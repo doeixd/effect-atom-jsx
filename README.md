@@ -1,10 +1,14 @@
 # effect-atom-jsx
 
-Effect-native reactive JSX runtime built on a small signal graph + `dom-expressions`-compatible runtime helpers.
+`effect-atom-jsx` is basically:
+- an **effect-atom style API** (`signal`, `computed`, `atomEffect`, optimistic actions)
+- plus a **`dom-expressions` JSX runtime target**
+- with **Effect v4 beta** runtime/service integration built in
 
-It aims to feel natural for users coming from either:
-- Effect services / Layer / Runtime patterns
-- atom-style reactive APIs (`signal`, `computed`, `atomEffect`)
+The design is also inspired by Solid 2.0 beta ideas around async UX:
+- initial `Loading` vs revalidation `Refreshing(previous)`
+- `isPending(...)` for refresh state
+- optimistic mutation flow via `actionEffect(...)`
 
 ## Install
 
@@ -13,6 +17,148 @@ npm i effect-atom-jsx effect
 ```
 
 This library currently targets `effect@^4.0.0-beta.29`.
+
+## Getting Started
+
+### 1) Configure JSX transform
+
+This package is intended to be used with `babel-plugin-jsx-dom-expressions` and `moduleName: "effect-atom-jsx"`.
+
+```json
+{
+  "plugins": [
+    [
+      "babel-plugin-jsx-dom-expressions",
+      {
+        "moduleName": "effect-atom-jsx",
+        "contextToCustomElements": true
+      }
+    ]
+  ]
+}
+```
+
+### 2) Mount with a Layer runtime
+
+`mount(...)` creates a `ManagedRuntime` from your `Layer` and injects it into the component tree.
+
+### 3) Use services + async atoms
+
+Use `use(Tag)` for sync service access and `resource(...)` / `atomEffect(...)` for reactive async state.
+
+```ts
+import { Effect, Layer, ServiceMap } from "effect";
+import { mount, use, resource, signal, Async } from "effect-atom-jsx";
+
+const CounterApi = ServiceMap.Service<{
+  readonly load: () => Effect.Effect<number>;
+}>("CounterApi");
+
+const CounterApiLive = Layer.succeed(CounterApi, {
+  load: () => Effect.succeed(42)
+});
+
+function App() {
+  const count = signal(0);
+  const remote = resource(() => use(CounterApi).load());
+
+  return (
+    <main>
+      <button onClick={() => count.update((n) => n + 1)}>
+        Local: {count.get()}
+      </button>
+      <Async
+        result={remote()}
+        loading={() => <p>Loading...</p>}
+        success={(value) => <p>From Effect service: {value}</p>}
+      />
+    </main>
+  );
+}
+
+mount(() => App(), document.getElementById("root")!, CounterApiLive);
+```
+
+## Simple Examples
+
+### Mental model (quick)
+
+- **Local state**: `signal` / `computed`
+  - fast in-memory reactive values for UI state
+- **Service state**: `resource` / `atomEffect`
+  - Effect-powered async reads with typed errors and cancellation
+- **Mutation state**: `actionEffect` + `createOptimistic`
+  - optimistic write flow with rollback and refresh hooks
+
+### Local state with `signal` / `computed`
+
+```ts
+import { signal, computed } from "effect-atom-jsx";
+
+const count = signal(1);
+const doubled = computed(() => count.get() * 2);
+
+count.set(3);
+console.log(count.get());   // 3
+console.log(doubled.get()); // 6
+```
+
+### Effect-backed async state with `atomEffect`
+
+```ts
+import { Effect } from "effect";
+import { atomEffect, AsyncResult } from "effect-atom-jsx";
+
+const user = atomEffect(() =>
+  Effect.succeed({ id: 1, name: "Ada" }).pipe(Effect.delay("200 millis"))
+);
+
+const state = user();
+if (AsyncResult.isLoading(state)) console.log("loading");
+if (AsyncResult.isSuccess(state)) console.log(state.value.name);
+```
+
+### Service injection with `mount` + `use`
+
+```ts
+import { Effect, Layer, ServiceMap } from "effect";
+import { mount, use, resource } from "effect-atom-jsx";
+
+const Api = ServiceMap.Service<{ getMessage: () => Effect.Effect<string> }>("Api");
+const ApiLive = Layer.succeed(Api, { getMessage: () => Effect.succeed("hello") });
+
+function App() {
+  const message = resource(() => use(Api).getMessage());
+  return <div>{message()._tag === "Success" ? message().value : "..."}</div>;
+}
+
+mount(() => App(), document.getElementById("root")!, ApiLive);
+```
+
+### Optimistic mutation with `actionEffect`
+
+```ts
+import { Effect } from "effect";
+import { signal, createOptimistic, actionEffect } from "effect-atom-jsx";
+
+const savedCount = signal(0);
+const optimisticCount = createOptimistic(() => savedCount.get());
+
+const save = actionEffect(
+  (next: number) => Effect.succeed(next).pipe(Effect.delay("250 millis")),
+  {
+    optimistic: (next) => optimisticCount.set(next),
+    rollback: () => optimisticCount.clear(),
+    onSuccess: (next) => {
+      optimisticCount.clear();
+      savedCount.set(next);
+    },
+  },
+);
+
+save.run(10);
+console.log(optimisticCount.get()); // 10 immediately
+```
 
 ## Core API
 
@@ -60,7 +206,6 @@ Helpers:
 
 - Full API reference: `docs/API.md`
 - Release checklist: `docs/RELEASE_CHECKLIST.md`
-- Effect v4 migration plan and notes: `EFFECT_V4_UPGRADE_PLAN.md`
 
 ## Minimal Example
 
@@ -98,5 +243,4 @@ mount(() => App(), document.getElementById("root")!, ApiLive);
 
 - Type-safe Effect v4 integration
 - Full test suite (`npm test`), typecheck (`npm run typecheck`), and build (`npm run build`)
-- Detailed v4 upgrade notes: `EFFECT_V4_UPGRADE_PLAN.md`
 - Release checklist: `docs/RELEASE_CHECKLIST.md`
