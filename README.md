@@ -5,6 +5,10 @@
 - plus a **`dom-expressions` JSX runtime target**
 - with **Effect v4 beta** runtime/service integration built in
 
+Compatibility note:
+- this package currently provides an effect-atom-compatible ergonomic surface, implemented natively for Effect v4
+- it does not currently depend on `@effect-atom/atom` directly (that line is currently Effect v3-oriented)
+
 The design is also inspired by Solid 2.0 beta ideas around async UX:
 - initial `Loading` vs revalidation `Refreshing(previous)`
 - `isPending(...)` for refresh state
@@ -100,6 +104,19 @@ In practice:
 3. `resource(...)` / `atomEffect(...)` run service effects reactively and expose `AsyncResult` state.
 4. `actionEffect(...)` handles writes, optimistic UI, rollback, and post-success refresh.
 5. JSX is compiled to dom-expressions helpers, so reactivity updates the DOM efficiently.
+
+## Compatibility And Roadmap
+
+- **Today**
+  - Runtime baseline: Effect v4 beta (`effect@^4.0.0-beta.29`)
+  - API style: effect-atom-like primitives and async/mutation patterns
+  - JSX runtime target: `dom-expressions` via `effect-atom-jsx/runtime`
+- **Near-term goal**
+  - keep this public API stable and predictable for app code
+  - continue tightening type-safety and integration tests
+- **Future alignment**
+  - monitor official Effect v4 atom modules as they mature
+  - if a stable framework-agnostic v4 atom core becomes available, adopt/adapter it behind the same public API
 
 ## Simple Examples
 
