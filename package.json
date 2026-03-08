@@ -1,7 +1,7 @@
 {
   "name": "effect-atom-jsx",
   "version": "0.1.0",
-  "description": "Effect-TS backed reactive JSX renderer using dom-expressions",
+  "description": "Effect-native fine-grained reactive JSX runtime with Layer-powered service injection, async atoms, and optimistic actions.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -15,6 +15,26 @@
       "import": "./dist/runtime.js",
       "types": "./dist/runtime.d.ts"
     }
+  },
+  "keywords": [
+    "effect",
+    "effect-ts",
+    "signals",
+    "reactivity",
+    "jsx",
+    "dom-expressions",
+    "atoms",
+    "todomvc",
+    "typescript",
+    "optimistic-ui"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/doeixd/effect-atom-jsx.git"
+  },
+  "homepage": "https://github.com/doeixd/effect-atom-jsx#readme",
+  "bugs": {
+    "url": "https://github.com/doeixd/effect-atom-jsx/issues"
   },
   "scripts": {
     "build": "tsc",
