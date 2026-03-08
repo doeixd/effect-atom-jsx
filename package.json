@@ -19,7 +19,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -32,7 +33,8 @@
     "@types/node": "^20.0.0",
     "babel-plugin-jsx-dom-expressions": "^0.39.0",
     "jest": "^30.2.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.0.18"
   },
   "peerDependencies": {
     "effect": "^3.0.0"

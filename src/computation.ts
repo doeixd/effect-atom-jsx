@@ -10,9 +10,10 @@
  *   5. Disposes itself when its parent Owner is disposed.
  *
  * Per-run Owner model:
- *   - `_owner`    : lifetime = Computation lifetime. Owns _runOwner.
- *   - `_runOwner` : lifetime = single execution. Replaced each re-run.
- *     onCleanup calls inside the fn attach to _runOwner.
+ *   - `_owner`    : lifetime = Computation lifetime. Registered on parent Owner.
+ *   - `_runOwner` : lifetime = single execution. Replaced before every re-run.
+ *     onCleanup() calls inside the fn attach to _runOwner so they fire before
+ *     the next execution (not just on final disposal).
  *
  * Memo<T> extends Computation to cache its return value and expose a
  * getter — the canonical "derived signal" primitive.
@@ -27,17 +28,26 @@ export class Computation implements IComputation {
   protected _deps: Set<ISignal<unknown>> = new Set();
   /** Lifetime owner — tied to parent, governs entire computation lifetime. */
   protected _owner: Owner;
-  /** Per-run owner — replaced before every re-execution for cleanup support. */
+  /** Per-run owner — disposed before every re-execution for cleanup support. */
   private _runOwner: Owner | null = null;
   private _disposed = false;
   private _running = false;
 
-  constructor(fn: () => unknown, parentOwner: Owner | null = getOwner()) {
+  /**
+   * @param fn          - The reactive function to execute.
+   * @param parentOwner - Owner that governs this computation's lifetime.
+   * @param defer       - If true, skip the initial run (used by Memo so it can
+   *                      set fields before the first execution).
+   */
+  constructor(
+    fn: () => unknown,
+    parentOwner: Owner | null = getOwner(),
+    defer = false,
+  ) {
     this._owner = new Owner(parentOwner);
     this._fn = fn;
-    // When our lifetime owner is disposed, clean up computation.
     this._owner.addCleanup(() => this._dispose());
-    this._run();
+    if (!defer) this._run();
   }
 
   addDependency(signal: ISignal<unknown>): void {
@@ -47,18 +57,19 @@ export class Computation implements IComputation {
   invalidate(): void {
     if (this._disposed || this._running) return;
     this._cleanup();
+    if (this._disposed) return; // re-check: _cleanup() may have triggered dispose
     this._run();
   }
 
   private _cleanup(): void {
-    // Remove this computation from all its current dependencies.
+    // Unsubscribe from all current dependencies.
     for (const dep of this._deps) {
       dep.removeSubscriber(this);
     }
     this._deps.clear();
 
-    // Dispose the previous run's sub-owner: fires onCleanup callbacks registered
-    // during that run, and disposes any nested effects/computations created in it.
+    // Dispose the per-run sub-owner to fire onCleanup callbacks registered
+    // during the previous run, and tear down nested effects/computations.
     if (this._runOwner !== null) {
       this._runOwner.dispose();
       this._runOwner = null;
@@ -69,8 +80,8 @@ export class Computation implements IComputation {
     if (this._disposed) return;
     this._running = true;
 
-    // Create a fresh per-run owner as a child of the lifetime owner.
-    // onCleanup() calls during _execute() attach their callbacks here.
+    // Fresh per-run owner as a child of the lifetime owner.
+    // onCleanup() inside _execute() attaches here.
     this._runOwner = new Owner(this._owner);
 
     const prevObserver = setObserver(this);
@@ -105,10 +116,13 @@ export class Computation implements IComputation {
 
 /**
  * Memo — a Computation that caches its return value.
- * Only notifies its own subscribers when the computed value actually changes.
+ *
+ * Only notifies its own downstream subscribers when the computed value
+ * actually changes (per `equals`). The first run initialises the value
+ * without notifying (no subscribers exist yet at construction time).
  */
 export class Memo<T> extends Computation implements ISignal<T> {
-  private _value: T = undefined as unknown as T;
+  private _value: T | undefined = undefined;
   private _subscribers: Set<IComputation> = new Set();
   private _equals: EqualityFn<T>;
   private _initialized = false;
@@ -118,25 +132,26 @@ export class Memo<T> extends Computation implements ISignal<T> {
     equals: EqualityFn<T> = defaultEquals as EqualityFn<T>,
     parentOwner: Owner | null = getOwner(),
   ) {
-    // Set _equals BEFORE super() so it's available when super calls _run → _execute.
-    // We use a trick: store on a shared closure variable captured by the override.
-    // Actually we need _equals on `this` before _execute runs. The cleanest fix:
-    // don't call _run in super for Memo — instead defer it.
-    //
-    // We achieve this by temporarily overriding _fn to a no-op, then replacing it.
-    super((() => {}) as () => unknown, parentOwner);
+    // Defer the initial _run() so we can set _equals before the first execution.
+    super(fn as () => unknown, parentOwner, /* defer = */ true);
     this._equals = equals;
-    this._fn = fn as () => unknown;
-    // Now run for real (the super constructor ran a no-op).
+    // Now run with _equals in place.
     this._run();
   }
 
   protected override _execute(): void {
     const next = (this._fn as () => T)();
-    if (!this._initialized || !this._equals(this._value, next)) {
-      this._value = next;
+
+    if (!this._initialized) {
+      // First run: store the initial value. No subscribers to notify yet.
       this._initialized = true;
-      // Notify memo's own downstream subscribers.
+      this._value = next;
+      return;
+    }
+
+    // Subsequent runs: notify only when the value actually changes.
+    if (!this._equals(this._value as T, next)) {
+      this._value = next;
       if (this._subscribers.size > 0) {
         for (const sub of [...this._subscribers]) {
           sub.invalidate();
@@ -147,12 +162,15 @@ export class Memo<T> extends Computation implements ISignal<T> {
 
   /** Read the memoised value; registers this memo as a dep of the caller. */
   get(): T {
+    if (!this._initialized) {
+      throw new Error("[effect-atom-jsx] Memo read before initialization (circular dependency?)");
+    }
     const observer = getObserver();
     if (observer !== null) {
       this._subscribers.add(observer);
       observer.addDependency(this as ISignal<unknown>);
     }
-    return this._value;
+    return this._value as T;
   }
 
   removeSubscriber(computation: IComputation): void {

@@ -22,6 +22,11 @@ export class Owner {
     parent?._children.add(this);
   }
 
+  /** The owner that created this one — used by useContext for tree traversal. */
+  get parent(): Owner | null {
+    return this._parent;
+  }
+
   addCleanup(fn: CleanupFn): void {
     if (this._disposed) {
       // Already disposed — run immediately so we don't leak.

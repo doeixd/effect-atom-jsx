@@ -180,10 +180,8 @@ export function useContext<T>(ctx: Context<T>): T {
     if (map?.has(ctx.id)) {
       return map.get(ctx.id) as T;
     }
-    // Walk up the owner tree by re-inspecting parent via the internal owner chain.
-    // We expose a helper from owner.ts for this.
-    owner = null; // Owner doesn't expose parent publicly; context lookup stops here.
-    // For full parent-chain traversal, see ownerParent() in owner.ts (to be wired below).
+    // Walk up to the parent Owner (exposed via `owner.parent` accessor).
+    owner = owner.parent;
   }
   return ctx.defaultValue;
 }
