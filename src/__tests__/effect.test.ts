@@ -13,9 +13,17 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { Effect, Exit, Scope, Cause, fiber } from "effect";
+import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime } from "effect";
 import {
   atomEffect,
+  resource,
+  resourceWith,
+  isPending,
+  createOptimistic,
+  actionEffect,
+  use,
+  signal,
+  computed,
   createAtom,
   AsyncResult,
   Async,
@@ -61,15 +69,24 @@ describe("AsyncResult", () => {
     expect((r as Defect).cause).toBe("boom");
   });
 
+  it("refreshing wraps the last settled value", () => {
+    const prev = AsyncResult.success(42);
+    const r = AsyncResult.refreshing<number, never>(prev);
+    expect(r._tag).toBe("Refreshing");
+    expect(r.previous).toEqual(prev);
+  });
+
   it("type guards are mutually exclusive", () => {
     const l = AsyncResult.loading;
     const s = AsyncResult.success(1);
     const f = AsyncResult.failure("err");
     const d = AsyncResult.defect("oops");
+    const rf = AsyncResult.refreshing<number, string>(f);
     expect(AsyncResult.isLoading(l)).toBe(true);
     expect(AsyncResult.isSuccess(s)).toBe(true);
     expect(AsyncResult.isFailure(f)).toBe(true);
     expect(AsyncResult.isDefect(d)).toBe(true);
+    expect(AsyncResult.isRefreshing(rf)).toBe(true);
     // Cross-checks
     expect(AsyncResult.isLoading(s)).toBe(false);
     expect(AsyncResult.isSuccess(f)).toBe(false);
@@ -205,6 +222,31 @@ describe("atomEffect — reactive dependencies", () => {
     dispose();
   });
 
+  it("emits Refreshing while revalidating after first settled value", async () => {
+    const [id, setId] = createSignal(1);
+    let result!: () => AsyncResultType<number, never>;
+    const dispose = createRoot((d) => {
+      result = atomEffect(() =>
+        Effect.succeed(id()).pipe(Effect.delay("30 millis"))
+      );
+      return d;
+    });
+
+    await tick(50);
+    expect(result()).toEqual(AsyncResult.success(1));
+
+    setId(2);
+    const during = result();
+    expect(AsyncResult.isRefreshing(during)).toBe(true);
+    if (AsyncResult.isRefreshing(during)) {
+      expect(during.previous).toEqual(AsyncResult.success(1));
+    }
+
+    await tick(50);
+    expect(result()).toEqual(AsyncResult.success(2));
+    dispose();
+  });
+
   it("cleans up the fiber when the root is disposed", async () => {
     const completions: number[] = [];
     let dispose!: () => void;
@@ -248,6 +290,203 @@ describe("atomEffect — Effect.gen", () => {
     await tick();
     expect(result()).toEqual(AsyncResult.success(50));
     dispose();
+  });
+});
+
+describe("atomEffect — runtime compatibility", () => {
+  const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
+
+  it("accepts ManagedRuntime as the runtime argument", async () => {
+    const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "hello" }));
+
+    let result!: () => AsyncResultType<string, never>;
+    const dispose = createRoot((d) => {
+      result = atomEffect(
+        () =>
+          Effect.gen(function* () {
+            const svc = yield* Effect.service(Greeting);
+            return `${svc.prefix} world`;
+          }),
+        runtime,
+      );
+      return d;
+    });
+
+    await tick();
+    expect(result()).toEqual(AsyncResult.success("hello world"));
+    dispose();
+    await runtime.dispose();
+  });
+});
+
+describe("signal / computed", () => {
+  it("signal exposes object-oriented read/write API", () => {
+    const count = signal(1);
+    expect(count.get()).toBe(1);
+    count.set(5);
+    expect(count.get()).toBe(5);
+    count.update((n) => n + 2);
+    expect(count.get()).toBe(7);
+  });
+
+  it("computed derives reactively from signal", () => {
+    const count = signal(2);
+    const doubled = computed(() => count.get() * 2);
+    expect(doubled.get()).toBe(4);
+    count.set(9);
+    expect(doubled.get()).toBe(18);
+  });
+});
+
+describe("use / resource", () => {
+  it("use(tag) throws when no ambient ManagedRuntime is present", () => {
+    const Name = ServiceMap.Service<{ readonly value: string }>("Name");
+    expect(() => use(Name)).toThrow(/no ambient ManagedRuntime/i);
+  });
+
+  it("resource(fn) returns a defect when no ambient runtime is available", async () => {
+    let result!: () => AsyncResultType<number, never>;
+    const dispose = createRoot((d) => {
+      result = resource(() => Effect.succeed(123));
+      return d;
+    });
+    await tick();
+    const current = result();
+    expect(AsyncResult.isDefect(current)).toBe(true);
+    if (AsyncResult.isDefect(current)) {
+      expect(current.cause).toMatch(/requires an ambient ManagedRuntime/i);
+    }
+    dispose();
+  });
+
+  it("resourceWith(runtime, fn) runs with explicit managed runtime", async () => {
+    const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
+    const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "yo" }));
+
+    let result!: () => AsyncResultType<string, never>;
+    const dispose = createRoot((d) => {
+      result = resourceWith(runtime, () =>
+        Effect.gen(function* () {
+          const svc = yield* Effect.service(Greeting);
+          return `${svc.prefix}!`;
+        }));
+      return d;
+    });
+
+    await tick();
+    expect(result()).toEqual(AsyncResult.success("yo!"));
+    dispose();
+    await runtime.dispose();
+  });
+});
+
+describe("isPending", () => {
+  it("tracks refreshing state (not initial loading)", async () => {
+    const [id, setId] = createSignal(1);
+    let pending!: () => boolean;
+    let result!: () => AsyncResultType<number, never>;
+
+    const dispose = createRoot((d) => {
+      result = atomEffect(() => Effect.succeed(id()).pipe(Effect.delay("20 millis")));
+      pending = isPending(result);
+      return d;
+    });
+
+    expect(AsyncResult.isLoading(result())).toBe(true);
+    expect(pending()).toBe(false);
+    await tick(40);
+    expect(AsyncResult.isSuccess(result())).toBe(true);
+
+    setId(2);
+    expect(AsyncResult.isRefreshing(result())).toBe(true);
+    expect(pending()).toBe(true);
+
+    await tick(40);
+    expect(AsyncResult.isSuccess(result())).toBe(true);
+    expect(pending()).toBe(false);
+    dispose();
+  });
+});
+
+describe("createOptimistic", () => {
+  it("overlays source until cleared", () => {
+    const [count, setCount] = createSignal(1);
+    const optimistic = createOptimistic(count);
+
+    expect(optimistic.get()).toBe(1);
+    expect(optimistic.isPending()).toBe(false);
+
+    optimistic.set(5);
+    expect(optimistic.get()).toBe(5);
+    expect(optimistic.isPending()).toBe(true);
+
+    setCount(2);
+    expect(optimistic.get()).toBe(5);
+
+    optimistic.clear();
+    expect(optimistic.isPending()).toBe(false);
+    expect(optimistic.get()).toBe(2);
+  });
+
+  it("supports updater function", () => {
+    const [value] = createSignal(10);
+    const optimistic = createOptimistic(value);
+    optimistic.set((n) => n + 3);
+    expect(optimistic.get()).toBe(13);
+  });
+});
+
+describe("actionEffect", () => {
+  it("runs effect and transitions result to Success", async () => {
+    const action = actionEffect((n: number) =>
+      Effect.succeed(n).pipe(Effect.delay("10 millis"))
+    );
+
+    action.run(1);
+    expect(AsyncResult.isRefreshing(action.result())).toBe(true);
+    expect(action.pending()).toBe(true);
+    await tick(30);
+    expect(action.result()).toEqual(AsyncResult.success(undefined));
+    expect(action.pending()).toBe(false);
+  });
+
+  it("supports optimistic + rollback for typed failures", async () => {
+    const [count, setCount] = createSignal(1);
+    const optimistic = createOptimistic(count);
+
+    const action = actionEffect(
+      (_n: number) => Effect.fail("nope").pipe(Effect.delay("10 millis")),
+      {
+        optimistic: (n) => optimistic.set(n),
+        rollback: () => optimistic.clear(),
+      },
+    );
+
+    action.run(7);
+    expect(optimistic.get()).toBe(7);
+    await tick(30);
+
+    expect(optimistic.isPending()).toBe(false);
+    expect(optimistic.get()).toBe(1);
+    expect(action.result()).toEqual(AsyncResult.failure("nope"));
+  });
+
+  it("requires runtime when action effect needs services", async () => {
+    const Greeting = ServiceMap.Service<{ readonly prefix: string }>("ActionGreeting");
+    const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "ok" }));
+
+    const action = actionEffect(
+      () => Effect.gen(function* () {
+        const svc = yield* Effect.service(Greeting);
+        return svc.prefix;
+      }),
+      { runtime },
+    );
+
+    action.run(undefined);
+    await tick();
+    expect(action.result()).toEqual(AsyncResult.success(undefined));
+    await runtime.dispose();
   });
 });
 

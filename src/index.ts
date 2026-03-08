@@ -43,6 +43,15 @@ export {
 // ─── Effect-TS integration ───────────────────────────────────────────────────
 export {
   atomEffect,
+  resource,
+  resourceWith,
+  isPending,
+  createOptimistic,
+  actionEffect,
+  use,
+  mount,
+  signal,
+  computed,
   scopedRoot,
   layerContext,
   AsyncResult,
@@ -50,9 +59,16 @@ export {
   For,
   Show,
   type Loading,
+  type Refreshing,
   type Success,
   type Failure,
   type AsyncResult as AsyncResultType,
+  type RuntimeLike,
+  type OptimisticRef,
+  type ActionEffectHandle,
+  type ActionEffectOptions,
+  type SignalRef,
+  type ComputedRef,
 } from "./effect-ts.js";
 
 // ─── DOM runtime helpers (also exported from ./runtime for compiled JSX) ──────
