@@ -79,6 +79,28 @@ function App() {
 mount(() => App(), document.getElementById("root")!, CounterApiLive);
 ```
 
+## How The Pieces Fit Together
+
+`effect-atom-jsx` combines three ideas into one workflow:
+
+- **Effect v4** (`effect`)
+  - provides typed effects, services, layers, and managed runtimes
+  - you model reads/writes as `Effect.Effect<A, E, R>`
+- **effect-atom style reactivity** (this library)
+  - provides ergonomic reactive primitives like `signal`, `computed`, `atomEffect`, and `actionEffect`
+  - bridges reactive invalidation to Effect fibers with interruption/cancellation
+- **dom-expressions JSX runtime**
+  - Babel turns JSX into fine-grained DOM operations against `effect-atom-jsx/runtime`
+  - updates are surgical: only nodes that depend on changed signals/effects update
+
+In practice:
+
+1. `mount(() => App(), el, layer)` builds a `ManagedRuntime` from your `Layer`.
+2. Components call `use(Tag)` to synchronously access services from that runtime.
+3. `resource(...)` / `atomEffect(...)` run service effects reactively and expose `AsyncResult` state.
+4. `actionEffect(...)` handles writes, optimistic UI, rollback, and post-success refresh.
+5. JSX is compiled to dom-expressions helpers, so reactivity updates the DOM efficiently.
+
 ## Simple Examples
 
 ### Mental model (quick)
