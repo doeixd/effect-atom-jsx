@@ -1,0 +1,18 @@
+{
+  "presets": [
+    ["@babel/preset-typescript", { "allExtensions": true, "isTSX": true }]
+  ],
+  "plugins": [
+    [
+      "babel-plugin-jsx-dom-expressions",
+      {
+        "moduleName": "effect-atom-jsx/runtime",
+        "generate": "dom",
+        "hydratable": false,
+        "delegateEvents": true,
+        "builtIns": [],
+        "requireStatic": false
+      }
+    ]
+  ]
+}

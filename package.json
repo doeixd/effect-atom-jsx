@@ -1,0 +1,40 @@
+{
+  "name": "effect-atom-jsx",
+  "version": "0.1.0",
+  "description": "Effect-TS backed reactive JSX renderer using dom-expressions",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./runtime": {
+      "import": "./dist/runtime.js",
+      "types": "./dist/runtime.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "effect": "^3.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-typescript": "^7.24.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.0.0",
+    "babel-plugin-jsx-dom-expressions": "^0.39.0",
+    "jest": "^30.2.0",
+    "typescript": "^5.4.0"
+  },
+  "peerDependencies": {
+    "effect": "^3.0.0"
+  }
+}
