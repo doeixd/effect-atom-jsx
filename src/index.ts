@@ -1,0 +1,89 @@
+/**
+ * effect-atom-jsx — main entry point.
+ *
+ * Re-exports the full public API: reactive primitives, DOM helpers,
+ * and Effect-TS integration.
+ *
+ * The babel-plugin-jsx-dom-expressions should point to
+ * "effect-atom-jsx/runtime" for compiled JSX output.
+ */
+
+// ─── Reactive core ────────────────────────────────────────────────────────────
+export {
+  createSignal,
+  createEffect,
+  createMemo,
+  createRoot,
+  createContext,
+  useContext,
+  onCleanup,
+  onMount,
+  untrack,
+  sample,
+  batch,
+  mergeProps,
+  splitProps,
+  getOwner,
+  runWithOwner,
+  type Accessor,
+  type Setter,
+  type SignalOptions,
+  type Context,
+} from "./api.js";
+
+// ─── Atom API (Jotai-style ergonomics on top of reactive core) ────────────────
+export {
+  createAtom,
+  type Atom,
+  type WritableAtom,
+  type DerivedAtom,
+  type AtomGetter,
+} from "./effect-ts.js";
+
+// ─── Effect-TS integration ───────────────────────────────────────────────────
+export {
+  atomEffect,
+  resource,
+  resourceWith,
+  isPending,
+  createOptimistic,
+  actionEffect,
+  use,
+  mount,
+  signal,
+  computed,
+  scopedRoot,
+  layerContext,
+  AsyncResult,
+  Async,
+  For,
+  Show,
+  type Loading,
+  type Refreshing,
+  type Success,
+  type Failure,
+  type AsyncResult as AsyncResultType,
+  type RuntimeLike,
+  type OptimisticRef,
+  type ActionEffectHandle,
+  type ActionEffectOptions,
+  type SignalRef,
+  type ComputedRef,
+} from "./effect-ts.js";
+
+// ─── DOM runtime helpers (also exported from ./runtime for compiled JSX) ──────
+export {
+  template,
+  insert,
+  createComponent,
+  spread,
+  attr,
+  prop,
+  classList,
+  style,
+  delegateEvents,
+  render,
+  // Reactive primitives re-exported for runtime consumers:
+  effect,
+  memo,
+} from "./dom.js";
