@@ -13,6 +13,82 @@ import { createSignal } from "./api.js";
 
 export type SchemaError = Schema.SchemaError;
 
+type AnyRecord = Record<PropertyKey, unknown>;
+
+function readPath(root: unknown, path: ReadonlyArray<PropertyKey>): unknown {
+  let current = root;
+  for (const key of path) {
+    if (current === null || typeof current !== "object") return undefined;
+    current = (current as AnyRecord)[key];
+  }
+  return current;
+}
+
+function writePath(root: unknown, path: ReadonlyArray<PropertyKey>, value: unknown): unknown {
+  if (path.length === 0) return value;
+  const [head, ...tail] = path;
+
+  const base =
+    root !== null && typeof root === "object"
+      ? root
+      : typeof head === "number"
+        ? []
+        : {};
+
+  if (Array.isArray(base)) {
+    const copy = base.slice();
+    const index = Number(head);
+    copy[index] = writePath(copy[index], tail, value);
+    return copy;
+  }
+
+  return {
+    ...(base as AnyRecord),
+    [head]: writePath((base as AnyRecord)[head], tail, value),
+  };
+}
+
+/**
+ * Create a writable atom focused on a nested path in an object atom.
+ *
+ * @example
+ * const form = Atom.make({ user: { name: "Ada" } })
+ * const userName = AtomSchema.path(form, "user", "name")
+ * Effect.runSync(Atom.set(userName, "Grace"))
+ */
+export function path<Root, Value>(
+  root: Atom.Writable<Root, Root>,
+  ...segments: ReadonlyArray<PropertyKey>
+): Atom.Writable<Value, Value> {
+  return Atom.writable<Value, Value>(
+    (get) => readPath(get(root), segments) as Value,
+    (ctx, next) => {
+      const current = ctx.get(root);
+      ctx.set(root, writePath(current, segments, next) as Root);
+    },
+  );
+}
+
+/**
+ * Common input codecs for form wiring.
+ */
+export const HtmlInput = {
+  /** String input -> finite number (e.g. `<input type="number">`). */
+  number: Schema.NumberFromString,
+  /** String input -> Date (ISO-like values accepted by `Schema.Date`). */
+  date: Schema.Date,
+  /** Empty string maps to `null`, otherwise string payload. */
+  optionalString: {
+    schema: Schema.OptionFromNullOr(Schema.String),
+    input: (value: string): string | null => value.trim() === "" ? null : value,
+  },
+  /** Empty string maps to `null`, otherwise numeric string payload. */
+  optionalNumber: {
+    schema: Schema.OptionFromNullOr(Schema.NumberFromString),
+    input: (value: string): string | null => value.trim() === "" ? null : value,
+  },
+} as const;
+
 /**
  * A reactive pair of atoms for managing form/input state with validation.
  */
@@ -38,26 +114,26 @@ export interface ValidatedAtom<A, I> {
 /**
  * Wrap a Writable atom with a Schema to create a validated form field.
  *
- * @example
- * const ageInput = Atom.make("25")
- * const ageField = AtomSchema.make(Schema.NumberFromString, ageInput)
- *
- * // Read current parse result
- * const current = Atom.get(ageField.value) // Option.some(25)
- */
-/**
- * Wrap a Writable atom with a Schema to create a validated form field.
- *
  * @param schema    - The Effect Schema used to decode the raw input.
  * @param inputAtom - The writable atom holding the raw input value.
  * @param options   - Optional config. Pass `initial` to enable dirty detection and reset.
  *
+ * `input` is wrapped to auto-mark `touched` on every write.
+ *
+ * `dirty` semantics:
+ * - when `initial` is provided: `dirty = currentInput !== initial`
+ * - otherwise: `dirty` mirrors `touched`
+ *
  * @example
  * const ageInput = Atom.make("25")
  * const ageField = AtomSchema.make(Schema.NumberFromString, ageInput)
  *
- * // Read current parse result
- * const current = Atom.get(ageField.value) // Option.some(25)
+ * const parsed = Effect.runSync(Atom.get(ageField.value))
+ * // Option.some(25)
+ *
+ * Effect.runSync(Atom.set(ageField.input, "oops"))
+ * const valid = Effect.runSync(Atom.get(ageField.isValid))
+ * // false
  */
 export function make<A, I>(
   schema: Schema.Schema<A>,
@@ -138,6 +214,9 @@ export function make<A, I>(
  * // emailField.isValid starts as false (empty string fails nonEmptyString)
  * Effect.runSync(Atom.set(emailField.input, "alice@example.com"))
  * // emailField.isValid is now true
+ *
+ * emailField.reset()
+ * // input resets to initial value and touched becomes false
  */
 export function makeInitial<A, I>(
   schema: Schema.Schema<A>,

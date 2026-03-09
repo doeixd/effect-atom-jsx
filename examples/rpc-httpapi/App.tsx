@@ -1,5 +1,5 @@
 import { Effect, Layer, ServiceMap } from "effect";
-import { AtomRpc, AtomHttpApi, MatchTag, mount } from "effect-atom-jsx";
+import { AtomRpc, AtomHttpApi, MatchTag, createMount } from "effect-atom-jsx";
 
 // ─── AtomRpc Example ──────────────────────────────────────────────────────────
 
@@ -122,5 +122,6 @@ if (root) {
   const AppLayer = Layer.succeed(RpcService, RpcClient).pipe(
     Layer.provideMerge(Layer.succeed(HttpApiService, HttpApiClient)),
   );
-  mount(() => <App />, root, AppLayer);
+  const mountApp = createMount(AppLayer);
+  mountApp(() => <App />, root);
 }

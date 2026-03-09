@@ -146,7 +146,7 @@ export interface Context<T> {
   Provider: (props: { value: T; children: unknown }) => unknown;
 }
 
-const contextMap = new WeakMap<Owner, Map<symbol, unknown>>();
+export const contextMap = new WeakMap<Owner, Map<symbol, unknown>>();
 
 function getContextMap(owner: Owner): Map<symbol, unknown> {
   let map = contextMap.get(owner);

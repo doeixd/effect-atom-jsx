@@ -1,7 +1,10 @@
 {
   "name": "effect-atom-jsx",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Effect-native fine-grained reactive JSX runtime with Layer-powered service injection, async atoms, and optimistic actions.",
+  "author": "Patrick G",
+  "license": "MIT",
+  "sideEffects": false,
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -14,6 +17,10 @@
     "./runtime": {
       "import": "./dist/runtime.js",
       "types": "./dist/runtime.d.ts"
+    },
+    "./testing": {
+      "import": "./dist/testing.js",
+      "types": "./dist/testing.d.ts"
     },
     "./Atom": {
       "import": "./dist/Atom.js",

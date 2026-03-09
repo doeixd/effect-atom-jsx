@@ -1,6 +1,12 @@
 import { Effect, Stream, Queue, Fiber, Runtime } from "effect";
 import { createSignal, batch as runBatch, type Accessor, createEffect, onCleanup } from "./api.js";
 import { Owner, runWithOwner } from "./owner.js";
+import {
+  queryEffect,
+  queryEffectStrict,
+  type AsyncResult,
+  type RuntimeLike,
+} from "./effect-ts.js";
 
 const TypeId = "~effect-atom-jsx/Atom" as const;
 const WritableTypeId = "~effect-atom-jsx/Atom/Writable" as const;
@@ -57,11 +63,23 @@ export interface WriteContext<A> {
   setSelf(value: A): void;
 }
 
-/** Type guard that checks whether an unknown value is an `Atom`. */
+/**
+ * Type guard for unknown values.
+ *
+ * Useful at boundaries where atoms are passed dynamically (plugins, devtools,
+ * generic helpers) and you need to narrow before calling `Atom.get`.
+ */
 export const isAtom = (u: unknown): u is Atom<any> =>
   typeof u === "object" && u !== null && TypeId in u;
 
-/** Type guard that checks whether an `Atom` is `Writable`. */
+/**
+ * Type guard that narrows a read-only `Atom` to `Writable`.
+ *
+ * @example
+ * if (Atom.isWritable(atom)) {
+ *   Effect.runSync(Atom.set(atom, nextValue))
+ * }
+ */
 export const isWritable = <R, W>(atom: Atom<R>): atom is Writable<R, W> =>
   typeof atom === "object" && atom !== null && WritableTypeId in atom;
 
@@ -149,9 +167,13 @@ export function make<A>(initial: A & (A extends (...args: Array<any>) => any ? n
  * Derived atoms track reads performed through `get(...)` and recompute when
  * dependencies change.
  *
+ * Note: function values cannot be used as plain initial values with `make`.
+ * If you need to store a function, wrap it in an object.
+ *
  * @example
  * const count = Atom.make(1)
  * const doubled = Atom.make((get) => get(count) * 2)
+ * const fnBox = Atom.make({ fn: () => 1 })
  */
 export function make<A>(valueOrRead: A | ((get: Context) => A)): Atom<A> | Writable<A> {
   if (typeof valueOrRead === "function") {
@@ -197,6 +219,10 @@ export function map<A, B>(self: Atom<A>, f: (a: A) => B): Atom<B>;
  * const doubled = Atom.map(count, (n) => n * 2)
  * const toLabel = Atom.map((n: number) => `#${n}`)
  * const labeledCount = toLabel(count)
+ *
+ * @example
+ * const user = Atom.make({ first: "Ada", last: "Lovelace" })
+ * const fullName = Atom.map(user, (u) => `${u.first} ${u.last}`)
  */
 export function map<A, B>(
   arg1: Atom<A> | ((a: A) => B),
@@ -365,6 +391,10 @@ export function modify<R, W, A>(
  *
  * Useful when the read logic depends on external state that is not captured
  * through atom dependencies.
+ *
+ * @example
+ * const clock = Atom.readable(() => Date.now())
+ * Effect.runSync(Atom.refresh(clock))
  */
 export const refresh = <A>(self: Atom<A>): Effect.Effect<void> =>
   Effect.sync(() => defaultContext.refresh(self));
@@ -377,6 +407,7 @@ export const refresh = <A>(self: Atom<A>): Effect.Effect<void> =>
  *
  * @example
  * const unsub = Atom.subscribe(count, console.log)
+ * // later: unsub()
  */
 export const subscribe = <A>(
   self: Atom<A>,
@@ -405,8 +436,13 @@ export const subscribe = <A>(
  * is first read (or explicitly mounted via a Registry), the stream starts.
  * The stream is interrupted when the registry/owner unmounts.
  *
+ * This is ideal for websocket/event-stream style data where you always want
+ * the latest value represented as an atom.
+ *
  * @example
  * const prices = Atom.fromStream(stream, 0)
+ * const stop = registry.mount(prices)
+ * // later: stop()
  */
 export function fromStream<A, E, R>(
   stream: Stream.Stream<A, E, R>,
@@ -465,4 +501,46 @@ export function fromQueue<A>(
   initialValue: A,
 ): Atom<A> {
   return fromStream(Stream.fromQueue(queue), initialValue);
+}
+
+export function query<A, E, R>(
+  fn: () => Effect.Effect<A, E, R>,
+): Atom<AsyncResult<A, E>>;
+export function query<A, E, R>(
+  runtime: RuntimeLike<R, unknown>,
+  fn: () => Effect.Effect<A, E, R>,
+): Atom<AsyncResult<A, E>>;
+/**
+ * Create an atom backed by `queryEffect(...)` semantics.
+ *
+ * This is the atom-native equivalent of `queryEffect` / `queryEffectStrict`:
+ * - tracks dependencies read inside `fn()`
+ * - interrupts stale fibers on dependency changes
+ * - exposes `AsyncResult<A, E>` through normal atom reads
+ *
+ * Without an explicit runtime, it uses ambient runtime behavior from `mount`.
+ *
+ * @example
+ * const user = Atom.query(() => use(Api).getUser(ui.get(userIdAtom)))
+ *
+ * @example
+ * const user = Atom.query(runtime, () => Effect.service(Api).pipe(Effect.flatMap((api) => api.getUser("1"))))
+ */
+export function query<A, E, R>(
+  arg1: RuntimeLike<R, unknown> | (() => Effect.Effect<A, E, R>),
+  arg2?: () => Effect.Effect<A, E, R>,
+): Atom<AsyncResult<A, E>> {
+  let accessor: Accessor<AsyncResult<A, E>> | null = null;
+
+  const getAccessor = (): Accessor<AsyncResult<A, E>> => {
+    if (accessor !== null) return accessor;
+    if (arg2 === undefined) {
+      accessor = queryEffect(arg1 as () => Effect.Effect<A, E, R>);
+    } else {
+      accessor = queryEffectStrict(arg1 as RuntimeLike<R, unknown>, arg2);
+    }
+    return accessor;
+  };
+
+  return readable(() => getAccessor()());
 }

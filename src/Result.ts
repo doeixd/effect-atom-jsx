@@ -122,7 +122,12 @@ export function fromAsyncResult<A, E>(
   }
   if (value._tag === "Success") return success(value.value);
   if (value._tag === "Failure") return failure(value.error, { previousSuccess: null });
-  return failure({ defect: value.cause });
+  // Instead of creating defect from cause string, use the rawCause from the exit field
+  // if available.
+  const raw = AsyncResult.rawCause(value);
+  return Option.isSome(raw)
+    ? failure({ defect: Cause.pretty(raw.value) } as unknown as E)
+    : failure({ defect: value.cause });
 }
 
 /**

@@ -53,11 +53,27 @@ import { render } from "./dom.js";
 // ─── AsyncResult ──────────────────────────────────────────────────────────────
 
 export type Loading = { readonly _tag: "Loading" };
-export type Success<A> = { readonly _tag: "Success"; readonly value: A };
+export type Success<A> = {
+  readonly _tag: "Success";
+  readonly value: A;
+  /** The canonical Effect Exit backing this result. */
+  readonly exit: Exit.Exit<A, never>;
+};
 /** E is the typed failure from your Effect's error channel. */
-export type Failure<E> = { readonly _tag: "Failure"; readonly error: E };
+export type Failure<E> = {
+  readonly _tag: "Failure";
+  readonly error: E;
+  /** The canonical Effect Exit backing this result. */
+  readonly exit: Exit.Exit<never, E>;
+};
 /** Defect wraps unexpected errors (bugs, interrupts) that aren't typed E. */
-export type Defect = { readonly _tag: "Defect"; readonly cause: string };
+export type Defect = {
+  readonly _tag: "Defect";
+  readonly cause: string;
+  readonly rawCause: Cause.Cause<unknown>;
+  /** The canonical Effect Exit backing this result. */
+  readonly exit: Exit.Exit<never, never>;
+};
 export type Refreshing<A, E> = {
   readonly _tag: "Refreshing";
   readonly previous: Success<A> | Failure<E> | Defect;
@@ -66,16 +82,152 @@ export type Refreshing<A, E> = {
 export type AsyncResult<A, E> = Loading | Refreshing<A, E> | Success<A> | Failure<E> | Defect;
 
 export const AsyncResult = {
+  /** Singleton Loading value. */
   loading: { _tag: "Loading" } as Loading,
+
+  /** Wrap a previously settled result as Refreshing. */
   refreshing: <A, E>(previous: Success<A> | Failure<E> | Defect): Refreshing<A, E> => ({ _tag: "Refreshing", previous }),
-  success: <A>(value: A): Success<A> => ({ _tag: "Success", value }),
-  failure: <E>(error: E): Failure<E> => ({ _tag: "Failure", error }),
-  defect: (cause: string): Defect => ({ _tag: "Defect", cause }),
+
+  /** Create a Success result, backed by `Exit.succeed(value)`. */
+  success: <A>(value: A): Success<A> => ({ _tag: "Success", value, exit: Exit.succeed(value) }),
+
+  /** Create a Failure result from a typed error, backed by `Exit.fail(error)`. */
+  failure: <E>(error: E): Failure<E> => ({ _tag: "Failure", error, exit: Exit.fail(error) }),
+
+  /**
+   * Create a Defect result from an unexpected error, backed by `Exit.failCause(...)`.
+   * @param cause    - Human-readable cause description.
+   * @param rawCause - Structured Effect Cause. If omitted, `Cause.die(cause)` is used.
+   */
+  defect: (cause: string, rawCause?: Cause.Cause<unknown>): Defect => {
+    const rc = rawCause ?? Cause.die(cause);
+    return { _tag: "Defect", cause, rawCause: rc, exit: Exit.failCause(rc) as Exit.Exit<never, never> };
+  },
+
+  /** Extract the settled value (skipping Loading, unwrapping Refreshing). */
+  settled: <A, E>(r: AsyncResult<A, E>): Option.Option<Success<A> | Failure<E> | Defect> => {
+    if (r._tag === "Loading") return Option.none();
+    if (r._tag === "Refreshing") return Option.some(r.previous);
+    return Option.some(r);
+  },
+
+  /**
+   * Canonical constructor from an Effect Exit.
+   * Maps `Exit.succeed(value)` to `Success`, typed failures to `Failure`,
+   * and defects/interrupts to `Defect`.
+   */
+  fromExit: <A, E>(exit: Exit.Exit<A, E>): AsyncResult<A, E> =>
+    Exit.match(exit, {
+      onSuccess: (value) => AsyncResult.success(value),
+      onFailure: (cause) => {
+        const typed = Cause.findErrorOption(cause);
+        if (Option.isSome(typed)) return AsyncResult.failure(typed.value);
+        return AsyncResult.defect(Cause.pretty(cause), cause);
+      },
+    }),
+
+  /**
+   * Convert to an Effect Exit. Returns `None` for `Loading`.
+   * Uses the canonical `.exit` field for accurate round-trips.
+   */
+  toExit: <A, E>(r: AsyncResult<A, E>): Option.Option<Exit.Exit<A, E>> => {
+    const settled = AsyncResult.settled(r);
+    if (Option.isNone(settled)) return Option.none();
+    return Option.some(settled.value.exit as unknown as Exit.Exit<A, E>);
+  },
+
+  /** Extract the success value as an Option. */
+  toOption: <A, E>(r: AsyncResult<A, E>): Option.Option<A> => {
+    const settled = AsyncResult.settled(r);
+    if (Option.isNone(settled)) return Option.none();
+    return settled.value._tag === "Success" ? Option.some(settled.value.value) : Option.none();
+  },
+
+  /** Extract the raw Cause from a Defect result. */
+  rawCause: <A, E>(r: AsyncResult<A, E>): Option.Option<Cause.Cause<unknown>> => {
+    const settled = AsyncResult.settled(r);
+    if (Option.isNone(settled)) return Option.none();
+    const value = settled.value;
+    if (value._tag !== "Defect") return Option.none();
+    return Option.some(value.rawCause);
+  },
+
+  // ─── Type Guards ────────────────────────────────────────────────────────
+
   isLoading: <A, E>(r: AsyncResult<A, E>): r is Loading => r._tag === "Loading",
   isRefreshing: <A, E>(r: AsyncResult<A, E>): r is Refreshing<A, E> => r._tag === "Refreshing",
   isSuccess: <A, E>(r: AsyncResult<A, E>): r is Success<A> => r._tag === "Success",
   isFailure: <A, E>(r: AsyncResult<A, E>): r is Failure<E> => r._tag === "Failure",
   isDefect: <A, E>(r: AsyncResult<A, E>): r is Defect => r._tag === "Defect",
+
+  // ─── Combinators ────────────────────────────────────────────────────────
+
+  /**
+   * Exhaustive pattern match over all five AsyncResult variants.
+   */
+  match: <A, E, R>(
+    r: AsyncResult<A, E>,
+    handlers: {
+      readonly onLoading: () => R;
+      readonly onRefreshing: (previous: Success<A> | Failure<E> | Defect) => R;
+      readonly onSuccess: (value: A) => R;
+      readonly onFailure: (error: E) => R;
+      readonly onDefect: (cause: string, rawCause: Cause.Cause<unknown>) => R;
+    },
+  ): R => {
+    switch (r._tag) {
+      case "Loading": return handlers.onLoading();
+      case "Refreshing": return handlers.onRefreshing(r.previous);
+      case "Success": return handlers.onSuccess(r.value);
+      case "Failure": return handlers.onFailure(r.error);
+      case "Defect": return handlers.onDefect(r.cause, r.rawCause);
+    }
+  },
+
+  /**
+   * Transform the success value. Non-success variants pass through unchanged.
+   */
+  map: <A, E, B>(r: AsyncResult<A, E>, f: (a: A) => B): AsyncResult<B, E> => {
+    if (r._tag === "Success") return AsyncResult.success(f(r.value));
+    if (r._tag === "Refreshing" && r.previous._tag === "Success") {
+      return AsyncResult.refreshing(AsyncResult.success(f(r.previous.value)));
+    }
+    return r as unknown as AsyncResult<B, E>;
+  },
+
+  /**
+   * Chain a success value into another AsyncResult-producing function.
+   * Non-success variants short-circuit and pass through unchanged.
+   */
+  flatMap: <A, E, B, E2>(r: AsyncResult<A, E>, f: (a: A) => AsyncResult<B, E2>): AsyncResult<B, E | E2> => {
+    if (r._tag === "Success") return f(r.value);
+    return r as unknown as AsyncResult<B, E | E2>;
+  },
+
+  /**
+   * Get the success value, or compute a fallback for any non-success state.
+   */
+  getOrElse: <A, E>(r: AsyncResult<A, E>, fallback: () => A): A => {
+    if (r._tag === "Success") return r.value;
+    if (r._tag === "Refreshing" && r.previous._tag === "Success") return r.previous.value;
+    return fallback();
+  },
+
+  /**
+   * Get the success value or throw.
+   * @throws The typed error on Failure, or an Error on Loading/Defect.
+   */
+  getOrThrow: <A, E>(r: AsyncResult<A, E>): A => {
+    if (r._tag === "Success") return r.value;
+    if (r._tag === "Refreshing" && r.previous._tag === "Success") return r.previous.value;
+    if (r._tag === "Failure") throw r.error;
+    if (r._tag === "Defect") throw new Error(r.cause);
+    if (r._tag === "Refreshing") {
+      if (r.previous._tag === "Failure") throw r.previous.error;
+      throw new Error((r.previous as Defect).cause);
+    }
+    throw new Error("AsyncResult is Loading");
+  },
 } as const;
 
 function previousFromResult<A, E>(
@@ -88,7 +240,7 @@ function previousFromResult<A, E>(
 
 // ─── Ambient ManagedRuntime context ───────────────────────────────────────────
 
-const ManagedRuntimeContext = createContext<ManagedRuntime.ManagedRuntime<unknown, unknown> | null>(null);
+export const ManagedRuntimeContext = createContext<ManagedRuntime.ManagedRuntime<unknown, unknown> | null>(null);
 
 function getAmbientManagedRuntime(): ManagedRuntime.ManagedRuntime<unknown, unknown> | null {
   return useContext(ManagedRuntimeContext);
@@ -117,6 +269,15 @@ function runForkWithRuntime<R, A, E>(
  * Synchronously resolve a service from the ambient ManagedRuntime.
  *
  * The runtime is provided by `mount(...)`.
+ *
+ * @example
+ * const Api = ServiceMap.Service<{ readonly get: () => Effect.Effect<number> }>("Api")
+ *
+ * function Widget() {
+ *   const api = use(Api)
+ *   const result = resource(() => api.get())
+ *   return <Async result={result()} loading={() => "Loading..."} success={(n) => n} />
+ * }
  */
 export function use<I, S>(tag: ServiceMap.Key<I, S>): S {
   const runtime = getAmbientManagedRuntime();
@@ -124,6 +285,73 @@ export function use<I, S>(tag: ServiceMap.Key<I, S>): S {
     throw new Error("[effect-atom-jsx] use(tag): no ambient ManagedRuntime found. Mount with mount(..., layer).");
   }
   return runtime.runSync(Effect.service(tag));
+}
+
+export interface QueryKey<A = unknown> {
+  readonly id: symbol;
+  readonly read: Accessor<number>;
+  readonly invalidate: () => void;
+  readonly _A?: (_: A) => A;
+}
+
+/**
+ * Create a typed invalidation key for query/resource revalidation.
+ */
+export function createQueryKey<A = unknown>(name?: string): QueryKey<A> {
+  const [version, setVersion] = createSignal(0);
+  return {
+    id: Symbol(name ?? "QueryKey"),
+    read: version,
+    invalidate: () => setVersion((n) => n + 1),
+  };
+}
+
+function normalizeQueryKeys(
+  keyOrKeys: QueryKey<any> | ReadonlyArray<QueryKey<any>> | undefined,
+): ReadonlyArray<QueryKey<any>> {
+  if (keyOrKeys === undefined) return [];
+  return Array.isArray(keyOrKeys)
+    ? keyOrKeys as ReadonlyArray<QueryKey<any>>
+    : [keyOrKeys as QueryKey<any>];
+}
+
+function trackQueryKeys(keys: ReadonlyArray<QueryKey<any>>): void {
+  for (const key of keys) {
+    key.read();
+  }
+}
+
+/**
+ * Invalidate one or more query keys.
+ */
+export function invalidate(keyOrKeys: QueryKey<any> | ReadonlyArray<QueryKey<any>>): void {
+  for (const key of normalizeQueryKeys(keyOrKeys)) {
+    key.invalidate();
+  }
+}
+
+/** Alias for `invalidate(...)`. */
+export const refresh = invalidate;
+
+/**
+ * Alias for `use(tag)` with Effect-centric naming.
+ */
+export const useService = use;
+
+/**
+ * Resolve multiple services from the ambient runtime in one call.
+ *
+ * @example
+ * const { api, clock } = useServices({ api: Api, clock: Clock })
+ */
+export function useServices<T extends Record<string, ServiceMap.Key<any, any>>>(
+  tags: T,
+): { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never } {
+  const out = {} as { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never };
+  for (const key in tags) {
+    out[key] = use(tags[key]) as { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never }[typeof key];
+  }
+  return out;
 }
 
 // ─── atomEffect ───────────────────────────────────────────────────────────────
@@ -203,7 +431,7 @@ export function atomEffect<A, E, R>(
             setResult(AsyncResult.failure(typed.value));
           } else {
             // Defect (unexpected exception) or fiber interrupt.
-            setResult(AsyncResult.defect(Cause.pretty(cause)));
+            setResult(AsyncResult.defect(Cause.pretty(cause), cause));
           }
         },
       }),
@@ -217,34 +445,107 @@ export function atomEffect<A, E, R>(
   return result;
 }
 
+export interface QueryEffectOptions<R> {
+  runtime?: RuntimeLike<R, unknown>;
+  key?: QueryKey<any> | ReadonlyArray<QueryKey<any>>;
+}
+
+export interface QueryRef<A, E> {
+  readonly key: QueryKey<A>;
+  readonly result: Accessor<AsyncResult<A, E>>;
+  readonly pending: Accessor<boolean>;
+  readonly latest: Accessor<A | undefined>;
+  invalidate(): void;
+  refresh(): void;
+}
+
+export interface QueryEffectOptions<R> {
+  runtime?: RuntimeLike<R, unknown>;
+  key?: QueryKey<any> | ReadonlyArray<QueryKey<any>>;
+}
+
+export interface QueryRef<A, E> {
+  readonly key: QueryKey<A>;
+  readonly result: Accessor<AsyncResult<A, E>>;
+  readonly pending: Accessor<boolean>;
+  readonly latest: Accessor<A | undefined>;
+  invalidate(): void;
+  refresh(): void;
+}
+
 /**
- * Like `atomEffect`, but uses the ambient ManagedRuntime from `mount(...)`
- * when available.
+ * Primary Effect-native query API with optional typed invalidation keys.
  *
- * If no ambient runtime is present, returns a `Defect` result with guidance
- * to use `mount(..., layer)` or `resourceWith(...)`.
+ * Uses the ambient ManagedRuntime from `mount(...)` when available.
+ * If no ambient runtime is present, returns a `Defect` result with guidance.
  */
-export function resource<A, E, R>(fn: () => Effect.Effect<A, E, R>): Accessor<AsyncResult<A, E>> {
+export function queryEffect<A, E, R>(
+  fn: () => Effect.Effect<A, E, R>,
+  options?: QueryEffectOptions<R>,
+): Accessor<AsyncResult<A, E>> {
+  const keys = normalizeQueryKeys(options?.key);
+  const wrapped = () => {
+    trackQueryKeys(keys);
+    return fn();
+  };
+  if (options?.runtime !== undefined) {
+    return atomEffect(wrapped, options.runtime);
+  }
   const ambient = getAmbientManagedRuntime();
   if (ambient === null) {
     const [result] = createSignal<AsyncResult<A, E>>(
       AsyncResult.defect(
-        "[effect-atom-jsx] resource(fn) requires an ambient ManagedRuntime. Use mount(..., layer) or atomEffect(fn, runtime).",
+        "[effect-atom-jsx] queryEffect(fn) requires an ambient ManagedRuntime. Use mount(..., layer) or pass { runtime }.",
       ),
     );
     return result;
   }
-  return atomEffect(fn, ambient as unknown as RuntimeLike<R, unknown>);
+  return atomEffect(wrapped, ambient as unknown as RuntimeLike<R, unknown>);
 }
 
 /**
- * Explicit-runtime variant of `resource(...)` for non-mounted usage.
+ * Strict explicit-runtime variant of `queryEffect(...)`.
  */
-export function resourceWith<A, E, R>(
+export function queryEffectStrict<A, E, R>(
   runtime: RuntimeLike<R, unknown>,
   fn: () => Effect.Effect<A, E, R>,
+  options?: { key?: QueryKey<any> | ReadonlyArray<QueryKey<any>> },
 ): Accessor<AsyncResult<A, E>> {
-  return atomEffect(fn, runtime);
+  return queryEffect(fn, { runtime, key: options?.key });
+}
+
+/**
+ * Create a keyed query bundle for ergonomic query + invalidation wiring.
+ *
+ * @example
+ * const todos = defineQuery(() => useService(TodoApi).list(), { name: "todos" })
+ * mutationEffect(saveTodo, { invalidates: todos.key })
+ */
+export function defineQuery<A, E, R>(
+  fn: () => Effect.Effect<A, E, R>,
+  options?: Omit<QueryEffectOptions<R>, "key"> & { key?: QueryKey<A>; name?: string },
+): QueryRef<A, E> {
+  const key = options?.key ?? createQueryKey<A>(options?.name);
+  const result = queryEffect(fn, { runtime: options?.runtime, key });
+  return {
+    key,
+    result,
+    pending: isPending(result),
+    latest: latest(result),
+    invalidate: () => invalidate(key),
+    refresh: () => refresh(key),
+  };
+}
+
+/**
+ * Strict explicit-runtime variant of `defineQuery(...)`.
+ */
+export function defineQueryStrict<A, E, R>(
+  runtime: RuntimeLike<R, unknown>,
+  fn: () => Effect.Effect<A, E, R>,
+  options?: { key?: QueryKey<A>; name?: string },
+): QueryRef<A, E> {
+  return defineQuery(fn, { runtime, key: options?.key, name: options?.name });
 }
 
 /**
@@ -322,14 +623,15 @@ export function createOptimistic<T>(source: Accessor<T>): OptimisticRef<T> {
   };
 }
 
-export interface ActionEffectHandle<A, E> {
+export interface MutationEffectHandle<A, E> {
   run(input: A): void;
   result: Accessor<AsyncResult<void, E>>;
   pending: Accessor<boolean>;
 }
 
-export interface ActionEffectOptions<A, E, R> {
+export interface MutationEffectOptions<A, E, R> {
   runtime?: RuntimeLike<R, unknown>;
+  invalidates?: QueryKey<any> | ReadonlyArray<QueryKey<any>>;
   optimistic?: (input: A) => void;
   rollback?: (input: A) => void;
   /**
@@ -341,7 +643,7 @@ export interface ActionEffectOptions<A, E, R> {
   onFailure?: (error: E | { readonly defect: string }, input: A) => void;
 }
 
-function runRefreshHooks(refresh: ActionEffectOptions<any, any, any>["refresh"]): void {
+function runRefreshHooks(refresh: MutationEffectOptions<any, any, any>["refresh"]): void {
   if (refresh === undefined) return;
   if (typeof refresh === "function") {
     refresh();
@@ -358,17 +660,22 @@ function runRefreshHooks(refresh: ActionEffectOptions<any, any, any>["refresh"])
  * `run(input)` executes `fn(input)` in a fiber. If a new run starts, the
  * previous run is interrupted and ignored.
  *
+ * Lifecycle:
+ * - Before run: optional `optimistic(input)`
+ * - On success: set `result=Success`, run `refresh`, then `onSuccess`
+ * - On typed failure/defect: run `rollback`, then `onFailure`, then set error state
+ *
  * @example
- * const save = actionEffect(saveTodo, {
+ * const save = mutationEffect(saveTodo, {
  *   optimistic: (todo) => optimisticTodos.set((xs) => [todo, ...xs]),
  *   rollback: () => optimisticTodos.clear(),
  *   refresh: () => refreshTodos(),
  * })
  */
-export function actionEffect<A, E, R>(
+export function mutationEffect<A, E, R>(
   fn: (input: A) => Effect.Effect<unknown, E, R>,
-  options?: ActionEffectOptions<A, E, R>,
-): ActionEffectHandle<A, E> {
+  options?: MutationEffectOptions<A, E, R>,
+): MutationEffectHandle<A, E> {
   const [result, setResult] = createSignal<AsyncResult<void, E>>(AsyncResult.success(undefined));
   let fiberRef: Fiber.Fiber<unknown, unknown> | null = null;
   let runVersion = 0;
@@ -403,6 +710,9 @@ export function actionEffect<A, E, R>(
           if (version !== runVersion) return;
           fiberRef = null;
           setResult(AsyncResult.success(undefined));
+          if (options?.invalidates !== undefined) {
+            invalidate(options.invalidates);
+          }
           runRefreshHooks(options?.refresh);
           options?.onSuccess?.(input);
         },
@@ -418,7 +728,7 @@ export function actionEffect<A, E, R>(
             const defect = Cause.pretty(cause);
             options?.rollback?.(input);
             options?.onFailure?.({ defect }, input);
-            setResult(AsyncResult.defect(defect));
+            setResult(AsyncResult.defect(defect, cause));
           }
         },
       }),
@@ -582,6 +892,58 @@ export function scopedRoot<T>(scope: Scope.Closeable, fn: () => T): T {
   return result;
 }
 
+/**
+ * Create a queryEffect whose reactive root is tied to an Effect Scope.
+ *
+ * When the scope closes, the query is disposed (fiber interrupted, all
+ * reactive computations cleaned up).
+ *
+ * @example
+ * Effect.gen(function* () {
+ *   const scope = yield* Scope.make();
+ *   const result = scopedQuery(scope, () => useService(Api).list());
+ *   // result() is AsyncResult<A, E>
+ *   yield* Scope.close(scope, Exit.void); // cleans up query
+ * })
+ */
+export function scopedQuery<A, E, R>(
+  scope: Scope.Closeable,
+  fn: () => Effect.Effect<A, E, R>,
+  options?: QueryEffectOptions<R>,
+): Accessor<AsyncResult<A, E>> {
+  let result!: Accessor<AsyncResult<A, E>>;
+  scopedRoot(scope, () => {
+    result = queryEffect(fn, options);
+  });
+  return result;
+}
+
+/**
+ * Create a mutationEffect whose reactive root is tied to an Effect Scope.
+ *
+ * When the scope closes, the mutation is disposed (in-flight fiber
+ * interrupted, all reactive computations cleaned up).
+ *
+ * @example
+ * Effect.gen(function* () {
+ *   const scope = yield* Scope.make();
+ *   const save = scopedMutation(scope, (n: number) => useService(Api).save(n));
+ *   save.run(42);
+ *   yield* Scope.close(scope, Exit.void); // cleans up mutation
+ * })
+ */
+export function scopedMutation<A, E, R>(
+  scope: Scope.Closeable,
+  fn: (input: A) => Effect.Effect<unknown, E, R>,
+  options?: MutationEffectOptions<A, E, R>,
+): MutationEffectHandle<A, E> {
+  let handle!: MutationEffectHandle<A, E>;
+  scopedRoot(scope, () => {
+    handle = mutationEffect(fn, options);
+  });
+  return handle;
+}
+
 // ─── layerContext ─────────────────────────────────────────────────────────────
 
 /**
@@ -733,6 +1095,18 @@ export function Async<A, E>(props: {
   return renderSettled(r);
 }
 
+
+/**
+ * Strict explicit-runtime variant of `mutationEffect(...)`.
+ */
+export function mutationEffectStrict<A, E, R>(
+  runtime: RuntimeLike<R, unknown>,
+  fn: (input: A) => Effect.Effect<unknown, E, R>,
+  options?: Omit<MutationEffectOptions<A, E, R>, "runtime">,
+): MutationEffectHandle<A, E> {
+  return mutationEffect(fn, { ...options, runtime });
+}
+
 function isAccessor<T>(u: unknown): u is Accessor<T> {
   return typeof u === "function";
 }
@@ -753,6 +1127,7 @@ function isLoadingInput(input: AsyncResult<unknown, unknown> | boolean): boolean
  *
  * - With `AsyncResult`: shows `fallback` only during first `Loading`
  * - With `boolean`: shows `fallback` when `true`
+ * - `Refreshing` does not show fallback; children continue rendering
  *
  * @example
  * <Loading when={todosResult} fallback={() => <Spinner />}>...</Loading>
@@ -772,6 +1147,10 @@ export function Loading(props: {
 
 /**
  * Declarative error boundary for `AsyncResult`.
+ *
+ * Handles both typed failures and defects:
+ * - `Failure<E>` -> `children(error)`
+ * - `Defect` -> `children({ defect })`
  *
  * @example
  * <Errored result={todosResult}>
@@ -824,6 +1203,22 @@ export function Match<T>(props: {
     children: props.children,
   };
 }
+
+/**
+ * Create a mount function pre-bound to a Layer.
+ *
+ * @example
+ * const mountApp = createMount(AppLayer)
+ * mountApp(() => <App />, root)
+ */
+export function createMount<R, E>(
+  layer: Layer.Layer<R, E, never>,
+): (fn: () => unknown, container: Element) => () => void {
+  return (fn, container) => mount(fn, container, layer);
+}
+
+/** Alias for `createMount(layer)` */
+export const mountWith = createMount;
 
 /**
  * Renders the first matching `Match` case.

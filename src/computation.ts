@@ -25,7 +25,15 @@ import { defaultEquals, type EqualityFn } from "./signal.js";
 
 export class Computation implements IComputation {
   protected _fn: () => unknown;
-  protected _deps: Set<ISignal<unknown>> = new Set();
+  protected _deps: ISignal<unknown>[] = [];
+  /**
+   * Dependencies newly captured during this execution.
+   *
+   * This follows Reactively's "prefix reuse" idea: if dependency access order
+   * remains stable, we reuse existing links and avoid churn.
+   */
+  private _capturedDeps: ISignal<unknown>[] | null = null;
+  private _depIndex = 0;
   /** Lifetime owner — tied to parent, governs entire computation lifetime. */
   protected _owner: Owner;
   /** Per-run owner — disposed before every re-execution for cleanup support. */
@@ -51,23 +59,25 @@ export class Computation implements IComputation {
   }
 
   addDependency(signal: ISignal<unknown>): void {
-    this._deps.add(signal);
+    if (this._capturedDeps === null && this._deps[this._depIndex] === signal) {
+      this._depIndex++;
+      return;
+    }
+    if (this._capturedDeps === null) {
+      this._capturedDeps = [signal];
+      return;
+    }
+    this._capturedDeps.push(signal);
   }
 
   invalidate(): void {
     if (this._disposed || this._running) return;
-    this._cleanup();
-    if (this._disposed) return; // re-check: _cleanup() may have triggered dispose
+    this._cleanupRunOwner();
+    if (this._disposed) return;
     this._run();
   }
 
-  private _cleanup(): void {
-    // Unsubscribe from all current dependencies.
-    for (const dep of this._deps) {
-      dep.removeSubscriber(this);
-    }
-    this._deps.clear();
-
+  private _cleanupRunOwner(): void {
     // Dispose the per-run sub-owner to fire onCleanup callbacks registered
     // during the previous run, and tear down nested effects/computations.
     if (this._runOwner !== null) {
@@ -79,6 +89,8 @@ export class Computation implements IComputation {
   protected _run(): void {
     if (this._disposed) return;
     this._running = true;
+    this._capturedDeps = null;
+    this._depIndex = 0;
 
     // Fresh per-run owner as a child of the lifetime owner.
     // onCleanup() inside _execute() attaches here.
@@ -95,7 +107,34 @@ export class Computation implements IComputation {
       });
     } finally {
       setObserver(prevObserver);
+      this._reconcileDependencies();
+      this._capturedDeps = null;
       this._running = false;
+    }
+  }
+
+  private _reconcileDependencies(): void {
+    if (this._capturedDeps !== null) {
+      for (let i = this._depIndex; i < this._deps.length; i++) {
+        this._deps[i].removeSubscriber(this);
+      }
+
+      if (this._depIndex > 0) {
+        this._deps.length = this._depIndex + this._capturedDeps.length;
+        for (let i = 0; i < this._capturedDeps.length; i++) {
+          this._deps[this._depIndex + i] = this._capturedDeps[i];
+        }
+      } else {
+        this._deps = this._capturedDeps;
+      }
+      return;
+    }
+
+    if (this._depIndex < this._deps.length) {
+      for (let i = this._depIndex; i < this._deps.length; i++) {
+        this._deps[i].removeSubscriber(this);
+      }
+      this._deps.length = this._depIndex;
     }
   }
 
@@ -106,7 +145,11 @@ export class Computation implements IComputation {
   private _dispose(): void {
     if (this._disposed) return;
     this._disposed = true;
-    this._cleanup();
+    for (let i = 0; i < this._deps.length; i++) {
+      this._deps[i].removeSubscriber(this);
+    }
+    this._deps.length = 0;
+    this._cleanupRunOwner();
   }
 
   get disposed(): boolean {

@@ -15,8 +15,9 @@ effect-atom-jsx = Effect v4 services + Atom/Registry state + dom-expressions JSX
 ```
 
 - **Local state** via `Atom` / `Registry` / `AtomRef` — reactive graph primitives
-- **Async state** via `resource` / `atomEffect` — Effect fibers with automatic cancellation
-- **Mutations** via `actionEffect` / `createOptimistic` — optimistic UI with rollback
+- **Async state** via `queryEffect` / `atomEffect` / `Atom.fromResource` — Effect fibers with automatic cancellation
+- **Mutations** via `mutationEffect` / `createOptimistic` — optimistic UI with rollback
+- **Testing** via `renderWithLayer` / `withTestLayer` / `mockService` — DOM-free test harness
 - **Form validation** via `AtomSchema` — Schema-driven reactive fields with touched/dirty tracking
 - **SSR** via `renderToString` / `hydrateRoot` — server-side rendering with hydration
 - **Debug** via `AtomLogger` — structured logging for atom reads/writes
@@ -63,7 +64,7 @@ render(() => <Counter />, document.getElementById("root")!);
 
 ```tsx
 import { Effect, Layer, ServiceMap } from "effect";
-import { mount, use, resource, Async } from "effect-atom-jsx";
+import { createMount, useService, queryEffect, Async } from "effect-atom-jsx";
 
 const Api = ServiceMap.Service<{
   readonly load: () => Effect.Effect<number>;
@@ -74,7 +75,7 @@ const ApiLive = Layer.succeed(Api, {
 });
 
 function App() {
-  const data = resource(() => use(Api).load());
+  const data = queryEffect(() => useService(Api).load());
 
   return (
     <Async
@@ -85,7 +86,8 @@ function App() {
   );
 }
 
-mount(() => <App />, document.getElementById("root")!, ApiLive);
+const mountApp = createMount(ApiLive);
+mountApp(() => <App />, document.getElementById("root")!);
 ```
 
 ## Core Concepts
@@ -134,21 +136,21 @@ list.push({ id: 3, text: "Deploy" });
 console.log(list.toArray().length); // 3
 ```
 
-### atomEffect & resource — Async State
+### queryEffect & atomEffect — Async State
 
 Both create reactive async computations backed by Effect fibers. When tracked dependencies change, the previous fiber is interrupted and a new one starts.
 
 ```tsx
 import { Effect } from "effect";
-import { atomEffect, resource, use, AsyncResult, Async } from "effect-atom-jsx";
+import { atomEffect, queryEffect, useService, AsyncResult, Async } from "effect-atom-jsx";
 
 // atomEffect — standalone, no runtime needed
 const time = atomEffect(() =>
   Effect.succeed(new Date().toISOString()).pipe(Effect.delay("1 second"))
 );
 
-// resource — uses the ambient Layer runtime from mount()
-const data = resource(() => use(Api).load());
+// queryEffect — uses ambient Layer runtime from mount()
+const data = queryEffect(() => useService(Api).load());
 
 // Pattern-match on the result in JSX
 <Async
@@ -159,7 +161,11 @@ const data = resource(() => use(Api).load());
 />
 ```
 
-**Key difference:** `resource` uses the ambient runtime injected by `mount()`, while `atomEffect` runs Effects directly (or accepts an explicit runtime parameter).
+**Key difference:** `queryEffect` / `defineQuery` uses the ambient runtime injected by `mount()`, while `atomEffect` runs Effects directly (or accepts an explicit runtime parameter).
+
+For ergonomic key + invalidation wiring, prefer `defineQuery(...)` and pass `query.key` into `mutationEffect({ invalidates })`.
+
+
 
 ### AsyncResult vs Result
 
@@ -167,24 +173,26 @@ The library has two result types for different use cases:
 
 | Type | Module | Used by | Purpose |
 |------|--------|---------|---------|
-| `AsyncResult<A, E>` | `effect-ts.ts` | `atomEffect`, `resource` | UI async state (Loading / Refreshing / Success / Failure / Defect) |
+| `AsyncResult<A, E>` | `effect-ts.ts` | `atomEffect`, `queryEffect` | UI async state (Loading / Refreshing / Success / Failure / Defect) |
 | `Result<A, E>` | `Result.ts` | `AtomRpc`, `AtomHttpApi` | Data fetching state (Initial / Success / Failure) with waiting flag |
 
 Convert between them with `Result.fromAsyncResult()` and `Result.toAsyncResult()`.
 
-### actionEffect — Mutations
+`AsyncResult` is **Exit-first internally** — each settled state (`Success`, `Failure`, `Defect`) carries a `.exit` field holding the canonical Effect `Exit`. This enables lossless round-trips and integration with Effect's error model. Combinators `AsyncResult.match`, `.map`, `.flatMap`, `.getOrElse`, and `.getOrThrow` are available for ergonomic pattern matching and transformation.
+
+### mutationEffect — Mutations
 
 Handles writes with optimistic UI, rollback, and automatic refresh.
 
 ```ts
 import { Effect } from "effect";
-import { Atom, Registry, createOptimistic, actionEffect } from "effect-atom-jsx";
+import { Atom, Registry, createOptimistic, mutationEffect } from "effect-atom-jsx";
 
 const registry = Registry.make();
 const savedCount = Atom.make(0);
 const optimistic = createOptimistic(() => registry.get(savedCount));
 
-const save = actionEffect(
+const save = mutationEffect(
   (next: number) => Effect.succeed(next).pipe(Effect.delay("250 millis")),
   {
     optimistic: (next) => optimistic.set(next),
@@ -350,7 +358,7 @@ import * as AtomSchema from "effect-atom-jsx/AtomSchema";
 | `Registry` | `make` (returns instance with `get`, `set`, `update`, `modify`, `mount`, `refresh`, `subscribe`, `reset`, `dispose`) |
 | `Result` | `initial`, `success`, `failure`, `isInitial`, `isSuccess`, `isFailure`, `isWaiting`, `fromAsyncResult`, `toAsyncResult`, `map`, `flatMap`, `match`, `all` |
 | `Hydration` | `dehydrate`, `hydrate`, `toValues` |
-| `AtomSchema` | `make`, `makeInitial` |
+| `AtomSchema` | `make`, `makeInitial`, `path`, `HtmlInput` |
 | `AtomLogger` | `traced`, `tracedWritable`, `logGet`, `logSet`, `snapshot` |
 | `AtomRpc` | `Tag()` factory with `query`, `mutation`, `refresh` |
 | `AtomHttpApi` | `Tag()` factory with grouped `query`, `mutation`, `refresh` |
@@ -359,10 +367,13 @@ import * as AtomSchema from "effect-atom-jsx/AtomSchema";
 
 ```ts
 import {
-  atomEffect, resource, resourceWith,
+  atomEffect, queryEffect, defineQuery,
+  queryEffectStrict, defineQueryStrict, createQueryKey, invalidate, refresh,
   isPending, latest,
-  createOptimistic, actionEffect,
-  use, mount, layerContext, scopedRoot,
+  createOptimistic, mutationEffect,
+  mutationEffectStrict,
+  useService, useServices, createMount, mount,
+  layerContext, scopedRoot,
   signal, computed,
 } from "effect-atom-jsx";
 ```
@@ -382,23 +393,54 @@ import {
 
 Full API reference: [`docs/API.md`](docs/API.md)
 
+Dedicated Effect integration guide: [`docs/ACTION_EFFECT_USE_RESOURCE.md`](docs/ACTION_EFFECT_USE_RESOURCE.md)
+
 ## Examples
 
 | Example | Location | What it shows |
 |---------|----------|---------------|
 | Counter | `examples/counter/` | Signals, atoms, Registry, async data with `atomEffect` |
-| TodoMVC | `examples/todomvc/` | Full app with `AtomRef`, `resource`, `actionEffect`, optimistic UI, service injection |
+| TodoMVC | `examples/todomvc/` | Full app with `defineQuery`, `mutationEffect`, optimistic UI, service injection |
 | RPC & HTTP API | `examples/rpc-httpapi/` | `AtomRpc.Tag()`, `AtomHttpApi.Tag()`, `MatchTag` component |
 | Schema Form | `examples/schema-form/` | `AtomSchema` validation, touched/dirty/reset, `AtomLogger.snapshot` |
 | SSR | `examples/ssr/` | `renderToString`, `hydrateRoot`, `Hydration.dehydrate/hydrate` |
 
 ## How It Works
 
-1. **`mount(() => <App />, el, layer)`** builds a `ManagedRuntime` from your `Layer`
-2. Components call **`use(Tag)`** to synchronously access services from that runtime
-3. **`resource()` / `atomEffect()`** run service effects reactively, exposing `AsyncResult` state
-4. **`actionEffect()`** handles writes with optimistic UI, rollback, and post-success refresh
-5. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
+1. **`createMount(layer)` / `mount(fn, el, layer)`** builds a `ManagedRuntime` from your `Layer`
+2. Components call **`useService(Tag)`** to synchronously access services from that runtime
+3. **`defineQuery()` / `queryEffect()` / `atomEffect()`** run service effects reactively, exposing `AsyncResult` state
+4. **`mutationEffect()`** handles writes with optimistic UI, rollback, and post-success refresh
+5. **`scopedQuery()` / `scopedMutation()`** tie query/mutation lifecycles to an Effect `Scope`
+6. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
+
+## Testing
+
+DOM-free test harness via `effect-atom-jsx/testing`:
+
+```ts
+import { withTestLayer, renderWithLayer, mockService } from "effect-atom-jsx/testing";
+
+const ApiMock = mockService(Api, {
+  load: () => Effect.succeed(42),
+});
+
+// Option 1: withTestLayer — manual execution
+const harness = withTestLayer(ApiMock);
+const result = harness.run(() => queryEffect(() => useService(Api).load()));
+await harness.tick();
+await harness.dispose();
+
+// Option 2: renderWithLayer — runs UI immediately
+const harness2 = renderWithLayer(ApiMock, () => {
+  const save = mutationEffect((n: number) => useService(Api).save(n));
+  save.run(42);
+});
+await harness2.tick();
+await harness2.dispose();
+```
+
+> See [`docs/TESTING.md`](docs/TESTING.md) for the full testing guide.
 
 ## Relationship to `@effect-atom/atom`
 
@@ -406,7 +448,9 @@ This project provides an effect-atom-like ergonomic surface, implemented nativel
 
 - **Same:** namespace-style API (`Atom`, `Result`, `Registry`, `AtomRef`), atom graph patterns, waiting/revalidation async model
 - **Different:** native implementation tuned for JSX + dom-expressions, targets Effect v4 beta (vs v3)
-- **Guidance:** if you already think in effect-atom terms, this API should feel familiar. Use `resource` / `actionEffect` / `mount` for Effect service integration.
+- **Guidance:** if you already think in effect-atom terms, this API should feel familiar. Prefer `defineQuery` / `mutationEffect` / `createMount` for Effect service integration.
+
+
 
 ## Compatibility
 

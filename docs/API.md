@@ -2,7 +2,7 @@
 
 `effect-atom-jsx` exports reactive primitives, Effect integration utilities, namespace modules, and DOM runtime helpers.
 
----
+<br />
 
 ## Atom (`src/Atom.ts`)
 
@@ -57,10 +57,14 @@ const prev = Effect.runSync(Atom.modify(count, n => [n, n + 1]));
 
 - **`Atom.fromStream(stream, initialValue, runtime?)`** — Create an atom whose value updates from an Effect Stream. Starts a fiber on first read.
 - **`Atom.fromQueue(queue, initialValue)`** — Create an atom that reads from an Effect Queue. Shorthand for `fromStream(Stream.fromQueue(queue), initial)`.
+- **`Atom.fromResource(fn)`** — Create an atom backed by `queryEffect` semantics using ambient runtime from `mount()`.
+- **`Atom.fromResource(runtime, fn)`** — Explicit-runtime variant for non-mounted usage.
+- **`Atom.fromResource(...)`** — Alias of `Atom.query(...)`.
 
 ```ts
 const prices = Atom.fromStream(priceStream, 0);
 const events = Atom.fromQueue(eventQueue, null);
+const user = Atom.fromResource(() => useService(Api).getUser("1"));
 ```
 
 ### Type Guards
@@ -75,7 +79,7 @@ const events = Atom.fromQueue(eventQueue, null);
 - `Atom.Context` — Callable read context with `get`, `refresh`, `set` methods.
 - `Atom.WriteContext<A>` — Write context with `get`, `set`, `refreshSelf`, `setSelf`.
 
----
+<br />
 
 ## AtomSchema (`src/AtomSchema.ts`)
 
@@ -84,6 +88,12 @@ Schema-validated form fields backed by atoms. Wraps a writable atom with an Effe
 - **`AtomSchema.make(schema, inputAtom, options?)`** — Wrap an existing writable atom with validation.
   - `options.initial` — baseline value for `dirty` comparison and `reset()`.
 - **`AtomSchema.makeInitial(schema, initial)`** — Create a standalone validated atom with an initial value.
+- **`AtomSchema.path(root, ...segments)`** — Create a writable atom focused on a nested object path.
+- **`AtomSchema.HtmlInput`** — Built-in form codecs/helpers:
+  - `number` (`Schema.NumberFromString`)
+  - `date` (`Schema.Date`)
+  - `optionalString` (`schema` + `input(value)` for empty-string mapping)
+  - `optionalNumber` (`schema` + `input(value)` for empty-string mapping)
 
 ```ts
 const field = AtomSchema.makeInitial(Schema.Int, 25);
@@ -111,7 +121,7 @@ field.reset();
 - `AtomSchema.ValidatedAtom<A, I>`
 - `AtomSchema.SchemaError`
 
----
+<br />
 
 ## AtomLogger (`src/AtomLogger.ts`)
 
@@ -128,7 +138,7 @@ const traced = AtomLogger.tracedWritable(count, "count");
 const snap = Effect.runSync(AtomLogger.snapshot([["count", count], ["name", name]]));
 ```
 
----
+<br />
 
 ## Registry (`src/Registry.ts`)
 
@@ -154,13 +164,13 @@ Provides a centralized read/write/subscribe context for atoms. Useful for managi
 
 - `Registry.Registry`
 
----
+<br />
 
 ## Result (`src/Result.ts`)
 
 A three-state result type for data fetching: `Initial`, `Success`, or `Failure`. Used by `AtomRpc` and `AtomHttpApi`.
 
-> **Note:** This is different from `AsyncResult` (used by `atomEffect`/`resource`). Convert between them with `Result.fromAsyncResult()` and `Result.toAsyncResult()`.
+> **Note:** This is different from `AsyncResult` (used by `atomEffect`/`queryEffect`). Convert between them with `Result.fromAsyncResult()` and `Result.toAsyncResult()`.
 
 ### Constructors
 
@@ -198,7 +208,7 @@ A three-state result type for data fetching: `Initial`, `Success`, or `Failure`.
 
 - `Result.Result<A, E>` — `Initial | Success<A> | Failure<E>`
 
----
+<br />
 
 ## AtomRef (`src/AtomRef.ts`)
 
@@ -230,7 +240,7 @@ Per-property reactive access to objects and arrays.
 
 - `AtomRef.AtomRef<A>`, `AtomRef.ReadonlyRef<A>`, `AtomRef.Collection<A>`
 
----
+<br />
 
 ## Hydration (`src/Hydration.ts`)
 
@@ -255,7 +265,7 @@ Hydration.hydrate(registry, state, { count: countAtom });
 
 - `Hydration.DehydratedAtom`, `Hydration.DehydratedAtomValue`
 
----
+<br />
 
 ## AtomRpc (`src/AtomRpc.ts`)
 
@@ -270,7 +280,7 @@ RPC client factory for flat endpoint maps.
 
 - `AtomRpc.AtomRpcClient<Defs, R>`
 
----
+<br />
 
 ## AtomHttpApi (`src/AtomHttpApi.ts`)
 
@@ -285,29 +295,45 @@ HTTP API client factory for grouped endpoints.
 
 - `AtomHttpApi.AtomHttpApiClient<Defs, R>`
 
----
+<br />
 
 ## Effect Integration (`src/effect-ts.ts`)
+
+For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOURCE.md`](ACTION_EFFECT_USE_RESOURCE.md).
 
 ### Async Data
 
 - **`atomEffect(fn, runtime?)`** — Create a reactive async computation. Tracks signal dependencies, interrupts previous fiber on re-run.
-- **`resource(fn)`** — Like `atomEffect` but uses the ambient runtime from `mount()`.
-- **`resourceWith(runtime, fn)`** — Like `resource` with an explicit runtime.
+- **`queryEffect(fn, options?)`** — Preferred Effect-native query API. Uses ambient Layer runtime from `mount()`. Supports `key` invalidation hooks and optional explicit runtime.
+- **`defineQuery(fn, options?)`** — Ergonomic keyed query bundle returning `{ key, result, pending, latest, invalidate, refresh }`.
+- **`scopedQuery(scope, fn, options?)`** — A `queryEffect` whose lifecycle is tied to an Effect `Scope.Closeable`.
+- **`queryEffectStrict(runtime, fn, options?)`** — Strict explicit-runtime query helper with optional key tracking.
+- **`defineQueryStrict(runtime, fn, options?)`** — Strict explicit-runtime query bundle helper.
+
+- **`queryEffectStrict(runtime, fn, options?)`** — Strict explicit-runtime query helper with optional key tracking.
+- **`defineQueryStrict(runtime, fn, options?)`** — Strict explicit-runtime query bundle helper.
+- **`createQueryKey<A>(name?)`** — Create typed invalidation keys for queries.
+- **`invalidate(key)` / `refresh(key)`** — Invalidate one or many query keys.
 - **`isPending(result)`** — `true` only during `Refreshing` (not initial `Loading`).
 - **`latest(result)`** — Returns the last successful value, or `undefined` if none.
 
 ### Services
 
-- **`use(tag)`** — Synchronously access a service from the ambient runtime. Throws if not available.
+- **`useService(tag)`** — Synchronously access a service from the ambient runtime. Throws if called outside a `mount(..., layer)` tree.
+- **`use(tag)`** — Alias of `useService(tag)`.
+- **`useServices({ ...tags })`** — Resolve multiple services at once with inferred return types.
 - **`mount(fn, container, layer)`** — Bootstrap a `ManagedRuntime` from a `Layer` and render.
+- **`createMount(layer)` / `mountWith(layer)`** — Create a mount function pre-bound to a layer.
 - **`layerContext(layer, fn, runtime?)`** — Run a function with a Layer-provided context.
 - **`scopedRoot(scope, fn)`** — Create a reactive root tied to an Effect Scope.
 
 ### Mutations
 
 - **`createOptimistic(source)`** — Create an optimistic overlay with `get`, `set`, `clear`, `isPending`.
-- **`actionEffect(fn, options?)`** — Create an Effect-powered mutation action with `optimistic`, `rollback`, `onSuccess`, `onFailure`, `refresh` hooks.
+- **`mutationEffect(fn, options?)`** — Create an Effect-powered mutation action with `optimistic`, `rollback`, `onSuccess`, `onFailure`, `refresh` hooks. Returns `{ run, result, pending }`. Supports `invalidates` query keys.
+- **`scopedMutation(scope, fn, options?)`** — A `mutationEffect` whose lifecycle is tied to an Effect `Scope.Closeable`.
+- **`mutationEffectStrict(runtime, fn, options?)`** — Strict explicit-runtime mutation helper.
+
 
 ### OO Facade
 
@@ -316,7 +342,7 @@ HTTP API client factory for grouped endpoints.
 
 ### AsyncResult
 
-The async state type used by `atomEffect` and `resource`:
+The async state type used by `atomEffect` and `queryEffect`:
 
 | Variant | Description |
 |---------|-------------|
@@ -325,6 +351,8 @@ The async state type used by `atomEffect` and `resource`:
 | `Success<A>` | Settled with a value |
 | `Failure<E>` | Settled with a typed error |
 | `Defect` | Unexpected defect or interrupt |
+
+Constructors/helpers: `AsyncResult.loading`, `refreshing`, `success`, `failure`, `defect`, `settled`, `fromExit`, `toExit`, `toOption`, `rawCause`
 
 Guards: `AsyncResult.isLoading`, `isRefreshing`, `isSuccess`, `isFailure`, `isDefect`
 
@@ -346,10 +374,10 @@ Guards: `AsyncResult.isLoading`, `isRefreshing`, `isSuccess`, `isFailure`, `isDe
 ### Types
 
 - `AsyncResult<A, E>`, `Loading`, `Refreshing<A, E>`, `Success<A>`, `Failure<E>`, `Defect`
-- `RuntimeLike<R, E>`, `OptimisticRef<T>`, `ActionEffectHandle<A, E>`, `ActionEffectOptions<A, E, R>`
+- `RuntimeLike<R, E>`, `OptimisticRef<T>`, `MutationEffectHandle<A, E>`, `MutationEffectOptions<A, E, R>`
 - `SignalRef<T>`, `ComputedRef<T>`
 
----
+<br />
 
 ## Reactive Core (`src/api.ts`)
 
@@ -371,7 +399,7 @@ Solid.js-compatible reactive primitives:
 
 - `Accessor<T>`, `Setter<T>`, `SignalOptions<T>`, `Context<T>`
 
----
+<br />
 
 ## DOM Runtime (`src/dom.ts`)
 

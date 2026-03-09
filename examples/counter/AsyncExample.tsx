@@ -4,10 +4,9 @@
  *
  * Shows how async state flows through the reactive graph as an AsyncResult
  * instead of thrown exceptions, with automatic cancellation of stale requests
- * when the userId signal changes.
+ * when the user-id atom changes.
  */
-import { createSignal } from "effect-atom-jsx";
-import { atomEffect, AsyncResult, Async, Show } from "effect-atom-jsx";
+import { Atom, Registry, atomEffect, Async } from "effect-atom-jsx";
 import { Effect, pipe } from "effect";
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
@@ -44,31 +43,27 @@ function fetchUser(id: number): Effect.Effect<User, FetchError> {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function AsyncUserCard() {
-  const [userId, setUserId] = createSignal(1);
+  const registry = Registry.make();
+  const userId = Atom.make<number>(1);
 
-  // atomEffect creates a signal driven by an Effect computation.
-  // When userId() changes, the previous Effect fiber is interrupted and a
+  // atomEffect creates an accessor driven by an Effect computation.
+  // When registry.get(userId) changes, the previous Effect fiber is interrupted and a
   // new one starts — structured concurrency, no manual AbortController needed.
-  const userResult = atomEffect(
-    Effect.gen(function* () {
-      const id = userId(); // tracked dependency — re-runs when this changes
-      return yield* fetchUser(id);
-    }),
-  );
+  const userResult = atomEffect(() => fetchUser(registry.get(userId)));
 
   return (
     <div class="counter">
       <h2>Async User (Effect-TS)</h2>
       <p>
-        User ID: <strong>{userId()}</strong>
+        User ID: <strong>{registry.get(userId)}</strong>
       </p>
-      <button onClick={() => setUserId((id) => Math.max(1, id - 1))}>Prev</button>
-      <button onClick={() => setUserId((id) => id + 1)}>Next</button>
+      <button onClick={() => registry.update(userId, (id) => Math.max(1, id - 1))}>Prev</button>
+      <button onClick={() => registry.update(userId, (id) => id + 1)}>Next</button>
 
       {/* Pattern-match on AsyncResult — no try/catch, typed errors */}
-      <Async
-        result={userResult()}
-        loading={() => <p>⏳ Loading user {userId()}…</p>}
+        <Async
+          result={userResult()}
+          loading={() => <p>Loading user {registry.get(userId)}...</p>}
         error={(e: FetchError) => (
           <p style="color:red">
             ✗ {e.message} (HTTP {e.status})

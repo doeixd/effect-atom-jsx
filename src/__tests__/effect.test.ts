@@ -16,13 +16,21 @@ import { describe, it, expect, vi } from "vitest";
 import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime, Option } from "effect";
 import {
   atomEffect,
-  resource,
-  resourceWith,
+  queryEffect,
+  queryEffectStrict,
+  defineQuery,
+  defineQueryStrict,
+  createQueryKey,
+  invalidate,
+  refresh,
   isPending,
   latest,
   createOptimistic,
-  actionEffect,
+  mutationEffect,
+  mutationEffectStrict,
   use,
+  useService,
+  useServices,
   signal,
   computed,
   createAtom,
@@ -103,6 +111,31 @@ describe("AsyncResult", () => {
     expect(AsyncResult.isLoading(s)).toBe(false);
     expect(AsyncResult.isSuccess(f)).toBe(false);
   });
+
+  it("fromExit and toExit round-trip settled results", () => {
+    const ok = Exit.succeed(7);
+    const fail = Exit.fail("bad");
+
+    const okResult = AsyncResult.fromExit(ok);
+    const failResult = AsyncResult.fromExit(fail);
+
+    expect(AsyncResult.toExit(okResult)).toEqual(Option.some(ok));
+    expect(AsyncResult.toExit(failResult)).toEqual(Option.some(fail));
+    expect(AsyncResult.toExit(AsyncResult.loading)).toEqual(Option.none());
+  });
+
+  it("toOption returns latest successful value", () => {
+    expect(AsyncResult.toOption(AsyncResult.loading)).toEqual(Option.none());
+    expect(AsyncResult.toOption(AsyncResult.success(1))).toEqual(Option.some(1));
+    expect(AsyncResult.toOption(AsyncResult.refreshing(AsyncResult.success(2)))).toEqual(Option.some(2));
+    expect(AsyncResult.toOption(AsyncResult.failure("no"))).toEqual(Option.none());
+  });
+
+  it("rawCause exposes structured defect cause when available", () => {
+    const cause = Cause.die("boom");
+    const defect = AsyncResult.defect("pretty", cause);
+    expect(AsyncResult.rawCause(defect)).toEqual(Option.some(cause));
+  });
 });
 
 // ─── atomEffect — success ─────────────────────────────────────────────────────
@@ -149,7 +182,7 @@ describe("atomEffect — success", () => {
 describe("atomEffect — typed failure (E channel)", () => {
   class ApiError {
     readonly _tag = "ApiError";
-    constructor(readonly status: number) {}
+    constructor(readonly status: number) { }
   }
 
   it("transitions to Failure with the typed error", async () => {
@@ -350,7 +383,7 @@ describe("signal / computed", () => {
   });
 });
 
-describe("use / resource", () => {
+describe("use / queryEffect (ambient runtime behavior)", () => {
   it("use(tag) throws when no ambient ManagedRuntime is present", () => {
     const Name = ServiceMap.Service<{ readonly value: string }>("Name");
     expect(() => use(Name)).toThrow(/no ambient ManagedRuntime/i);
@@ -359,7 +392,7 @@ describe("use / resource", () => {
   it("resource(fn) returns a defect when no ambient runtime is available", async () => {
     let result!: () => AsyncResultType<number, never>;
     const dispose = createRoot((d) => {
-      result = resource(() => Effect.succeed(123));
+      result = queryEffect(() => Effect.succeed(123));
       return d;
     });
     await tick();
@@ -377,7 +410,7 @@ describe("use / resource", () => {
 
     let result!: () => AsyncResultType<string, never>;
     const dispose = createRoot((d) => {
-      result = resourceWith(runtime, () =>
+      result = queryEffectStrict(runtime, () =>
         Effect.gen(function* () {
           const svc = yield* Effect.service(Greeting);
           return `${svc.prefix}!`;
@@ -388,6 +421,135 @@ describe("use / resource", () => {
     await tick();
     expect(result()).toEqual(AsyncResult.success("yo!"));
     dispose();
+    await runtime.dispose();
+  });
+
+  it("useService(tag) aliases use(tag)", () => {
+    const Name = ServiceMap.Service<{ readonly value: string }>("Name");
+    expect(() => useService(Name)).toThrow(/no ambient ManagedRuntime/i);
+  });
+
+  it("useServices throws without ambient runtime", () => {
+    const A = ServiceMap.Service<{ readonly value: string }>("A");
+    const B = ServiceMap.Service<{ readonly n: number }>("B");
+    expect(() => useServices({ a: A, b: B })).toThrow(/no ambient ManagedRuntime/i);
+  });
+});
+
+describe("query keys / queryEffect", () => {
+  it("invalidate(key) triggers queryEffect re-run", async () => {
+    const key = createQueryKey<number>("counter");
+    const runtime = ManagedRuntime.make(Layer.empty);
+    let runs = 0;
+    let result!: () => AsyncResultType<number, never>;
+
+    const dispose = createRoot((d) => {
+      result = queryEffect(() => Effect.sync(() => ++runs), { key, runtime });
+      return d;
+    });
+
+    await tick();
+    expect(result()).toEqual(AsyncResult.success(1));
+    invalidate(key);
+    await tick();
+    expect(result()).toEqual(AsyncResult.success(2));
+    refresh(key);
+    await tick();
+    expect(result()).toEqual(AsyncResult.success(3));
+    dispose();
+    await runtime.dispose();
+  });
+
+  it("queryEffectStrict runs with explicit runtime", async () => {
+    const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
+    const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "hey" }));
+
+    let result!: () => AsyncResultType<string, never>;
+    const dispose = createRoot((d) => {
+      result = queryEffectStrict(runtime, () =>
+        Effect.gen(function* () {
+          const svc = yield* Effect.service(Greeting);
+          return `${svc.prefix}!`;
+        }));
+      return d;
+    });
+
+    await tick();
+    expect(result()).toEqual(AsyncResult.success("hey!"));
+    dispose();
+    await runtime.dispose();
+  });
+
+  it("defineQuery bundles key/result/pending/latest", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    let runs = 0;
+
+    const query = createRoot(() => defineQuery(() => Effect.sync(() => ++runs), { runtime, name: "q" }));
+    await tick();
+    expect(query.result()).toEqual(AsyncResult.success(1));
+    expect(query.latest()).toBe(1);
+
+    query.invalidate();
+    await tick();
+    expect(query.result()).toEqual(AsyncResult.success(2));
+    await runtime.dispose();
+  });
+
+  it("defineQueryStrict requires explicit runtime", async () => {
+    const Svc = ServiceMap.Service<{ readonly value: string }>("Svc");
+    const runtime = ManagedRuntime.make(Layer.succeed(Svc, { value: "ok" }));
+    const query = createRoot(() => defineQueryStrict(
+      runtime,
+      () => Effect.service(Svc).pipe(Effect.map((s) => s.value)),
+      { name: "svc" },
+    ));
+
+    await tick();
+    expect(query.result()).toEqual(AsyncResult.success("ok"));
+    await runtime.dispose();
+  });
+});
+
+describe("strict aliases", () => {
+  it("mutationEffect invalidates query keys", async () => {
+    const key = createQueryKey<number>("todos");
+    const runtime = ManagedRuntime.make(Layer.empty);
+    let observed = 0;
+
+    const dispose = createRoot((d) => {
+      const q = queryEffect(() => Effect.sync(() => {
+        key.read();
+        observed += 1;
+        return observed;
+      }), { runtime });
+      const mutate = mutationEffect(
+        (_: void) => Effect.void,
+        { invalidates: key },
+      );
+
+      mutate.run(void 0);
+      return d;
+    });
+
+    await tick();
+    expect(observed).toBeGreaterThanOrEqual(2);
+    dispose();
+    await runtime.dispose();
+  });
+
+  it("mutationEffectStrict injects runtime", async () => {
+    const Svc = ServiceMap.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("Svc");
+    let saved = 0;
+    const runtime = ManagedRuntime.make(Layer.succeed(Svc, { save: (n) => Effect.sync(() => { saved = n; }) }));
+
+    const action = mutationEffectStrict(
+      runtime,
+      (n: number) => Effect.service(Svc).pipe(Effect.flatMap((svc) => svc.save(n))),
+    );
+
+    action.run(7);
+    await tick();
+    expect(saved).toBe(7);
     await runtime.dispose();
   });
 });
@@ -474,9 +636,9 @@ describe("createOptimistic", () => {
   });
 });
 
-describe("actionEffect", () => {
+describe("mutationEffect", () => {
   it("runs effect and transitions result to Success", async () => {
-    const action = actionEffect((n: number) =>
+    const action = mutationEffect((n: number) =>
       Effect.succeed(n).pipe(Effect.delay("10 millis"))
     );
 
@@ -492,7 +654,7 @@ describe("actionEffect", () => {
     const [count, setCount] = createSignal(1);
     const optimistic = createOptimistic(count);
 
-    const action = actionEffect(
+    const action = mutationEffect(
       (_n: number) => Effect.fail("nope").pipe(Effect.delay("10 millis")),
       {
         optimistic: (n) => optimistic.set(n),
@@ -513,12 +675,12 @@ describe("actionEffect", () => {
     const Greeting = ServiceMap.Service<{ readonly prefix: string }>("ActionGreeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "ok" }));
 
-    const action = actionEffect(
-      () => Effect.gen(function* () {
+    const action = mutationEffectStrict(
+      runtime,
+      (_: void) => Effect.gen(function* () {
         const svc = yield* Effect.service(Greeting);
         return svc.prefix;
       }),
-      { runtime },
     );
 
     action.run(undefined);
@@ -531,7 +693,7 @@ describe("actionEffect", () => {
     const [tickValue, setTickValue] = createSignal(0);
     const calls: number[] = [];
 
-    const action = actionEffect(
+    const action = mutationEffect(
       () => Effect.succeed("ok").pipe(Effect.delay("10 millis")),
       {
         refresh: [
@@ -818,7 +980,7 @@ describe("Switch/Match", () => {
     const r = Switch({
       children: [
         Match({ when: false, children: "no" }),
-        Match({ when: "yes", children: (v) => `got:${v}` }),
+        Match({ when: "yes", children: (v: string) => `got:${v}` }),
         Match({ when: true, children: "later" }),
       ],
       fallback: () => "fallback",
@@ -878,8 +1040,8 @@ describe("MatchTag", () => {
 describe("Optional", () => {
   it("treats nullish as absent but keeps falsey values", () => {
     expect(Optional({ when: null, fallback: () => "none", children: "some" })).toBe("none");
-    expect(Optional({ when: 0, fallback: () => "none", children: (v) => `v:${v}` })).toBe("v:0");
-    expect(Optional({ when: "", fallback: () => "none", children: (v) => `v:${v}` })).toBe("v:");
+    expect(Optional({ when: 0, fallback: () => "none", children: (v: number) => `v:${v}` })).toBe("v:0");
+    expect(Optional({ when: "", fallback: () => "none", children: (v: string) => `v:${v}` })).toBe("v:");
   });
 });
 

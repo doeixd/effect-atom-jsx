@@ -14,9 +14,21 @@ const TypeId = "~effect-atom-jsx/Registry" as const;
 
 export interface Registry {
   readonly [TypeId]: typeof TypeId;
-  /** Read the current value of an atom. */
+  /**
+   * Read the current value of an atom.
+   *
+   * @example
+   * const n = registry.get(countAtom)
+   */
   readonly get: <A>(atom: Atom.Atom<A>) => A;
-  /** Mount an atom so its derivation stays active. Returns an unmount function. */
+  /**
+   * Keep an atom "hot" by mounting it under an owner.
+   *
+   * This is mainly useful for atoms backed by effects/streams where work should
+   * continue even when no JSX expression is currently reading the atom.
+   *
+   * @returns unmount function
+   */
   readonly mount: <A>(atom: Atom.Atom<A>) => () => void;
   /** Force-refresh an atom and invalidate its dependents. */
   readonly refresh: <A>(atom: Atom.Atom<A>) => void;
@@ -28,7 +40,7 @@ export interface Registry {
   readonly update: <R>(atom: Atom.Writable<R, R>, f: (_: R) => R) => void;
   /** Subscribe to value changes. Returns an unsubscribe function. */
   readonly subscribe: <A>(atom: Atom.Atom<A>, f: (_: A) => void, options?: { readonly immediate?: boolean }) => () => void;
-  /** Dispose all mounted atoms and clear internal state. */
+  /** Dispose all mounted atoms and clear internal owner state. */
   readonly reset: () => void;
   /** Alias for `reset`. Disposes the registry and all mounted owners. */
   readonly dispose: () => void;
@@ -40,10 +52,15 @@ export const isRegistry = (u: unknown): u is Registry =>
 /**
  * Create a registry for reading/writing/subscribing atoms.
  *
+ * Registries are lightweight and can be local to one component/module or
+ * shared app-wide. Use one registry consistently for the atoms you want to
+ * keep in the same reactive graph.
+ *
  * @example
  * const registry = Registry.make()
  * registry.set(count, 1)
  * const stop = registry.subscribe(count, console.log)
+ * stop()
  */
 export const make = (): Registry => {
   const roots = new Set<Owner>();
@@ -100,6 +117,9 @@ export const make = (): Registry => {
  * @param self - The Registry instance.
  * @param atom - The atom to read.
  * @returns A synchronous Effect producing the atom's current value.
+ *
+ * @example
+ * const current = Effect.runSync(Registry.getResult(registry, countAtom))
  */
 export const getResult = <A>(
   self: Registry,

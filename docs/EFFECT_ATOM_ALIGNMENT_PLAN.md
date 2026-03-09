@@ -40,10 +40,10 @@ From `Atom.d.ts` and related modules, the important user-facing semantics are:
 Already present in `effect-atom-jsx`:
 
 - Atom-like ergonomics: `signal`, `computed`, `createAtom`
-- Async effects with cancellation: `atomEffect`, `resource`, `resourceWith`
+- Async effects with cancellation: `atomEffect`, `queryEffect` / `defineQuery`, `resource`, `resourceWith`
 - Async state model: `Loading/Refreshing/Success/Failure/Defect`
-- Mutation helpers: `createOptimistic`, `actionEffect`
-- Layer/runtime injection: `mount`, `use`
+- Mutation helpers: `createOptimistic`, `mutationEffect` / `actionEffect`
+- Layer/runtime injection: `createMount` / `mount`, `useService` / `use`
 
 Missing vs effect-atom expectations:
 
@@ -121,7 +121,7 @@ Deliverables:
 - `keepAlive` / `autoDispose` semantics compatible with current owner model
 
 3. Optimistic parity
-- Align current `createOptimistic/actionEffect` with effect-atom-style optimistic patterns and naming.
+- Align current `createOptimistic/mutationEffect` with effect-atom-style optimistic patterns and naming.
 
 Deliverables:
 - `src/compat/combinators.ts`

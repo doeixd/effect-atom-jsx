@@ -9,15 +9,12 @@
  * 5. `Hydration.dehydrate()` / `Hydration.hydrate()` for atom state transfer
  */
 import {
-  createSignal,
-  onCleanup,
   Atom,
   Registry,
   Hydration,
   isServer,
   renderToString,
   hydrateRoot,
-  getRequestEvent,
   setRequestEvent,
   render,
 } from "effect-atom-jsx";
@@ -25,15 +22,16 @@ import {
 // ─── Shared component ─────────────────────────────────────────────────────────
 
 function Greeting() {
-  const [name, setName] = createSignal("World");
+  const registry = Registry.make();
+  const name = Atom.make<string>("World");
 
   return (
     <div class="card">
-      <h2>Hello, {name()}!</h2>
+      <h2>Hello, {registry.get(name)}!</h2>
       <input
         type="text"
-        value={name()}
-        onInput={(e: Event) => setName((e.target as HTMLInputElement).value)}
+        value={registry.get(name)}
+        onInput={(e: Event) => registry.set(name, (e.currentTarget as HTMLInputElement).value)}
         placeholder="Enter your name"
       />
     </div>
@@ -41,14 +39,15 @@ function Greeting() {
 }
 
 function Counter() {
-  const [count, setCount] = createSignal(0);
+  const registry = Registry.make();
+  const count = Atom.make<number>(0);
 
   return (
     <div class="card">
-      <h2>Counter: {count()}</h2>
-      <button onClick={() => setCount((c) => c - 1)}>-</button>
-      <button onClick={() => setCount(0)}>Reset</button>
-      <button onClick={() => setCount((c) => c + 1)}>+</button>
+      <h2>Counter: {registry.get(count)}</h2>
+      <button onClick={() => registry.update(count, (c) => c - 1)}>-</button>
+      <button onClick={() => registry.set(count, 0)}>Reset</button>
+      <button onClick={() => registry.update(count, (c) => c + 1)}>+</button>
     </div>
   );
 }
@@ -66,8 +65,8 @@ function AppContent() {
 // ─── SSR demo (runs in the browser to demonstrate the API) ───────────────────
 
 export function App() {
-  const [ssrHtml, setSsrHtml] = createSignal("");
-  const [hydrated, setHydrated] = createSignal(false);
+  const registry = Registry.make();
+  const ssrHtml = Atom.make<string>("");
 
   return (
     <main>
@@ -82,16 +81,16 @@ export function App() {
         <button onClick={() => {
           // Simulate setting request context (like a server would)
           setRequestEvent({ url: "/demo", method: "GET" });
-          const html = renderToString(() => AppContent({}));
+          const html = renderToString(() => <AppContent />);
           setRequestEvent(undefined);
-          setSsrHtml(html);
+          registry.set(ssrHtml, html);
         }}>
           renderToString()
         </button>
-        {ssrHtml() ? (
+        {registry.get(ssrHtml) ? (
           <div>
             <h3>Raw HTML output:</h3>
-            <pre>{ssrHtml()}</pre>
+            <pre>{registry.get(ssrHtml)}</pre>
           </div>
         ) : null}
       </div>

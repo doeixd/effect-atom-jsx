@@ -119,4 +119,24 @@ describe("AtomSchema", () => {
     field.reset();
     expect(Effect.runSync(Atom.get(field.isValid))).toBe(true);
   });
+
+  it("path focuses nested writable form state", () => {
+    const form = Atom.make<{ user: { name: string }; age: string }>({ user: { name: "Ada" }, age: "42" });
+    const nameField = AtomSchema.path<{ user: { name: string }; age: string }, string>(
+      form,
+      "user",
+      "name",
+    );
+
+    expect(Effect.runSync(Atom.get(nameField))).toBe("Ada");
+    Effect.runSync(Atom.set(nameField, "Grace"));
+    expect(Effect.runSync(Atom.get(form))).toEqual({ user: { name: "Grace" }, age: "42" });
+  });
+
+  it("HtmlInput optional helpers map empty string to null", () => {
+    expect(AtomSchema.HtmlInput.optionalString.input("")).toBeNull();
+    expect(AtomSchema.HtmlInput.optionalString.input("x")).toBe("x");
+    expect(AtomSchema.HtmlInput.optionalNumber.input(" ")).toBeNull();
+    expect(AtomSchema.HtmlInput.optionalNumber.input("12")).toBe("12");
+  });
 });
