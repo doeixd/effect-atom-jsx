@@ -3,7 +3,7 @@
 Fine-grained reactive JSX runtime powered by Effect v4. Combines **effect-atom style state management**, a **dom-expressions JSX runtime**, and **Effect v4 service integration** into a single, cohesive framework.
 
 ```bash
-npm i effect-atom-jsx effect
+npm i effect-atom-jsx effect@^4.0.0-beta.29
 ```
 
 > Targets `effect@^4.0.0-beta.29`
