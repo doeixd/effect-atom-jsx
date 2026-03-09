@@ -9,6 +9,22 @@ Compatibility note:
 - this package provides an effect-atom-like ergonomic surface as first-class API, implemented natively for Effect v4
 - it does not currently depend on `@effect-atom/atom` directly (that package line is currently Effect v3-oriented)
 
+### Relationship to `@effect-atom/atom`
+
+This project is intentionally close to effect-atom, but not a direct re-export.
+
+- What is the same:
+  - primary namespace-style API (`Atom`, `Result`, `Registry`, `AtomRef`)
+  - atom graph usage patterns (`make`, `family`, `map`, `set/update/modify`, subscriptions)
+  - waiting/revalidation-oriented async model
+- What is different:
+  - backend implementation is native to this library and tuned for JSX + `dom-expressions`
+  - Effect runtime baseline is v4 beta here; `@effect-atom/atom` currently targets Effect v3
+  - some advanced effect-atom modules are still being expanded toward parity
+- Practical guidance:
+  - if you already think in effect-atom terms, use `Atom` / `Registry` / `Result` / `AtomRef` directly here
+  - use `resource` / `actionEffect` / `mount` for Effect service + UI integration
+
 ## Main API (Effect-Atom Style)
 
 - `Atom` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Atom`)
