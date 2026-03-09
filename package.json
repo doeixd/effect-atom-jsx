@@ -31,6 +31,14 @@
       "import": "./dist/AtomRpc.js",
       "types": "./dist/AtomRpc.d.ts"
     },
+    "./AtomLogger": {
+      "import": "./dist/AtomLogger.js",
+      "types": "./dist/AtomLogger.d.ts"
+    },
+    "./AtomSchema": {
+      "import": "./dist/AtomSchema.js",
+      "types": "./dist/AtomSchema.d.ts"
+    },
     "./Hydration": {
       "import": "./dist/Hydration.js",
       "types": "./dist/Hydration.d.ts"

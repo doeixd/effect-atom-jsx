@@ -45,6 +45,8 @@ export * as Atom from "./Atom.js";
 export * as AtomHttpApi from "./AtomHttpApi.js";
 export * as AtomRef from "./AtomRef.js";
 export * as AtomRpc from "./AtomRpc.js";
+export * as AtomLogger from "./AtomLogger.js";
+export * as AtomSchema from "./AtomSchema.js";
 export * as Hydration from "./Hydration.js";
 export * as Result from "./Result.js";
 export * as Registry from "./Registry.js";
@@ -104,6 +106,14 @@ export {
   style,
   delegateEvents,
   render,
+  // SSR / Hydration:
+  isServer,
+  renderToString,
+  hydrateRoot,
+  isHydrating,
+  getNextHydrateNode,
+  getRequestEvent,
+  setRequestEvent,
   // Reactive primitives re-exported for runtime consumers:
   effect,
   memo,

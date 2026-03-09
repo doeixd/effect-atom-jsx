@@ -1,7 +1,6 @@
-import { Effect } from "effect";
-import { createSignal, batch as runBatch, type Accessor } from "./api.js";
+import { Effect, Stream, Queue, Fiber, Runtime } from "effect";
+import { createSignal, batch as runBatch, type Accessor, createEffect, onCleanup } from "./api.js";
 import { Owner, runWithOwner } from "./owner.js";
-import { createEffect } from "./api.js";
 
 const TypeId = "~effect-atom-jsx/Atom" as const;
 const WritableTypeId = "~effect-atom-jsx/Atom/Writable" as const;
@@ -34,26 +33,44 @@ export interface Writable<R, W = R> extends Atom<R> {
   readonly write: (ctx: WriteContext<R>, value: W) => void;
 }
 
+/** Read context passed to atom `read` functions. Callable as a shorthand for `get`. */
 export interface Context {
+  /** Read an atom's current value (shorthand call signature). */
   <A>(atom: Atom<A>): A;
+  /** Read an atom's current value, tracking it as a dependency. */
   get<A>(atom: Atom<A>): A;
+  /** Force-refresh an atom and invalidate its dependents. */
   refresh<A>(atom: Atom<A>): void;
+  /** Write a value to a writable atom. */
   set<R, W>(atom: Writable<R, W>, value: W): void;
 }
 
+/** Write context passed to atom `write` functions. */
 export interface WriteContext<A> {
+  /** Read an atom's current value. */
   get<T>(atom: Atom<T>): T;
+  /** Write a value to another writable atom. */
   set<R, W>(atom: Writable<R, W>, value: W): void;
+  /** Force-refresh the current atom, re-running its read function. */
   refreshSelf(): void;
+  /** Directly set the current atom's underlying signal value. */
   setSelf(value: A): void;
 }
 
+/** Type guard that checks whether an unknown value is an `Atom`. */
 export const isAtom = (u: unknown): u is Atom<any> =>
   typeof u === "object" && u !== null && TypeId in u;
 
+/** Type guard that checks whether an `Atom` is `Writable`. */
 export const isWritable = <R, W>(atom: Atom<R>): atom is Writable<R, W> =>
   typeof atom === "object" && atom !== null && WritableTypeId in atom;
 
+/**
+ * Low-level constructor for a read-only atom.
+ *
+ * @param read    - Function that computes the atom's value given a read context.
+ * @param refresh - Optional callback invoked when the atom is force-refreshed.
+ */
 export const readable = <A>(
   read: (get: Context) => A,
   refresh?: (f: <A>(atom: Atom<A>) => void) => void,
@@ -63,6 +80,13 @@ export const readable = <A>(
   refresh,
 });
 
+/**
+ * Low-level constructor for a writable atom with custom read and write logic.
+ *
+ * @param read    - Function that computes the atom's value given a read context.
+ * @param write   - Function that handles writes, receiving a write context and the new value.
+ * @param refresh - Optional callback invoked when the atom is force-refreshed.
+ */
 export const writable = <R, W = R>(
   read: (get: Context) => R,
   write: (ctx: WriteContext<R>, value: W) => void,
@@ -216,6 +240,21 @@ export function withFallback<A, E>(
   });
 }
 
+/**
+ * Batch multiple atom writes into a single reactive flush.
+ *
+ * Updates inside `f` are deferred until the batch completes, preventing
+ * intermediate recomputations.
+ *
+ * @param f - Function containing atom writes to batch together.
+ *
+ * @example
+ * Atom.batch(() => {
+ *   Effect.runSync(Atom.set(firstName, "Jane"))
+ *   Effect.runSync(Atom.set(lastName, "Doe"))
+ * })
+ * // Dependents recompute once, not twice
+ */
 export const batch = (f: () => void): void => {
   runBatch(f);
 };
@@ -358,3 +397,72 @@ export const subscribe = <A>(
   });
   return () => owner.dispose();
 };
+
+/**
+ * Creates an atom whose value is continuously updated from an Effect Stream.
+ *
+ * Uses the default Runtime to fork the stream subscription. When the atom
+ * is first read (or explicitly mounted via a Registry), the stream starts.
+ * The stream is interrupted when the registry/owner unmounts.
+ *
+ * @example
+ * const prices = Atom.fromStream(stream, 0)
+ */
+export function fromStream<A, E, R>(
+  stream: Stream.Stream<A, E, R>,
+  initialValue: A,
+  runtime?: any, // V4 runtime
+): Atom<A> {
+  const [get, set] = createSignal<A>(initialValue);
+  let fiber: Fiber.Fiber<void, E> | null = null;
+  let active = false;
+
+  const start = () => {
+    if (active) return;
+    active = true;
+    const eff = Stream.runForEach(stream, (a) => Effect.sync(() => set(a))) as Effect.Effect<void, E, R>;
+    fiber = (runtime ? Effect.runForkWith(runtime as any)(eff) : Effect.runFork(eff as unknown as Effect.Effect<void, E, never>)) as Fiber.Fiber<void, E>;
+  };
+
+  const stop = () => {
+    if (!active) return;
+    active = false;
+    if (fiber) {
+      Effect.runFork(Fiber.interrupt(fiber));
+      fiber = null;
+    }
+  };
+
+  return readable((ctx) => {
+    // If not active, try to start it and schedule cleanup
+    if (!active) {
+      const owner = new Owner();
+      runWithOwner(owner, () => {
+        start();
+        onCleanup(() => stop());
+      });
+    }
+    return get();
+  });
+}
+
+/**
+ * Creates an atom that reads from an Effect Queue.
+ *
+ * Internally converts the queue to a Stream via `Stream.fromQueue` and
+ * delegates to `fromStream`.
+ *
+ * @param queue        - The Effect Dequeue to consume values from.
+ * @param initialValue - The atom's value before the first item arrives.
+ *
+ * @example
+ * const queue = yield* Queue.unbounded<number>()
+ * const latest = Atom.fromQueue(queue, 0)
+ * // latest atom updates each time an item is offered to the queue
+ */
+export function fromQueue<A>(
+  queue: Queue.Dequeue<A>,
+  initialValue: A,
+): Atom<A> {
+  return fromStream(Stream.fromQueue(queue), initialValue);
+}

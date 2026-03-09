@@ -1,3 +1,10 @@
+/**
+ * Registry.ts — Centralized store for reading, writing, and subscribing to atoms.
+ *
+ * A Registry manages atom lifecycle (mount/dispose) and provides an imperative
+ * API for use outside reactive contexts (tests, server handlers, etc.).
+ */
+
 import { Effect } from "effect";
 import { Owner, runWithOwner } from "./owner.js";
 import { createEffect } from "./api.js";
@@ -7,14 +14,23 @@ const TypeId = "~effect-atom-jsx/Registry" as const;
 
 export interface Registry {
   readonly [TypeId]: typeof TypeId;
+  /** Read the current value of an atom. */
   readonly get: <A>(atom: Atom.Atom<A>) => A;
+  /** Mount an atom so its derivation stays active. Returns an unmount function. */
   readonly mount: <A>(atom: Atom.Atom<A>) => () => void;
+  /** Force-refresh an atom and invalidate its dependents. */
   readonly refresh: <A>(atom: Atom.Atom<A>) => void;
+  /** Write a new value to a writable atom. */
   readonly set: <R, W>(atom: Atom.Writable<R, W>, value: W) => void;
+  /** Read, transform, write in one step; returns the computed side-value. */
   readonly modify: <R, W, A>(atom: Atom.Writable<R, W>, f: (_: R) => [A, W]) => A;
+  /** Update a writable atom using a function of its current value. */
   readonly update: <R>(atom: Atom.Writable<R, R>, f: (_: R) => R) => void;
+  /** Subscribe to value changes. Returns an unsubscribe function. */
   readonly subscribe: <A>(atom: Atom.Atom<A>, f: (_: A) => void, options?: { readonly immediate?: boolean }) => () => void;
+  /** Dispose all mounted atoms and clear internal state. */
   readonly reset: () => void;
+  /** Alias for `reset`. Disposes the registry and all mounted owners. */
   readonly dispose: () => void;
 }
 
@@ -78,6 +94,13 @@ export const make = (): Registry => {
   return registry;
 };
 
+/**
+ * Read an atom value from a Registry as an `Effect`.
+ *
+ * @param self - The Registry instance.
+ * @param atom - The atom to read.
+ * @returns A synchronous Effect producing the atom's current value.
+ */
 export const getResult = <A>(
   self: Registry,
   atom: Atom.Atom<A>,

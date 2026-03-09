@@ -1,27 +1,42 @@
+/**
+ * Result.ts — Synchronous result type with revalidation tracking.
+ *
+ * `Result<A, E>` is a three-state union (Initial | Success | Failure) designed
+ * for atom-based data fetching. Unlike `AsyncResult`, Result carries `waiting`
+ * and `previousSuccess` metadata so UI can show stale-while-revalidate patterns
+ * without separate loading state.
+ */
+
 import { AsyncResult, type Defect } from "./effect-ts.js";
 import { Cause, Exit, Option, pipe } from "effect";
 
 export type Initial<A, E = never> = {
   readonly _tag: "Initial";
+  /** Whether a fetch is currently in progress (first-load). */
   readonly waiting: boolean;
 };
 
 export type Success<A, E = never> = {
   readonly _tag: "Success";
   readonly value: A;
+  /** Whether a revalidation fetch is in progress while this value is stale. */
   readonly waiting: boolean;
+  /** Epoch millisecond timestamp of when this value was produced. */
   readonly timestamp: number;
 };
 
 export type Failure<A, E = never> = {
   readonly _tag: "Failure";
   readonly error: E | { readonly defect: string };
+  /** Whether a retry/revalidation fetch is in progress. */
   readonly waiting: boolean;
+  /** The last successful value before this failure, if any. Enables stale-while-revalidate. */
   readonly previousSuccess: Success<A, E> | null;
 };
 
 export type Result<A, E = never> = Initial<A, E> | Success<A, E> | Failure<A, E>;
 
+/** Type guard that checks whether an unknown value is a `Result`. */
 export const isResult = (u: unknown): u is Result<unknown, unknown> =>
   typeof u === "object" && u !== null && "_tag" in u && (
     (u as { _tag?: string })._tag === "Initial"
@@ -82,6 +97,15 @@ export const waiting = <A, E>(r: Result<A, E>): Result<A, E> => {
   return failure(r.error, { waiting: true, previousSuccess: r.previousSuccess });
 };
 
+/**
+ * Convert an `AsyncResult` (from `atomEffect`) to a `Result`.
+ *
+ * Maps Loading to Initial(waiting), Refreshing to the previous value with
+ * `waiting=true`, and settles Success/Failure directly.
+ *
+ * @example
+ * const result = Result.fromAsyncResult(userAsync())
+ */
 export function fromAsyncResult<A, E>(
   value: AsyncResult<A, E>,
 ): Result<A, E> {
@@ -101,6 +125,15 @@ export function fromAsyncResult<A, E>(
   return failure({ defect: value.cause });
 }
 
+/**
+ * Produce a waiting Result from an optional previous result.
+ *
+ * If `previous` is `None`, returns `Initial(waiting=true)`. Otherwise marks
+ * the previous result as waiting.
+ *
+ * @param previous - The previous result, if any.
+ * @returns A Result with `waiting=true`.
+ */
 export function waitingFrom<A, E>(previous: Option.Option<Result<A, E>>): Result<A, E> {
   return Option.match(previous, {
     onNone: () => initial(true),
@@ -108,6 +141,14 @@ export function waitingFrom<A, E>(previous: Option.Option<Result<A, E>>): Result
   });
 }
 
+/**
+ * Convert an Effect `Exit` to a settled Result (Success or Failure).
+ *
+ * Typed errors become `Failure`, defects become `Failure({ defect })`.
+ *
+ * @param exit - The Effect Exit value to convert.
+ * @returns A Success or Failure result.
+ */
 export function fromExit<A, E>(exit: Exit.Exit<A, E>): Success<A, E> | Failure<A, E> {
   return Exit.match(exit, {
     onSuccess: (value) => success(value),
@@ -121,6 +162,14 @@ export function fromExit<A, E>(exit: Exit.Exit<A, E>): Success<A, E> | Failure<A
   });
 }
 
+/**
+ * Convert an Effect `Exit` to a Result, preserving `previousSuccess` from a
+ * prior result when the exit is a failure.
+ *
+ * @param exit     - The Effect Exit value to convert.
+ * @param previous - The previous Result, used to populate `previousSuccess` on failure.
+ * @returns A Success or Failure result.
+ */
 export function fromExitWithPrevious<A, E>(
   exit: Exit.Exit<A, E>,
   previous: Option.Option<Result<A, E>>,
@@ -133,6 +182,13 @@ export function fromExitWithPrevious<A, E>(
     : next;
 }
 
+/**
+ * Convert a `Result` back to an `AsyncResult` for use with UI components
+ * like `<Async>` or `<Loading>`.
+ *
+ * @example
+ * const asyncResult = Result.toAsyncResult(result)
+ */
 export function toAsyncResult<A, E>(
   value: Result<A, E>,
 ): AsyncResult<A, E> {
@@ -149,10 +205,21 @@ export function toAsyncResult<A, E>(
     : AsyncResult.failure(value.error as E);
 }
 
+/**
+ * Extract the success value as an `Option`.
+ *
+ * @returns `Some(value)` if Success, `None` otherwise.
+ */
 export function value<A, E>(self: Result<A, E>): Option.Option<A> {
   return self._tag === "Success" ? Option.some(self.value) : Option.none();
 }
 
+/**
+ * Get the success value, or compute a fallback if not successful.
+ *
+ * @example
+ * const name = Result.getOrElse(userResult, () => "anonymous")
+ */
 export function getOrElse<A, E>(
   self: Result<A, E>,
   orElse: () => A,
@@ -160,6 +227,11 @@ export function getOrElse<A, E>(
   return self._tag === "Success" ? self.value : orElse();
 }
 
+/**
+ * Get the success value or throw the error/defect.
+ *
+ * @throws The error value on Failure, or an Error on Initial.
+ */
 export function getOrThrow<A, E>(self: Result<A, E>): A {
   if (self._tag === "Success") return self.value;
   if (self._tag === "Failure") {
@@ -171,6 +243,14 @@ export function getOrThrow<A, E>(self: Result<A, E>): A {
   throw new Error("Result is Initial");
 }
 
+/**
+ * Transform the success value of a Result.
+ *
+ * Preserves waiting state, timestamp, and previousSuccess through the mapping.
+ *
+ * @example
+ * const nameResult = Result.map(userResult, (u) => u.name)
+ */
 export function map<A, E, B>(self: Result<A, E>, f: (a: A) => B): Result<B, E> {
   if (self._tag === "Success") return success(f(self.value), { waiting: self.waiting, timestamp: self.timestamp });
   if (self._tag === "Failure") {
@@ -182,6 +262,12 @@ export function map<A, E, B>(self: Result<A, E>, f: (a: A) => B): Result<B, E> {
   return initial(self.waiting);
 }
 
+/**
+ * Chain a Result into another Result-producing function.
+ *
+ * @example
+ * const profile = Result.flatMap(userResult, (u) => fetchProfile(u.id))
+ */
 export function flatMap<A, E, B, E2>(
   self: Result<A, E>,
   f: (a: A) => Result<B, E2>,
@@ -194,6 +280,16 @@ export function flatMap<A, E, B, E2>(
   return initial(self.waiting);
 }
 
+/**
+ * Exhaustive pattern match over all three Result states.
+ *
+ * @example
+ * const label = Result.match(userResult, {
+ *   onInitial: () => "loading...",
+ *   onSuccess: (u) => u.name,
+ *   onFailure: (e) => `error: ${e}`,
+ * })
+ */
 export function match<A, E, R>(
   self: Result<A, E>,
   handlers: {
@@ -207,6 +303,15 @@ export function match<A, E, R>(
   return handlers.onFailure(self.error);
 }
 
+/**
+ * Combine multiple Results into a single Result of a tuple.
+ *
+ * Short-circuits on the first Initial or Failure encountered.
+ *
+ * @example
+ * const combined = Result.all([userResult, prefsResult])
+ * // Result<[User, Prefs], UserError | PrefsError>
+ */
 export function all<A extends ReadonlyArray<Result<any, any>>>(
   results: A,
 ): Result<{ [K in keyof A]: A[K] extends Result<infer X, any> ? X : never }, A[number] extends Result<any, infer XE> ? XE : never> {

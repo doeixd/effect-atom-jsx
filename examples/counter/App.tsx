@@ -15,6 +15,7 @@ import {
   batch,
   onCleanup,
 } from "effect-atom-jsx";
+import { AsyncUserCard } from "./AsyncExample.js";
 
 // ─── Plain signal API ─────────────────────────────────────────────────────────
 
@@ -108,6 +109,7 @@ export function App() {
       <EffectAtomStyleCounter />
       {/* Two instances share the same globalCount atom */}
       <AtomCounter />
+      <AsyncUserCard />
     </main>
   );
 }

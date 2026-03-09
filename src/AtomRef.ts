@@ -1,26 +1,48 @@
+/**
+ * AtomRef.ts — Mutable object/array references with per-property reactive refs.
+ *
+ * `AtomRef` provides fine-grained reactivity over structured data. Each property
+ * can be accessed as its own ref, enabling granular subscriptions and updates
+ * without replacing the entire object.
+ */
+
 import { createSignal, createEffect } from "./api.js";
 import { Owner, runWithOwner } from "./owner.js";
 
 const TypeId = "~effect-atom-jsx/AtomRef" as const;
 
+/** A read-only reactive reference with subscribe and map capabilities. */
 export interface ReadonlyRef<A> {
   readonly [TypeId]: typeof TypeId;
+  /** Debug key identifying this ref in the hierarchy. */
   readonly key: string;
+  /** The current reactive value. Reading this inside a computation tracks it. */
   readonly value: A;
+  /** Subscribe to value changes. Returns an unsubscribe function. */
   readonly subscribe: (f: (a: A) => void) => () => void;
+  /** Derive a new ReadonlyRef by transforming this ref's value. */
   readonly map: <B>(f: (a: A) => B) => ReadonlyRef<B>;
 }
 
+/** A mutable reactive reference with property drilling, set, and update. */
 export interface AtomRef<A> extends ReadonlyRef<A> {
+  /** Access a nested property as its own AtomRef for granular updates. */
   readonly prop: <K extends keyof A>(prop: K) => AtomRef<A[K]>;
+  /** Replace the current value. Returns the ref for chaining. */
   readonly set: (value: A) => AtomRef<A>;
+  /** Update the value using a function of the current value. Returns the ref for chaining. */
   readonly update: (f: (value: A) => A) => AtomRef<A>;
 }
 
+/** A reactive list of AtomRefs with array mutation helpers. */
 export interface Collection<A> extends ReadonlyRef<ReadonlyArray<AtomRef<A>>> {
+  /** Append an item to the end of the collection. */
   readonly push: (item: A) => Collection<A>;
+  /** Insert an item at the given index. */
   readonly insertAt: (index: number, item: A) => Collection<A>;
+  /** Remove a specific ref from the collection by identity. */
   readonly remove: (ref: AtomRef<A>) => Collection<A>;
+  /** Snapshot all ref values into a plain array. */
   readonly toArray: () => Array<A>;
 }
 

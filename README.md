@@ -1,252 +1,119 @@
 # effect-atom-jsx
 
-`effect-atom-jsx` is basically:
-- an **effect-atom style API as the main API** (`Atom`, `Result`, `Registry`)
-- plus a **`dom-expressions` JSX runtime target**
-- with **Effect v4 beta** runtime/service integration built in
-
-Compatibility note:
-- this package provides an effect-atom-like ergonomic surface as first-class API, implemented natively for Effect v4
-- it does not currently depend on `@effect-atom/atom` directly (that package line is currently Effect v3-oriented)
-
-### Relationship to `@effect-atom/atom`
-
-This project is intentionally close to effect-atom, but not a direct re-export.
-
-- What is the same:
-  - primary namespace-style API (`Atom`, `Result`, `Registry`, `AtomRef`)
-  - atom graph usage patterns (`make`, `family`, `map`, `set/update/modify`, subscriptions)
-  - waiting/revalidation-oriented async model
-- What is different:
-  - backend implementation is native to this library and tuned for JSX + `dom-expressions`
-  - Effect runtime baseline is v4 beta here; `@effect-atom/atom` currently targets Effect v3
-  - some advanced effect-atom modules are still being expanded toward parity
-- Practical guidance:
-  - if you already think in effect-atom terms, use `Atom` / `Registry` / `Result` / `AtomRef` directly here
-  - use `resource` / `actionEffect` / `mount` for Effect service + UI integration
-
-## Main API (Effect-Atom Style)
-
-- `Atom` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Atom`)
-  - constructors: `Atom.make`, `Atom.readable`, `Atom.writable`
-  - graph helpers: `Atom.family`, `Atom.map`, `Atom.withFallback`, `Atom.batch`
-  - effect helpers: `Atom.get`, `Atom.set`, `Atom.update`, `Atom.modify`, `Atom.refresh`, `Atom.subscribe`
-- `AtomRef` namespace (from `effect-atom-jsx` or `effect-atom-jsx/AtomRef`)
-  - `AtomRef.make`, `AtomRef.collection`, `ref.prop(...)`, `ref.set(...)`, `ref.update(...)`
-- `Result` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Result`)
-  - `Result.initial`, `Result.success`, `Result.failure`
-  - guards and waiting helpers
-- `Registry` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Registry`)
-  - `Registry.make` with `get/set/update/modify/refresh/subscribe/dispose`
-- `Hydration` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Hydration`)
-  - `Hydration.dehydrate`, `Hydration.hydrate`, `Hydration.toValues`
-- `AtomRpc` namespace (from `effect-atom-jsx` or `effect-atom-jsx/AtomRpc`)
-  - `AtomRpc.Tag()(id, { call, runtime? })` with `query/mutation/refresh`
-- `AtomHttpApi` namespace (from `effect-atom-jsx` or `effect-atom-jsx/AtomHttpApi`)
-  - `AtomHttpApi.Tag()(id, { call, runtime? })` with grouped `query/mutation/refresh`
-
-The design is also inspired by Solid 2.0 beta ideas around async UX:
-- initial `Loading` vs revalidation `Refreshing(previous)`
-- `isPending(...)` for refresh state
-- `latest(...)` to read last successful value during refresh
-- optimistic mutation flow via `actionEffect(...)`
-
-## Install
+Fine-grained reactive JSX runtime powered by Effect v4. Combines **effect-atom style state management**, a **dom-expressions JSX runtime**, and **Effect v4 service integration** into a single, cohesive framework.
 
 ```bash
 npm i effect-atom-jsx effect
 ```
 
-This library currently targets `effect@^4.0.0-beta.29`.
+> Targets `effect@^4.0.0-beta.29`
 
-## Getting Started
+## Overview
 
-### 1) Configure JSX transform
+```
+effect-atom-jsx = Effect v4 services + Atom/Registry state + dom-expressions JSX
+```
 
-This package is intended to be used with `babel-plugin-jsx-dom-expressions` and `moduleName: "effect-atom-jsx"`.
+- **Local state** via `Atom` / `Registry` / `AtomRef` — reactive graph primitives
+- **Async state** via `resource` / `atomEffect` — Effect fibers with automatic cancellation
+- **Mutations** via `actionEffect` / `createOptimistic` — optimistic UI with rollback
+- **Form validation** via `AtomSchema` — Schema-driven reactive fields with touched/dirty tracking
+- **SSR** via `renderToString` / `hydrateRoot` — server-side rendering with hydration
+- **Debug** via `AtomLogger` — structured logging for atom reads/writes
+
+## Quick Start
+
+### 1. Configure Babel
 
 ```json
 {
   "plugins": [
-    [
-      "babel-plugin-jsx-dom-expressions",
-      {
-        "moduleName": "effect-atom-jsx",
-        "contextToCustomElements": true
-      }
-    ]
+    ["babel-plugin-jsx-dom-expressions", {
+      "moduleName": "effect-atom-jsx",
+      "contextToCustomElements": true
+    }]
   ]
 }
 ```
 
-### 2) Mount with a Layer runtime
+### 2. Write a component
 
-`mount(...)` creates a `ManagedRuntime` from your `Layer` and injects it into the component tree.
+Components are plain functions that run once. Reactive expressions in JSX update only the specific DOM nodes that depend on them.
 
-### 3) Use `Atom` / `Registry` + Effect services
+```tsx
+import { createSignal, createMemo, render } from "effect-atom-jsx";
 
-Use `Atom`/`Registry` for local graph state, and `use(Tag)` + `resource(...)` for Effect-powered async data.
-
-```ts
-import { Effect, Layer, ServiceMap } from "effect";
-import { mount, use, resource, Async, Atom, Registry } from "effect-atom-jsx";
-
-const CounterApi = ServiceMap.Service<{
-  readonly load: () => Effect.Effect<number>;
-}>("CounterApi");
-
-const CounterApiLive = Layer.succeed(CounterApi, {
-  load: () => Effect.succeed(42)
-});
-
-function App() {
-  const registry = Registry.make();
-  const count = Atom.make(0);
-  const remote = resource(() => use(CounterApi).load());
+function Counter() {
+  const [count, setCount] = createSignal(0);
+  const doubled = createMemo(() => count() * 2);
 
   return (
-    <main>
-      <button onClick={() => registry.update(count, (n) => n + 1)}>
-        Local: {registry.get(count)}
-      </button>
-      <Async
-        result={remote()}
-        loading={() => <p>Loading...</p>}
-        success={(value) => <p>From Effect service: {value}</p>}
-      />
-    </main>
+    <div>
+      <p>Count: {count()} (doubled: {doubled()})</p>
+      <button onClick={() => setCount((c) => c + 1)}>+</button>
+    </div>
   );
 }
 
-mount(() => App(), document.getElementById("root")!, CounterApiLive);
+render(() => <Counter />, document.getElementById("root")!);
 ```
 
-## How The Pieces Fit Together
+### 3. Add Effect services
 
-`effect-atom-jsx` combines three ideas into one workflow:
+```tsx
+import { Effect, Layer, ServiceMap } from "effect";
+import { mount, use, resource, Async } from "effect-atom-jsx";
 
-- **Effect v4** (`effect`)
-  - provides typed effects, services, layers, and managed runtimes
-  - you model reads/writes as `Effect.Effect<A, E, R>`
-- **effect-atom style reactivity** (this library)
-  - provides ergonomic primitives like `Atom`, `Registry`, `AtomRef`, `resource`, and `actionEffect`
-  - bridges reactive invalidation to Effect fibers with interruption/cancellation
-- **dom-expressions JSX runtime**
-  - Babel turns JSX into fine-grained DOM operations against `effect-atom-jsx/runtime`
-  - updates are surgical: only nodes that depend on changed signals/effects update
+const Api = ServiceMap.Service<{
+  readonly load: () => Effect.Effect<number>;
+}>("Api");
 
-In practice:
+const ApiLive = Layer.succeed(Api, {
+  load: () => Effect.succeed(42),
+});
 
-1. `mount(() => App(), el, layer)` builds a `ManagedRuntime` from your `Layer`.
-2. Components call `use(Tag)` to synchronously access services from that runtime.
-3. `resource(...)` / `atomEffect(...)` run service effects reactively and expose `AsyncResult` state.
-4. `actionEffect(...)` handles writes, optimistic UI, rollback, and post-success refresh.
-5. JSX is compiled to dom-expressions helpers, so reactivity updates the DOM efficiently.
+function App() {
+  const data = resource(() => use(Api).load());
 
-## Compatibility And Roadmap
+  return (
+    <Async
+      result={data()}
+      loading={() => <p>Loading...</p>}
+      success={(value) => <p>Loaded: {value}</p>}
+    />
+  );
+}
 
-- **Today**
-  - Runtime baseline: Effect v4 beta (`effect@^4.0.0-beta.29`)
-  - API style: effect-atom-like primitives and async/mutation patterns
-  - JSX runtime target: `dom-expressions` via `effect-atom-jsx/runtime`
-- **Near-term goal**
-  - keep this public API stable and predictable for app code
-  - continue tightening type-safety and integration tests
-- **Future alignment**
-  - monitor official Effect v4 atom modules as they mature
-  - if a stable framework-agnostic v4 atom core becomes available, adopt/adapter it behind the same public API
+mount(() => <App />, document.getElementById("root")!, ApiLive);
+```
 
-## Simple Examples
+## Core Concepts
 
-### Mental model (quick)
+### Atom & Registry — Local State
 
-- **Local state**: `Atom` / `Registry`
-  - fast in-memory reactive values for UI state
-- **Service state**: `resource` / `atomEffect`
-  - Effect-powered async reads with typed errors and cancellation
-- **Mutation state**: `actionEffect` + `createOptimistic` (or `AtomRef` for object-like local editing)
-  - optimistic write flow with rollback and refresh hooks
-
-### Local graph state with `Atom` / `Registry`
+Atoms are reactive values. A `Registry` reads, writes, and subscribes to atoms.
 
 ```ts
 import { Effect } from "effect";
 import { Atom, Registry } from "effect-atom-jsx";
 
-const count = Atom.make(1);
+const count = Atom.make(0);
 const doubled = Atom.map(count, (n) => n * 2);
-const registry = Registry.make();
 
+// Registry provides the read/write context
+const registry = Registry.make();
 registry.set(count, 3);
-console.log(registry.get(count));   // 3
 console.log(registry.get(doubled)); // 6
 
+// Atom also exposes Effect-based helpers
 Effect.runSync(Atom.update(count, (n) => n + 1));
-console.log(registry.get(count)); // 4
 ```
 
-### Effect-backed async state with `atomEffect`
+All Effect helpers (`get`, `set`, `update`, `modify`) support both data-first and data-last (pipeable) forms.
 
-```ts
-import { Effect } from "effect";
-import { atomEffect, AsyncResult, latest } from "effect-atom-jsx";
+### AtomRef — Object State
 
-const user = atomEffect(() =>
-  Effect.succeed({ id: 1, name: "Ada" }).pipe(Effect.delay("200 millis"))
-);
-const userLatest = latest(user);
-
-const state = user();
-if (AsyncResult.isLoading(state)) console.log("loading");
-if (AsyncResult.isSuccess(state)) console.log(state.value.name);
-console.log(userLatest()); // last successful value (or undefined)
-```
-
-### Service injection with `mount` + `use`
-
-```ts
-import { Effect, Layer, ServiceMap } from "effect";
-import { mount, use, resource, Result } from "effect-atom-jsx";
-
-const Api = ServiceMap.Service<{ getMessage: () => Effect.Effect<string> }>("Api");
-const ApiLive = Layer.succeed(Api, { getMessage: () => Effect.succeed("hello") });
-
-function App() {
-  const message = resource(() => use(Api).getMessage());
-  const state = Result.fromAsyncResult(message());
-  return <div>{Result.isSuccess(state) ? state.value : "..."}</div>;
-}
-
-mount(() => App(), document.getElementById("root")!, ApiLive);
-```
-
-### Optimistic mutation with `actionEffect`
-
-```ts
-import { Effect } from "effect";
-import { Atom, Registry, createOptimistic, actionEffect } from "effect-atom-jsx";
-
-const registry = Registry.make();
-const savedCount = Atom.make(0);
-const optimisticCount = createOptimistic(() => registry.get(savedCount));
-
-const save = actionEffect(
-  (next: number) => Effect.succeed(next).pipe(Effect.delay("250 millis")),
-  {
-    optimistic: (next) => optimisticCount.set(next),
-    rollback: () => optimisticCount.clear(),
-    onSuccess: (next) => {
-      optimisticCount.clear();
-      registry.set(savedCount, next);
-    },
-  },
-);
-
-save.run(10);
-console.log(optimisticCount.get()); // 10 immediately
-```
-
-### Object editing with `AtomRef`
+`AtomRef` provides per-property reactive access to objects and arrays.
 
 ```ts
 import { AtomRef } from "effect-atom-jsx";
@@ -256,95 +123,292 @@ const title = todo.prop("title");
 
 title.set("Ship release notes");
 console.log(todo.value.title); // "Ship release notes"
+
+// Collections for arrays
+const list = AtomRef.collection([
+  { id: 1, text: "Buy milk" },
+  { id: 2, text: "Write tests" },
+]);
+list.push({ id: 3, text: "Deploy" });
+console.log(list.toArray().length); // 3
 ```
 
-## Additional APIs
+### atomEffect & resource — Async State
 
-- `signal(initial)` / `computed(fn)`
-  - optional convenience API layered on the same reactive core
-- `atomEffect(() => Effect)`
-  - tracked reactive async computation with cancellation on dependency changes
-- `mount(fn, container, layer)`
-  - bootstraps a `ManagedRuntime` from `Layer` and injects it into the component tree
-- `use(tag)`
-  - sync service access from the ambient runtime created by `mount`
-- `resource(fn)` / `resourceWith(runtime, fn)`
-  - runtime-aware async atom helpers (ambient and explicit forms)
+Both create reactive async computations backed by Effect fibers. When tracked dependencies change, the previous fiber is interrupted and a new one starts.
 
-## Async UI Model
+```tsx
+import { Effect } from "effect";
+import { atomEffect, resource, use, AsyncResult, Async } from "effect-atom-jsx";
 
-`atomEffect` and `resource` return `Accessor<AsyncResult<A, E>>` where:
-- `Loading` = initial load (no settled value yet)
-- `Refreshing(previous)` = revalidation while preserving last settled value
-- `Success(value)`
-- `Failure(error)` (typed error channel)
-- `Defect(cause)` (unexpected defects / interrupts)
+// atomEffect — standalone, no runtime needed
+const time = atomEffect(() =>
+  Effect.succeed(new Date().toISOString()).pipe(Effect.delay("1 second"))
+);
 
-Helpers:
-- `isPending(result)` returns `true` only during `Refreshing`
-- `latest(result)` returns the last successful value (including while refreshing)
-- `Async({ result, ...slots })` declaratively renders these states
-- `MatchTag({ value, cases })` provides type-safe `_tag` pattern matching
-- `Loading({ when, fallback, children })`, `Errored({ result, children })`, and `Switch/Match` provide lightweight UI boundaries
-- `Optional`, `MatchOption`, `Dynamic`, `Frame/createFrame`, and `WithLayer` cover optional values, Option matching, dynamic components, frame loops, and layer boundaries
+// resource — uses the ambient Layer runtime from mount()
+const data = resource(() => use(Api).load());
 
-## Mutation Helpers
+// Pattern-match on the result in JSX
+<Async
+  result={data()}
+  loading={() => <p>Loading...</p>}
+  error={(e) => <p>Error: {e.message}</p>}
+  success={(value) => <p>{value}</p>}
+/>
+```
 
-- `createOptimistic(source)` creates an optimistic overlay:
-  - `get`, `set`, `clear`, `isPending`
-- `actionEffect(fn, options)` creates an Effect-powered mutation action:
-  - cancellation of stale runs
-  - optional `optimistic`, `rollback`, `refresh`, `onSuccess`, `onFailure`
-  - `result: Accessor<AsyncResult<void, E>>`
-  - `pending: Accessor<boolean>` for loading/refreshing mutation state
+**Key difference:** `resource` uses the ambient runtime injected by `mount()`, while `atomEffect` runs Effects directly (or accepts an explicit runtime parameter).
+
+### AsyncResult vs Result
+
+The library has two result types for different use cases:
+
+| Type | Module | Used by | Purpose |
+|------|--------|---------|---------|
+| `AsyncResult<A, E>` | `effect-ts.ts` | `atomEffect`, `resource` | UI async state (Loading / Refreshing / Success / Failure / Defect) |
+| `Result<A, E>` | `Result.ts` | `AtomRpc`, `AtomHttpApi` | Data fetching state (Initial / Success / Failure) with waiting flag |
+
+Convert between them with `Result.fromAsyncResult()` and `Result.toAsyncResult()`.
+
+### actionEffect — Mutations
+
+Handles writes with optimistic UI, rollback, and automatic refresh.
+
+```ts
+import { Effect } from "effect";
+import { Atom, Registry, createOptimistic, actionEffect } from "effect-atom-jsx";
+
+const registry = Registry.make();
+const savedCount = Atom.make(0);
+const optimistic = createOptimistic(() => registry.get(savedCount));
+
+const save = actionEffect(
+  (next: number) => Effect.succeed(next).pipe(Effect.delay("250 millis")),
+  {
+    optimistic: (next) => optimistic.set(next),
+    rollback: () => optimistic.clear(),
+    onSuccess: (next) => {
+      optimistic.clear();
+      registry.set(savedCount, next);
+    },
+  },
+);
+
+save.run(10);
+console.log(optimistic.get()); // 10 immediately
+```
+
+### AtomSchema — Form Validation
+
+Wraps atoms with Effect Schema for reactive validation with form state tracking.
+
+```ts
+import { Schema, Effect, Option } from "effect";
+import { Atom, AtomSchema } from "effect-atom-jsx";
+
+const ageField = AtomSchema.makeInitial(Schema.Int, 25);
+
+// Each field provides reactive accessors
+ageField.value;   // Atom<Option<number>> — parsed value
+ageField.error;   // Atom<Option<SchemaError>> — validation error
+ageField.isValid; // Atom<boolean>
+ageField.touched; // Atom<boolean> — modified since creation?
+ageField.dirty;   // Atom<boolean> — differs from initial?
+
+// Write invalid input
+Effect.runSync(Atom.set(ageField.input, 1.5));
+Effect.runSync(Atom.get(ageField.isValid)); // false
+
+// Reset everything
+ageField.reset(); // restores initial value, clears touched
+```
+
+### AtomLogger — Debug Tracking
+
+Structured logging for atom reads and writes using Effect's Logger.
+
+```ts
+import { Effect } from "effect";
+import { Atom, AtomLogger } from "effect-atom-jsx";
+
+const count = Atom.make(0);
+
+// Wrap to automatically log all reads/writes
+const traced = AtomLogger.tracedWritable(count, "count");
+// logs: atom:read { atom: "count", op: "read", value: "0" }
+// logs: atom:write { atom: "count", op: "write", value: "5" }
+
+// Effect-based logging
+Effect.runSync(AtomLogger.logGet(count, "count"));
+
+// Capture state snapshot
+const snap = Effect.runSync(
+  AtomLogger.snapshot([["count", count], ["other", otherAtom]])
+);
+// { count: 0, other: "hello" }
+```
+
+### fromStream / fromQueue — Streaming Atoms
+
+Create atoms whose values are continuously updated from Effect Streams or Queues.
+
+```ts
+import { Stream, Queue, Effect } from "effect";
+import { Atom } from "effect-atom-jsx";
+
+// Atom fed by a Stream — starts a fiber on first read
+const prices = Atom.fromStream(
+  Stream.fromIterable([10, 20, 30]),
+  0, // initial value
+);
+
+// Atom fed by a Queue
+const queue = Effect.runSync(Queue.unbounded<string>());
+const messages = Atom.fromQueue(queue, "");
+```
+
+### Server-Side Rendering
+
+Render components to HTML strings on the server and hydrate on the client.
+
+```ts
+import {
+  renderToString, hydrateRoot, isServer,
+  setRequestEvent, getRequestEvent,
+} from "effect-atom-jsx";
+import { Hydration, Registry, Atom } from "effect-atom-jsx";
+
+// ─── Server ─────────────────────────────────────────────────────
+setRequestEvent({ url: req.url, headers: req.headers });
+
+const html = renderToString(() => <App />);
+
+// Serialize atom state for the client
+const registry = Registry.make();
+const state = Hydration.dehydrate(registry, [
+  ["count", countAtom],
+  ["user", userAtom],
+]);
+
+res.send(`
+  <div id="root">${html}</div>
+  <script>window.__STATE__ = ${JSON.stringify(state)}</script>
+`);
+
+// ─── Client ─────────────────────────────────────────────────────
+// Restore atom state from server
+Hydration.hydrate(registry, window.__STATE__, {
+  count: countAtom,
+  user: userAtom,
+});
+
+// Attach reactivity to existing DOM
+const dispose = hydrateRoot(() => <App />, document.getElementById("root")!);
+```
+
+## Control-Flow Components
+
+JSX components for declarative conditional and list rendering:
+
+| Component | Purpose | Example |
+|-----------|---------|---------|
+| `Show` | Conditional rendering | `<Show when={show()}><p>Visible</p></Show>` |
+| `For` | List rendering with keying | `<For each={items()}>{(item) => <li>{item}</li>}</For>` |
+| `Async` | AsyncResult pattern matching | `<Async result={r} loading={...} success={...} />` |
+| `Loading` | Show content while loading | `<Loading when={result}><Spinner /></Loading>` |
+| `Errored` | Show content on error | `<Errored result={r}>{(e) => <p>{e}</p>}</Errored>` |
+| `Switch` / `Match` | Multi-case matching | `<Switch><Match when={a()}>A</Match>...</Switch>` |
+| `MatchTag` | Type-safe `_tag` matching | `<MatchTag value={r} cases={{ Success: ... }} />` |
+| `Optional` | Render when value is truthy | `<Optional when={val()}>{(v) => <p>{v}</p>}</Optional>` |
+| `MatchOption` | Match Effect Option | `<MatchOption value={opt} some={(v) => ...} />` |
+| `Dynamic` | Dynamic component selection | `<Dynamic component={Comp} ...props />` |
+| `WithLayer` | Provide a Layer boundary | `<WithLayer layer={DbLive}>...</WithLayer>` |
+| `Frame` | Animation frame loop | `<Frame>{() => <canvas />}</Frame>` |
+
+## API Reference
+
+### Namespace Modules
+
+Each module is available as a namespace import and as a deep import:
+
+```ts
+// Namespace import
+import { Atom, AtomRef, Registry, Result, Hydration } from "effect-atom-jsx";
+import { AtomSchema, AtomLogger, AtomRpc, AtomHttpApi } from "effect-atom-jsx";
+
+// Deep imports
+import * as Atom from "effect-atom-jsx/Atom";
+import * as AtomSchema from "effect-atom-jsx/AtomSchema";
+```
+
+| Module | Key Exports |
+|--------|-------------|
+| `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `batch`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue` |
+| `AtomRef` | `make`, `collection` |
+| `Registry` | `make` (returns instance with `get`, `set`, `update`, `modify`, `mount`, `refresh`, `subscribe`, `reset`, `dispose`) |
+| `Result` | `initial`, `success`, `failure`, `isInitial`, `isSuccess`, `isFailure`, `isWaiting`, `fromAsyncResult`, `toAsyncResult`, `map`, `flatMap`, `match`, `all` |
+| `Hydration` | `dehydrate`, `hydrate`, `toValues` |
+| `AtomSchema` | `make`, `makeInitial` |
+| `AtomLogger` | `traced`, `tracedWritable`, `logGet`, `logSet`, `snapshot` |
+| `AtomRpc` | `Tag()` factory with `query`, `mutation`, `refresh` |
+| `AtomHttpApi` | `Tag()` factory with grouped `query`, `mutation`, `refresh` |
+
+### Effect Integration
+
+```ts
+import {
+  atomEffect, resource, resourceWith,
+  isPending, latest,
+  createOptimistic, actionEffect,
+  use, mount, layerContext, scopedRoot,
+  signal, computed,
+} from "effect-atom-jsx";
+```
+
+### Reactive Core
+
+```ts
+import {
+  createSignal, createEffect, createMemo, createRoot,
+  createContext, useContext,
+  onCleanup, onMount,
+  untrack, sample, batch,
+  mergeProps, splitProps,
+  getOwner, runWithOwner,
+} from "effect-atom-jsx";
+```
+
+Full API reference: [`docs/API.md`](docs/API.md)
 
 ## Examples
 
-- Counter + async sample: `examples/counter/`
-- Full TodoMVC with optimistic mutations and service injection: `examples/todomvc/`
-  - includes a `TodoApiFromRpc(...)` adapter so an Effect RPC client can be mounted as the backend service layer
-- **New:** Advanced APIs example showing `AtomRpc` and `AtomHttpApi`: `examples/rpc-httpapi/`
+| Example | Location | What it shows |
+|---------|----------|---------------|
+| Counter | `examples/counter/` | Signals, atoms, Registry, async data with `atomEffect` |
+| TodoMVC | `examples/todomvc/` | Full app with `AtomRef`, `resource`, `actionEffect`, optimistic UI, service injection |
+| RPC & HTTP API | `examples/rpc-httpapi/` | `AtomRpc.Tag()`, `AtomHttpApi.Tag()`, `MatchTag` component |
+| Schema Form | `examples/schema-form/` | `AtomSchema` validation, touched/dirty/reset, `AtomLogger.snapshot` |
+| SSR | `examples/ssr/` | `renderToString`, `hydrateRoot`, `Hydration.dehydrate/hydrate` |
 
-## Documentation
+## How It Works
 
-- Full API reference: `docs/API.md`
-- Release checklist: `docs/RELEASE_CHECKLIST.md`
+1. **`mount(() => <App />, el, layer)`** builds a `ManagedRuntime` from your `Layer`
+2. Components call **`use(Tag)`** to synchronously access services from that runtime
+3. **`resource()` / `atomEffect()`** run service effects reactively, exposing `AsyncResult` state
+4. **`actionEffect()`** handles writes with optimistic UI, rollback, and post-success refresh
+5. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
 
-## Minimal Example
+## Relationship to `@effect-atom/atom`
 
-```ts
-import { Effect, Layer, ServiceMap } from "effect";
-import { mount, use, resource, Atom, Registry, actionEffect, createOptimistic } from "effect-atom-jsx";
+This project provides an effect-atom-like ergonomic surface, implemented natively for Effect v4.
 
-const Api = ServiceMap.Service<{ load: () => Effect.Effect<number>; save: (n: number) => Effect.Effect<void, string> }>("Api");
-const ApiLive = Layer.succeed(Api, {
-  load: () => Effect.succeed(1),
-  save: () => Effect.void,
-});
+- **Same:** namespace-style API (`Atom`, `Result`, `Registry`, `AtomRef`), atom graph patterns, waiting/revalidation async model
+- **Different:** native implementation tuned for JSX + dom-expressions, targets Effect v4 beta (vs v3)
+- **Guidance:** if you already think in effect-atom terms, this API should feel familiar. Use `resource` / `actionEffect` / `mount` for Effect service integration.
 
-function App() {
-  const registry = Registry.make();
-  const count = Atom.make(0);
-  const remote = resource(() => use(Api).load());
-  const optimistic = createOptimistic(() => registry.get(count));
+## Compatibility
 
-  const save = actionEffect(
-    (next: number) => use(Api).save(next),
-    {
-      optimistic: (next) => optimistic.set(next),
-      rollback: () => optimistic.clear(),
-      onSuccess: (next) => registry.set(count, next),
-    },
-  );
-
-  return { remote, optimistic, save };
-}
-
-mount(() => App(), document.getElementById("root")!, ApiLive);
-```
-
-## Release Readiness
-
-- Type-safe Effect v4 integration
-- Full test suite (`npm test`), typecheck (`npm run typecheck`), and build (`npm run build`)
-- Release checklist: `docs/RELEASE_CHECKLIST.md`
+- Runtime: Effect v4 beta (`effect@^4.0.0-beta.29`)
+- JSX: `dom-expressions` via `effect-atom-jsx/runtime`
+- Test: `npm test` / Typecheck: `npm run typecheck` / Build: `npm run build`

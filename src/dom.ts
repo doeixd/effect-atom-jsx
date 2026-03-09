@@ -319,3 +319,568 @@ export function render(
 // We proxy them here so the runtime module is self-contained.
 
 export { createEffect as effect, createMemo as memo, untrack, sample, batch, createRoot as root, getOwner, runWithOwner, mergeProps } from "./api.js";
+
+// ─── SSR support ──────────────────────────────────────────────────────────────
+
+/**
+ * `true` when running in a server environment (no `window` or `document`).
+ */
+export const isServer: boolean =
+  typeof window === "undefined" || typeof document === "undefined";
+
+// ─── Virtual DOM for SSR ──────────────────────────────────────────────────────
+
+/** Minimal attributes map. */
+type Attrs = Record<string, string>;
+
+const VOID_ELEMENTS = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input",
+  "link", "meta", "param", "source", "track", "wbr",
+]);
+
+/** Escape HTML special chars in text content and attribute values. */
+function escapeHTML(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Base class for server-side virtual DOM nodes.
+ */
+class ServerNode {
+  nodeName = "#node";
+  childNodes: ServerNode[] = [];
+  parentNode: ServerNode | null = null;
+  textContent = "";
+  nextSibling: ServerNode | null = null;
+
+  appendChild(child: ServerNode): ServerNode {
+    child.parentNode = this;
+    this.childNodes.push(child);
+    this._updateSiblings();
+    return child;
+  }
+
+  insertBefore(newChild: ServerNode, ref: ServerNode | null): ServerNode {
+    if (ref == null) return this.appendChild(newChild);
+    const idx = this.childNodes.indexOf(ref);
+    if (idx === -1) return this.appendChild(newChild);
+    newChild.parentNode = this;
+    this.childNodes.splice(idx, 0, newChild);
+    this._updateSiblings();
+    return newChild;
+  }
+
+  removeChild(child: ServerNode): ServerNode {
+    const idx = this.childNodes.indexOf(child);
+    if (idx !== -1) {
+      this.childNodes.splice(idx, 1);
+      child.parentNode = null;
+      this._updateSiblings();
+    }
+    return child;
+  }
+
+  replaceChild(newChild: ServerNode, oldChild: ServerNode): ServerNode {
+    const idx = this.childNodes.indexOf(oldChild);
+    if (idx !== -1) {
+      newChild.parentNode = this;
+      oldChild.parentNode = null;
+      this.childNodes.splice(idx, 1, newChild);
+      this._updateSiblings();
+    }
+    return oldChild;
+  }
+
+  remove(): void {
+    if (this.parentNode) this.parentNode.removeChild(this);
+  }
+
+  cloneNode(deep?: boolean): ServerNode {
+    const clone = new ServerNode();
+    clone.nodeName = this.nodeName;
+    clone.textContent = this.textContent;
+    if (deep) {
+      for (const child of this.childNodes) {
+        clone.appendChild(child.cloneNode(true));
+      }
+    }
+    return clone;
+  }
+
+  /** Serialize this node subtree to an HTML string. */
+  toHTML(): string {
+    return this.childNodes.map((c) => c.toHTML()).join("");
+  }
+
+  private _updateSiblings(): void {
+    for (let i = 0; i < this.childNodes.length; i++) {
+      this.childNodes[i].nextSibling = this.childNodes[i + 1] ?? null;
+    }
+  }
+}
+
+/**
+ * Virtual DOM element for SSR.
+ */
+class ServerElement extends ServerNode {
+  private _attrs: Attrs = {};
+  private _style: Record<string, string> = {};
+  private _classList: Set<string> = new Set();
+
+  constructor(public override nodeName: string) {
+    super();
+  }
+
+  setAttribute(name: string, value: string): void {
+    this._attrs[name] = value;
+  }
+
+  removeAttribute(name: string): void {
+    delete this._attrs[name];
+  }
+
+  getAttribute(name: string): string | null {
+    return this._attrs[name] ?? null;
+  }
+
+  get className(): string {
+    return this._attrs["class"] ?? "";
+  }
+
+  set className(val: string) {
+    if (val) this._attrs["class"] = val;
+    else delete this._attrs["class"];
+  }
+
+  get classList() {
+    const self = this;
+    return {
+      add(name: string) { self._classList.add(name); self._syncClassList(); },
+      remove(name: string) { self._classList.delete(name); self._syncClassList(); },
+      toggle(name: string, force?: boolean) {
+        if (force === undefined) {
+          if (self._classList.has(name)) self._classList.delete(name);
+          else self._classList.add(name);
+        } else if (force) self._classList.add(name);
+        else self._classList.delete(name);
+        self._syncClassList();
+      },
+      contains(name: string) { return self._classList.has(name); },
+    };
+  }
+
+  private _syncClassList(): void {
+    const existing = this._attrs["class"]?.split(/\s+/).filter(Boolean) ?? [];
+    const merged = new Set([...existing, ...this._classList]);
+    if (merged.size > 0) this._attrs["class"] = [...merged].join(" ");
+    else delete this._attrs["class"];
+  }
+
+  get style(): Record<string, unknown> & { cssText: string; setProperty: (k: string, v: string) => void; removeProperty: (k: string) => void } {
+    const self = this;
+    const proxy: Record<string, unknown> = {};
+    return Object.assign(proxy, {
+      get cssText() {
+        return Object.entries(self._style).map(([k, v]) => `${k}: ${v}`).join("; ");
+      },
+      set cssText(val: string) {
+        self._style = {};
+        if (!val) return;
+        for (const part of val.split(";")) {
+          const colon = part.indexOf(":");
+          if (colon === -1) continue;
+          const k = part.slice(0, colon).trim();
+          const v = part.slice(colon + 1).trim();
+          if (k) self._style[k] = v;
+        }
+      },
+      setProperty(k: string, v: string) { self._style[k] = v; },
+      removeProperty(k: string) { delete self._style[k]; },
+    });
+  }
+
+  addEventListener(): void { /* no-op on server */ }
+  removeEventListener(): void { /* no-op on server */ }
+
+  override cloneNode(deep?: boolean): ServerElement {
+    const clone = new ServerElement(this.nodeName);
+    clone._attrs = { ...this._attrs };
+    clone._style = { ...this._style };
+    clone._classList = new Set(this._classList);
+    if (deep) {
+      for (const child of this.childNodes) {
+        clone.appendChild(child.cloneNode(true));
+      }
+    }
+    return clone;
+  }
+
+  override toHTML(): string {
+    const tag = this.nodeName.toLowerCase();
+    let attrStr = "";
+    // Merge inline style into attrs for serialisation
+    const styleStr = Object.entries(this._style).map(([k, v]) => `${k}: ${v}`).join("; ");
+    const attrs = { ...this._attrs };
+    if (styleStr) attrs["style"] = styleStr;
+
+    for (const [k, v] of Object.entries(attrs)) {
+      attrStr += ` ${k}="${escapeHTML(v)}"`;
+    }
+
+    if (VOID_ELEMENTS.has(tag)) return `<${tag}${attrStr}>`;
+
+    const inner = this.childNodes.map((c) => c.toHTML()).join("");
+    return `<${tag}${attrStr}>${inner}</${tag}>`;
+  }
+}
+
+/**
+ * Virtual DOM text node for SSR.
+ */
+class ServerTextNode extends ServerNode {
+  override nodeName = "#text";
+
+  constructor(public override textContent: string) {
+    super();
+  }
+
+  override cloneNode(): ServerTextNode {
+    return new ServerTextNode(this.textContent);
+  }
+
+  override toHTML(): string {
+    return escapeHTML(this.textContent);
+  }
+}
+
+/**
+ * Virtual DOM document fragment for SSR.
+ */
+class ServerDocumentFragment extends ServerNode {
+  override nodeName = "#document-fragment";
+
+  override cloneNode(deep?: boolean): ServerDocumentFragment {
+    const clone = new ServerDocumentFragment();
+    if (deep) {
+      for (const child of this.childNodes) {
+        clone.appendChild(child.cloneNode(true));
+      }
+    }
+    return clone;
+  }
+}
+
+/** Simple HTML parser — turns an HTML string into ServerElement nodes. */
+function parseHTML(html: string): ServerNode[] {
+  const nodes: ServerNode[] = [];
+  let pos = 0;
+
+  function parseNodes(stop?: string): ServerNode[] {
+    const result: ServerNode[] = [];
+    while (pos < html.length) {
+      if (stop && html.startsWith(stop, pos)) {
+        pos += stop.length;
+        return result;
+      }
+      if (html[pos] === "<") {
+        if (html[pos + 1] === "/") {
+          // Closing tag — handled by caller via stop
+          return result;
+        }
+        const el = parseElement();
+        if (el) result.push(el);
+      } else {
+        const nextTag = html.indexOf("<", pos);
+        const text = nextTag === -1 ? html.slice(pos) : html.slice(pos, nextTag);
+        pos = nextTag === -1 ? html.length : nextTag;
+        if (text) result.push(new ServerTextNode(text));
+      }
+    }
+    return result;
+  }
+
+  function parseElement(): ServerElement | null {
+    // Skip '<'
+    pos++;
+    const tagEnd = html.slice(pos).search(/[\s/>]/);
+    if (tagEnd === -1) return null;
+    const tagName = html.slice(pos, pos + tagEnd);
+    pos += tagEnd;
+
+    const el = new ServerElement(tagName.toUpperCase());
+
+    // Parse attributes
+    while (pos < html.length) {
+      // Skip whitespace
+      while (pos < html.length && /\s/.test(html[pos])) pos++;
+
+      if (html[pos] === "/" && html[pos + 1] === ">") {
+        pos += 2;
+        return el;
+      }
+      if (html[pos] === ">") {
+        pos++;
+        break;
+      }
+
+      // Attribute name
+      const attrNameEnd = html.slice(pos).search(/[\s=/>]/);
+      if (attrNameEnd <= 0) { pos++; continue; }
+      const attrName = html.slice(pos, pos + attrNameEnd);
+      pos += attrNameEnd;
+
+      // Skip whitespace
+      while (pos < html.length && /\s/.test(html[pos])) pos++;
+
+      if (html[pos] === "=") {
+        pos++; // skip '='
+        while (pos < html.length && /\s/.test(html[pos])) pos++;
+        if (html[pos] === '"' || html[pos] === "'") {
+          const quote = html[pos];
+          pos++;
+          const valEnd = html.indexOf(quote, pos);
+          const val = valEnd === -1 ? "" : html.slice(pos, valEnd);
+          pos = valEnd === -1 ? html.length : valEnd + 1;
+          el.setAttribute(attrName, val);
+        } else {
+          const valEnd = html.slice(pos).search(/[\s>]/);
+          const val = valEnd === -1 ? html.slice(pos) : html.slice(pos, pos + valEnd);
+          pos = valEnd === -1 ? html.length : pos + valEnd;
+          el.setAttribute(attrName, val);
+        }
+      } else {
+        el.setAttribute(attrName, "");
+      }
+    }
+
+    if (VOID_ELEMENTS.has(tagName.toLowerCase())) return el;
+
+    // Parse children
+    const children = parseNodes();
+    for (const child of children) el.appendChild(child);
+
+    // Skip closing tag
+    const closeTag = `</${tagName}>`;
+    const closeLower = `</${tagName.toLowerCase()}>`;
+    if (html.startsWith(closeTag, pos) || html.startsWith(closeLower, pos)) {
+      pos += closeTag.length;
+    }
+
+    return el;
+  }
+
+  nodes.push(...parseNodes());
+  return nodes;
+}
+
+/**
+ * Create a mock `document` object for server-side rendering.
+ */
+function createServerDocument(): unknown {
+  const doc = {
+    createElement(tag: string): ServerElement {
+      return new ServerElement(tag.toUpperCase());
+    },
+    createTextNode(text: string): ServerTextNode {
+      return new ServerTextNode(text);
+    },
+    createDocumentFragment(): ServerDocumentFragment {
+      return new ServerDocumentFragment();
+    },
+    addEventListener(): void { /* no-op */ },
+    removeEventListener(): void { /* no-op */ },
+    querySelector(): null { return null; },
+    querySelectorAll(): never[] { return []; },
+    createComment(text: string): ServerTextNode {
+      // Approximate comments as empty text nodes (they act as markers)
+      const n = new ServerTextNode("");
+      n.nodeName = "#comment";
+      (n as unknown as Record<string, string>)._commentText = text;
+      n.toHTML = () => `<!--${text}-->`;
+      return n;
+    },
+  };
+  return doc;
+}
+
+// Module-level SSR state
+let _ssrMode = false;
+let _serverDoc: unknown = null;
+
+/**
+ * Render a component tree to an HTML string on the server.
+ *
+ * Temporarily replaces the global `document` with a virtual DOM implementation,
+ * runs the component function inside a reactive root, serialises the resulting
+ * virtual tree to HTML, and restores the original state.
+ *
+ * @param fn - A zero-argument function that returns a component tree (the same
+ *   function you would pass to `render()` on the client).
+ * @returns The rendered HTML string.
+ *
+ * @example
+ * ```ts
+ * const html = renderToString(() => <App />);
+ * res.send(`<!DOCTYPE html><html><body>${html}</body></html>`);
+ * ```
+ */
+export function renderToString(fn: () => unknown): string {
+  const prevSSR = _ssrMode;
+  const prevDoc = _serverDoc;
+  const origDocument = typeof globalThis.document !== "undefined" ? globalThis.document : undefined;
+
+  try {
+    _ssrMode = true;
+    const serverDoc = createServerDocument();
+    _serverDoc = serverDoc;
+
+    // Temporarily install the server document as the global `document` so
+    // that existing functions (template, insert, toNode, etc.) work as-is.
+    (globalThis as Record<string, unknown>).document = serverDoc;
+
+    // Also patch `Node` so that `instanceof Node` checks work with virtual nodes.
+    const origNode = typeof globalThis.Node !== "undefined" ? globalThis.Node : undefined;
+    (globalThis as Record<string, unknown>).Node = ServerNode as unknown;
+
+    let result: unknown;
+    let dispose: (() => void) | undefined;
+
+    createRoot((d) => {
+      dispose = d;
+      result = fn();
+    });
+
+    let html = "";
+    if (result instanceof ServerNode) {
+      html = (result as ServerNode).toHTML();
+    } else if (Array.isArray(result)) {
+      html = (result as unknown[])
+        .map((r) => (r instanceof ServerNode ? (r as ServerNode).toHTML() : String(r ?? "")))
+        .join("");
+    } else if (result != null) {
+      html = String(result);
+    }
+
+    // Dispose the reactive root — we only needed a single snapshot.
+    dispose?.();
+
+    // Restore Node
+    if (origNode !== undefined) {
+      (globalThis as Record<string, unknown>).Node = origNode;
+    } else {
+      delete (globalThis as Record<string, unknown>).Node;
+    }
+
+    return html;
+  } finally {
+    _ssrMode = prevSSR;
+    _serverDoc = prevDoc;
+    if (origDocument !== undefined) {
+      (globalThis as Record<string, unknown>).document = origDocument;
+    } else {
+      delete (globalThis as Record<string, unknown>).document;
+    }
+  }
+}
+
+// ─── Hydration ────────────────────────────────────────────────────────────────
+
+/** Module-level hydration state. */
+let _hydrating = false;
+let _hydrateWalker: { node: Node | null } | null = null;
+
+/**
+ * Returns `true` when the runtime is currently hydrating server-rendered HTML.
+ */
+export function isHydrating(): boolean {
+  return _hydrating;
+}
+
+/**
+ * Advance the hydration walker to the next DOM node, returning the current one.
+ * Components and `insert()` call this during hydration instead of creating
+ * new DOM nodes.
+ */
+export function getNextHydrateNode(): Node | null {
+  if (!_hydrateWalker) return null;
+  const current = _hydrateWalker.node;
+  if (current) {
+    _hydrateWalker.node = current.nextSibling;
+  }
+  return current;
+}
+
+/**
+ * Hydrate server-rendered HTML inside `container`.
+ *
+ * Instead of creating new DOM nodes, the reactive runtime attaches bindings
+ * to the existing children that were rendered on the server via
+ * `renderToString`.
+ *
+ * @param fn - The same component function used in `renderToString`.
+ * @param container - The DOM element that contains the server-rendered HTML.
+ * @returns A dispose function that tears down all reactive subscriptions.
+ *
+ * @example
+ * ```ts
+ * const dispose = hydrateRoot(() => <App />, document.getElementById("root")!);
+ * ```
+ */
+export function hydrateRoot(
+  fn: () => unknown,
+  container: Element,
+): () => void {
+  const prevHydrating = _hydrating;
+  const prevWalker = _hydrateWalker;
+
+  _hydrating = true;
+  _hydrateWalker = { node: container.firstChild };
+
+  let dispose!: () => void;
+
+  try {
+    createRoot((d) => {
+      dispose = d;
+      insert(container, fn as () => Child, null, Array.from(container.childNodes) as unknown as Node[]);
+    });
+  } finally {
+    _hydrating = prevHydrating;
+    _hydrateWalker = prevWalker;
+  }
+
+  return dispose;
+}
+
+// ─── Request event context (SSR) ─────────────────────────────────────────────
+
+let _requestEvent: unknown | undefined;
+
+/**
+ * Retrieve the current SSR request context.
+ *
+ * During server-side rendering, framework integrations can call
+ * `setRequestEvent()` to store request metadata (headers, URL, cookies, etc.)
+ * that components can access synchronously via `getRequestEvent()`.
+ *
+ * @returns The current request event, or `undefined` outside of an SSR pass.
+ */
+export function getRequestEvent(): unknown | undefined {
+  return _requestEvent;
+}
+
+/**
+ * Set the SSR request context.
+ *
+ * Call this before `renderToString()` to make request information available
+ * to components during server-side rendering.
+ *
+ * @param event - An arbitrary request context object (e.g., a `Request`,
+ *   framework-specific event, or custom object with headers/cookies).
+ */
+export function setRequestEvent(event: unknown): void {
+  _requestEvent = event;
+}

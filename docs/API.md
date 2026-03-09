@@ -1,224 +1,399 @@
 # API Reference
 
-`effect-atom-jsx` exports a reactive core, Effect integration utilities, and DOM runtime helpers.
+`effect-atom-jsx` exports reactive primitives, Effect integration utilities, namespace modules, and DOM runtime helpers.
 
-## Effect-Atom Style Main API
+---
 
-### `Atom` (`src/Atom.ts`)
+## Atom (`src/Atom.ts`)
 
-- `Atom.make(value | read)`
-- `Atom.readable(read)`
-- `Atom.writable(read, write)`
-- `Atom.family(fn)`
-- `Atom.map(...)`
-- `Atom.withFallback(...)`
-- `Atom.batch(fn)`
-- `Atom.get(atom) => Effect.Effect<A>`
-- `Atom.set(atom, value)`
-- `Atom.update(atom, fn)`
-- `Atom.modify(atom, fn)`
-- `Atom.refresh(atom)`
-- `Atom.subscribe(atom, listener, options?)`
+The core reactive state primitive. Atoms are plain objects with `read`/`write` methods backed by the signal graph.
 
-Types:
-- `Atom.Atom<A>`
-- `Atom.Writable<R, W>`
-- `Atom.Context`
-- `Atom.WriteContext<A>`
+### Constructors
 
-### `Result` (`src/Result.ts`)
+- **`Atom.make(value)`** — Create a writable atom with an initial value.
+- **`Atom.make((get) => ...)`** — Create a derived (read-only) atom that tracks dependencies.
+- **`Atom.readable(read, refresh?)`** — Low-level read-only atom constructor.
+- **`Atom.writable(read, write, refresh?)`** — Low-level writable atom constructor.
+- **`Atom.family(fn)`** — Create a memoized atom factory keyed by argument identity. Same arg returns same atom instance.
 
-- `Result.initial(waiting?)`
-- `Result.success(value, options?)`
-- `Result.failure(error, options?)`
-- `Result.isInitial/isSuccess/isFailure/isWaiting`
-- `Result.isNotInitial`
-- `Result.isResult`
-- `Result.fromAsyncResult(...)`
-- `Result.toAsyncResult(...)`
-- `Result.waiting(...)`
-- `Result.waitingFrom(...)`
-- `Result.fromExit(...)`
-- `Result.fromExitWithPrevious(...)`
-- `Result.value/getOrElse/getOrThrow`
-- `Result.map/flatMap/match/all`
+```ts
+const count = Atom.make(0);
+const doubled = Atom.make((get) => get(count) * 2);
+const todoById = Atom.family((id: string) => Atom.make({ id, done: false }));
+```
 
-Type:
-- `Result.Result<A, E>`
+### Derivations
 
-### `Registry` (`src/Registry.ts`)
+- **`Atom.map(atom, fn)` / `Atom.map(fn)`** — Derive a new atom by transforming the value. Supports data-first and data-last.
+- **`Atom.withFallback(atom, fallback)` / `Atom.withFallback(fallback)`** — Replace `null`/`undefined` with a fallback value.
 
-- `Registry.make()`
-- registry instance methods:
-  - `get`, `set`, `update`, `modify`
-  - `mount`, `refresh`, `subscribe`
-  - `reset`, `dispose`
+```ts
+const label = Atom.map(count, (n) => `Count: ${n}`);
+const safe = Atom.withFallback(nameAtom, "anonymous");
+```
 
-Type:
+### Effect Helpers
+
+All support both data-first `Atom.set(atom, value)` and data-last `Atom.set(value)` forms.
+
+- **`Atom.get(atom)`** → `Effect<A>` — Read atom value.
+- **`Atom.set(atom, value)`** → `Effect<void>` — Write atom value.
+- **`Atom.update(atom, fn)`** → `Effect<void>` — Update from previous value.
+- **`Atom.modify(atom, fn)`** → `Effect<A>` — Read-modify-write, returning a computed value.
+- **`Atom.refresh(atom)`** → `Effect<void>` — Force-invalidate atom and dependents.
+
+```ts
+Effect.runSync(Atom.get(count));           // 0
+Effect.runSync(Atom.update(count, n => n + 1));
+const prev = Effect.runSync(Atom.modify(count, n => [n, n + 1]));
+```
+
+### Subscriptions & Batching
+
+- **`Atom.subscribe(atom, listener, options?)`** — Subscribe to value changes. Returns unsubscribe function. Calls listener immediately by default (pass `{ immediate: false }` to skip).
+- **`Atom.batch(fn)`** — Batch multiple writes into a single notification cycle.
+
+### Stream Integration
+
+- **`Atom.fromStream(stream, initialValue, runtime?)`** — Create an atom whose value updates from an Effect Stream. Starts a fiber on first read.
+- **`Atom.fromQueue(queue, initialValue)`** — Create an atom that reads from an Effect Queue. Shorthand for `fromStream(Stream.fromQueue(queue), initial)`.
+
+```ts
+const prices = Atom.fromStream(priceStream, 0);
+const events = Atom.fromQueue(eventQueue, null);
+```
+
+### Type Guards
+
+- **`Atom.isAtom(u)`** — `true` if `u` is an `Atom<any>`.
+- **`Atom.isWritable(atom)`** — `true` if the atom is a `Writable<R, W>`.
+
+### Types
+
+- `Atom.Atom<A>` — Read-only atom.
+- `Atom.Writable<R, W>` — Readable as `R`, writable as `W`.
+- `Atom.Context` — Callable read context with `get`, `refresh`, `set` methods.
+- `Atom.WriteContext<A>` — Write context with `get`, `set`, `refreshSelf`, `setSelf`.
+
+---
+
+## AtomSchema (`src/AtomSchema.ts`)
+
+Schema-validated form fields backed by atoms. Wraps a writable atom with an Effect Schema to produce a `ValidatedAtom`.
+
+- **`AtomSchema.make(schema, inputAtom, options?)`** — Wrap an existing writable atom with validation.
+  - `options.initial` — baseline value for `dirty` comparison and `reset()`.
+- **`AtomSchema.makeInitial(schema, initial)`** — Create a standalone validated atom with an initial value.
+
+```ts
+const field = AtomSchema.makeInitial(Schema.Int, 25);
+Effect.runSync(Atom.get(field.isValid));  // true
+Effect.runSync(Atom.set(field.input, 1.5));
+Effect.runSync(Atom.get(field.isValid));  // false
+field.reset();
+```
+
+### ValidatedAtom\<A, I\>
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `input` | `Writable<I, I>` | Raw input atom (writes mark field as touched) |
+| `result` | `Atom<Exit<A, SchemaError>>` | Parse result |
+| `error` | `Atom<Option<SchemaError>>` | Validation error or `None` |
+| `value` | `Atom<Option<A>>` | Parsed value or `None` |
+| `isValid` | `Atom<boolean>` | `true` when input passes validation |
+| `touched` | `Atom<boolean>` | `true` after first write |
+| `dirty` | `Atom<boolean>` | `true` when input differs from initial |
+| `reset()` | `() => void` | Restore initial value, clear touched |
+
+### Types
+
+- `AtomSchema.ValidatedAtom<A, I>`
+- `AtomSchema.SchemaError`
+
+---
+
+## AtomLogger (`src/AtomLogger.ts`)
+
+Structured debug logging for atom reads and writes using Effect's Logger.
+
+- **`AtomLogger.traced(atom, label)`** — Wrap a read-only atom to log reads via `Effect.logDebug` with `{ atom, op, value }` annotations.
+- **`AtomLogger.tracedWritable(atom, label)`** — Wrap a writable atom to log both reads and writes.
+- **`AtomLogger.logGet(atom, label?)`** → `Effect<A>` — Read atom as an Effect with debug logging.
+- **`AtomLogger.logSet(atom, value, label?)`** → `Effect<void>` — Write atom as an Effect with debug logging.
+- **`AtomLogger.snapshot(atoms)`** → `Effect<Record<string, unknown>>` — Read all labeled atoms and return a snapshot.
+
+```ts
+const traced = AtomLogger.tracedWritable(count, "count");
+const snap = Effect.runSync(AtomLogger.snapshot([["count", count], ["name", name]]));
+```
+
+---
+
+## Registry (`src/Registry.ts`)
+
+Provides a centralized read/write/subscribe context for atoms. Useful for managing atom state outside of reactive computations.
+
+- **`Registry.make()`** — Create a new registry instance.
+
+### Registry Instance Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `get(atom)` | `<A>(atom: Atom<A>) => A` | Read current value |
+| `set(atom, value)` | `<R,W>(atom: Writable<R,W>, value: W) => void` | Write a value |
+| `update(atom, fn)` | `<R>(atom: Writable<R,R>, fn: (v: R) => R) => void` | Update from previous |
+| `modify(atom, fn)` | `<R,W,A>(atom: Writable<R,W>, fn: (v: R) => [A, W]) => A` | Read-modify-write |
+| `subscribe(atom, fn)` | `<A>(atom: Atom<A>, fn: (v: A) => void) => () => void` | Subscribe to changes |
+| `mount(atom)` | `<A>(atom: Atom<A>) => () => void` | Keep atom alive (run effects) |
+| `refresh(atom)` | `<A>(atom: Atom<A>) => void` | Force-invalidate |
+| `reset(atom)` | `<A>(atom: Writable<A,A>) => void` | Reset to initial value |
+| `dispose()` | `() => void` | Clean up all subscriptions |
+
+### Types
+
 - `Registry.Registry`
 
-### `AtomRef` (`src/AtomRef.ts`)
+---
 
-- `AtomRef.make(initial)`
-- `ref.prop(key)`
-- `ref.set(value)`
-- `ref.update(fn)`
-- `ref.subscribe(listener)`
-- `AtomRef.collection(items)` with:
-  - `push`, `insertAt`, `remove`, `toArray`
+## Result (`src/Result.ts`)
 
-Types:
-- `AtomRef.AtomRef<A>`
-- `AtomRef.ReadonlyRef<A>`
-- `AtomRef.Collection<A>`
+A three-state result type for data fetching: `Initial`, `Success`, or `Failure`. Used by `AtomRpc` and `AtomHttpApi`.
 
-### `Hydration` (`src/Hydration.ts`)
+> **Note:** This is different from `AsyncResult` (used by `atomEffect`/`resource`). Convert between them with `Result.fromAsyncResult()` and `Result.toAsyncResult()`.
 
-- `Hydration.dehydrate(registry, entries)`
-- `Hydration.toValues(state)`
-- `Hydration.hydrate(registry, state, resolvers)`
+### Constructors
 
-Types:
-- `Hydration.DehydratedAtom`
-- `Hydration.DehydratedAtomValue`
+- **`Result.initial(waiting?)`** — Create an initial result. `waiting: true` means a fetch is in progress.
+- **`Result.success(value, options?)`** — Create a success result. Options: `{ waiting?, timestamp? }`.
+- **`Result.failure(error, options?)`** — Create a failure result. Options: `{ previousSuccess? }`.
 
-### `AtomRpc` (`src/AtomRpc.ts`)
+### Guards
 
-- `AtomRpc.Tag()(id, { call, runtime? })`
-- client members:
-  - `mutation(tag)`
-  - `query(tag, payload, options?)`
-  - `refresh(tag, payload)`
+- `Result.isInitial(r)`, `Result.isSuccess(r)`, `Result.isFailure(r)`, `Result.isWaiting(r)`, `Result.isNotInitial(r)`, `Result.isResult(r)`
 
-Type:
+### Transformations
+
+- **`Result.map(result, fn)`** — Map over success value.
+- **`Result.flatMap(result, fn)`** — Chain results.
+- **`Result.match(result, { initial, success, failure })`** — Pattern match all states.
+- **`Result.all(results)`** — Combine multiple results (all must succeed).
+
+### Accessors
+
+- **`Result.value(result)`** — Extract success value or `undefined`.
+- **`Result.getOrElse(result, fallback)`** — Success value or fallback.
+- **`Result.getOrThrow(result)`** — Success value or throw.
+
+### Conversions
+
+- **`Result.fromAsyncResult(asyncResult)`** — Convert `AsyncResult` to `Result`.
+- **`Result.toAsyncResult(result)`** — Convert `Result` to `AsyncResult`.
+- **`Result.fromExit(exit)`** — Convert Effect `Exit` to `Result`.
+- **`Result.fromExitWithPrevious(exit, previous)`** — Convert Exit, preserving previous success on failure.
+- **`Result.waiting(result)`** — Set `waiting: true` on an existing result.
+- **`Result.waitingFrom(result)`** — Create a waiting version, preserving success value.
+
+### Types
+
+- `Result.Result<A, E>` — `Initial | Success<A> | Failure<E>`
+
+---
+
+## AtomRef (`src/AtomRef.ts`)
+
+Per-property reactive access to objects and arrays.
+
+- **`AtomRef.make(initial)`** — Create a ref for an object. Returns `AtomRef<A>`.
+- **`AtomRef.collection(items)`** — Create a reactive array. Returns `Collection<A>`.
+
+### AtomRef Instance
+
+| Method | Description |
+|--------|-------------|
+| `prop(key)` | Get a reactive ref for a single property |
+| `set(value)` | Replace the entire object |
+| `update(fn)` | Update via a function |
+| `subscribe(fn)` | Subscribe to changes |
+| `value` | Current snapshot (non-reactive) |
+
+### Collection Instance
+
+| Method | Description |
+|--------|-------------|
+| `push(item)` | Append an item |
+| `insertAt(index, item)` | Insert at position |
+| `remove(predicate)` | Remove matching items |
+| `toArray()` | Get current items array |
+
+### Types
+
+- `AtomRef.AtomRef<A>`, `AtomRef.ReadonlyRef<A>`, `AtomRef.Collection<A>`
+
+---
+
+## Hydration (`src/Hydration.ts`)
+
+SSR state transfer — serialize atom values on the server and restore them on the client.
+
+- **`Hydration.dehydrate(registry, entries)`** — Snapshot atom values to a serializable array.
+  - `entries`: `Iterable<[key: string, atom: Atom<any>]>`
+  - Returns `DehydratedAtomValue[]`
+- **`Hydration.hydrate(registry, state, resolvers)`** — Restore atom values from a dehydrated snapshot.
+  - `resolvers`: `Record<string, Writable<any, any>>` mapping keys to atoms
+- **`Hydration.toValues(state)`** — Filter dehydrated state to typed value entries.
+
+```ts
+// Server
+const state = Hydration.dehydrate(registry, [["count", countAtom]]);
+
+// Client
+Hydration.hydrate(registry, state, { count: countAtom });
+```
+
+### Types
+
+- `Hydration.DehydratedAtom`, `Hydration.DehydratedAtomValue`
+
+---
+
+## AtomRpc (`src/AtomRpc.ts`)
+
+RPC client factory for flat endpoint maps.
+
+- **`AtomRpc.Tag()(id, { call, runtime? })`** — Create a typed RPC client.
+  - `query(tag, payload, options?)` — reactive query
+  - `mutation(tag)` — mutation action
+  - `refresh(tag, payload)` — force refresh a query
+
+### Types
+
 - `AtomRpc.AtomRpcClient<Defs, R>`
 
-### `AtomHttpApi` (`src/AtomHttpApi.ts`)
+---
 
-- `AtomHttpApi.Tag()(id, { call, runtime? })`
-- client members:
-  - `mutation(group, endpoint)`
-  - `query(group, endpoint, request)`
-  - `refresh(group, endpoint, request)`
+## AtomHttpApi (`src/AtomHttpApi.ts`)
 
-Type:
+HTTP API client factory for grouped endpoints.
+
+- **`AtomHttpApi.Tag()(id, { call, runtime? })`** — Create a typed HTTP API client.
+  - `query(group, endpoint, request)` — reactive query
+  - `mutation(group, endpoint)` — mutation action
+  - `refresh(group, endpoint, request)` — force refresh
+
+### Types
+
 - `AtomHttpApi.AtomHttpApiClient<Defs, R>`
 
-## Reactive Core (`src/api.ts`)
-
-- `createSignal<T>(initial, options?) => [Accessor<T>, Setter<T>]`
-- `createEffect(fn, initialValue?)`
-- `createMemo(fn, options?) => Accessor<T>`
-- `createRoot(fn)`
-- `createContext(defaultValue)` / `useContext(context)`
-- `onCleanup(fn)` / `onMount(fn)`
-- `untrack(fn)` / `sample(fn)`
-- `batch(fn)`
-- `mergeProps(...sources)`
-- `splitProps(props, keys)`
-- `getOwner()` / `runWithOwner(owner, fn)`
-
-Types:
-- `Accessor<T>`
-- `Setter<T>`
-- `SignalOptions<T>`
-- `Context<T>`
-
-## Atom API (`src/effect-ts.ts`)
-
-- `createAtom(value)` writable atom (`get/set/update/subscribe`)
-- `createAtom(getter)` derived atom (`get/subscribe`)
-
-Types:
-- `Atom<T>`
-- `WritableAtom<T>`
-- `DerivedAtom<T>`
-- `AtomGetter<T>`
+---
 
 ## Effect Integration (`src/effect-ts.ts`)
 
-### Async State
+### Async Data
 
-- `AsyncResult.loading`
-- `AsyncResult.refreshing(previous)`
-- `AsyncResult.success(value)`
-- `AsyncResult.failure(error)`
-- `AsyncResult.defect(cause)`
-- `AsyncResult.isLoading/isRefreshing/isSuccess/isFailure/isDefect`
+- **`atomEffect(fn, runtime?)`** — Create a reactive async computation. Tracks signal dependencies, interrupts previous fiber on re-run.
+- **`resource(fn)`** — Like `atomEffect` but uses the ambient runtime from `mount()`.
+- **`resourceWith(runtime, fn)`** — Like `resource` with an explicit runtime.
+- **`isPending(result)`** — `true` only during `Refreshing` (not initial `Loading`).
+- **`latest(result)`** — Returns the last successful value, or `undefined` if none.
 
-Types:
-- `Loading`
-- `Refreshing<A, E>`
-- `Success<A>`
-- `Failure<E>`
-- `Defect`
-- `AsyncResult<A, E>`
+### Services
 
-### Data / Services
+- **`use(tag)`** — Synchronously access a service from the ambient runtime. Throws if not available.
+- **`mount(fn, container, layer)`** — Bootstrap a `ManagedRuntime` from a `Layer` and render.
+- **`layerContext(layer, fn, runtime?)`** — Run a function with a Layer-provided context.
+- **`scopedRoot(scope, fn)`** — Create a reactive root tied to an Effect Scope.
 
-- `atomEffect(fn, runtime?)`
-- `resource(fn)`
-- `resourceWith(runtime, fn)`
-- `isPending(result)`
-- `latest(result)`
-- `use(tag)`
-- `mount(fn, container, layer)`
-- `layerContext(layer, fn, runtime?)`
-- `scopedRoot(scope, fn)`
+### Mutations
 
-Type:
-- `RuntimeLike<R, E = never>`
+- **`createOptimistic(source)`** — Create an optimistic overlay with `get`, `set`, `clear`, `isPending`.
+- **`actionEffect(fn, options?)`** — Create an Effect-powered mutation action with `optimistic`, `rollback`, `onSuccess`, `onFailure`, `refresh` hooks.
 
-### Atom-like OO Facade
+### OO Facade
 
-- `signal(initial)`
-- `computed(fn)`
+- **`signal(initial)`** — Create a `SignalRef<T>` with `get()`/`set(v)`.
+- **`computed(fn)`** — Create a `ComputedRef<T>` with `get()`.
 
-Types:
-- `SignalRef<T>`
-- `ComputedRef<T>`
+### AsyncResult
 
-### Mutation / Optimistic Helpers
+The async state type used by `atomEffect` and `resource`:
 
-- `createOptimistic(source)`
-- `actionEffect(fn, options?)`
-  - supports `refresh` hooks in options
+| Variant | Description |
+|---------|-------------|
+| `Loading` | Initial load, no value yet |
+| `Refreshing<A, E>` | Revalidating with previous settled value |
+| `Success<A>` | Settled with a value |
+| `Failure<E>` | Settled with a typed error |
+| `Defect` | Unexpected defect or interrupt |
 
-Types:
-- `OptimisticRef<T>`
-- `ActionEffectHandle<A, E>`
-- `ActionEffectOptions<A, E, R>`
+Guards: `AsyncResult.isLoading`, `isRefreshing`, `isSuccess`, `isFailure`, `isDefect`
 
-### Control-flow Helpers
+### Control-Flow Components
 
-- `Async(props)`
-- `Loading(props)`
-- `Errored(props)`
-- `Switch(props)`
-- `Match(props)`
-- `MatchTag({ value, cases, fallback? })`
-- `Optional({ when, fallback?, children })`
-- `MatchOption({ value, some, none? })`
-- `Dynamic({ component, ...props })`
-- `createFrame(initial?)`
-- `Frame({ children })`
-- `WithLayer({ layer, runtime?, fallback?, children })`
-- `For(props)`
-- `Show(props)`
+- **`Async({ result, loading?, success?, error? })`** — Render slots based on AsyncResult state.
+- **`Loading({ when, fallback?, children })`** — Show children while loading.
+- **`Errored({ result, children })`** — Show children on error.
+- **`Show({ when, fallback?, children })`** — Conditional rendering.
+- **`For({ each, children })`** — List rendering with keying.
+- **`Switch` / `Match({ when, children })`** — Multi-case conditional.
+- **`MatchTag({ value, cases, fallback? })`** — Type-safe `_tag` pattern matching.
+- **`Optional({ when, fallback?, children })`** — Render when truthy.
+- **`MatchOption({ value, some, none? })`** — Match Effect `Option`.
+- **`Dynamic({ component, ...props })`** — Dynamic component selection.
+- **`WithLayer({ layer, runtime?, fallback?, children })`** — Provide a Layer boundary.
+- **`Frame({ children })` / `createFrame(initial?)`** — Animation frame loop.
+
+### Types
+
+- `AsyncResult<A, E>`, `Loading`, `Refreshing<A, E>`, `Success<A>`, `Failure<E>`, `Defect`
+- `RuntimeLike<R, E>`, `OptimisticRef<T>`, `ActionEffectHandle<A, E>`, `ActionEffectOptions<A, E, R>`
+- `SignalRef<T>`, `ComputedRef<T>`
+
+---
+
+## Reactive Core (`src/api.ts`)
+
+Solid.js-compatible reactive primitives:
+
+- `createSignal<T>(initial, options?)` → `[Accessor<T>, Setter<T>]`
+- `createEffect(fn)` — Run side effect when dependencies change.
+- `createMemo(fn, options?)` → `Accessor<T>` — Cached derived value.
+- `createRoot(fn)` — Create a new reactive ownership scope.
+- `createContext(defaultValue)` / `useContext(ctx)` — Dependency injection.
+- `onCleanup(fn)` — Register cleanup when owner disposes.
+- `onMount(fn)` — Run after component mounts.
+- `untrack(fn)` / `sample(fn)` — Read without tracking.
+- `batch(fn)` — Batch updates.
+- `mergeProps(...sources)` / `splitProps(props, keys)` — Props utilities.
+- `getOwner()` / `runWithOwner(owner, fn)` — Ownership utilities.
+
+### Types
+
+- `Accessor<T>`, `Setter<T>`, `SignalOptions<T>`, `Context<T>`
+
+---
 
 ## DOM Runtime (`src/dom.ts`)
 
-- `template`
-- `insert`
-- `createComponent`
-- `spread`
-- `attr`
-- `prop`
-- `classList`
-- `style`
-- `delegateEvents`
-- `render`
-- `effect`
-- `memo`
+Functions called by `babel-plugin-jsx-dom-expressions` compiled output:
 
-For JSX runtime transforms, use the package runtime entry: `effect-atom-jsx/runtime`.
+- `template(html)` — Create reusable DOM template from HTML string.
+- `insert(parent, accessor, marker?, current?)` — Insert reactive children.
+- `createComponent(Comp, props)` — Instantiate a component in a new reactive root.
+- `spread(node, accessor, isSVG?, skipChildren?)` — Reactive prop spreading.
+- `attr(node, name, value)` / `prop(node, name, value)` — Set attributes/properties.
+- `classList(node, value, prev?)` — Reactive class toggling.
+- `style(node, value, prev?)` — Reactive inline styles.
+- `delegateEvents(events)` — Set up global event delegation.
+- `render(fn, container)` — Mount a component tree. Returns dispose function.
+
+### SSR
+
+- **`isServer`** — `true` when `window`/`document` are unavailable.
+- **`renderToString(fn)`** — Render component tree to HTML string using virtual DOM.
+- **`hydrateRoot(fn, container)`** — Attach reactivity to server-rendered DOM. Returns dispose function.
+- **`isHydrating()`** — `true` during hydration pass.
+- **`getNextHydrateNode()`** — Advance hydration walker (for custom component hydration).
+- **`getRequestEvent()` / `setRequestEvent(event)`** — SSR request context.
+
+For JSX runtime transforms, use the package entry: `effect-atom-jsx/runtime`.
