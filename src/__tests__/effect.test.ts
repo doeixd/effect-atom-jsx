@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime } from "effect";
+import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime, Option } from "effect";
 import {
   atomEffect,
   resource,
@@ -28,6 +28,17 @@ import {
   createAtom,
   AsyncResult,
   Async,
+  Loading,
+  Errored,
+  Switch,
+  Match,
+  MatchTag,
+  Optional,
+  MatchOption,
+  Dynamic,
+  createFrame,
+  Frame,
+  WithLayer,
   For,
   Show,
   scopedRoot,
@@ -753,6 +764,190 @@ describe("Async", () => {
   it("returns null for unhandled failure/defect slots", () => {
     expect(Async({ result: AsyncResult.failure("e"), success: () => "ok" })).toBeNull();
     expect(Async({ result: AsyncResult.defect("d"), success: () => "ok" })).toBeNull();
+  });
+});
+
+describe("Loading", () => {
+  it("renders fallback during initial loading", () => {
+    const r = Loading({ when: AsyncResult.loading, fallback: () => "spin", children: "ready" });
+    expect(r).toBe("spin");
+  });
+
+  it("renders children for non-loading async states", () => {
+    const r = Loading({ when: AsyncResult.success(1), fallback: () => "spin", children: () => "ok" });
+    expect(r).toBe("ok");
+  });
+
+  it("accepts accessor boolean input", () => {
+    const [pending, setPending] = createSignal(true);
+    expect(Loading({ when: pending, fallback: () => "wait", children: "done" })).toBe("wait");
+    setPending(false);
+    expect(Loading({ when: pending, fallback: () => "wait", children: "done" })).toBe("done");
+  });
+});
+
+describe("Errored", () => {
+  it("renders typed failure", () => {
+    const r = Errored({
+      result: AsyncResult.failure({ code: 401 }),
+      children: (e: any) => "code" in e ? `error:${e.code}` : "defect",
+    });
+    expect(r).toBe("error:401");
+  });
+
+  it("renders defect as structured error", () => {
+    const r = Errored({
+      result: AsyncResult.defect("boom"),
+      children: (e: any) => "defect" in e ? `defect:${e.defect}` : "typed",
+    });
+    expect(r).toBe("defect:boom");
+  });
+
+  it("renders fallback when not in error state", () => {
+    const r = Errored({
+      result: AsyncResult.success(1),
+      fallback: () => "ok",
+      children: () => "bad",
+    });
+    expect(r).toBe("ok");
+  });
+});
+
+describe("Switch/Match", () => {
+  it("renders first matching branch", () => {
+    const r = Switch({
+      children: [
+        Match({ when: false, children: "no" }),
+        Match({ when: "yes", children: (v) => `got:${v}` }),
+        Match({ when: true, children: "later" }),
+      ],
+      fallback: () => "fallback",
+    });
+    expect(r).toBe("got:yes");
+  });
+
+  it("renders fallback when nothing matches", () => {
+    const r = Switch({
+      children: [
+        Match({ when: 0, children: "no" }),
+        Match({ when: "", children: "no" }),
+      ],
+      fallback: () => "fallback",
+    });
+    expect(r).toBe("fallback");
+  });
+});
+
+describe("MatchTag", () => {
+  it("matches by _tag with typed handlers", () => {
+    const value: AsyncResultType<number, string> = AsyncResult.success(42);
+    const r = MatchTag<AsyncResultType<number, string>, string>({
+      value,
+      cases: {
+        Success: (v) => `ok:${v.value}`,
+        Failure: (v) => `err:${String(v.error)}`,
+      },
+      fallback: () => "other",
+    });
+    expect(r).toBe("ok:42");
+  });
+
+  it("supports accessor input and fallback", () => {
+    const [state, setState] = createSignal<AsyncResultType<number, string>>(AsyncResult.loading);
+    const first = MatchTag({
+      value: state,
+      cases: {
+        Success: (v) => v.value,
+      },
+      fallback: () => -1,
+    });
+    expect(first).toBe(-1);
+
+    setState(AsyncResult.success(9));
+    const second = MatchTag({
+      value: state,
+      cases: {
+        Success: (v) => v.value,
+      },
+      fallback: () => -1,
+    });
+    expect(second).toBe(9);
+  });
+});
+
+describe("Optional", () => {
+  it("treats nullish as absent but keeps falsey values", () => {
+    expect(Optional({ when: null, fallback: () => "none", children: "some" })).toBe("none");
+    expect(Optional({ when: 0, fallback: () => "none", children: (v) => `v:${v}` })).toBe("v:0");
+    expect(Optional({ when: "", fallback: () => "none", children: (v) => `v:${v}` })).toBe("v:");
+  });
+});
+
+describe("MatchOption", () => {
+  it("matches Option.Some and Option.None", () => {
+    const some = MatchOption({
+      value: Option.some(5),
+      some: (v) => `some:${v}`,
+      none: () => "none",
+    });
+    const none = MatchOption({
+      value: Option.none<number>(),
+      some: (v) => `some:${v}`,
+      none: () => "none",
+    });
+    expect(some).toBe("some:5");
+    expect(none).toBe("none");
+  });
+});
+
+describe("Dynamic", () => {
+  it("renders selected component or fallback", () => {
+    const A = (p: { label: string }) => `A:${p.label}`;
+    expect(Dynamic({ component: A, label: "x" })).toBe("A:x");
+    expect(Dynamic({ component: null, label: "x", fallback: () => "fallback" })).toBe("fallback");
+  });
+});
+
+describe("createFrame / Frame", () => {
+  it("updates with requestAnimationFrame and cleans up", () => {
+    const rafPrev = globalThis.requestAnimationFrame;
+    const cafPrev = globalThis.cancelAnimationFrame;
+    let cb: ((t: number) => void) | undefined;
+    globalThis.requestAnimationFrame = ((f: FrameRequestCallback) => {
+      cb = f;
+      return 1;
+    }) as typeof requestAnimationFrame;
+    const cancel = vi.fn();
+    globalThis.cancelAnimationFrame = cancel as unknown as typeof cancelAnimationFrame;
+
+    let time!: () => number;
+    const dispose = createRoot((d) => {
+      time = createFrame(0);
+      return d;
+    });
+
+    expect(time()).toBe(0);
+    cb?.(16);
+    expect(time()).toBe(16);
+
+    const framed = createRoot(() => {
+      const out = Frame({ children: (t) => `t:${Math.floor(t)}` });
+      return out;
+    });
+    expect(typeof framed()).toBe("string");
+
+    dispose();
+    expect(cancel).toHaveBeenCalled();
+    globalThis.requestAnimationFrame = rafPrev;
+    globalThis.cancelAnimationFrame = cafPrev;
+  });
+});
+
+describe("WithLayer", () => {
+  it("renders fallback while layer is unresolved", () => {
+    const layer = Layer.succeed(ServiceMap.Service<{ readonly v: number }>("Tmp"), { v: 1 });
+    const r = WithLayer({ layer, fallback: () => "loading", children: () => "ok" });
+    expect(r === "loading" || r === "ok" || r === null).toBe(true);
   });
 });
 

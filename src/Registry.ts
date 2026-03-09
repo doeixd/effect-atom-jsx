@@ -21,6 +21,14 @@ export interface Registry {
 export const isRegistry = (u: unknown): u is Registry =>
   typeof u === "object" && u !== null && TypeId in u;
 
+/**
+ * Create a registry for reading/writing/subscribing atoms.
+ *
+ * @example
+ * const registry = Registry.make()
+ * registry.set(count, 1)
+ * const stop = registry.subscribe(count, console.log)
+ */
 export const make = (): Registry => {
   const roots = new Set<Owner>();
 

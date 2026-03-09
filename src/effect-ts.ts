@@ -251,6 +251,10 @@ export function resourceWith<A, E, R>(
  * Returns `true` while an `AsyncResult` accessor is revalidating.
  *
  * This is `false` during first-load `Loading`, and `true` for `Refreshing`.
+ *
+ * @example
+ * const pending = isPending(userResult)
+ * // pending() is true only when stale data is being revalidated
  */
 export function isPending<A, E>(result: Accessor<AsyncResult<A, E>>): Accessor<boolean> {
   return createMemo(() => AsyncResult.isRefreshing(result()));
@@ -262,6 +266,10 @@ export function isPending<A, E>(result: Accessor<AsyncResult<A, E>>): Accessor<b
  * - `Success(value)` => `value`
  * - `Refreshing(Success(previous))` => `previous.value`
  * - otherwise => `undefined`
+ *
+ * @example
+ * const userLatest = latest(userResult)
+ * <Show when={userLatest()}>{(u) => <UserCard user={u()} />}</Show>
  */
 export function latest<A, E>(result: Accessor<AsyncResult<A, E>>): Accessor<A | undefined> {
   return createMemo(() => {
@@ -324,6 +332,10 @@ export interface ActionEffectOptions<A, E, R> {
   runtime?: RuntimeLike<R, unknown>;
   optimistic?: (input: A) => void;
   rollback?: (input: A) => void;
+  /**
+   * Optional refresh hooks executed after successful mutation completion.
+   * Accepts a single callback or an array of callbacks.
+   */
   refresh?: (() => void) | ReadonlyArray<() => void>;
   onSuccess?: (input: A) => void;
   onFailure?: (error: E | { readonly defect: string }, input: A) => void;
@@ -345,6 +357,13 @@ function runRefreshHooks(refresh: ActionEffectOptions<any, any, any>["refresh"])
  *
  * `run(input)` executes `fn(input)` in a fiber. If a new run starts, the
  * previous run is interrupted and ignored.
+ *
+ * @example
+ * const save = actionEffect(saveTodo, {
+ *   optimistic: (todo) => optimisticTodos.set((xs) => [todo, ...xs]),
+ *   rollback: () => optimisticTodos.clear(),
+ *   refresh: () => refreshTodos(),
+ * })
  */
 export function actionEffect<A, E, R>(
   fn: (input: A) => Effect.Effect<unknown, E, R>,
@@ -712,6 +731,263 @@ export function Async<A, E>(props: {
   if (r._tag === "Loading") return props.loading?.() ?? null;
   if (r._tag === "Refreshing") return props.refreshing?.(r.previous) ?? renderSettled(r.previous);
   return renderSettled(r);
+}
+
+function isAccessor<T>(u: unknown): u is Accessor<T> {
+  return typeof u === "function";
+}
+
+function renderNode(node: unknown): unknown {
+  return typeof node === "function" ? (node as () => unknown)() : node;
+}
+
+// ─── Loading / Errored ────────────────────────────────────────────────────────
+
+function isLoadingInput(input: AsyncResult<unknown, unknown> | boolean): boolean {
+  if (typeof input === "boolean") return input;
+  return input._tag === "Loading";
+}
+
+/**
+ * Declarative loading boundary.
+ *
+ * - With `AsyncResult`: shows `fallback` only during first `Loading`
+ * - With `boolean`: shows `fallback` when `true`
+ *
+ * @example
+ * <Loading when={todosResult} fallback={() => <Spinner />}>...</Loading>
+ */
+export function Loading(props: {
+  when: AsyncResult<unknown, unknown> | boolean | Accessor<AsyncResult<unknown, unknown> | boolean>;
+  fallback: () => unknown;
+  children: unknown;
+}): unknown {
+  const whenValue = isAccessor<AsyncResult<unknown, unknown> | boolean>(props.when)
+    ? props.when()
+    : props.when;
+
+  if (isLoadingInput(whenValue)) return props.fallback();
+  return renderNode(props.children);
+}
+
+/**
+ * Declarative error boundary for `AsyncResult`.
+ *
+ * @example
+ * <Errored result={todosResult}>
+ *   {(e) => <ErrorBanner message={"defect" in e ? e.defect : String(e)} />}
+ * </Errored>
+ */
+export function Errored<A, E>(props: {
+  result: AsyncResult<A, E> | Accessor<AsyncResult<A, E>>;
+  fallback?: () => unknown;
+  children: (error: E | { readonly defect: string }) => unknown;
+}): unknown {
+  const result = isAccessor<AsyncResult<A, E>>(props.result)
+    ? props.result()
+    : props.result;
+
+  if (result._tag === "Failure") return props.children(result.error);
+  if (result._tag === "Defect") return props.children({ defect: result.cause });
+  return props.fallback?.() ?? null;
+}
+
+// ─── Switch / Match ───────────────────────────────────────────────────────────
+
+const MatchTypeId = Symbol.for("effect-atom-jsx/Match");
+
+type MatchCase<T> = {
+  readonly [MatchTypeId]: true;
+  readonly when: T | false | null | undefined | 0 | "";
+  readonly children: ((value: NonNullable<T>) => unknown) | unknown;
+};
+
+/**
+ * Creates a Switch case descriptor.
+ *
+ * @example
+ * Switch({
+ *   children: [
+ *     Match({ when: isAdmin, children: "admin" }),
+ *     Match({ when: isUser, children: "user" }),
+ *   ],
+ *   fallback: () => "guest",
+ * })
+ */
+export function Match<T>(props: {
+  when: T | false | null | undefined | 0 | "";
+  children: ((value: NonNullable<T>) => unknown) | unknown;
+}): MatchCase<T> {
+  return {
+    [MatchTypeId]: true,
+    when: props.when,
+    children: props.children,
+  };
+}
+
+/**
+ * Renders the first matching `Match` case.
+ */
+export function Switch(props: {
+  fallback?: () => unknown;
+  children: unknown;
+}): unknown {
+  const children = Array.isArray(props.children)
+    ? props.children
+    : [props.children];
+
+  for (const child of children) {
+    if (typeof child === "object" && child !== null && MatchTypeId in child) {
+      const match = child as MatchCase<unknown>;
+      if (!match.when) continue;
+      if (typeof match.children === "function") {
+        return (match.children as (value: unknown) => unknown)(match.when);
+      }
+      return match.children;
+    }
+  }
+
+  return props.fallback?.() ?? null;
+}
+
+// ─── Optional / Option matching ───────────────────────────────────────────────
+
+/**
+ * Null-safe conditional rendering.
+ *
+ * Unlike `Show`, this only checks for `null | undefined`, so values like
+ * `0`, `""`, and `false` are treated as present values.
+ */
+export function Optional<T>(props: {
+  when: T | null | undefined | Accessor<T | null | undefined>;
+  fallback?: () => unknown;
+  children: ((value: NonNullable<T>) => unknown) | unknown;
+}): unknown {
+  const value = isAccessor<T | null | undefined>(props.when) ? props.when() : props.when;
+  if (value === null || value === undefined) return props.fallback?.() ?? null;
+  if (typeof props.children === "function") {
+    return (props.children as (v: NonNullable<T>) => unknown)(value as NonNullable<T>);
+  }
+  return props.children;
+}
+
+/**
+ * Pattern match `Option.Option<A>` values declaratively.
+ */
+export function MatchOption<A>(props: {
+  value: Option.Option<A> | Accessor<Option.Option<A>>;
+  some: (value: A) => unknown;
+  none?: () => unknown;
+}): unknown {
+  const value = isAccessor<Option.Option<A>>(props.value) ? props.value() : props.value;
+  return Option.match(value, {
+    onNone: () => props.none?.() ?? null,
+    onSome: props.some,
+  });
+}
+
+// ─── Dynamic / lazy-like helpers ──────────────────────────────────────────────
+
+/**
+ * Runtime-selected component renderer.
+ */
+export function Dynamic<P extends Record<string, unknown>>(props: {
+  component: ((props: P) => unknown) | null | undefined;
+  fallback?: () => unknown;
+} & P): unknown {
+  const { component, fallback, ...rest } = props as {
+    component: ((props: P) => unknown) | null | undefined;
+    fallback?: () => unknown;
+  } & P;
+
+  if (component == null) return fallback?.() ?? null;
+  return component(rest as unknown as P);
+}
+
+/**
+ * Frame-timestamp signal driven by `requestAnimationFrame`.
+ */
+export function createFrame(initial = Date.now()): Accessor<number> {
+  const [time, setTime] = createSignal(initial);
+  if (typeof globalThis.requestAnimationFrame !== "function") {
+    return time;
+  }
+
+  let id = 0;
+  const loop = (t: number): void => {
+    setTime(t);
+    id = globalThis.requestAnimationFrame(loop);
+  };
+  id = globalThis.requestAnimationFrame(loop);
+
+  onCleanup(() => {
+    if (typeof globalThis.cancelAnimationFrame === "function") {
+      globalThis.cancelAnimationFrame(id);
+    }
+  });
+
+  return time;
+}
+
+/**
+ * Convenience frame component that passes the RAF timestamp to children.
+ */
+export function Frame(props: { children: (time: number) => unknown }): Accessor<unknown> {
+  const frame = createFrame();
+  return createMemo(() => props.children(frame()));
+}
+
+// ─── Layer helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Component-style Layer boundary.
+ *
+ * Uses `layerContext` under the hood and renders `fallback` while unresolved.
+ */
+export function WithLayer<A, E, RIn>(props: {
+  layer: Layer.Layer<A, E, RIn>;
+  runtime?: RuntimeLike<RIn, unknown>;
+  fallback?: () => unknown;
+  children: () => unknown;
+}): unknown {
+  const ctx = layerContext(
+    props.layer as Layer.Layer<A, E, RIn>,
+    props.children as () => unknown,
+    props.runtime as RuntimeLike<RIn, unknown>,
+  );
+  return ctx.children ?? props.fallback?.() ?? null;
+}
+
+// ─── MatchTag ─────────────────────────────────────────────────────────────────
+
+type Tagged = { readonly _tag: string };
+
+type MatchTagCases<T extends Tagged, R> = {
+  [K in T["_tag"]]?: (value: Extract<T, { readonly _tag: K }>) => R;
+};
+
+/**
+ * Type-safe pattern matching over discriminated unions by `_tag`.
+ *
+ * @example
+ * const out = MatchTag({
+ *   value: result(),
+ *   cases: {
+ *     Success: (v) => v.value,
+ *     Failure: (v) => `error:${String(v.error)}`,
+ *   },
+ *   fallback: () => "pending",
+ * })
+ */
+export function MatchTag<T extends Tagged, R>(props: {
+  value: T | Accessor<T>;
+  cases: MatchTagCases<T, R>;
+  fallback?: (value: T) => R;
+}): R | null {
+  const value = isAccessor<T>(props.value) ? props.value() : props.value;
+  const handler = props.cases[value._tag as T["_tag"]] as ((v: T) => R) | undefined;
+  if (handler) return handler(value);
+  return props.fallback ? props.fallback(value) : null;
 }
 
 // ─── For ──────────────────────────────────────────────────────────────────────

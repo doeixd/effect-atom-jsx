@@ -21,8 +21,19 @@ export type Failure<A, E = never> = {
 
 export type Result<A, E = never> = Initial<A, E> | Success<A, E> | Failure<A, E>;
 
+/**
+ * Construct an initial result value.
+ *
+ * `waiting=true` indicates first-load in progress.
+ */
 export const initial = <A = never, E = never>(waiting = false): Initial<A, E> => ({ _tag: "Initial", waiting });
 
+/**
+ * Construct a success result value.
+ *
+ * @example
+ * const r = Result.success({ id: 1 })
+ */
 export const success = <A, E = never>(
   value: A,
   options?: { readonly waiting?: boolean; readonly timestamp?: number },
@@ -33,6 +44,7 @@ export const success = <A, E = never>(
   timestamp: options?.timestamp ?? Date.now(),
 });
 
+/** Construct a failure result value. */
 export const failure = <A, E = never>(
   error: E | { readonly defect: string },
   options?: { readonly waiting?: boolean; readonly previousSuccess?: Success<A, E> | null },
@@ -49,6 +61,12 @@ export const isSuccess = <A, E>(r: Result<A, E>): r is Success<A, E> => r._tag =
 export const isFailure = <A, E>(r: Result<A, E>): r is Failure<A, E> => r._tag === "Failure";
 export const isWaiting = <A, E>(r: Result<A, E>): boolean => r.waiting;
 
+/**
+ * Mark a result as waiting/revalidating.
+ *
+ * @example
+ * const stale = Result.waiting(Result.success(data))
+ */
 export const waiting = <A, E>(r: Result<A, E>): Result<A, E> => {
   if (r.waiting) return r;
   if (r._tag === "Initial") return initial(true);
@@ -91,6 +109,7 @@ export function toAsyncResult<A, E>(
     : AsyncResult.failure(value.error as E);
 }
 
+/** Convert a Defect to a structured failure payload. */
 export function fromDefect<A>(defect: Defect): Failure<A, { readonly defect: string }> {
   return failure({ defect: defect.cause });
 }

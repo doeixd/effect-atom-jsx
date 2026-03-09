@@ -115,6 +115,20 @@ function makeWriteContext<A>(self: Writable<A, any>): WriteContext<A> {
 
 export function make<A>(read: (get: Context) => A): Atom<A>;
 export function make<A>(initial: A & (A extends (...args: Array<any>) => any ? never : unknown)): Writable<A>;
+/**
+ * Create an atom.
+ *
+ * Overloads:
+ * - `make(value)` -> writable atom
+ * - `make((get) => ...)` -> derived read-only atom
+ *
+ * Derived atoms track reads performed through `get(...)` and recompute when
+ * dependencies change.
+ *
+ * @example
+ * const count = Atom.make(1)
+ * const doubled = Atom.make((get) => get(count) * 2)
+ */
 export function make<A>(valueOrRead: A | ((get: Context) => A)): Atom<A> | Writable<A> {
   if (typeof valueOrRead === "function") {
     return readable(valueOrRead as (get: Context) => A);
@@ -128,6 +142,15 @@ export function make<A>(valueOrRead: A | ((get: Context) => A)): Atom<A> | Writa
   return atom;
 }
 
+/**
+ * Create memoized atom families keyed by argument identity.
+ *
+ * Useful for per-id state (todos, route params, entity caches).
+ * Calling the family with the same argument returns the same atom instance.
+ *
+ * @example
+ * const todoById = Atom.family((id: string) => Atom.make({ id, done: false }))
+ */
 export const family = <Arg, T>(f: (arg: Arg) => T): ((arg: Arg) => T) => {
   const cache = new Map<Arg, T>();
   return (arg) => {
@@ -141,6 +164,16 @@ export const family = <Arg, T>(f: (arg: Arg) => T): ((arg: Arg) => T) => {
 
 export function map<A, B>(f: (a: A) => B): (self: Atom<A>) => Atom<B>;
 export function map<A, B>(self: Atom<A>, f: (a: A) => B): Atom<B>;
+/**
+ * Map an atom value into a derived atom.
+ *
+ * Supports both data-first and data-last usage.
+ *
+ * @example
+ * const doubled = Atom.map(count, (n) => n * 2)
+ * const toLabel = Atom.map((n: number) => `#${n}`)
+ * const labeledCount = toLabel(count)
+ */
 export function map<A, B>(
   arg1: Atom<A> | ((a: A) => B),
   arg2?: (a: A) => B,
@@ -156,6 +189,14 @@ export function map<A, B>(
 
 export function withFallback<A>(fallback: A): <E>(self: Atom<A | E>) => Atom<A>;
 export function withFallback<A, E>(self: Atom<A | E>, fallback: A): Atom<A>;
+/**
+ * Provide a fallback when an atom returns `null` or `undefined`.
+ *
+ * This is handy for optional server data when UI wants a stable value.
+ *
+ * @example
+ * const safeName = Atom.withFallback(nameAtom, "anonymous")
+ */
 export function withFallback<A, E>(
   arg1: A | Atom<A | E>,
   arg2?: A,
@@ -179,11 +220,30 @@ export const batch = (f: () => void): void => {
   runBatch(f);
 };
 
+/**
+ * Read atom value as an `Effect`.
+ *
+ * The returned effect is synchronous and can be composed with other Effect
+ * operations in pipelines.
+ *
+ * @example
+ * const n = Effect.runSync(Atom.get(count))
+ */
 export const get = <A>(self: Atom<A>): Effect.Effect<A> =>
   Effect.sync(() => defaultContext.get(self));
 
 export function set<R, W>(value: W): (self: Writable<R, W>) => Effect.Effect<void>;
 export function set<R, W>(self: Writable<R, W>, value: W): Effect.Effect<void>;
+/**
+ * Write atom value as an `Effect`.
+ *
+ * Supports data-first and data-last forms.
+ *
+ * @example
+ * Effect.runSync(Atom.set(count, 2))
+ * const setZero = Atom.set(0)
+ * Effect.runSync(setZero(count))
+ */
 export function set<R, W>(
   arg1: Writable<R, W> | W,
   arg2?: W,
@@ -199,6 +259,12 @@ export function set<R, W>(
 
 export function update<R>(f: (value: R) => R): (self: Writable<R, R>) => Effect.Effect<void>;
 export function update<R>(self: Writable<R, R>, f: (value: R) => R): Effect.Effect<void>;
+/**
+ * Update atom value from previous value.
+ *
+ * @example
+ * Effect.runSync(Atom.update(count, (n) => n + 1))
+ */
 export function update<R>(
   arg1: Writable<R, R> | ((value: R) => R),
   arg2?: (value: R) => R,
@@ -225,6 +291,15 @@ export function modify<R, W, A>(
   self: Writable<R, W>,
   f: (value: R) => [A, W],
 ): Effect.Effect<A>;
+/**
+ * Atom modification that also returns a computed value.
+ *
+ * This is useful when a single read/transform/write should produce a return
+ * value (for logging, IDs, domain events, etc.).
+ *
+ * @example
+ * const previous = Effect.runSync(Atom.modify(count, (n) => [n, n + 1]))
+ */
 export function modify<R, W, A>(
   arg1: Writable<R, W> | ((value: R) => [A, W]),
   arg2?: (value: R) => [A, W],
@@ -246,9 +321,24 @@ export function modify<R, W, A>(
   });
 }
 
+/**
+ * Force-refresh an atom and invalidate dependents.
+ *
+ * Useful when the read logic depends on external state that is not captured
+ * through atom dependencies.
+ */
 export const refresh = <A>(self: Atom<A>): Effect.Effect<void> =>
   Effect.sync(() => defaultContext.refresh(self));
 
+/**
+ * Subscribe to atom value changes.
+ *
+ * By default, listener is called immediately with current value, then on each
+ * subsequent change.
+ *
+ * @example
+ * const unsub = Atom.subscribe(count, console.log)
+ */
 export const subscribe = <A>(
   self: Atom<A>,
   f: (_: A) => void,

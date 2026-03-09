@@ -164,6 +164,17 @@ Types:
 ### Control-flow Helpers
 
 - `Async(props)`
+- `Loading(props)`
+- `Errored(props)`
+- `Switch(props)`
+- `Match(props)`
+- `MatchTag({ value, cases, fallback? })`
+- `Optional({ when, fallback?, children })`
+- `MatchOption({ value, some, none? })`
+- `Dynamic({ component, ...props })`
+- `createFrame(initial?)`
+- `Frame({ children })`
+- `WithLayer({ layer, runtime?, fallback?, children })`
 - `For(props)`
 - `Show(props)`
 

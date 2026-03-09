@@ -46,6 +46,14 @@ function readonlyRef<A>(key: string, read: () => A): ReadonlyRef<A> {
   };
 }
 
+/**
+ * Create a mutable object/array reference with per-property refs.
+ *
+ * @example
+ * const todo = AtomRef.make({ title: "a", done: false })
+ * todo.prop("title").set("b")
+ * todo.update((t) => ({ ...t, done: true }))
+ */
 export const make = <A>(initial: A): AtomRef<A> => {
   const [getValue, setValue] = createSignal(initial);
   const children = new Map<PropertyKey, AtomRef<any>>();
@@ -97,6 +105,15 @@ export const make = <A>(initial: A): AtomRef<A> => {
   return self;
 };
 
+/**
+ * Create a collection reference with list-like mutation helpers.
+ *
+ * @example
+ * const todos = AtomRef.collection([{ title: "one" }])
+ * todos.push({ title: "two" })
+ * const first = todos.value[0]
+ * if (first) todos.remove(first)
+ */
 export const collection = <A>(items: Iterable<A>): Collection<A> => {
   const [getItems, setItems] = createSignal(Array.from(items).map((item) => make(item)));
 

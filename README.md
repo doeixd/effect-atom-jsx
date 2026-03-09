@@ -280,6 +280,9 @@ Helpers:
 - `isPending(result)` returns `true` only during `Refreshing`
 - `latest(result)` returns the last successful value (including while refreshing)
 - `Async({ result, ...slots })` declaratively renders these states
+- `MatchTag({ value, cases })` provides type-safe `_tag` pattern matching
+- `Loading({ when, fallback, children })`, `Errored({ result, children })`, and `Switch/Match` provide lightweight UI boundaries
+- `Optional`, `MatchOption`, `Dynamic`, `Frame/createFrame`, and `WithLayer` cover optional values, Option matching, dynamic components, frame loops, and layer boundaries
 
 ## Mutation Helpers
 
