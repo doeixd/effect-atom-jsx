@@ -50,6 +50,7 @@ import {
   For,
   Show,
   scopedRoot,
+  scopedRootEffect,
   type AsyncResult as AsyncResultType,
   type Failure,
   type Success,
@@ -1155,7 +1156,7 @@ describe("scopedRoot", () => {
     expect(log).toEqual([0, 1]);
   });
 
-  it("closes the scope when the reactive root is disposed manually", async () => {
+  it("does not implicitly close the scope when the reactive root is disposed", async () => {
     let scopeClosed = false;
 
     await Effect.runPromise(
@@ -1164,9 +1165,8 @@ describe("scopedRoot", () => {
         // Add a finalizer to detect scope closure.
         yield* Scope.addFinalizer(scope, Effect.sync(() => { scopeClosed = true; }));
 
-        // scopedRoot creates its own internal Owner. We capture the dispose by
-        // wrapping in createRoot — when createRoot's owner disposes, it disposes
-        // the scopedRoot's owner which triggers the scope close.
+        // scopedRoot creates its own internal Owner. Disposing the parent root
+        // should dispose reactive work, but scope lifetime remains explicit.
         let dispose!: () => void;
         createRoot((d) => {
           scopedRoot(scope, () => {
@@ -1175,13 +1175,42 @@ describe("scopedRoot", () => {
           dispose = d;
         });
 
-        // Dispose the reactive root — this should propagate to close the scope.
+        // Dispose the reactive root.
         dispose();
-        // Give the fork time to run the scope close.
+        // Scope should remain open until explicitly closed.
         yield* Effect.sleep("30 millis");
+        expect(scopeClosed).toBe(false);
+
+        yield* Scope.close(scope, Exit.void);
       })
     );
 
     expect(scopeClosed).toBe(true);
+  });
+});
+
+describe("scopedRootEffect", () => {
+  it("builds scoped roots as an Effect constructor", async () => {
+    const log: number[] = [];
+    const [n, setN] = createSignal(0);
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const scope = yield* Scope.make();
+        yield* scopedRootEffect(scope, () => {
+          createEffect(() => log.push(n()));
+        });
+
+        expect(log).toEqual([0]);
+        setN(1);
+        expect(log).toEqual([0, 1]);
+
+        yield* Scope.close(scope, Exit.void);
+        yield* Effect.sleep("20 millis");
+      })
+    );
+
+    setN(2);
+    expect(log).toEqual([0, 1]);
   });
 });

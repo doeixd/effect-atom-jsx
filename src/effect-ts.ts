@@ -459,20 +459,6 @@ export interface QueryRef<A, E> {
   refresh(): void;
 }
 
-export interface QueryEffectOptions<R> {
-  runtime?: RuntimeLike<R, unknown>;
-  key?: QueryKey<any> | ReadonlyArray<QueryKey<any>>;
-}
-
-export interface QueryRef<A, E> {
-  readonly key: QueryKey<A>;
-  readonly result: Accessor<AsyncResult<A, E>>;
-  readonly pending: Accessor<boolean>;
-  readonly latest: Accessor<A | undefined>;
-  invalidate(): void;
-  refresh(): void;
-}
-
 /**
  * Primary Effect-native query API with optional typed invalidation keys.
  *
@@ -852,44 +838,24 @@ function _createDerivedAtom<T>(getter: AtomGetter<T>): DerivedAtom<T> {
  * });
  */
 export function scopedRoot<T>(scope: Scope.Closeable, fn: () => T): T {
-  const owner = new Owner(getOwner());
+  return Effect.runSync(scopedRootEffect(scope, fn));
+}
 
-  // Scope → reactive: when scope closes, dispose the owner.
-  // addFinalizer is itself an Effect; run it as a fork so we can call
-  // scopedRoot synchronously. The fork resolves immediately since
-  // addFinalizer only registers and returns void.
-  pipe(
-    Scope.addFinalizer(scope, Effect.sync(() => owner.dispose())),
-    Effect.catchCause((cause) =>
-      Effect.sync(() =>
-        console.error(
-          "[effect-atom-jsx] scopedRoot: failed to register scope finalizer:",
-          Cause.pretty(cause),
-        ),
-      ),
-    ),
-    (eff) => Effect.runFork(eff),
-  );
-
-  const result = runWithOwner(owner, fn);
-
-  // Reactive → scope: when owner disposes, close the scope.
-  owner.addCleanup(() => {
-    pipe(
-      Scope.close(scope, Exit.void),
-      Effect.catchCause((cause) =>
-        Effect.sync(() =>
-          console.error(
-            "[effect-atom-jsx] scopedRoot: failed to close scope:",
-            Cause.pretty(cause),
-          ),
-        ),
-      ),
-      (eff) => Effect.runFork(eff),
-    );
+/**
+ * Effect constructor variant of `scopedRoot`.
+ *
+ * Registers owner disposal as a scope finalizer and evaluates `fn` under that
+ * owner. The scope is the single authority for lifetime.
+ */
+export function scopedRootEffect<T>(
+  scope: Scope.Closeable,
+  fn: () => T,
+): Effect.Effect<T> {
+  return Effect.gen(function* () {
+    const owner = new Owner(getOwner());
+    yield* Scope.addFinalizer(scope, Effect.sync(() => owner.dispose()));
+    return runWithOwner(owner, fn);
   });
-
-  return result;
 }
 
 /**
@@ -911,11 +877,18 @@ export function scopedQuery<A, E, R>(
   fn: () => Effect.Effect<A, E, R>,
   options?: QueryEffectOptions<R>,
 ): Accessor<AsyncResult<A, E>> {
-  let result!: Accessor<AsyncResult<A, E>>;
-  scopedRoot(scope, () => {
-    result = queryEffect(fn, options);
-  });
-  return result;
+  return Effect.runSync(scopedQueryEffect(scope, fn, options));
+}
+
+/**
+ * Effect constructor variant of `scopedQuery(...)`.
+ */
+export function scopedQueryEffect<A, E, R>(
+  scope: Scope.Closeable,
+  fn: () => Effect.Effect<A, E, R>,
+  options?: QueryEffectOptions<R>,
+): Effect.Effect<Accessor<AsyncResult<A, E>>> {
+  return scopedRootEffect(scope, () => queryEffect(fn, options));
 }
 
 /**
@@ -937,11 +910,18 @@ export function scopedMutation<A, E, R>(
   fn: (input: A) => Effect.Effect<unknown, E, R>,
   options?: MutationEffectOptions<A, E, R>,
 ): MutationEffectHandle<A, E> {
-  let handle!: MutationEffectHandle<A, E>;
-  scopedRoot(scope, () => {
-    handle = mutationEffect(fn, options);
-  });
-  return handle;
+  return Effect.runSync(scopedMutationEffect(scope, fn, options));
+}
+
+/**
+ * Effect constructor variant of `scopedMutation(...)`.
+ */
+export function scopedMutationEffect<A, E, R>(
+  scope: Scope.Closeable,
+  fn: (input: A) => Effect.Effect<unknown, E, R>,
+  options?: MutationEffectOptions<A, E, R>,
+): Effect.Effect<MutationEffectHandle<A, E>> {
+  return scopedRootEffect(scope, () => mutationEffect(fn, options));
 }
 
 // ─── layerContext ─────────────────────────────────────────────────────────────

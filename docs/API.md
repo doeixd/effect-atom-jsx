@@ -15,11 +15,23 @@ The core reactive state primitive. Atoms are plain objects with `read`/`write` m
 - **`Atom.readable(read, refresh?)`** — Low-level read-only atom constructor.
 - **`Atom.writable(read, write, refresh?)`** — Low-level writable atom constructor.
 - **`Atom.family(fn)`** — Create a memoized atom factory keyed by argument identity. Same arg returns same atom instance.
+- **`Atom.runtime(layer)`** — Create an Atom runtime bound to an Effect `Layer` with `atom(...)` and `fn(...)` helpers.
+- **`Atom.runtime.addGlobalLayer(layer)`** — Add a global layer applied to newly-created atom runtimes.
+- **`Atom.keepAlive(atom)`** — Compatibility helper matching effect-atom ergonomics (identity in this package).
+- **`Atom.fn(effect, options?)`** / **`Atom.fn(runtime, effect, options?)`** — Create function-style mutation atoms from Effect functions.
+- **`Atom.pull(stream, options?)`** — Create pull-based stream pagination atom. Call `set(void 0)` to pull next chunk.
+- **`Atom.searchParam(name, codec?)`** — Atom bound to URL search params (browser environments).
+- **`Atom.kvs({ key, defaultValue, ... })`** — Atom backed by key-value storage (`localStorage` by default).
+- **`Atom.withReactivity(atom, keys)`** / **`Atom.invalidateReactivity(keys)`** — Register and invalidate logical reactivity keys.
 
 ```ts
 const count = Atom.make(0);
 const doubled = Atom.make((get) => get(count) * 2);
 const todoById = Atom.family((id: string) => Atom.make({ id, done: false }));
+
+const runtime = Atom.runtime(MyLayer);
+const userAtom = runtime.atom(Effect.service(UserApi).pipe(Effect.flatMap((api) => api.me())));
+const incrementAtom = runtime.fn((n: number) => Effect.sync(() => console.log(n)));
 ```
 
 ### Derivations
@@ -76,8 +88,9 @@ const user = Atom.fromResource(() => useService(Api).getUser("1"));
 
 - `Atom.Atom<A>` — Read-only atom.
 - `Atom.Writable<R, W>` — Readable as `R`, writable as `W`.
-- `Atom.Context` — Callable read context with `get`, `refresh`, `set` methods.
-- `Atom.WriteContext<A>` — Write context with `get`, `set`, `refreshSelf`, `setSelf`.
+- `Atom.Context` — Callable read context with `get`, `refresh`, `set`, `result`, `addFinalizer` methods.
+- `Atom.WriteContext<A>` — Write context with `get`, `set`, `refreshSelf`, `setSelf`, `result`, `addFinalizer`.
+- `Atom.AtomRuntime<R, E>` — Runtime wrapper with `managed`, `atom(...)`, `fn(...)`, and `dispose()`.
 
 <br />
 
@@ -306,10 +319,8 @@ For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOUR
 - **`atomEffect(fn, runtime?)`** — Create a reactive async computation. Tracks signal dependencies, interrupts previous fiber on re-run.
 - **`queryEffect(fn, options?)`** — Preferred Effect-native query API. Uses ambient Layer runtime from `mount()`. Supports `key` invalidation hooks and optional explicit runtime.
 - **`defineQuery(fn, options?)`** — Ergonomic keyed query bundle returning `{ key, result, pending, latest, invalidate, refresh }`.
-- **`scopedQuery(scope, fn, options?)`** — A `queryEffect` whose lifecycle is tied to an Effect `Scope.Closeable`.
-- **`queryEffectStrict(runtime, fn, options?)`** — Strict explicit-runtime query helper with optional key tracking.
-- **`defineQueryStrict(runtime, fn, options?)`** — Strict explicit-runtime query bundle helper.
-
+- **`scopedQueryEffect(scope, fn, options?)`** — Effect constructor variant that creates a scope-bound query accessor.
+- **`scopedQuery(scope, fn, options?)`** — Sync convenience wrapper over `scopedQueryEffect(...)`.
 - **`queryEffectStrict(runtime, fn, options?)`** — Strict explicit-runtime query helper with optional key tracking.
 - **`defineQueryStrict(runtime, fn, options?)`** — Strict explicit-runtime query bundle helper.
 - **`createQueryKey<A>(name?)`** — Create typed invalidation keys for queries.
@@ -325,13 +336,15 @@ For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOUR
 - **`mount(fn, container, layer)`** — Bootstrap a `ManagedRuntime` from a `Layer` and render.
 - **`createMount(layer)` / `mountWith(layer)`** — Create a mount function pre-bound to a layer.
 - **`layerContext(layer, fn, runtime?)`** — Run a function with a Layer-provided context.
-- **`scopedRoot(scope, fn)`** — Create a reactive root tied to an Effect Scope.
+- **`scopedRootEffect(scope, fn)`** — Effect constructor variant for creating a reactive root tied to an Effect Scope.
+- **`scopedRoot(scope, fn)`** — Sync convenience wrapper over `scopedRootEffect(...)`.
 
 ### Mutations
 
 - **`createOptimistic(source)`** — Create an optimistic overlay with `get`, `set`, `clear`, `isPending`.
 - **`mutationEffect(fn, options?)`** — Create an Effect-powered mutation action with `optimistic`, `rollback`, `onSuccess`, `onFailure`, `refresh` hooks. Returns `{ run, result, pending }`. Supports `invalidates` query keys.
-- **`scopedMutation(scope, fn, options?)`** — A `mutationEffect` whose lifecycle is tied to an Effect `Scope.Closeable`.
+- **`scopedMutationEffect(scope, fn, options?)`** — Effect constructor variant that creates a scope-bound mutation handle.
+- **`scopedMutation(scope, fn, options?)`** — Sync convenience wrapper over `scopedMutationEffect(...)`.
 - **`mutationEffectStrict(runtime, fn, options?)`** — Strict explicit-runtime mutation helper.
 
 

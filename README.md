@@ -353,7 +353,7 @@ import * as AtomSchema from "effect-atom-jsx/AtomSchema";
 
 | Module | Key Exports |
 |--------|-------------|
-| `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `batch`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue` |
+| `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `withReactivity`, `invalidateReactivity`, `keepAlive`, `runtime`, `fn`, `pull`, `searchParam`, `kvs`, `batch`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue`, `query` |
 | `AtomRef` | `make`, `collection` |
 | `Registry` | `make` (returns instance with `get`, `set`, `update`, `modify`, `mount`, `refresh`, `subscribe`, `reset`, `dispose`) |
 | `Result` | `initial`, `success`, `failure`, `isInitial`, `isSuccess`, `isFailure`, `isWaiting`, `fromAsyncResult`, `toAsyncResult`, `map`, `flatMap`, `match`, `all` |
@@ -373,7 +373,10 @@ import {
   createOptimistic, mutationEffect,
   mutationEffectStrict,
   useService, useServices, createMount, mount,
-  layerContext, scopedRoot,
+  layerContext,
+  scopedRoot, scopedRootEffect,
+  scopedQuery, scopedQueryEffect,
+  scopedMutation, scopedMutationEffect,
   signal, computed,
 } from "effect-atom-jsx";
 ```
@@ -395,6 +398,8 @@ Full API reference: [`docs/API.md`](docs/API.md)
 
 Dedicated Effect integration guide: [`docs/ACTION_EFFECT_USE_RESOURCE.md`](docs/ACTION_EFFECT_USE_RESOURCE.md)
 
+Effect-atom migration/equivalents guide: [`docs/EFFECT_ATOM_EQUIVALENTS.md`](docs/EFFECT_ATOM_EQUIVALENTS.md)
+
 ## Examples
 
 | Example | Location | What it shows |
@@ -411,8 +416,9 @@ Dedicated Effect integration guide: [`docs/ACTION_EFFECT_USE_RESOURCE.md`](docs/
 2. Components call **`useService(Tag)`** to synchronously access services from that runtime
 3. **`defineQuery()` / `queryEffect()` / `atomEffect()`** run service effects reactively, exposing `AsyncResult` state
 4. **`mutationEffect()`** handles writes with optimistic UI, rollback, and post-success refresh
-5. **`scopedQuery()` / `scopedMutation()`** tie query/mutation lifecycles to an Effect `Scope`
-6. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
+5. **`scopedRootEffect()` / `scopedQueryEffect()` / `scopedMutationEffect()`** provide Effect-first scoped constructors
+6. **`scopedQuery()` / `scopedMutation()`** remain sync convenience wrappers over the scoped constructors
+7. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
 
 ## Testing
 

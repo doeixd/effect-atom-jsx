@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { Effect } from "effect";
 import { Exit, Option } from "effect";
+import { Layer, ServiceMap } from "effect";
+import { Stream } from "effect";
 import * as Atom from "../Atom.js";
 import * as AtomRef from "../AtomRef.js";
 import * as Hydration from "../Hydration.js";
@@ -30,6 +32,12 @@ describe("effect-atom style API", () => {
     const byId = Atom.family((id: number) => Atom.make(id * 10));
     expect(byId(1)).toBe(byId(1));
     expect(Effect.runSync(Atom.get(byId(3)))).toBe(30);
+  });
+
+  it("supports Atom.keepAlive compatibility helper", () => {
+    const count = Atom.make(1);
+    const kept = Atom.keepAlive(count);
+    expect(kept).toBe(count);
   });
 
   it("supports Atom.map and withFallback", () => {
@@ -133,5 +141,174 @@ describe("effect-atom style API", () => {
 
     const waiting = Result.waitingFrom(Option.some(Result.success("x")));
     expect(Result.isWaiting(waiting)).toBe(true);
+  });
+
+  it("supports Atom.runtime(...).atom for Layer-backed services", async () => {
+    const Greeting = ServiceMap.Service<{ readonly value: string }>("Greeting");
+    const rt = Atom.runtime(Layer.succeed(Greeting, { value: "hello" }));
+
+    const greetingAtom = rt.atom(
+      Effect.service(Greeting).pipe(Effect.map((svc) => svc.value)),
+    );
+
+    await Effect.runPromise(Effect.sleep("5 millis"));
+    const value = Effect.runSync(Atom.get(greetingAtom));
+    expect(value._tag).toBe("Success");
+    if (value._tag === "Success") {
+      expect(value.value).toBe("hello");
+    }
+
+    await rt.dispose();
+  });
+
+  it("supports Atom.runtime(...).fn for effectful function atoms", async () => {
+    const values: number[] = [];
+    const rt = Atom.runtime(Layer.empty);
+    const fnAtom = rt.fn((n: number) => Effect.sync(() => { values.push(n); }));
+
+    Effect.runSync(Atom.set(fnAtom, 42));
+    await Effect.runPromise(Effect.sleep("5 millis"));
+
+    expect(values).toEqual([42]);
+    const state = Effect.runSync(Atom.get(fnAtom));
+    expect(state._tag === "Success" || state._tag === "Refreshing").toBe(true);
+
+    await rt.dispose();
+  });
+
+  it("supports Context.result and addFinalizer", () => {
+    let finalized = false;
+    const asyncAtom = Atom.make((get) => {
+      get.addFinalizer(() => {
+        finalized = true;
+      });
+      return AsyncResult.success(1);
+    });
+
+    const value = Effect.runSync(Atom.get(asyncAtom));
+    expect(value._tag).toBe("Success");
+
+    const unwrapAtom = Atom.make((get) =>
+      Effect.runSync(get.result(asyncAtom))
+    );
+    expect(Effect.runSync(Atom.get(unwrapAtom))).toBe(1);
+
+    const stop = Atom.subscribe(asyncAtom, () => {});
+    stop();
+    expect(finalized).toBe(true);
+  });
+
+  it("supports Atom.pull for incremental stream pagination", async () => {
+    const pullAtom = Atom.pull(Stream.make(1, 2, 3), { chunkSize: 2 });
+
+    expect(Result.isInitial(Effect.runSync(Atom.get(pullAtom)))).toBe(true);
+    Effect.runSync(Atom.set(undefined)(pullAtom));
+    await Effect.runPromise(Effect.sleep("10 millis"));
+
+    const first = Effect.runSync(Atom.get(pullAtom));
+    expect(Result.isSuccess(first)).toBe(true);
+    if (Result.isSuccess(first)) {
+      expect(first.value.items).toEqual([1, 2]);
+      expect(first.value.done).toBe(false);
+    }
+
+    Effect.runSync(Atom.set(undefined)(pullAtom));
+    const second = Effect.runSync(Atom.get(pullAtom));
+    expect(Result.isSuccess(second)).toBe(true);
+    if (Result.isSuccess(second)) {
+      expect(second.value.items).toEqual([1, 2, 3]);
+      expect(second.value.done).toBe(true);
+    }
+  });
+
+  it("supports Atom.kvs with custom storage", () => {
+    const storage = new Map<string, string>();
+    const kvsAtom = Atom.kvs({
+      key: "flag",
+      defaultValue: () => false,
+      storage: {
+        getItem: (key) => storage.get(key) ?? null,
+        setItem: (key, value) => {
+          storage.set(key, value);
+        },
+        removeItem: (key) => {
+          storage.delete(key);
+        },
+      },
+    });
+
+    expect(Effect.runSync(Atom.get(kvsAtom))).toBe(false);
+    Effect.runSync(Atom.set(kvsAtom, true));
+    expect(Effect.runSync(Atom.get(kvsAtom))).toBe(true);
+    expect(storage.get("flag")).toBe("true");
+  });
+
+  it("supports Atom.searchParam read/write", () => {
+    const prevWindow = (globalThis as any).window;
+    let popstateHandler: ((event: unknown) => void) | undefined;
+
+    (globalThis as any).window = {
+      location: {
+        href: "https://example.com/?page=1",
+        search: "?page=1",
+      },
+      history: {
+        state: null,
+        replaceState: (_state: unknown, _title: string, next: string) => {
+          const url = new URL(next);
+          (globalThis as any).window.location.href = url.toString();
+          (globalThis as any).window.location.search = url.search;
+        },
+      },
+      addEventListener: (name: string, handler: (event: unknown) => void) => {
+        if (name === "popstate") popstateHandler = handler;
+      },
+      removeEventListener: (name: string) => {
+        if (name === "popstate") popstateHandler = undefined;
+      },
+    };
+
+    try {
+      const page = Atom.searchParam("page");
+      expect(Effect.runSync(Atom.get(page))).toBe("1");
+
+      Effect.runSync(Atom.set(page, "2"));
+      expect((globalThis as any).window.location.search).toBe("?page=2");
+
+      (globalThis as any).window.location.search = "?page=3";
+      if (popstateHandler !== undefined) {
+        popstateHandler({});
+      }
+      expect(Effect.runSync(Atom.get(page))).toBe("3");
+    } finally {
+      (globalThis as any).window = prevWindow;
+    }
+  });
+
+  it("supports withReactivity and invalidateReactivity", () => {
+    let count = 0;
+    const base = Atom.make(() => {
+      count += 1;
+      return count;
+    });
+    const reactive = Atom.withReactivity(base, ["counter"]);
+
+    expect(Effect.runSync(Atom.get(reactive))).toBe(1);
+    Atom.invalidateReactivity(["counter"]);
+    expect(Effect.runSync(Atom.get(reactive))).toBe(2);
+  });
+
+  it("supports Atom.fn with reactivity key invalidation", async () => {
+    let runCount = 0;
+    const counter = Atom.withReactivity(Atom.make(() => ++runCount), ["counter"]);
+    const increment = Atom.fn(
+      (_: void) => Effect.void,
+      { reactivityKeys: ["counter"] },
+    );
+
+    expect(Effect.runSync(Atom.get(counter))).toBe(1);
+    Effect.runSync(Atom.set(undefined)(increment));
+    await Effect.runPromise(Effect.sleep("10 millis"));
+    expect(Effect.runSync(Atom.get(counter))).toBe(2);
   });
 });

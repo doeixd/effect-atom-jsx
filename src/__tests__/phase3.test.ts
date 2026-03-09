@@ -13,7 +13,9 @@ import {
   mutationEffect,
   AsyncResult,
   scopedQuery,
+  scopedQueryEffect,
   scopedMutation,
+  scopedMutationEffect,
   type AsyncResult as AsyncResultType,
   type Success,
   type Failure,
@@ -250,6 +252,32 @@ describe("scopedMutation", () => {
         expect(handle).toHaveProperty("run");
         expect(handle).toHaveProperty("result");
         expect(handle).toHaveProperty("pending");
+
+        yield* Scope.close(scope, Exit.void);
+      })
+    );
+  });
+
+  it("exposes Effect constructor variants for scoped lifecycle APIs", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const scope = yield* Scope.make();
+        const rt = ManagedRuntime.make(Layer.empty);
+
+        const query = yield* scopedQueryEffect(
+          scope,
+          () => Effect.succeed("ok"),
+          { runtime: rt },
+        );
+
+        const mutation = yield* scopedMutationEffect(
+          scope,
+          (_n: number) => Effect.succeed(undefined),
+          { runtime: rt },
+        );
+
+        expect(typeof query).toBe("function");
+        expect(mutation).toHaveProperty("run");
 
         yield* Scope.close(scope, Exit.void);
       })
