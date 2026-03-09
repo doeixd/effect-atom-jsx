@@ -19,6 +19,7 @@ import {
   resource,
   resourceWith,
   isPending,
+  latest,
   createOptimistic,
   actionEffect,
   use,
@@ -408,6 +409,32 @@ describe("isPending", () => {
   });
 });
 
+describe("latest", () => {
+  it("returns latest success across refreshing states", async () => {
+    const [id, setId] = createSignal(1);
+    let result!: () => AsyncResultType<number, never>;
+    let latestValue!: () => number | undefined;
+
+    const dispose = createRoot((d) => {
+      result = atomEffect(() => Effect.succeed(id()).pipe(Effect.delay("15 millis")));
+      latestValue = latest(result);
+      return d;
+    });
+
+    expect(latestValue()).toBeUndefined();
+    await tick(30);
+    expect(latestValue()).toBe(1);
+
+    setId(2);
+    expect(AsyncResult.isRefreshing(result())).toBe(true);
+    expect(latestValue()).toBe(1);
+
+    await tick(30);
+    expect(latestValue()).toBe(2);
+    dispose();
+  });
+});
+
 describe("createOptimistic", () => {
   it("overlays source until cleared", () => {
     const [count, setCount] = createSignal(1);
@@ -487,6 +514,26 @@ describe("actionEffect", () => {
     await tick();
     expect(action.result()).toEqual(AsyncResult.success(undefined));
     await runtime.dispose();
+  });
+
+  it("supports refresh hooks on success", async () => {
+    const [tickValue, setTickValue] = createSignal(0);
+    const calls: number[] = [];
+
+    const action = actionEffect(
+      () => Effect.succeed("ok").pipe(Effect.delay("10 millis")),
+      {
+        refresh: [
+          () => calls.push(1),
+          () => setTickValue((n) => n + 1),
+        ],
+      },
+    );
+
+    action.run(undefined);
+    await tick(30);
+    expect(calls).toEqual([1]);
+    expect(tickValue()).toBe(1);
   });
 });
 

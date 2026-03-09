@@ -53,6 +53,7 @@ export {
   resource,
   resourceWith,
   isPending,
+  latest,
   createOptimistic,
   actionEffect,
   use,

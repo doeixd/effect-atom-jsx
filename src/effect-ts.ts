@@ -256,6 +256,24 @@ export function isPending<A, E>(result: Accessor<AsyncResult<A, E>>): Accessor<b
   return createMemo(() => AsyncResult.isRefreshing(result()));
 }
 
+/**
+ * Returns the latest successful value from an async result accessor.
+ *
+ * - `Success(value)` => `value`
+ * - `Refreshing(Success(previous))` => `previous.value`
+ * - otherwise => `undefined`
+ */
+export function latest<A, E>(result: Accessor<AsyncResult<A, E>>): Accessor<A | undefined> {
+  return createMemo(() => {
+    const current = result();
+    if (current._tag === "Success") return current.value;
+    if (current._tag === "Refreshing" && current.previous._tag === "Success") {
+      return current.previous.value;
+    }
+    return undefined;
+  });
+}
+
 // ─── Optimistic / actions ─────────────────────────────────────────────────────
 
 export interface OptimisticRef<T> {
@@ -306,8 +324,20 @@ export interface ActionEffectOptions<A, E, R> {
   runtime?: RuntimeLike<R, unknown>;
   optimistic?: (input: A) => void;
   rollback?: (input: A) => void;
+  refresh?: (() => void) | ReadonlyArray<() => void>;
   onSuccess?: (input: A) => void;
   onFailure?: (error: E | { readonly defect: string }, input: A) => void;
+}
+
+function runRefreshHooks(refresh: ActionEffectOptions<any, any, any>["refresh"]): void {
+  if (refresh === undefined) return;
+  if (typeof refresh === "function") {
+    refresh();
+    return;
+  }
+  for (const hook of refresh) {
+    hook();
+  }
 }
 
 /**
@@ -354,6 +384,7 @@ export function actionEffect<A, E, R>(
           if (version !== runVersion) return;
           fiberRef = null;
           setResult(AsyncResult.success(undefined));
+          runRefreshHooks(options?.refresh);
           options?.onSuccess?.(input);
         },
         onFailure: (cause: Cause.Cause<E>): void => {

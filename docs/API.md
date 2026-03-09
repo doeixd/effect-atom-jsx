@@ -132,6 +132,7 @@ Types:
 - `resource(fn)`
 - `resourceWith(runtime, fn)`
 - `isPending(result)`
+- `latest(result)`
 - `use(tag)`
 - `mount(fn, container, layer)`
 - `layerContext(layer, fn, runtime?)`
@@ -153,6 +154,7 @@ Types:
 
 - `createOptimistic(source)`
 - `actionEffect(fn, options?)`
+  - supports `refresh` hooks in options
 
 Types:
 - `OptimisticRef<T>`

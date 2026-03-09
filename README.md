@@ -44,6 +44,7 @@ This project is intentionally close to effect-atom, but not a direct re-export.
 The design is also inspired by Solid 2.0 beta ideas around async UX:
 - initial `Loading` vs revalidation `Refreshing(previous)`
 - `isPending(...)` for refresh state
+- `latest(...)` to read last successful value during refresh
 - optimistic mutation flow via `actionEffect(...)`
 
 ## Install
@@ -184,15 +185,17 @@ console.log(registry.get(count)); // 4
 
 ```ts
 import { Effect } from "effect";
-import { atomEffect, AsyncResult } from "effect-atom-jsx";
+import { atomEffect, AsyncResult, latest } from "effect-atom-jsx";
 
 const user = atomEffect(() =>
   Effect.succeed({ id: 1, name: "Ada" }).pipe(Effect.delay("200 millis"))
 );
+const userLatest = latest(user);
 
 const state = user();
 if (AsyncResult.isLoading(state)) console.log("loading");
 if (AsyncResult.isSuccess(state)) console.log(state.value.name);
+console.log(userLatest()); // last successful value (or undefined)
 ```
 
 ### Service injection with `mount` + `use`
@@ -275,6 +278,7 @@ console.log(todo.value.title); // "Ship release notes"
 
 Helpers:
 - `isPending(result)` returns `true` only during `Refreshing`
+- `latest(result)` returns the last successful value (including while refreshing)
 - `Async({ result, ...slots })` declaratively renders these states
 
 ## Mutation Helpers
@@ -283,7 +287,7 @@ Helpers:
   - `get`, `set`, `clear`, `isPending`
 - `actionEffect(fn, options)` creates an Effect-powered mutation action:
   - cancellation of stale runs
-  - optional `optimistic`, `rollback`, `onSuccess`, `onFailure`
+  - optional `optimistic`, `rollback`, `refresh`, `onSuccess`, `onFailure`
   - `result: Accessor<AsyncResult<void, E>>`
   - `pending: Accessor<boolean>` for loading/refreshing mutation state
 
