@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Effect } from "effect";
+import { Exit, Option } from "effect";
 import * as Atom from "../Atom.js";
 import * as AtomRef from "../AtomRef.js";
 import * as Hydration from "../Hydration.js";
@@ -111,5 +112,26 @@ describe("effect-atom style API", () => {
     const failure = Result.failure<number, string>("nope");
     expect(Result.isFailure(failure)).toBe(true);
     expect(Result.isNotInitial(failure)).toBe(true);
+  });
+
+  it("supports Result fromExit/map/match/all helpers", () => {
+    const ok = Result.fromExit(Exit.succeed(3));
+    expect(Result.isSuccess(ok)).toBe(true);
+
+    const mapped = Result.map(ok, (n) => n * 2);
+    expect(Result.isSuccess(mapped) && mapped.value === 6).toBe(true);
+
+    const text = Result.match(mapped, {
+      onInitial: () => "i",
+      onSuccess: (v) => `s:${v}`,
+      onFailure: () => "f",
+    });
+    expect(text).toBe("s:6");
+
+    const collected = Result.all([Result.success(1), Result.success(2)] as const);
+    expect(Result.isSuccess(collected) && collected.value[1] === 2).toBe(true);
+
+    const waiting = Result.waitingFrom(Option.some(Result.success("x")));
+    expect(Result.isWaiting(waiting)).toBe(true);
   });
 });

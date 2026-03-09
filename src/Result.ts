@@ -1,4 +1,5 @@
 import { AsyncResult, type Defect } from "./effect-ts.js";
+import { Cause, Exit, Option, pipe } from "effect";
 
 export type Initial<A, E = never> = {
   readonly _tag: "Initial";
@@ -20,6 +21,13 @@ export type Failure<A, E = never> = {
 };
 
 export type Result<A, E = never> = Initial<A, E> | Success<A, E> | Failure<A, E>;
+
+export const isResult = (u: unknown): u is Result<unknown, unknown> =>
+  typeof u === "object" && u !== null && "_tag" in u && (
+    (u as { _tag?: string })._tag === "Initial"
+    || (u as { _tag?: string })._tag === "Success"
+    || (u as { _tag?: string })._tag === "Failure"
+  );
 
 /**
  * Construct an initial result value.
@@ -93,6 +101,38 @@ export function fromAsyncResult<A, E>(
   return failure({ defect: value.cause });
 }
 
+export function waitingFrom<A, E>(previous: Option.Option<Result<A, E>>): Result<A, E> {
+  return Option.match(previous, {
+    onNone: () => initial(true),
+    onSome: (value) => waiting(value),
+  });
+}
+
+export function fromExit<A, E>(exit: Exit.Exit<A, E>): Success<A, E> | Failure<A, E> {
+  return Exit.match(exit, {
+    onSuccess: (value) => success(value),
+    onFailure: (cause) => {
+      const err = Cause.findErrorOption(cause);
+      return Option.match(err, {
+        onNone: () => failure({ defect: Cause.pretty(cause) } as unknown as E),
+        onSome: (e) => failure(e as E),
+      });
+    },
+  });
+}
+
+export function fromExitWithPrevious<A, E>(
+  exit: Exit.Exit<A, E>,
+  previous: Option.Option<Result<A, E>>,
+): Success<A, E> | Failure<A, E> {
+  const next = fromExit(exit);
+  if (next._tag === "Success") return next;
+  const prev = Option.getOrUndefined(previous);
+  return next.previousSuccess === null && prev?._tag === "Success"
+    ? failure(next.error, { previousSuccess: prev })
+    : next;
+}
+
 export function toAsyncResult<A, E>(
   value: Result<A, E>,
 ): AsyncResult<A, E> {
@@ -107,6 +147,76 @@ export function toAsyncResult<A, E>(
   return value.waiting && value.previousSuccess !== null
     ? AsyncResult.refreshing(AsyncResult.success(value.previousSuccess.value))
     : AsyncResult.failure(value.error as E);
+}
+
+export function value<A, E>(self: Result<A, E>): Option.Option<A> {
+  return self._tag === "Success" ? Option.some(self.value) : Option.none();
+}
+
+export function getOrElse<A, E>(
+  self: Result<A, E>,
+  orElse: () => A,
+): A {
+  return self._tag === "Success" ? self.value : orElse();
+}
+
+export function getOrThrow<A, E>(self: Result<A, E>): A {
+  if (self._tag === "Success") return self.value;
+  if (self._tag === "Failure") {
+    if (typeof self.error === "object" && self.error !== null && "defect" in self.error) {
+      throw new Error((self.error as { readonly defect: string }).defect);
+    }
+    throw self.error;
+  }
+  throw new Error("Result is Initial");
+}
+
+export function map<A, E, B>(self: Result<A, E>, f: (a: A) => B): Result<B, E> {
+  if (self._tag === "Success") return success(f(self.value), { waiting: self.waiting, timestamp: self.timestamp });
+  if (self._tag === "Failure") {
+    return failure<B, E>(self.error as E | { readonly defect: string }, {
+      waiting: self.waiting,
+      previousSuccess: self.previousSuccess ? success(f(self.previousSuccess.value)) : null,
+    });
+  }
+  return initial(self.waiting);
+}
+
+export function flatMap<A, E, B, E2>(
+  self: Result<A, E>,
+  f: (a: A) => Result<B, E2>,
+): Result<B, E | E2> {
+  if (self._tag === "Success") return f(self.value);
+  if (self._tag === "Failure") return failure(self.error as E | E2 | { readonly defect: string }, {
+    waiting: self.waiting,
+    previousSuccess: null,
+  });
+  return initial(self.waiting);
+}
+
+export function match<A, E, R>(
+  self: Result<A, E>,
+  handlers: {
+    onInitial: () => R;
+    onSuccess: (a: A) => R;
+    onFailure: (e: E | { readonly defect: string }) => R;
+  },
+): R {
+  if (self._tag === "Initial") return handlers.onInitial();
+  if (self._tag === "Success") return handlers.onSuccess(self.value);
+  return handlers.onFailure(self.error);
+}
+
+export function all<A extends ReadonlyArray<Result<any, any>>>(
+  results: A,
+): Result<{ [K in keyof A]: A[K] extends Result<infer X, any> ? X : never }, A[number] extends Result<any, infer XE> ? XE : never> {
+  const values: unknown[] = [];
+  for (const r of results) {
+    if (r._tag === "Initial") return initial(r.waiting) as any;
+    if (r._tag === "Failure") return failure(r.error, { waiting: r.waiting }) as any;
+    values.push(r.value);
+  }
+  return success(values as any);
 }
 
 /** Convert a Defect to a structured failure payload. */

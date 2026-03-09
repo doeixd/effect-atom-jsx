@@ -40,6 +40,10 @@ This project is intentionally close to effect-atom, but not a direct re-export.
   - `Registry.make` with `get/set/update/modify/refresh/subscribe/dispose`
 - `Hydration` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Hydration`)
   - `Hydration.dehydrate`, `Hydration.hydrate`, `Hydration.toValues`
+- `AtomRpc` namespace (from `effect-atom-jsx` or `effect-atom-jsx/AtomRpc`)
+  - `AtomRpc.Tag()(id, { call, runtime? })` with `query/mutation/refresh`
+- `AtomHttpApi` namespace (from `effect-atom-jsx` or `effect-atom-jsx/AtomHttpApi`)
+  - `AtomHttpApi.Tag()(id, { call, runtime? })` with grouped `query/mutation/refresh`
 
 The design is also inspired by Solid 2.0 beta ideas around async UX:
 - initial `Loading` vs revalidation `Refreshing(previous)`
@@ -299,6 +303,7 @@ Helpers:
 - Counter + async sample: `examples/counter/`
 - Full TodoMVC with optimistic mutations and service injection: `examples/todomvc/`
   - includes a `TodoApiFromRpc(...)` adapter so an Effect RPC client can be mounted as the backend service layer
+- **New:** Advanced APIs example showing `AtomRpc` and `AtomHttpApi`: `examples/rpc-httpapi/`
 
 ## Documentation
 

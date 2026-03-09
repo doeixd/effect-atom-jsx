@@ -33,9 +33,15 @@ Types:
 - `Result.failure(error, options?)`
 - `Result.isInitial/isSuccess/isFailure/isWaiting`
 - `Result.isNotInitial`
+- `Result.isResult`
 - `Result.fromAsyncResult(...)`
 - `Result.toAsyncResult(...)`
 - `Result.waiting(...)`
+- `Result.waitingFrom(...)`
+- `Result.fromExit(...)`
+- `Result.fromExitWithPrevious(...)`
+- `Result.value/getOrElse/getOrThrow`
+- `Result.map/flatMap/match/all`
 
 Type:
 - `Result.Result<A, E>`
@@ -75,6 +81,28 @@ Types:
 Types:
 - `Hydration.DehydratedAtom`
 - `Hydration.DehydratedAtomValue`
+
+### `AtomRpc` (`src/AtomRpc.ts`)
+
+- `AtomRpc.Tag()(id, { call, runtime? })`
+- client members:
+  - `mutation(tag)`
+  - `query(tag, payload, options?)`
+  - `refresh(tag, payload)`
+
+Type:
+- `AtomRpc.AtomRpcClient<Defs, R>`
+
+### `AtomHttpApi` (`src/AtomHttpApi.ts`)
+
+- `AtomHttpApi.Tag()(id, { call, runtime? })`
+- client members:
+  - `mutation(group, endpoint)`
+  - `query(group, endpoint, request)`
+  - `refresh(group, endpoint, request)`
+
+Type:
+- `AtomHttpApi.AtomHttpApiClient<Defs, R>`
 
 ## Reactive Core (`src/api.ts`)
 

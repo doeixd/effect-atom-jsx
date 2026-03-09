@@ -42,7 +42,9 @@ export {
 
 // ─── Effect-atom style namespace APIs ─────────────────────────────────────────
 export * as Atom from "./Atom.js";
+export * as AtomHttpApi from "./AtomHttpApi.js";
 export * as AtomRef from "./AtomRef.js";
+export * as AtomRpc from "./AtomRpc.js";
 export * as Hydration from "./Hydration.js";
 export * as Result from "./Result.js";
 export * as Registry from "./Registry.js";

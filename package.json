@@ -19,9 +19,17 @@
       "import": "./dist/Atom.js",
       "types": "./dist/Atom.d.ts"
     },
+    "./AtomHttpApi": {
+      "import": "./dist/AtomHttpApi.js",
+      "types": "./dist/AtomHttpApi.d.ts"
+    },
     "./AtomRef": {
       "import": "./dist/AtomRef.js",
       "types": "./dist/AtomRef.d.ts"
+    },
+    "./AtomRpc": {
+      "import": "./dist/AtomRpc.js",
+      "types": "./dist/AtomRpc.d.ts"
     },
     "./Hydration": {
       "import": "./dist/Hydration.js",
