@@ -1,6 +1,6 @@
 {
   "name": "effect-atom-jsx",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Effect-native fine-grained reactive JSX runtime with Layer-powered service injection, async atoms, and optimistic actions.",
   "type": "module",
   "main": "./dist/index.js",
