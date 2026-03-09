@@ -34,11 +34,18 @@ export {
 // ─── Atom API (Jotai-style ergonomics on top of reactive core) ────────────────
 export {
   createAtom,
-  type Atom,
+  type Atom as AtomType,
   type WritableAtom,
   type DerivedAtom,
   type AtomGetter,
 } from "./effect-ts.js";
+
+// ─── Effect-atom style namespace APIs ─────────────────────────────────────────
+export * as Atom from "./Atom.js";
+export * as AtomRef from "./AtomRef.js";
+export * as Hydration from "./Hydration.js";
+export * as Result from "./Result.js";
+export * as Registry from "./Registry.js";
 
 // ─── Effect-TS integration ───────────────────────────────────────────────────
 export {

@@ -1,13 +1,29 @@
 # effect-atom-jsx
 
 `effect-atom-jsx` is basically:
-- an **effect-atom style API** (`signal`, `computed`, `atomEffect`, optimistic actions)
+- an **effect-atom style API as the main API** (`Atom`, `Result`, `Registry`)
 - plus a **`dom-expressions` JSX runtime target**
 - with **Effect v4 beta** runtime/service integration built in
 
 Compatibility note:
-- this package currently provides an effect-atom-compatible ergonomic surface, implemented natively for Effect v4
-- it does not currently depend on `@effect-atom/atom` directly (that line is currently Effect v3-oriented)
+- this package provides an effect-atom-like ergonomic surface as first-class API, implemented natively for Effect v4
+- it does not currently depend on `@effect-atom/atom` directly (that package line is currently Effect v3-oriented)
+
+## Main API (Effect-Atom Style)
+
+- `Atom` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Atom`)
+  - constructors: `Atom.make`, `Atom.readable`, `Atom.writable`
+  - graph helpers: `Atom.family`, `Atom.map`, `Atom.withFallback`, `Atom.batch`
+  - effect helpers: `Atom.get`, `Atom.set`, `Atom.update`, `Atom.modify`, `Atom.refresh`, `Atom.subscribe`
+- `AtomRef` namespace (from `effect-atom-jsx` or `effect-atom-jsx/AtomRef`)
+  - `AtomRef.make`, `AtomRef.collection`, `ref.prop(...)`, `ref.set(...)`, `ref.update(...)`
+- `Result` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Result`)
+  - `Result.initial`, `Result.success`, `Result.failure`
+  - guards and waiting helpers
+- `Registry` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Registry`)
+  - `Registry.make` with `get/set/update/modify/refresh/subscribe/dispose`
+- `Hydration` namespace (from `effect-atom-jsx` or `effect-atom-jsx/Hydration`)
+  - `Hydration.dehydrate`, `Hydration.hydrate`, `Hydration.toValues`
 
 The design is also inspired by Solid 2.0 beta ideas around async UX:
 - initial `Loading` vs revalidation `Refreshing(previous)`
@@ -46,13 +62,13 @@ This package is intended to be used with `babel-plugin-jsx-dom-expressions` and 
 
 `mount(...)` creates a `ManagedRuntime` from your `Layer` and injects it into the component tree.
 
-### 3) Use services + async atoms
+### 3) Use `Atom` / `Registry` + Effect services
 
-Use `use(Tag)` for sync service access and `resource(...)` / `atomEffect(...)` for reactive async state.
+Use `Atom`/`Registry` for local graph state, and `use(Tag)` + `resource(...)` for Effect-powered async data.
 
 ```ts
 import { Effect, Layer, ServiceMap } from "effect";
-import { mount, use, resource, signal, Async } from "effect-atom-jsx";
+import { mount, use, resource, Async, Atom, Registry } from "effect-atom-jsx";
 
 const CounterApi = ServiceMap.Service<{
   readonly load: () => Effect.Effect<number>;
@@ -63,13 +79,14 @@ const CounterApiLive = Layer.succeed(CounterApi, {
 });
 
 function App() {
-  const count = signal(0);
+  const registry = Registry.make();
+  const count = Atom.make(0);
   const remote = resource(() => use(CounterApi).load());
 
   return (
     <main>
-      <button onClick={() => count.update((n) => n + 1)}>
-        Local: {count.get()}
+      <button onClick={() => registry.update(count, (n) => n + 1)}>
+        Local: {registry.get(count)}
       </button>
       <Async
         result={remote()}
@@ -91,7 +108,7 @@ mount(() => App(), document.getElementById("root")!, CounterApiLive);
   - provides typed effects, services, layers, and managed runtimes
   - you model reads/writes as `Effect.Effect<A, E, R>`
 - **effect-atom style reactivity** (this library)
-  - provides ergonomic reactive primitives like `signal`, `computed`, `atomEffect`, and `actionEffect`
+  - provides ergonomic primitives like `Atom`, `Registry`, `AtomRef`, `resource`, and `actionEffect`
   - bridges reactive invalidation to Effect fibers with interruption/cancellation
 - **dom-expressions JSX runtime**
   - Babel turns JSX into fine-grained DOM operations against `effect-atom-jsx/runtime`
@@ -122,24 +139,29 @@ In practice:
 
 ### Mental model (quick)
 
-- **Local state**: `signal` / `computed`
+- **Local state**: `Atom` / `Registry`
   - fast in-memory reactive values for UI state
 - **Service state**: `resource` / `atomEffect`
   - Effect-powered async reads with typed errors and cancellation
-- **Mutation state**: `actionEffect` + `createOptimistic`
+- **Mutation state**: `actionEffect` + `createOptimistic` (or `AtomRef` for object-like local editing)
   - optimistic write flow with rollback and refresh hooks
 
-### Local state with `signal` / `computed`
+### Local graph state with `Atom` / `Registry`
 
 ```ts
-import { signal, computed } from "effect-atom-jsx";
+import { Effect } from "effect";
+import { Atom, Registry } from "effect-atom-jsx";
 
-const count = signal(1);
-const doubled = computed(() => count.get() * 2);
+const count = Atom.make(1);
+const doubled = Atom.map(count, (n) => n * 2);
+const registry = Registry.make();
 
-count.set(3);
-console.log(count.get());   // 3
-console.log(doubled.get()); // 6
+registry.set(count, 3);
+console.log(registry.get(count));   // 3
+console.log(registry.get(doubled)); // 6
+
+Effect.runSync(Atom.update(count, (n) => n + 1));
+console.log(registry.get(count)); // 4
 ```
 
 ### Effect-backed async state with `atomEffect`
@@ -161,14 +183,15 @@ if (AsyncResult.isSuccess(state)) console.log(state.value.name);
 
 ```ts
 import { Effect, Layer, ServiceMap } from "effect";
-import { mount, use, resource } from "effect-atom-jsx";
+import { mount, use, resource, Result } from "effect-atom-jsx";
 
 const Api = ServiceMap.Service<{ getMessage: () => Effect.Effect<string> }>("Api");
 const ApiLive = Layer.succeed(Api, { getMessage: () => Effect.succeed("hello") });
 
 function App() {
   const message = resource(() => use(Api).getMessage());
-  return <div>{message()._tag === "Success" ? message().value : "..."}</div>;
+  const state = Result.fromAsyncResult(message());
+  return <div>{Result.isSuccess(state) ? state.value : "..."}</div>;
 }
 
 mount(() => App(), document.getElementById("root")!, ApiLive);
@@ -178,10 +201,11 @@ mount(() => App(), document.getElementById("root")!, ApiLive);
 
 ```ts
 import { Effect } from "effect";
-import { signal, createOptimistic, actionEffect } from "effect-atom-jsx";
+import { Atom, Registry, createOptimistic, actionEffect } from "effect-atom-jsx";
 
-const savedCount = signal(0);
-const optimisticCount = createOptimistic(() => savedCount.get());
+const registry = Registry.make();
+const savedCount = Atom.make(0);
+const optimisticCount = createOptimistic(() => registry.get(savedCount));
 
 const save = actionEffect(
   (next: number) => Effect.succeed(next).pipe(Effect.delay("250 millis")),
@@ -190,7 +214,7 @@ const save = actionEffect(
     rollback: () => optimisticCount.clear(),
     onSuccess: (next) => {
       optimisticCount.clear();
-      savedCount.set(next);
+      registry.set(savedCount, next);
     },
   },
 );
@@ -199,10 +223,22 @@ save.run(10);
 console.log(optimisticCount.get()); // 10 immediately
 ```
 
-## Core API
+### Object editing with `AtomRef`
+
+```ts
+import { AtomRef } from "effect-atom-jsx";
+
+const todo = AtomRef.make({ title: "Write docs", done: false });
+const title = todo.prop("title");
+
+title.set("Ship release notes");
+console.log(todo.value.title); // "Ship release notes"
+```
+
+## Additional APIs
 
 - `signal(initial)` / `computed(fn)`
-  - object-oriented atom API (`get`, `set`, `update`, `subscribe`)
+  - optional convenience API layered on the same reactive core
 - `atomEffect(() => Effect)`
   - tracked reactive async computation with cancellation on dependency changes
 - `mount(fn, container, layer)`
@@ -250,7 +286,7 @@ Helpers:
 
 ```ts
 import { Effect, Layer, ServiceMap } from "effect";
-import { mount, use, resource, signal, actionEffect, createOptimistic } from "effect-atom-jsx";
+import { mount, use, resource, Atom, Registry, actionEffect, createOptimistic } from "effect-atom-jsx";
 
 const Api = ServiceMap.Service<{ load: () => Effect.Effect<number>; save: (n: number) => Effect.Effect<void, string> }>("Api");
 const ApiLive = Layer.succeed(Api, {
@@ -259,16 +295,17 @@ const ApiLive = Layer.succeed(Api, {
 });
 
 function App() {
-  const count = signal(0);
+  const registry = Registry.make();
+  const count = Atom.make(0);
   const remote = resource(() => use(Api).load());
-  const optimistic = createOptimistic(() => count.get());
+  const optimistic = createOptimistic(() => registry.get(count));
 
   const save = actionEffect(
     (next: number) => use(Api).save(next),
     {
       optimistic: (next) => optimistic.set(next),
       rollback: () => optimistic.clear(),
-      onSuccess: (next) => count.set(next),
+      onSuccess: (next) => registry.set(count, next),
     },
   );
 

@@ -10,6 +10,8 @@ import {
   createSignal,
   createMemo,
   createAtom,
+  Atom,
+  Registry,
   batch,
   onCleanup,
 } from "effect-atom-jsx";
@@ -62,6 +64,38 @@ function AtomCounter() {
   );
 }
 
+// ─── Effect-atom style namespace API ──────────────────────────────────────────
+
+const atomCount = Atom.make(0);
+const atomDoubled = Atom.map(atomCount, (n) => n * 2);
+const atomRegistry = Registry.make();
+
+function EffectAtomStyleCounter() {
+  const [count, setCount] = createSignal(atomRegistry.get(atomCount));
+  const [doubled, setDoubled] = createSignal(atomRegistry.get(atomDoubled));
+
+  const unsubCount = atomRegistry.subscribe(atomCount, setCount);
+  const unsubDoubled = atomRegistry.subscribe(atomDoubled, setDoubled);
+
+  onCleanup(() => {
+    unsubCount();
+    unsubDoubled();
+  });
+
+  return (
+    <div class="counter">
+      <h2>Effect-Atom Style (Atom/Registry)</h2>
+      <p>
+        Count: <strong>{count()}</strong>
+        {" "}- doubled: <strong>{doubled()}</strong>
+      </p>
+      <button onClick={() => atomRegistry.update(atomCount, (n) => n - 1)}>−</button>
+      <button onClick={() => atomRegistry.set(atomCount, 0)}>Reset</button>
+      <button onClick={() => atomRegistry.update(atomCount, (n) => n + 1)}>+</button>
+    </div>
+  );
+}
+
 // ─── App root ─────────────────────────────────────────────────────────────────
 
 export function App() {
@@ -71,6 +105,7 @@ export function App() {
       <p>Fine-grained reactivity powered by Effect-TS primitives.</p>
       <Counter />
       <AtomCounter />
+      <EffectAtomStyleCounter />
       {/* Two instances share the same globalCount atom */}
       <AtomCounter />
     </main>

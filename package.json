@@ -14,6 +14,26 @@
     "./runtime": {
       "import": "./dist/runtime.js",
       "types": "./dist/runtime.d.ts"
+    },
+    "./Atom": {
+      "import": "./dist/Atom.js",
+      "types": "./dist/Atom.d.ts"
+    },
+    "./AtomRef": {
+      "import": "./dist/AtomRef.js",
+      "types": "./dist/AtomRef.d.ts"
+    },
+    "./Hydration": {
+      "import": "./dist/Hydration.js",
+      "types": "./dist/Hydration.d.ts"
+    },
+    "./Result": {
+      "import": "./dist/Result.js",
+      "types": "./dist/Result.d.ts"
+    },
+    "./Registry": {
+      "import": "./dist/Registry.js",
+      "types": "./dist/Registry.d.ts"
     }
   },
   "files": [
