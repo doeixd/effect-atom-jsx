@@ -41,16 +41,17 @@ effect-atom-jsx = Effect v4 services + Atom/Registry state + dom-expressions JSX
 Components are plain functions that run once. Reactive expressions in JSX update only the specific DOM nodes that depend on them.
 
 ```tsx
-import { createSignal, createMemo, render } from "effect-atom-jsx";
+import { Atom, Registry, render } from "effect-atom-jsx";
 
 function Counter() {
-  const [count, setCount] = createSignal(0);
-  const doubled = createMemo(() => count() * 2);
+  const count = Atom.make(0);
+  const registry = Registry.make();
+  const doubled = Atom.map(count, (n) => n * 2);
 
   return (
     <div>
-      <p>Count: {count()} (doubled: {doubled()})</p>
-      <button onClick={() => setCount((c) => c + 1)}>+</button>
+      <p>Count: {registry.get(count)} (doubled: {registry.get(doubled)})</p>
+      <button onClick={() => registry.update(count, (c) => c + 1)}>+</button>
     </div>
   );
 }
