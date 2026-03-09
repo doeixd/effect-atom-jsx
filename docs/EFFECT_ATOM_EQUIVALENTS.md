@@ -16,6 +16,7 @@ top of the JSX runtime + Effect v4 integration.
 | `Atom.runtime(layer)` | `Atom.runtime(layer)` |
 | `runtime.atom(effect)` | `runtime.atom(effect)` |
 | `Atom.fn(...)` / `runtime.fn(...)` | `Atom.fn(...)` / `runtime.fn(...)` |
+| `createProjection(...)` / derived store | `Atom.projection(...)` / `Atom.projectionAsync(...)` |
 | reactivity keys (`withReactivity`, invalidation) | `Atom.withReactivity(...)`, `Atom.invalidateReactivity(...)` |
 | stream pull atom (`Atom.pull`) | `Atom.pull(stream, { chunkSize? })` |
 | out-of-order chunk assembly | `Atom.Stream.applyChunk(...)` + `Atom.Stream.hydrateState(...)` |
@@ -54,6 +55,39 @@ const saveAtom = Atom.fn((payload: { id: string }) =>
 
 // run
 Effect.runSync(Atom.set(saveAtom, { id: "1" }));
+```
+
+## Projection Atoms
+
+```ts
+import { Atom } from "effect-atom-jsx";
+
+const selectedId = Atom.make("a");
+
+const selectedMap = Atom.projection(
+  (draft: Record<string, boolean>, get) => {
+    const id = get(selectedId);
+    draft[id] = true;
+  },
+  {},
+);
+```
+
+Async projection:
+
+```ts
+import { Atom } from "effect-atom-jsx";
+import { Effect } from "effect";
+
+const users = Atom.projectionAsync(
+  (_draft, _get) =>
+    Effect.succeed([
+      { id: "1", name: "Ada" },
+      { id: "2", name: "Grace" },
+    ]),
+  [] as Array<{ id: string; name: string }>,
+  { runtime: myManagedRuntime },
+);
 ```
 
 ## Reactivity Keys

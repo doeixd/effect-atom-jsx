@@ -20,6 +20,8 @@ The core reactive state primitive. Atoms are plain objects with `read`/`write` m
 - **`Atom.keepAlive(atom)`** — Compatibility helper matching effect-atom ergonomics (identity in this package).
 - **`Atom.fn(effect, options?)`** / **`Atom.fn(runtime, effect, options?)`** — Create function-style mutation atoms from Effect functions.
 - **`Atom.pull(stream, options?)`** — Create pull-based stream pagination atom. Call `set(void 0)` to pull next chunk.
+- **`Atom.projection(derive, initial, options?)`** — Mutable derived projection. Mutate draft or return a next value with keyed reconciliation.
+- **`Atom.projectionAsync(derive, initial, options?)`** — Async projection variant returning `AsyncResult<T, E>`. Uses `options.runtime` or ambient mount runtime.
 - **`Atom.searchParam(name, codec?)`** — Atom bound to URL search params (browser environments).
 - **`Atom.kvs({ key, defaultValue, ... })`** — Atom backed by key-value storage (`localStorage` by default).
 - **`Atom.withReactivity(atom, keys)`** / **`Atom.invalidateReactivity(keys)`** — Register and invalidate logical reactivity keys.
@@ -33,6 +35,9 @@ const todoById = Atom.family((id: string) => Atom.make({ id, done: false }));
 const runtime = Atom.runtime(MyLayer);
 const userAtom = runtime.atom(Effect.service(UserApi).pipe(Effect.flatMap((api) => api.me())));
 const incrementAtom = runtime.fn((n: number) => Effect.sync(() => console.log(n)));
+const selectedMap = Atom.projection((draft: Record<string, boolean>) => {
+  draft["a"] = true;
+}, {});
 ```
 
 ### Derivations
@@ -92,6 +97,7 @@ const user = Atom.fromResource(() => useService(Api).getUser("1"));
 - `Atom.Context` — Callable read context with `get`, `refresh`, `set`, `result`, `addFinalizer` methods.
 - `Atom.WriteContext<A>` — Write context with `get`, `set`, `refreshSelf`, `setSelf`, `result`, `addFinalizer`.
 - `Atom.AtomRuntime<R, E>` — Runtime wrapper with `managed`, `atom(...)`, `fn(...)`, and `dispose()`.
+- `Atom.ProjectionOptions<T>` / `Atom.ProjectionAsyncOptions<T, R>` — Projection configuration.
 
 <br />
 

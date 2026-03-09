@@ -108,6 +108,78 @@ function toEffectResult<A, E>(
   }
 }
 
+function isRecord(u: unknown): u is Record<string, unknown> {
+  return typeof u === "object" && u !== null && !Array.isArray(u);
+}
+
+function deepCloneProjectionValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => deepCloneProjectionValue(item)) as unknown as T;
+  }
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = deepCloneProjectionValue(v);
+    }
+    return out as T;
+  }
+  return value;
+}
+
+function shallowEqualRecord(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.is(a[key], b[key])) return false;
+  }
+  return true;
+}
+
+function reconcileProjectionValue<T>(
+  previous: T,
+  next: T,
+  key: string,
+): T {
+  if (Array.isArray(previous) && Array.isArray(next)) {
+    const prevByKey = new Map<unknown, unknown>();
+    for (const item of previous) {
+      if (isRecord(item) && key in item) {
+        prevByKey.set(item[key], item);
+      }
+    }
+
+    const out = next.map((item) => {
+      if (!isRecord(item) || !(key in item)) return item;
+      const prevItem = prevByKey.get(item[key]);
+      if (!isRecord(prevItem)) return item;
+      if (shallowEqualRecord(prevItem, item)) return prevItem;
+
+      const merged: Record<string, unknown> = { ...item };
+      for (const field of Object.keys(merged)) {
+        if (Object.is(prevItem[field], merged[field])) {
+          merged[field] = prevItem[field];
+        }
+      }
+      return merged;
+    });
+
+    return out as unknown as T;
+  }
+
+  if (isRecord(previous) && isRecord(next)) {
+    const merged: Record<string, unknown> = { ...next };
+    for (const field of Object.keys(merged)) {
+      if (Object.is(previous[field], merged[field])) {
+        merged[field] = previous[field];
+      }
+    }
+    return merged as T;
+  }
+
+  return next;
+}
+
 /**
  * Type guard for unknown values.
  *
@@ -511,8 +583,10 @@ export interface OOOStreamState<A> {
   readonly complete: boolean;
 }
 
-/** Build an empty out-of-order stream state. */
-/** @deprecated Use `Atom.Stream.emptyState()` instead. */
+/**
+ * Build an empty out-of-order stream state.
+ * @deprecated Use `Atom.Stream.emptyState()` instead.
+ */
 export function emptyOOOStreamState<A>(): OOOStreamState<A> {
   return {
     version: 1,
@@ -528,8 +602,8 @@ export function emptyOOOStreamState<A>(): OOOStreamState<A> {
  * Merge one out-of-order chunk into stream state.
  *
  * Duplicate or already-consumed chunks are ignored.
+ * @deprecated Use `Atom.Stream.applyChunk()` instead.
  */
-/** @deprecated Use `Atom.Stream.applyChunk()` instead. */
 export function applyOOOStreamChunk<A>(
   state: OOOStreamState<A>,
   chunk: StreamChunk<A>,
@@ -576,8 +650,8 @@ export function applyOOOStreamChunk<A>(
  * Hydrate serialized out-of-order stream state.
  *
  * Invalid payloads fall back to an empty state.
+ * @deprecated Use `Atom.Stream.hydrateState()` instead.
  */
-/** @deprecated Use `Atom.Stream.hydrateState()` instead. */
 export function hydrateOOOStreamState<A>(
   value: unknown,
 ): OOOStreamState<A> {
@@ -801,6 +875,90 @@ export function kvs<A>(options: {
       storage.setItem(options.key, JSON.stringify(encode(next)));
     },
   );
+}
+
+export interface ProjectionOptions<T> {
+  /**
+   * Key used for array reconciliation when derive returns a new array value.
+   *
+   * Defaults to `"id"`.
+   */
+  readonly key?: string;
+  /**
+   * Optional equality function to keep previous identity when logically equal.
+   */
+  readonly equals?: (left: T, right: T) => boolean;
+}
+
+/**
+ * Create a mutable derived atom (projection).
+ *
+ * On each read, `derive` runs against a deep-cloned draft of the previous
+ * projection value. You can either mutate the draft in-place or return a new
+ * value. Returned arrays/records are reconciled to preserve stable identities
+ * for unchanged fields/items.
+ */
+export function projection<T>(
+  derive: (draft: T, get: Context) => void | T,
+  initial: T,
+  options?: ProjectionOptions<T>,
+): Atom<T> {
+  let current = initial;
+  const key = options?.key ?? "id";
+
+  return readable((get) => {
+    const draft = deepCloneProjectionValue(current);
+    const returned = derive(draft, get);
+    const candidate = returned === undefined ? draft : returned;
+    const reconciled = reconcileProjectionValue(current, candidate, key);
+
+    if (options?.equals ? options.equals(current, reconciled) : Object.is(current, reconciled)) {
+      return current;
+    }
+
+    current = reconciled;
+    return current;
+  });
+}
+
+export interface ProjectionAsyncOptions<T, R>
+  extends ProjectionOptions<T> {
+  readonly runtime?: RuntimeLike<R, unknown>;
+}
+
+/**
+ * Async projection that yields `AsyncResult<T, E>`.
+ *
+ * This composes projection semantics with `Atom.query(...)`. Reads made through
+ * `get(...)` are tracked reactively; stale runs are interrupted by query
+ * semantics when dependencies change.
+ */
+export function projectionAsync<T, E, R = never>(
+  derive: (draft: T, get: Context) => Effect.Effect<void | T, E, R>,
+  initial: T,
+  options?: ProjectionAsyncOptions<T, R>,
+): Atom<AsyncResult<T, E>> {
+  let current = initial;
+  const key = options?.key ?? "id";
+
+  const run = () => Effect.suspend(() => {
+    const draft = deepCloneProjectionValue(current);
+    return derive(draft, defaultContext).pipe(
+      Effect.map((returned) => {
+        const candidate = (returned === undefined ? draft : returned) as T;
+        const reconciled = reconcileProjectionValue(current, candidate, key);
+        if (options?.equals ? options.equals(current, reconciled) : Object.is(current, reconciled)) {
+          return current;
+        }
+        current = reconciled;
+        return current;
+      }),
+    );
+  });
+
+  return options?.runtime === undefined
+    ? query(run)
+    : query(options.runtime, run);
 }
 
 export function map<A, B>(f: (a: A) => B): (self: Atom<A>) => Atom<B>;

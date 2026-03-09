@@ -49,6 +49,84 @@ describe("effect-atom style API", () => {
     expect(Effect.runSync(Atom.get(fallback))).toBe(9);
   });
 
+  it("supports Atom.projection with mutable draft updates", () => {
+    const base = Atom.make(1);
+    const projected = Atom.projection(
+      (draft: { value: number; seen: number[] }, get) => {
+        const n = get(base);
+        draft.value = n * 2;
+        draft.seen.push(n);
+      },
+      { value: 0, seen: [] },
+    );
+
+    expect(Effect.runSync(Atom.get(projected))).toEqual({ value: 2, seen: [1] });
+    Effect.runSync(Atom.set(base, 2));
+    expect(Effect.runSync(Atom.get(projected))).toEqual({ value: 4, seen: [1, 2] });
+  });
+
+  it("supports Atom.projection return-value reconciliation for arrays", () => {
+    const users = Atom.make([
+      { id: 1, name: "A" },
+      { id: 2, name: "B" },
+    ]);
+
+    const projected = Atom.projection(
+      (_draft, get) =>
+        get(users).map((u) => ({ ...u, label: `${u.id}:${u.name}` })),
+      [] as Array<{ id: number; name: string; label: string }>,
+      { key: "id" },
+    );
+
+    const first = Effect.runSync(Atom.get(projected));
+    Effect.runSync(Atom.set(users, [
+      { id: 1, name: "A" },
+      { id: 2, name: "Bee" },
+    ]));
+    const second = Effect.runSync(Atom.get(projected));
+
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).not.toBe(first[1]);
+    expect(second[1]?.label).toBe("2:Bee");
+  });
+
+  it("keeps previous identity when projection equals() returns true", () => {
+    const source = Atom.make<number>(1);
+    const projected = Atom.projection(
+      (draft: { value: number }, get) => {
+        draft.value = get(source) * 2;
+      },
+      { value: 2 },
+      {
+        equals: (a, b) => a.value === b.value,
+      },
+    );
+
+    const first = Effect.runSync(Atom.get(projected));
+    Effect.runSync(Atom.set(source, 1));
+    const second = Effect.runSync(Atom.get(projected));
+
+    expect(second).toBe(first);
+  });
+
+  it("does not mutate prior projection snapshots", () => {
+    const source = Atom.make<number>(1);
+    const projected = Atom.projection(
+      (draft: { nested: { value: number } }, get) => {
+        draft.nested.value = get(source);
+      },
+      { nested: { value: 0 } },
+    );
+
+    const first = Effect.runSync(Atom.get(projected));
+    expect(first.nested.value).toBe(1);
+
+    Effect.runSync(Atom.set(source, 2));
+    const second = Effect.runSync(Atom.get(projected));
+    expect(second.nested.value).toBe(2);
+    expect(first.nested.value).toBe(1);
+  });
+
   it("supports Atom.modify", () => {
     const count = Atom.make(2);
     const ret = Effect.runSync(Atom.modify(count, (n) => [`was-${n}`, n + 5]));
@@ -172,6 +250,88 @@ describe("effect-atom style API", () => {
     expect(values).toEqual([42]);
     const state = Effect.runSync(Atom.get(fnAtom));
     expect(state._tag === "Success" || state._tag === "Refreshing").toBe(true);
+
+    await rt.dispose();
+  });
+
+  it("supports Atom.projectionAsync for async derived projection state", async () => {
+    const source = Atom.make(1);
+    const rt = Atom.runtime(Layer.empty);
+    const projected = Atom.projectionAsync(
+      (draft: { value: number }, get) =>
+        Effect.sync(() => {
+          draft.value = get(source) * 10;
+        }),
+      { value: 0 },
+      { runtime: rt.managed },
+    );
+
+    await Effect.runPromise(Effect.sleep("10 millis"));
+    const first = Effect.runSync(Atom.get(projected));
+    expect(first._tag).toBe("Success");
+    if (first._tag === "Success") {
+      expect(first.value.value).toBe(10);
+    }
+
+    Effect.runSync(Atom.set(source, 2));
+    await Effect.runPromise(Effect.sleep("10 millis"));
+    const second = Effect.runSync(Atom.get(projected));
+    expect(second._tag).toBe("Success");
+    if (second._tag === "Success") {
+      expect(second.value.value).toBe(20);
+    }
+
+    await rt.dispose();
+  });
+
+  it("supports Atom.projectionAsync failure channel", async () => {
+    const rt = Atom.runtime(Layer.empty);
+    const projected = Atom.projectionAsync<{ value: number }, string>(
+      () => Effect.fail("boom"),
+      { value: 0 },
+      { runtime: rt.managed },
+    );
+
+    await Effect.runPromise(Effect.sleep("10 millis"));
+    const state = Effect.runSync(Atom.get(projected));
+    expect(state._tag).toBe("Failure");
+    if (state._tag === "Failure") {
+      expect(state.error).toBe("boom");
+    }
+
+    await rt.dispose();
+  });
+
+  it("reconciles async projection arrays by key", async () => {
+    const rt = Atom.runtime(Layer.empty);
+    const source = Atom.make<number>(0);
+    const projected = Atom.projectionAsync<Array<{ id: string; value: number }>, never>(
+      (_draft, get) =>
+        Effect.sync(() => {
+          const n = get(source);
+          return [
+            { id: "a", value: 1 },
+            { id: "b", value: n + 1 },
+          ];
+        }),
+      [],
+      { key: "id", runtime: rt.managed },
+    );
+
+    await Effect.runPromise(Effect.sleep("10 millis"));
+    const first = Effect.runSync(Atom.get(projected));
+    expect(first._tag).toBe("Success");
+
+    Effect.runSync(Atom.set(source, 1));
+    await Effect.runPromise(Effect.sleep("10 millis"));
+    const second = Effect.runSync(Atom.get(projected));
+    expect(second._tag).toBe("Success");
+
+    if (first._tag === "Success" && second._tag === "Success") {
+      expect(second.value[0]).toBe(first.value[0]);
+      expect(second.value[1]).not.toBe(first.value[1]);
+      expect(second.value[1]?.value).toBe(2);
+    }
 
     await rt.dispose();
   });
@@ -330,5 +490,20 @@ describe("effect-atom style API", () => {
     const hydrated = Atom.Stream.hydrateState<number>(JSON.parse(JSON.stringify(state)));
     expect(hydrated.items).toEqual([10, 20, 21, 30]);
     expect(hydrated.complete).toBe(true);
+  });
+
+  it("treats duplicate OOO chunks as idempotent", () => {
+    let state = Atom.Stream.emptyState<number>();
+
+    state = Atom.Stream.applyChunk(state, { sequence: 0, items: [1] });
+    const once = state;
+
+    state = Atom.Stream.applyChunk(state, { sequence: 0, items: [1] });
+    expect(state).toBe(once);
+    expect(state.items).toEqual([1]);
+
+    state = Atom.Stream.applyChunk(state, { sequence: 1, items: [2], done: true });
+    expect(state.items).toEqual([1, 2]);
+    expect(state.complete).toBe(true);
   });
 });
