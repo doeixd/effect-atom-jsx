@@ -58,6 +58,10 @@ function Counter() {
 }
 
 render(() => <Counter />, document.getElementById("root")!);
+
+// Vite HMR helper (optional):
+// const hot = (import.meta as ImportMeta & { hot?: ViteHotContext }).hot;
+// renderWithHMR(() => <Counter />, document.getElementById("root")!, hot);
 ```
 
 ### 3. Add Effect services
@@ -353,7 +357,7 @@ import * as AtomSchema from "effect-atom-jsx/AtomSchema";
 
 | Module | Key Exports |
 |--------|-------------|
-| `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `withReactivity`, `invalidateReactivity`, `keepAlive`, `runtime`, `fn`, `pull`, `searchParam`, `kvs`, `batch`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue`, `query` |
+| `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `withReactivity`, `invalidateReactivity`, `keepAlive`, `runtime`, `fn`, `pull`, `Stream.*` (advanced OOO helpers), `searchParam`, `kvs`, `batch`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue`, `query` |
 | `AtomRef` | `make`, `collection` |
 | `Registry` | `make` (returns instance with `get`, `set`, `update`, `modify`, `mount`, `refresh`, `subscribe`, `reset`, `dispose`) |
 | `Result` | `initial`, `success`, `failure`, `isInitial`, `isSuccess`, `isFailure`, `isWaiting`, `fromAsyncResult`, `toAsyncResult`, `map`, `flatMap`, `match`, `all` |
@@ -405,6 +409,7 @@ Effect-atom migration/equivalents guide: [`docs/EFFECT_ATOM_EQUIVALENTS.md`](doc
 | Example | Location | What it shows |
 |---------|----------|---------------|
 | Counter | `examples/counter/` | Signals, atoms, Registry, async data with `atomEffect` |
+| OOO Async | `examples/ooo-async/` | `Atom.pull` + OOO chunk merge, rendered via `Async`, `Loading`, and `Errored` |
 | TodoMVC | `examples/todomvc/` | Full app with `defineQuery`, `mutationEffect`, optimistic UI, service injection |
 | RPC & HTTP API | `examples/rpc-httpapi/` | `AtomRpc.Tag()`, `AtomHttpApi.Tag()`, `MatchTag` component |
 | Schema Form | `examples/schema-form/` | `AtomSchema` validation, touched/dirty/reset, `AtomLogger.snapshot` |

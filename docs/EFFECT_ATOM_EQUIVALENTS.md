@@ -18,6 +18,7 @@ top of the JSX runtime + Effect v4 integration.
 | `Atom.fn(...)` / `runtime.fn(...)` | `Atom.fn(...)` / `runtime.fn(...)` |
 | reactivity keys (`withReactivity`, invalidation) | `Atom.withReactivity(...)`, `Atom.invalidateReactivity(...)` |
 | stream pull atom (`Atom.pull`) | `Atom.pull(stream, { chunkSize? })` |
+| out-of-order chunk assembly | `Atom.Stream.applyChunk(...)` + `Atom.Stream.hydrateState(...)` |
 | URL param atom | `Atom.searchParam(name, codec?)` |
 | key-value atom (`kvs`) | `Atom.kvs({ key, defaultValue, ... })` |
 
@@ -89,6 +90,22 @@ const first = Effect.runSync(Atom.get(feed));
 if (Result.isSuccess(first)) {
   console.log(first.value.items); // [1, 2]
 }
+```
+
+## Out-Of-Order Chunk Assembly
+
+```ts
+import { Atom } from "effect-atom-jsx";
+
+let state = Atom.Stream.emptyState<number>();
+state = Atom.Stream.applyChunk(state, { sequence: 1, items: [20, 21] });
+state = Atom.Stream.applyChunk(state, { sequence: 0, items: [10] });
+state = Atom.Stream.applyChunk(state, { sequence: 2, items: [30], done: true });
+
+console.log(state.items); // [10, 20, 21, 30]
+
+const serialized = JSON.stringify(state);
+const hydrated = Atom.Stream.hydrateState<number>(JSON.parse(serialized));
 ```
 
 ## URL Search Params

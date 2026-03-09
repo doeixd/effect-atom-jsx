@@ -123,6 +123,8 @@ export {
   style,
   delegateEvents,
   render,
+  renderWithHMR,
+  withViteHMR,
   // SSR / Hydration:
   isServer,
   renderToString,
@@ -134,4 +136,5 @@ export {
   // Reactive primitives re-exported for runtime consumers:
   effect,
   memo,
+  type ViteHotContext,
 } from "./dom.js";

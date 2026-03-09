@@ -311,4 +311,24 @@ describe("effect-atom style API", () => {
     await Effect.runPromise(Effect.sleep("10 millis"));
     expect(Effect.runSync(Atom.get(counter))).toBe(2);
   });
+
+  it("supports out-of-order stream chunk merge and hydration", () => {
+    let state = Atom.Stream.emptyState<number>();
+
+    state = Atom.Stream.applyChunk(state, { sequence: 1, items: [20, 21] });
+    expect(state.items).toEqual([]);
+    expect(state.nextSequence).toBe(0);
+
+    state = Atom.Stream.applyChunk(state, { sequence: 0, items: [10] });
+    expect(state.items).toEqual([10, 20, 21]);
+    expect(state.nextSequence).toBe(2);
+
+    state = Atom.Stream.applyChunk(state, { sequence: 2, items: [30], done: true });
+    expect(state.items).toEqual([10, 20, 21, 30]);
+    expect(state.complete).toBe(true);
+
+    const hydrated = Atom.Stream.hydrateState<number>(JSON.parse(JSON.stringify(state)));
+    expect(hydrated.items).toEqual([10, 20, 21, 30]);
+    expect(hydrated.complete).toBe(true);
+  });
 });

@@ -5,4 +5,4 @@ const root = document.getElementById("root");
 if (!root) throw new Error("No #root element found");
 
 const hot = (import.meta as ImportMeta & { hot?: ViteHotContext }).hot;
-renderWithHMR(() => App(), root, hot, "example:schema-form");
+renderWithHMR(() => App(), root, hot, "example:ooo-async");

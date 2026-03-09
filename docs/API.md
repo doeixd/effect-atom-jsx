@@ -23,6 +23,7 @@ The core reactive state primitive. Atoms are plain objects with `read`/`write` m
 - **`Atom.searchParam(name, codec?)`** — Atom bound to URL search params (browser environments).
 - **`Atom.kvs({ key, defaultValue, ... })`** — Atom backed by key-value storage (`localStorage` by default).
 - **`Atom.withReactivity(atom, keys)`** / **`Atom.invalidateReactivity(keys)`** — Register and invalidate logical reactivity keys.
+- **`Atom.Stream.emptyState()` / `Atom.Stream.applyChunk(state, chunk)` / `Atom.Stream.hydrateState(value)`** — Advanced out-of-order stream assembly + hydration helpers.
 
 ```ts
 const count = Atom.make(0);
@@ -427,6 +428,8 @@ Functions called by `babel-plugin-jsx-dom-expressions` compiled output:
 - `style(node, value, prev?)` — Reactive inline styles.
 - `delegateEvents(events)` — Set up global event delegation.
 - `render(fn, container)` — Mount a component tree. Returns dispose function.
+- `renderWithHMR(fn, container, hot?, key?)` — Mount with Vite HMR self-accept + previous dispose handling.
+- `withViteHMR(dispose, hot?, key?)` — Attach any disposer to Vite HMR lifecycle.
 
 ### SSR
 

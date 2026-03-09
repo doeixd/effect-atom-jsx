@@ -1,4 +1,4 @@
-import { createMount } from "effect-atom-jsx";
+import { createMount, withViteHMR, type ViteHotContext } from "effect-atom-jsx";
 import { TodoMvcApp } from "./App.js";
 import { TodoApiLive } from "./todo-service.js";
 
@@ -7,8 +7,5 @@ if (!root) throw new Error("No #root element found");
 
 const mountTodoApp = createMount(TodoApiLive);
 const dispose = mountTodoApp(() => TodoMvcApp(), root);
-
-const hot = (import.meta as ImportMeta & { hot?: { dispose: (cb: () => void) => void } }).hot;
-if (hot) {
-  hot.dispose(dispose);
-}
+const hot = (import.meta as ImportMeta & { hot?: ViteHotContext }).hot;
+withViteHMR(dispose, hot, "example:todomvc");

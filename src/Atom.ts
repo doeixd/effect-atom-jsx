@@ -1,4 +1,4 @@
-import { Effect, Stream, Queue, Fiber, Layer, ManagedRuntime, Cause, Option } from "effect";
+import { Effect, Stream as FxStream, Queue, Fiber, Layer, ManagedRuntime, Cause, Option } from "effect";
 import { createSignal, batch as runBatch, type Accessor, createEffect, onCleanup } from "./api.js";
 import { Owner, runWithOwner } from "./owner.js";
 import {
@@ -491,12 +491,130 @@ export interface PullChunk<A> {
 export type PullResult<A, E = never> = Result.Result<PullChunk<A>, E>;
 
 /**
+ * Out-of-order stream chunk payload.
+ *
+ * `sequence` is 0-based and monotonically increasing for each chunk at source.
+ */
+export interface StreamChunk<A> {
+  readonly sequence: number;
+  readonly items: ReadonlyArray<A>;
+  readonly done?: boolean;
+}
+
+/** Serializable state for out-of-order stream assembly. */
+export interface OOOStreamState<A> {
+  readonly version: 1;
+  readonly items: ReadonlyArray<A>;
+  readonly nextSequence: number;
+  readonly buffered: Readonly<Record<number, ReadonlyArray<A>>>;
+  readonly finalSequence: number | null;
+  readonly complete: boolean;
+}
+
+/** Build an empty out-of-order stream state. */
+/** @deprecated Use `Atom.Stream.emptyState()` instead. */
+export function emptyOOOStreamState<A>(): OOOStreamState<A> {
+  return {
+    version: 1,
+    items: [],
+    nextSequence: 0,
+    buffered: {},
+    finalSequence: null,
+    complete: false,
+  };
+}
+
+/**
+ * Merge one out-of-order chunk into stream state.
+ *
+ * Duplicate or already-consumed chunks are ignored.
+ */
+/** @deprecated Use `Atom.Stream.applyChunk()` instead. */
+export function applyOOOStreamChunk<A>(
+  state: OOOStreamState<A>,
+  chunk: StreamChunk<A>,
+): OOOStreamState<A> {
+  if (chunk.sequence < state.nextSequence) {
+    return state;
+  }
+
+  let nextSequence = state.nextSequence;
+  let items = state.items;
+  const buffered: Record<number, ReadonlyArray<A>> = { ...state.buffered };
+  let finalSequence = state.finalSequence;
+
+  if (chunk.done === true) {
+    finalSequence = finalSequence === null ? chunk.sequence : Math.min(finalSequence, chunk.sequence);
+  }
+
+  if (chunk.sequence === nextSequence) {
+    items = [...items, ...chunk.items];
+    nextSequence += 1;
+  } else if (buffered[chunk.sequence] === undefined) {
+    buffered[chunk.sequence] = chunk.items;
+  }
+
+  while (buffered[nextSequence] !== undefined) {
+    items = [...items, ...buffered[nextSequence]];
+    delete buffered[nextSequence];
+    nextSequence += 1;
+  }
+
+  const complete = finalSequence !== null && nextSequence > finalSequence;
+
+  return {
+    version: 1,
+    items,
+    nextSequence,
+    buffered,
+    finalSequence,
+    complete,
+  };
+}
+
+/**
+ * Hydrate serialized out-of-order stream state.
+ *
+ * Invalid payloads fall back to an empty state.
+ */
+/** @deprecated Use `Atom.Stream.hydrateState()` instead. */
+export function hydrateOOOStreamState<A>(
+  value: unknown,
+): OOOStreamState<A> {
+  if (typeof value !== "object" || value === null) {
+    return emptyOOOStreamState<A>();
+  }
+  const v = value as Partial<OOOStreamState<A>>;
+  if (v.version !== 1 || !Array.isArray(v.items) || typeof v.nextSequence !== "number") {
+    return emptyOOOStreamState<A>();
+  }
+
+  return {
+    version: 1,
+    items: v.items,
+    nextSequence: v.nextSequence,
+    buffered: typeof v.buffered === "object" && v.buffered !== null ? v.buffered : {},
+    finalSequence: typeof v.finalSequence === "number" ? v.finalSequence : null,
+    complete: v.complete === true,
+  };
+}
+
+/**
+ * Advanced stream helpers grouped under `Atom.Stream` to reduce top-level API noise.
+ */
+export const Stream = {
+  emptyState: emptyOOOStreamState,
+  applyChunk: applyOOOStreamChunk,
+  hydrateState: hydrateOOOStreamState,
+} as const;
+
+/**
  * Build a pull-based stream atom.
  *
  * The writable input is `void`; each write pulls the next chunk into `items`.
  */
 export function pull<A, E, R>(
-  stream: Stream.Stream<A, E, R>,
+  stream: FxStream.Stream<A, E, R>,
   options?: {
     readonly runtime?: RuntimeLike<R, unknown>;
     readonly chunkSize?: number;
@@ -523,7 +641,7 @@ export function pull<A, E, R>(
     if (running) return;
     running = true;
     setState(Result.waiting(state()));
-    const collect = Stream.runCollect(stream).pipe(
+    const collect = FxStream.runCollect(stream).pipe(
       Effect.map((chunk) => Array.from(chunk as Iterable<A>)),
     );
     void runPromiseWithRuntime(options?.runtime, collect)
@@ -922,7 +1040,7 @@ export const subscribe = <A>(
  * // later: stop()
  */
 export function fromStream<A, E, R>(
-  stream: Stream.Stream<A, E, R>,
+  stream: FxStream.Stream<A, E, R>,
   initialValue: A,
   runtime?: any, // V4 runtime
 ): Atom<A> {
@@ -933,7 +1051,7 @@ export function fromStream<A, E, R>(
   const start = () => {
     if (active) return;
     active = true;
-    const eff = Stream.runForEach(stream, (a) => Effect.sync(() => set(a))) as Effect.Effect<void, E, R>;
+    const eff = FxStream.runForEach(stream, (a) => Effect.sync(() => set(a))) as Effect.Effect<void, E, R>;
     fiber = (runtime ? Effect.runForkWith(runtime as any)(eff) : Effect.runFork(eff as unknown as Effect.Effect<void, E, never>)) as Fiber.Fiber<void, E>;
   };
 
@@ -977,7 +1095,7 @@ export function fromQueue<A>(
   queue: Queue.Dequeue<A>,
   initialValue: A,
 ): Atom<A> {
-  return fromStream(Stream.fromQueue(queue), initialValue);
+  return fromStream(FxStream.fromQueue(queue), initialValue);
 }
 
 export function query<A, E, R>(

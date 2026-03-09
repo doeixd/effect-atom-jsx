@@ -10,7 +10,7 @@
 
 import { Computation } from "./computation.js";
 import { runUntracked } from "./tracking.js";
-import { createRoot, mergeProps } from "./api.js";
+import { createRoot, mergeProps, onCleanup } from "./api.js";
 
 /**
  * Create a reusable DOM template from an HTML string.
@@ -306,12 +306,64 @@ export function render(
   fn: () => unknown,
   container: Element,
 ): () => void {
+  // Ensure remounts (including HMR) don't duplicate old DOM content.
+  while (container.firstChild) {
+    container.removeChild(container.firstChild);
+  }
+
   let dispose!: () => void;
   createRoot((d) => {
+    onCleanup(() => {
+      while (container.firstChild) {
+        container.removeChild(container.firstChild);
+      }
+    });
+
     dispose = d;
     insert(container, fn as () => Child);
   });
   return dispose;
+}
+
+export interface ViteHotContext {
+  readonly data: Record<string, unknown>;
+  accept(cb?: () => void): void;
+  dispose(cb: (data: Record<string, unknown>) => void): void;
+}
+
+/**
+ * Register a dispose handler with Vite HMR and auto-dispose the previous mount.
+ */
+export function withViteHMR(
+  dispose: () => void,
+  hot?: ViteHotContext,
+  key = "effect-atom-jsx:dispose",
+): () => void {
+  if (!hot) return dispose;
+
+  const previous = hot.data[key] as (() => void) | undefined;
+  previous?.();
+  hot.data[key] = dispose;
+
+  hot.accept();
+  hot.dispose((data) => {
+    dispose();
+    delete data[key];
+  });
+
+  return dispose;
+}
+
+/**
+ * Render helper that wires dispose lifecycle to Vite HMR automatically.
+ */
+export function renderWithHMR(
+  fn: () => unknown,
+  container: Element,
+  hot?: ViteHotContext,
+  key = "effect-atom-jsx:dispose",
+): () => void {
+  return withViteHMR(render(fn, container), hot, key);
 }
 
 // ─── effect / memo re-exports (used by compiled JSX output) ──────────────────

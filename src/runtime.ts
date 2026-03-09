@@ -19,6 +19,8 @@ export {
   style,
   delegateEvents,
   render,
+  renderWithHMR,
+  withViteHMR,
   // Reactive helpers called by compiled expressions
   effect,
   memo,
