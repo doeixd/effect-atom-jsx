@@ -2,12 +2,12 @@ import { describe, it, expect } from "vitest";
 import { Effect, Layer, ManagedRuntime, ServiceMap } from "effect";
 import {
   mutationEffectStrict,
-  AsyncResult,
   createOptimistic,
   createSignal,
   createRoot,
   queryEffectStrict,
 } from "../index.js";
+import { AsyncResult } from "../advanced.js";
 
 type Todo = {
   readonly id: string;

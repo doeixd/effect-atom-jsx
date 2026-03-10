@@ -22,6 +22,10 @@
       "import": "./dist/testing.js",
       "types": "./dist/testing.d.ts"
     },
+    "./advanced": {
+      "import": "./dist/advanced.js",
+      "types": "./dist/advanced.d.ts"
+    },
     "./Atom": {
       "import": "./dist/Atom.js",
       "types": "./dist/Atom.d.ts"

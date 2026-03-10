@@ -325,6 +325,8 @@ HTTP API client factory for grouped endpoints.
 
 For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOURCE.md`](ACTION_EFFECT_USE_RESOURCE.md).
 
+Note: `AsyncResult` and scoped/strict constructors are considered advanced and are also available from `effect-atom-jsx/advanced`.
+
 ### Async Data
 
 - **`atomEffect(fn, runtime?)`** — Create a reactive async computation. Tracks signal dependencies, interrupts previous fiber on re-run.

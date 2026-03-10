@@ -154,13 +154,14 @@ list.push({ id: 3, text: "Deploy" });
 console.log(list.toArray().length); // 3
 ```
 
-### queryEffect & atomEffect — Async State
+### Advanced: queryEffect / atomEffect / AsyncResult
 
 Both create reactive async computations backed by Effect fibers. When tracked dependencies change, the previous fiber is interrupted and a new one starts.
 
 ```tsx
 import { Effect } from "effect";
-import { atomEffect, queryEffect, useService, AsyncResult, Async } from "effect-atom-jsx";
+import { atomEffect, queryEffect, useService } from "effect-atom-jsx";
+import { AsyncResult, Async } from "effect-atom-jsx/advanced";
 
 // atomEffect — standalone, no runtime needed
 const time = atomEffect(() =>
@@ -197,7 +198,7 @@ If you want defects or typed failures to escalate globally, leave local handlers
 
 
 
-### AsyncResult vs Result
+### AsyncResult vs Result (Advanced Interop)
 
 The library has two result types for different use cases:
 
@@ -420,21 +421,25 @@ import * as AtomSchema from "effect-atom-jsx/AtomSchema";
 
 ```ts
 import {
-  atomEffect, queryEffect, defineQuery,
-  queryEffectStrict, defineQueryStrict, createQueryKey, invalidate, refresh,
+  defineQuery, createQueryKey, invalidate, refresh,
   isPending, latest,
-  createOptimistic, defineMutation, mutationEffect,
-  defineMutationStrict, mutationEffectStrict,
+  createOptimistic, defineMutation,
   useService, useServices, createMount, mount,
+  signal, computed,
+} from "effect-atom-jsx";
+
+import {
+  atomEffect, queryEffect, queryEffectStrict, defineQueryStrict,
+  mutationEffect, defineMutationStrict, mutationEffectStrict,
   layerContext,
   scopedRoot, scopedRootEffect,
   scopedQuery, scopedQueryEffect,
   scopedMutation, scopedMutationEffect,
-  signal, computed,
-} from "effect-atom-jsx";
+  AsyncResult, Async,
+} from "effect-atom-jsx/advanced";
 ```
 
-### Reactive Core
+### Reactive Core (Internals / Advanced)
 
 ```ts
 import {
@@ -444,7 +449,7 @@ import {
   untrack, sample, batch,
   mergeProps, splitProps,
   getOwner, runWithOwner,
-} from "effect-atom-jsx";
+} from "effect-atom-jsx/advanced";
 ```
 
 Full API reference: [`docs/API.md`](docs/API.md)

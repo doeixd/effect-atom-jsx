@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Effect } from "effect";
-import { AsyncResult } from "../index.js";
+import { AsyncResult } from "../advanced.js";
 import { createOOOAsyncDemo } from "../../examples/ooo-async/App.js";
 
 describe("ooo-async example", () => {
