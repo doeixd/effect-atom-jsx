@@ -165,6 +165,7 @@ const snap = Effect.runSync(AtomLogger.snapshot([["count", count], ["name", name
 Provides a centralized read/write/subscribe context for atoms. Useful for managing atom state outside of reactive computations.
 
 - **`Registry.make()`** — Create a new registry instance.
+- **`Registry.useRegistry()`** — Get ambient owner-scoped registry (stable per owner, auto-disposed on cleanup). Outside any owner, returns a shared detached registry.
 
 ### Registry Instance Methods
 
@@ -177,7 +178,7 @@ Provides a centralized read/write/subscribe context for atoms. Useful for managi
 | `subscribe(atom, fn)` | `<A>(atom: Atom<A>, fn: (v: A) => void) => () => void` | Subscribe to changes |
 | `mount(atom)` | `<A>(atom: Atom<A>) => () => void` | Keep atom alive (run effects) |
 | `refresh(atom)` | `<A>(atom: Atom<A>) => void` | Force-invalidate |
-| `reset(atom)` | `<A>(atom: Writable<A,A>) => void` | Reset to initial value |
+| `reset()` | `() => void` | Dispose mounted owners and clear registry |
 | `dispose()` | `() => void` | Clean up all subscriptions |
 
 ### Types

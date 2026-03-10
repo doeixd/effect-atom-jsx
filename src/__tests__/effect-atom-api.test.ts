@@ -9,6 +9,7 @@ import * as Hydration from "../Hydration.js";
 import * as Result from "../Result.js";
 import * as Registry from "../Registry.js";
 import { AsyncResult } from "../effect-ts.js";
+import { createRoot } from "../api.js";
 
 describe("effect-atom style API", () => {
   it("supports Atom.make writable values", () => {
@@ -146,6 +147,43 @@ describe("effect-atom style API", () => {
     expect(changed).toEqual([4, 5]);
     unsub();
     registry.dispose();
+  });
+
+  it("supports owner-scoped ambient registry access", () => {
+    let a!: Registry.Registry;
+    let b!: Registry.Registry;
+    const dispose = createRoot((d) => {
+      a = Registry.useRegistry();
+      b = Registry.useRegistry();
+      return d;
+    });
+
+    expect(a).toBe(b);
+    dispose();
+  });
+
+  it("creates separate ambient registries across roots", () => {
+    let a!: Registry.Registry;
+    let b!: Registry.Registry;
+
+    const disposeA = createRoot((d) => {
+      a = Registry.useRegistry();
+      return d;
+    });
+    const disposeB = createRoot((d) => {
+      b = Registry.useRegistry();
+      return d;
+    });
+
+    expect(a).not.toBe(b);
+    disposeA();
+    disposeB();
+  });
+
+  it("reuses detached ambient registry outside roots", () => {
+    const a = Registry.useRegistry();
+    const b = Registry.useRegistry();
+    expect(a).toBe(b);
   });
 
   it("supports AtomRef prop and updates", () => {

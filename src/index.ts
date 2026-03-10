@@ -50,6 +50,7 @@ export * as AtomSchema from "./AtomSchema.js";
 export * as Hydration from "./Hydration.js";
 export * as Result from "./Result.js";
 export * as Registry from "./Registry.js";
+export { useRegistry } from "./Registry.js";
 
 // ─── Effect-TS integration ───────────────────────────────────────────────────
 export {

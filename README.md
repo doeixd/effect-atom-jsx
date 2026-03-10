@@ -46,7 +46,7 @@ import { Atom, Registry, render } from "effect-atom-jsx";
 
 function Counter() {
   const count = Atom.make(0);
-  const registry = Registry.make();
+  const registry = Registry.useRegistry();
   const doubled = Atom.map(count, (n) => n * 2);
 
   return (
@@ -120,7 +120,7 @@ const count = Atom.make(0);
 const doubled = Atom.map(count, (n) => n * 2);
 
 // Registry provides the read/write context
-const registry = Registry.make();
+const registry = Registry.useRegistry();
 registry.set(count, 3);
 console.log(registry.get(doubled)); // 6
 
@@ -129,6 +129,8 @@ Effect.runSync(Atom.update(count, (n) => n + 1));
 ```
 
 All Effect helpers (`get`, `set`, `update`, `modify`) support both data-first and data-last (pipeable) forms.
+
+`Registry.useRegistry()` returns an ambient registry scoped to the current reactive owner (component/root) and auto-disposes it on cleanup. For explicit standalone usage (tests, scripts, server handlers), use `Registry.make()`.
 
 ### AtomRef — Object State
 

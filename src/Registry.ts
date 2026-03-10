@@ -7,7 +7,7 @@
 
 import { Effect } from "effect";
 import { Owner, runWithOwner } from "./owner.js";
-import { createEffect } from "./api.js";
+import { createEffect, getOwner, onCleanup } from "./api.js";
 import * as Atom from "./Atom.js";
 
 const TypeId = "~effect-atom-jsx/Registry" as const;
@@ -49,20 +49,10 @@ export interface Registry {
 export const isRegistry = (u: unknown): u is Registry =>
   typeof u === "object" && u !== null && TypeId in u;
 
-/**
- * Create a registry for reading/writing/subscribing atoms.
- *
- * Registries are lightweight and can be local to one component/module or
- * shared app-wide. Use one registry consistently for the atoms you want to
- * keep in the same reactive graph.
- *
- * @example
- * const registry = Registry.make()
- * registry.set(count, 1)
- * const stop = registry.subscribe(count, console.log)
- * stop()
- */
-export const make = (): Registry => {
+const ownerRegistries = new WeakMap<Owner, Registry>();
+let detachedRegistry: Registry | null = null;
+
+const createRegistry = (): Registry => {
   const roots = new Set<Owner>();
 
   const registry: Registry = {
@@ -108,6 +98,51 @@ export const make = (): Registry => {
     },
   };
 
+  return registry;
+};
+
+/**
+ * Create a registry for reading/writing/subscribing atoms.
+ *
+ * Registries are lightweight and can be local to one component/module or
+ * shared app-wide. Use one registry consistently for the atoms you want to
+ * keep in the same reactive graph.
+ *
+ * @example
+ * const registry = Registry.make()
+ * registry.set(count, 1)
+ * const stop = registry.subscribe(count, console.log)
+ * stop()
+ */
+export const make = (): Registry => {
+  return createRegistry();
+};
+
+/**
+ * Get an ambient registry for the current reactive owner.
+ *
+ * - Inside a component/root owner: returns one stable registry per owner and
+ *   disposes it automatically on owner cleanup.
+ * - Outside any owner: returns a shared detached registry.
+ */
+export const useRegistry = (): Registry => {
+  const owner = getOwner();
+  if (owner === null) {
+    if (detachedRegistry === null) {
+      detachedRegistry = createRegistry();
+    }
+    return detachedRegistry;
+  }
+
+  const existing = ownerRegistries.get(owner);
+  if (existing !== undefined) return existing;
+
+  const registry = createRegistry();
+  ownerRegistries.set(owner, registry);
+  onCleanup(() => {
+    ownerRegistries.delete(owner);
+    registry.dispose();
+  });
   return registry;
 };
 
