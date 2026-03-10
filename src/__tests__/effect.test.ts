@@ -58,7 +58,8 @@ import {
 } from "../effect-ts.js";
 import { createSignal, createRoot, createEffect, onCleanup } from "../api.js";
 import { Owner, runWithOwner } from "../owner.js";
-import { currentComponentScope } from "../component-scope.js";
+import { currentComponentScope, withComponentScope } from "../component-scope.js";
+import { createComponent } from "../dom.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1234,5 +1235,26 @@ describe("component scope context", () => {
   it("returns null for detached createRoot usage", () => {
     const seen = createRoot(() => currentComponentScope());
     expect(seen).toBeNull();
+  });
+
+  it("forks a child scope for component boundaries", () => {
+    const parent = Scope.makeUnsafe();
+    let child: any = null;
+
+    createRoot(() => withComponentScope(parent, () => {
+      createComponent(() => {
+        child = currentComponentScope();
+        return null;
+      }, {});
+      return null;
+    }));
+
+    expect(child).not.toBeNull();
+    if (child === null) throw new Error("expected child scope to be present");
+    expect(child).not.toBe(parent);
+    expect(child.state._tag).toBe("Open");
+
+    Effect.runSync(Scope.close(parent, Exit.void));
+    expect(child.state._tag).toBe("Closed");
   });
 });
