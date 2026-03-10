@@ -3,7 +3,7 @@
  *
  *   - Naming consolidation (queryEffect/mutationEffect primary)
  *   - Exit-first internals (.exit field on Success/Failure/Defect)
- *   - Scoped lifecycle primitives (scopedQuery, scopedMutation)
+ *   - Scoped lifecycle primitives (Effect constructors)
  */
 
 import { describe, it, expect } from "vitest";
@@ -12,9 +12,7 @@ import {
   queryEffect,
   mutationEffect,
   AsyncResult,
-  scopedQuery,
   scopedQueryEffect,
-  scopedMutation,
   scopedMutationEffect,
   type AsyncResult as AsyncResultType,
   type Success,
@@ -204,7 +202,7 @@ describe("Exit-first internals", () => {
 
 // ─── Scoped Lifecycle Primitives ─────────────────────────────────────────────
 
-describe("scopedQuery", () => {
+describe("scopedQueryEffect", () => {
   it("creates a query tied to a scope and disposes on scope close", async () => {
     let fiberRan = false;
     let fiberInterrupted = false;
@@ -215,14 +213,14 @@ describe("scopedQuery", () => {
         const rt = ManagedRuntime.make(Layer.empty);
 
         createRoot(() => {
-          scopedQuery(scope, () =>
+          Effect.runSync(scopedQueryEffect(scope, () =>
             Effect.gen(function* () {
               fiberRan = true;
               yield* Effect.sleep("1 hour");
               return "done";
             }).pipe(Effect.onInterrupt(() => Effect.sync(() => { fiberInterrupted = true; }))),
             { runtime: rt },
-          );
+          ));
         });
 
         yield* Effect.sleep("30 millis");
@@ -237,7 +235,7 @@ describe("scopedQuery", () => {
   });
 });
 
-describe("scopedMutation", () => {
+describe("scopedMutationEffect", () => {
   it("creates a mutation handle tied to a scope", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -246,7 +244,9 @@ describe("scopedMutation", () => {
 
         let handle: any;
         createRoot(() => {
-          handle = scopedMutation(scope, (_n: number) => Effect.succeed(undefined), { runtime: rt });
+          handle = Effect.runSync(
+            scopedMutationEffect(scope, (_n: number) => Effect.succeed(undefined), { runtime: rt }),
+          );
         });
 
         expect(handle).toHaveProperty("run");

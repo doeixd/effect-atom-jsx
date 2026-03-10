@@ -826,10 +826,6 @@ function _createDerivedAtom<T>(getter: AtomGetter<T>): DerivedAtom<T> {
  *   // ^ automatically disposes the createEffect above
  * });
  */
-export function scopedRoot<T>(scope: Scope.Closeable, fn: () => T): T {
-  return Effect.runSync(scopedRootEffect(scope, fn));
-}
-
 /**
  * Effect constructor variant of `scopedRoot`.
  *
@@ -861,14 +857,6 @@ export function scopedRootEffect<T>(
  *   yield* Scope.close(scope, Exit.void); // cleans up query
  * })
  */
-export function scopedQuery<A, E, R>(
-  scope: Scope.Closeable,
-  fn: () => Effect.Effect<A, E, R>,
-  options?: QueryEffectOptions<R>,
-): Accessor<AsyncResult<A, E>> {
-  return Effect.runSync(scopedQueryEffect(scope, fn, options));
-}
-
 /**
  * Effect constructor variant of `scopedQuery(...)`.
  */
@@ -894,14 +882,6 @@ export function scopedQueryEffect<A, E, R>(
  *   yield* Scope.close(scope, Exit.void); // cleans up mutation
  * })
  */
-export function scopedMutation<A, E, R>(
-  scope: Scope.Closeable,
-  fn: (input: A) => Effect.Effect<unknown, E, R>,
-  options?: MutationEffectOptions<A, E, R>,
-): MutationEffectHandle<A, E> {
-  return Effect.runSync(scopedMutationEffect(scope, fn, options));
-}
-
 /**
  * Effect constructor variant of `scopedMutation(...)`.
  */

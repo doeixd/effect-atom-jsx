@@ -45,7 +45,6 @@ import {
   WithLayer,
   For,
   Show,
-  scopedRoot,
   scopedRootEffect,
   type AsyncResult as AsyncResultType,
   type Failure,
@@ -1158,9 +1157,9 @@ describe("scopedRoot", () => {
       Effect.gen(function* () {
         const scope = yield* Scope.make();
         let observed: Scope.Closeable | null = null;
-        scopedRoot(scope, () => {
+        Effect.runSync(scopedRootEffect(scope, () => {
           observed = currentComponentScope();
-        });
+        }));
         expect(observed).toBe(scope);
         yield* Scope.close(scope, Exit.void);
       })
@@ -1172,10 +1171,10 @@ describe("scopedRoot", () => {
       Effect.gen(function* () {
         const scope = yield* Scope.make();
         let owner!: Owner | null;
-        scopedRoot(scope, () => {
+        Effect.runSync(scopedRootEffect(scope, () => {
           // Just verify fn runs.
           owner = null; // scope runs synchronously
-        });
+        }));
         yield* Scope.close(scope, Exit.void);
       })
     );
@@ -1188,9 +1187,9 @@ describe("scopedRoot", () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const scope = yield* Scope.make();
-        scopedRoot(scope, () => {
+        Effect.runSync(scopedRootEffect(scope, () => {
           createEffect(() => log.push(n()));
-        });
+        }));
         expect(log).toEqual([0]);
         setN(1);
         expect(log).toEqual([0, 1]);
@@ -1219,9 +1218,9 @@ describe("scopedRoot", () => {
         // should dispose reactive work, but scope lifetime remains explicit.
         let dispose!: () => void;
         createRoot((d) => {
-          scopedRoot(scope, () => {
+          Effect.runSync(scopedRootEffect(scope, () => {
             // reactive work here
-          });
+          }));
           dispose = d;
         });
 
