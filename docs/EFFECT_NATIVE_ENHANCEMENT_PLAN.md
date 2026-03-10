@@ -64,6 +64,119 @@ The following track incorporates a deeper architecture/API review focused on red
 - Reduce top-level API ambiguity through naming, tiering, and deprecations.
 - Preserve backward compatibility with aliases/migration guides before removals.
 
+## Design Feedback Integration (2026-03-10)
+
+This section translates the latest design feedback into concrete plan decisions, experiments, and acceptance criteria.
+
+### A. Decisions we can make now (before implementation)
+
+- **Registry posture**: treat registry as advanced/runtime API, not default JSX ergonomics.
+- **Runtime posture**: support both ambient and explicit runtime patterns, but document one golden path first.
+- **Async API posture**: collapse docs into a tiered model now, then deprecate redundant names gradually.
+- **Boundary precedence**: local async handlers remain first; unhandled failures bubble to boundaries.
+- **Observability defaults**: no tracer/metrics services means near-zero instrumentation work.
+- **Hydration safety**: add explicit validation mode to catch missing/unknown keys in development.
+
+### B. ADRs to add (required before further API expansion)
+
+Create short architecture decision records in `docs/adr/` for:
+
+1. `ADR-001` Registry ergonomics and ambient behavior
+2. `ADR-002` Async model direction (`AsyncResult`, `Result`, or split responsibilities)
+3. `ADR-003` Runtime model priority (ambient `mount` vs explicit `Atom.runtime`)
+4. `ADR-004` Public export tiers (core vs advanced vs internals)
+5. `ADR-005` Family eviction and hydration key strategy
+
+Each ADR should include:
+
+- context/problem
+- options considered
+- decision and rationale
+- migration impact
+- rollback plan
+
+### C. Concrete experiments (time-boxed)
+
+#### Experiment 1 - Golden-path ergonomics spike (2-3 days)
+
+- Build a branch-level prototype where common reads/writes avoid explicit registry boilerplate.
+- Validate against existing TodoMVC integration test plus one new medium example.
+- Measure whether API usage in examples shrinks meaningfully (target: >=25% fewer ceremony lines).
+
+#### Experiment 2 - Async surface simplification spike (2 days)
+
+- Build a typed facade around existing internals:
+  - one recommended query entrypoint
+  - one recommended mutation entrypoint
+  - existing variants preserved as aliases
+- Validate no behavior regressions in current tests.
+
+#### Experiment 3 - Runtime-model comparison spike (2 days)
+
+- Implement side-by-side examples:
+  - ambient mount + `useService`
+  - explicit runtime-bound atoms/actions
+- Compare composability for multi-runtime apps and error quality.
+
+### D. Acceptance criteria for major debated topics
+
+#### Registry and atom UX
+
+- A new user can build a basic counter + query example without creating `Registry` manually.
+- Advanced registry use remains possible via explicit import/path.
+- Docs clearly explain when to use each pattern.
+
+#### Async model clarity
+
+- README uses one default async pattern end-to-end.
+- `Async` behavior table explicitly maps all states (including Refreshing and Defect).
+- If dual models remain, docs include a hard boundary: "use X for UI suspension, use Y for explicit state machines".
+
+#### API surface reduction
+
+- Public docs present <=3 recommended async primitives at top level.
+- All other async constructors are marked advanced/legacy alias in API docs.
+- Naming symmetry exists for query/mutation golden path.
+
+#### Hydration and family safety
+
+- Development hydration mode warns on unknown/missing keys.
+- `Atom.family` docs include eviction guidance and memory implications.
+- Family API either exposes eviction controls or explicitly documents lifecycle constraints.
+
+### E. Documentation restructure requirements
+
+Before next release that adds major surface area, README must be reorganized to:
+
+1. **Quick Start (golden path)**
+2. **Common app patterns**
+3. **Advanced/escape hatches**
+4. **Internals and library-author APIs**
+
+And each advanced API section should include:
+
+- "When to use"
+- "When not to use"
+- "Golden-path alternative"
+
+### F. Immediate implementation sequencing update
+
+Replace the next-step order with:
+
+1. Phase 1 completion hardening (already started): scope lifecycle correctness + docs
+2. ADR batch (`ADR-001` to `ADR-005`)
+3. Golden-path docs restructure draft (no API break)
+4. Typed requirements prototype + TodoMVC ergonomics validation
+5. Async naming/tiering consolidation pass
+6. Continue with concurrency / boundaries / RPC / observability / stream features
+
+### G. Explicit anti-goals from feedback
+
+- Do not add more top-level async entrypoints before consolidation.
+- Do not expand AtomRef-like parallel state models without proving integration story.
+- Do not ship observability defaults that can explode metric cardinality.
+- Do not rely on implicit semantic conversions between result types without documenting loss.
+
 ## API Simplification Workstream (parallel to Phases 2-7)
 
 This workstream runs in parallel with feature phases and feeds API decisions back into implementation.
