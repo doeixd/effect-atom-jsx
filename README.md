@@ -1,3 +1,5 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/doeixd/effect-atom-jsx)
+
 # effect-atom-jsx
 
 Fine-grained reactive JSX runtime powered by Effect v4. Combines **effect-atom style state management**, a **dom-expressions JSX runtime**, and **Effect v4 service integration** into a single, cohesive framework.
