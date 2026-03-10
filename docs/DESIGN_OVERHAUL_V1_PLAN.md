@@ -72,6 +72,38 @@ Success means:
 6. **AtomRef interoperability model**
    - Preserve effect-atom familiarity while clarifying how `AtomRef` composes with Atom/query/mutation flows.
 
+## Requested v1 Design Directives (Locked Inputs)
+
+These directives are now explicit inputs to implementation planning.
+
+1. **Linearize mutations with Effect generators**
+   - Introduce action-style mutation flow (`apiRuntime.action(...)`) using `Effect.fn` / generator ergonomics.
+   - Prefer linear happy-path code with optional `onError` hook.
+   - Support two invalidation styles:
+     - imperative `refresh(queryAtom)`
+     - declarative `reactivityKeys` invalidation
+
+2. **Collapse async primitives to three primary concepts**
+   - `apiRuntime.atom` for reads
+   - `apiRuntime.action` for writes
+   - `Atom.effect` for standalone non-runtime effects
+   - Treat scoped and strict constructor variants as advanced/internal implementation details.
+
+3. **Keep `isPending` and `latest` as first-class async UI tools**
+   - Preserve expression-level pending checks (`isPending(() => expr)`).
+   - Preserve stale-value peeking (`latest(expr)`).
+   - Align behavior/docs with Solid 2.0 expectations.
+
+4. **Adopt `withReactivity`-style declarative invalidation**
+   - Keep manual invalidation wiring available.
+   - Add/retain key-based reactivity invalidation as a clean alternative.
+   - Integrate this path with runtime actions and RPC helpers.
+
+5. **Move toward microtask batching + explicit `flush`**
+   - Evaluate replacing user-facing `batch` guidance with microtask-default batching.
+   - Add `flush()` escape hatch for imperative DOM sequencing.
+   - If full migration is risky, ship behind an opt-in runtime flag first.
+
 ## Breaking Changes Policy
 
 - Allowed in v1 with migration notes.

@@ -98,6 +98,14 @@ This draft is intentionally opinionated and allows breaking changes.
 2. Registry ergonomics: default implicit in JSX vs explicit everywhere.
 3. Final strictness API shape: option flags vs dedicated constructors.
 
+## Pending Major Additions for v1 Redesign
+
+- Runtime actions API (`apiRuntime.action`) with linear Effect-generator mutation flow.
+- Runtime read API simplification (`apiRuntime.atom`) as the canonical query/read primitive.
+- Standalone effect primitive rename/alignment (`Atom.effect`) for non-runtime async sources.
+- Declarative invalidation path (`withReactivity` / `reactivityKeys`) alongside imperative `refresh`.
+- Microtask batching model + `flush` escape hatch evaluation.
+
 ## Exit Criteria for This Draft
 
 - All current exports mapped to `core/advanced/internals/legacy`.
