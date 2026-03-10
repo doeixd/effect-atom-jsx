@@ -210,6 +210,21 @@ Convert between them with `Result.fromAsyncResult()` and `Result.toAsyncResult()
 
 Important: conversion is useful but not semantically identical in every state. In particular, `AsyncResult` carries explicit fiber-lifecycle states (`Loading`, `Refreshing`, `Defect`) while `Result` models data-centric waiting semantics. Treat conversion as an interop bridge, not a one-to-one state machine equivalence.
 
+For explicit non-suspense rendering, use `Result.builder(...)`:
+
+```tsx
+const view = Result.builder(users())
+  .onInitial(() => <Spinner />)
+  .onFailure((cause) => <ErrorCard cause={cause} />)
+  .onSuccess((data, { waiting }) => (
+    <>
+      {waiting && <RefreshIndicator />}
+      <For each={data}>{(u) => <li>{u().name}</li>}</For>
+    </>
+  ))
+  .render();
+```
+
 `AsyncResult` is **Exit-first internally** — each settled state (`Success`, `Failure`, `Defect`) carries a `.exit` field holding the canonical Effect `Exit`. This enables lossless round-trips and integration with Effect's error model. Combinators `AsyncResult.match`, `.map`, `.flatMap`, `.getOrElse`, and `.getOrThrow` are available for ergonomic pattern matching and transformation.
 
 ### defineMutation / mutationEffect — Mutations

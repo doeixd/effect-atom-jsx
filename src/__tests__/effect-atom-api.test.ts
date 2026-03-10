@@ -301,6 +301,25 @@ describe("effect-atom style API", () => {
     expect(Result.isWaiting(waiting)).toBe(true);
   });
 
+  it("supports Result.builder fluent rendering", () => {
+    const initialView = Result.builder(Result.initial<number, string>(true))
+      .onInitial(() => "loading")
+      .onSuccess((n) => `ok:${n}`)
+      .onFailure((e) => `err:${String(e)}`)
+      .render();
+    expect(initialView).toBe("loading");
+
+    const successView = Result.builder(Result.success(42, { waiting: true }))
+      .onSuccess((n, meta) => `${n}/${meta.waiting}`)
+      .render();
+    expect(successView).toBe("42/true");
+
+    const failureView = Result.builder(Result.failure<number, string>("boom"))
+      .onFailure((e) => `err:${e}`)
+      .render();
+    expect(failureView).toBe("err:boom");
+  });
+
   it("supports Atom.runtime(...).atom for Layer-backed services", async () => {
     const Greeting = ServiceMap.Service<{ readonly value: string }>("Greeting");
     const rt = Atom.runtime(Layer.succeed(Greeting, { value: "hello" }));

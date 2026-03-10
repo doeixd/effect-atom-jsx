@@ -30,7 +30,7 @@ This draft is intentionally opinionated and allows breaking changes.
 | `AtomHttpApi` | Keep | advanced | Power-user/service integrations |
 | `AtomLogger` | Keep | advanced | Supplemental to structural observability |
 | `Hydration` | Keep | advanced | SSR-focused API |
-| `Result` | Keep (pending async ADR) | advanced | Final status depends on async model decision |
+| `Result` | Keep | core (explicit opt-in path) | Fluent explicit rendering path for non-suspense flows |
 | `Registry` | Keep | advanced | Explicit registry remains supported |
 
 ### Primary function exports
@@ -94,7 +94,7 @@ This draft is intentionally opinionated and allows breaking changes.
 
 ## Open Decisions Before Lock
 
-1. Async model: dual-model boundary vs single user-facing model.
+1. Async model: locked by ADR-002 -> suspension-first default + `Result` opt-in; finalize API signatures.
 2. Registry ergonomics: default implicit in JSX vs explicit everywhere.
 3. Final strictness API shape: option flags vs dedicated constructors.
 

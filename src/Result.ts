@@ -36,6 +36,19 @@ export type Failure<A, E = never> = {
 
 export type Result<A, E = never> = Initial<A, E> | Success<A, E> | Failure<A, E>;
 
+export interface BuilderHandlers<A, E, R> {
+  onInitial?: () => R;
+  onSuccess?: (value: A, meta: { readonly waiting: boolean; readonly timestamp: number }) => R;
+  onFailure?: (error: E | { readonly defect: string }, meta: { readonly waiting: boolean; readonly previousSuccess: Success<A, E> | null }) => R;
+}
+
+export interface Builder<A, E, R> {
+  onInitial<R2>(f: () => R2): Builder<A, E, R | R2>;
+  onSuccess<R2>(f: (value: A, meta: { readonly waiting: boolean; readonly timestamp: number }) => R2): Builder<A, E, R | R2>;
+  onFailure<R2>(f: (error: E | { readonly defect: string }, meta: { readonly waiting: boolean; readonly previousSuccess: Success<A, E> | null }) => R2): Builder<A, E, R | R2>;
+  render(): R | undefined;
+}
+
 /** Type guard that checks whether an unknown value is a `Result`. */
 export const isResult = (u: unknown): u is Result<unknown, unknown> =>
   typeof u === "object" && u !== null && "_tag" in u && (
@@ -306,6 +319,52 @@ export function match<A, E, R>(
   if (self._tag === "Initial") return handlers.onInitial();
   if (self._tag === "Success") return handlers.onSuccess(self.value);
   return handlers.onFailure(self.error);
+}
+
+/**
+ * Fluent builder API for rendering / matching `Result` values.
+ *
+ * @example
+ * const view = Result.builder(result)
+ *   .onInitial(() => "loading")
+ *   .onFailure((e) => `error: ${String(e)}`)
+ *   .onSuccess((value, { waiting }) => waiting ? `${value}...` : `${value}`)
+ *   .render()
+ */
+export function builder<A, E, R = never>(self: Result<A, E>): Builder<A, E, R> {
+  const handlers: BuilderHandlers<A, E, R> = {};
+
+  const api: Builder<A, E, R> = {
+    onInitial: (f) => {
+      (handlers as BuilderHandlers<A, E, R | ReturnType<typeof f>>).onInitial = f;
+      return api as unknown as Builder<A, E, R | ReturnType<typeof f>>;
+    },
+    onSuccess: (f) => {
+      (handlers as BuilderHandlers<A, E, R | ReturnType<typeof f>>).onSuccess = f;
+      return api as unknown as Builder<A, E, R | ReturnType<typeof f>>;
+    },
+    onFailure: (f) => {
+      (handlers as BuilderHandlers<A, E, R | ReturnType<typeof f>>).onFailure = f;
+      return api as unknown as Builder<A, E, R | ReturnType<typeof f>>;
+    },
+    render: () => {
+      if (self._tag === "Initial") {
+        return handlers.onInitial?.();
+      }
+      if (self._tag === "Success") {
+        return handlers.onSuccess?.(self.value, {
+          waiting: self.waiting,
+          timestamp: self.timestamp,
+        });
+      }
+      return handlers.onFailure?.(self.error, {
+        waiting: self.waiting,
+        previousSuccess: self.previousSuccess,
+      });
+    },
+  };
+
+  return api;
 }
 
 /**

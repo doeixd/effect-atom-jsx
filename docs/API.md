@@ -209,6 +209,7 @@ A three-state result type for data fetching: `Initial`, `Success`, or `Failure`.
 - **`Result.flatMap(result, fn)`** — Chain results.
 - **`Result.match(result, { initial, success, failure })`** — Pattern match all states.
 - **`Result.all(results)`** — Combine multiple results (all must succeed).
+- **`Result.builder(result)`** — Fluent builder with `.onInitial(...)`, `.onFailure(...)`, `.onSuccess(...)`, `.render()`.
 
 ### Accessors
 
