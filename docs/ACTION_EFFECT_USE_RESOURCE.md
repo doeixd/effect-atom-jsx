@@ -95,7 +95,7 @@ Behavior details:
 - Defects/interruption surface as `Defect`.
 - If used without ambient runtime, `queryEffect` returns a `Defect` result accessor with a guidance message.
 
-If you are outside `mount`, use `queryEffectStrict(runtime, fn)`.
+If you are outside `mount`, use `queryEffect(fn, { runtime })`.
 
 ---
 

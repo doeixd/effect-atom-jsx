@@ -17,9 +17,7 @@ import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime, Option }
 import {
   atomEffect,
   queryEffect,
-  queryEffectStrict,
   defineQuery,
-  defineQueryStrict,
   createQueryKey,
   invalidate,
   refresh,
@@ -27,9 +25,7 @@ import {
   latest,
   createOptimistic,
   mutationEffect,
-  mutationEffectStrict,
   defineMutation,
-  defineMutationStrict,
   use,
   useService,
   useServices,
@@ -424,11 +420,11 @@ describe("use / queryEffect (ambient runtime behavior)", () => {
 
     let result!: () => AsyncResultType<string, never>;
     const dispose = createRoot((d) => {
-      result = queryEffectStrict(runtime, () =>
+      result = queryEffect(() =>
         Effect.gen(function* () {
           const svc = yield* Effect.service(Greeting);
           return `${svc.prefix}!`;
-        }));
+        }), { runtime });
       return d;
     });
 
@@ -480,17 +476,17 @@ describe("query keys / queryEffect", () => {
     await runtime.dispose();
   });
 
-  it("queryEffectStrict runs with explicit runtime", async () => {
+  it("queryEffect runs with explicit runtime", async () => {
     const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "hey" }));
 
     let result!: () => AsyncResultType<string, never>;
     const dispose = createRoot((d) => {
-      result = queryEffectStrict(runtime, () =>
+      result = queryEffect(() =>
         Effect.gen(function* () {
           const svc = yield* Effect.service(Greeting);
           return `${svc.prefix}!`;
-        }));
+        }), { runtime });
       return d;
     });
 
@@ -515,13 +511,12 @@ describe("query keys / queryEffect", () => {
     await runtime.dispose();
   });
 
-  it("defineQueryStrict requires explicit runtime", async () => {
+  it("defineQuery accepts explicit runtime", async () => {
     const Svc = ServiceMap.Service<{ readonly value: string }>("Svc");
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { value: "ok" }));
-    const query = createRoot(() => defineQueryStrict(
-      runtime,
+    const query = createRoot(() => defineQuery(
       () => Effect.service(Svc).pipe(Effect.map((s) => s.value)),
-      { name: "svc" },
+      { name: "svc", runtime },
     ));
 
     await tick();
@@ -557,14 +552,14 @@ describe("strict aliases", () => {
     await runtime.dispose();
   });
 
-  it("mutationEffectStrict injects runtime", async () => {
+  it("mutationEffect injects runtime", async () => {
     const Svc = ServiceMap.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("Svc");
     let saved = 0;
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { save: (n) => Effect.sync(() => { saved = n; }) }));
 
-    const action = mutationEffectStrict(
-      runtime,
+    const action = mutationEffect(
       (n: number) => Effect.service(Svc).pipe(Effect.flatMap((svc) => svc.save(n))),
+      { runtime },
     );
 
     action.run(7);
@@ -695,12 +690,12 @@ describe("mutationEffect", () => {
     const Greeting = ServiceMap.Service<{ readonly prefix: string }>("ActionGreeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "ok" }));
 
-    const action = mutationEffectStrict(
-      runtime,
+    const action = mutationEffect(
       (_: void) => Effect.gen(function* () {
         const svc = yield* Effect.service(Greeting);
         return svc.prefix;
       }),
+      { runtime },
     );
 
     action.run(undefined);
@@ -737,14 +732,14 @@ describe("mutationEffect", () => {
     expect(saved).toBe(11);
   });
 
-  it("defineMutationStrict aliases mutationEffectStrict", async () => {
+  it("defineMutation supports explicit runtime option", async () => {
     const Svc = ServiceMap.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("AliasSvc");
     let saved = 0;
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { save: (n) => Effect.sync(() => { saved = n; }) }));
 
-    const action = defineMutationStrict(
-      runtime,
+    const action = defineMutation(
       (n: number) => Effect.service(Svc).pipe(Effect.flatMap((svc) => svc.save(n))),
+      { runtime },
     );
 
     action.run(13);

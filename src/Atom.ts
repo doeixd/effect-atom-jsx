@@ -12,15 +12,12 @@ import { Owner, runWithOwner } from "./owner.js";
 import {
   atomEffect,
   queryEffect,
-  queryEffectStrict,
   mutationEffect,
-  mutationEffectStrict,
   type AsyncResult,
   type Refreshing,
   type Success,
   type Failure,
   type Defect,
-  type MutationEffectHandle,
   type RuntimeLike,
 } from "./effect-ts.js";
 import * as Result from "./Result.js";
@@ -421,10 +418,10 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
         readonly onSuccess?: (input: Input) => void;
       },
     ): ActionHandle<Input, E2> {
-      const handle = mutationEffectStrict(
-        managed as RuntimeLike<R, unknown>,
+      const handle = mutationEffect(
         (input: Input) => effect(input),
         {
+          runtime: managed as RuntimeLike<R, unknown>,
           onSuccess: (input) => {
             options?.onSuccess?.(input);
             if (options?.reactivityKeys !== undefined) {
@@ -450,18 +447,14 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
       effect: (input: Input) => Effect.Effect<A, E2, R>,
       options?: { readonly reactivityKeys?: ReactivityKeysInput },
     ): Writable<AsyncResult<void, E2>, Input> {
-      let handle: MutationEffectHandle<Input, E2> | null = null;
-      const ensureHandle = (): MutationEffectHandle<Input, E2> => {
+      let handle: ActionHandle<Input, E2> | null = null;
+      const ensureHandle = (): ActionHandle<Input, E2> => {
         if (handle !== null) return handle;
-        handle = mutationEffectStrict(
+        handle = action(
           managed as RuntimeLike<R, unknown>,
           (input: Input) => effect(input),
           {
-            onSuccess: () => {
-              if (options?.reactivityKeys !== undefined) {
-                invalidateReactivity(options.reactivityKeys);
-              }
-            },
+            reactivityKeys: options?.reactivityKeys,
           },
         );
         return handle;
@@ -596,19 +589,16 @@ export function fn<A, E, R, Input = void>(
   const effectFn = (hasRuntime ? arg2 : arg1) as (input: Input) => Effect.Effect<A, E, R>;
   const options = (hasRuntime ? arg3 : arg2) as { readonly reactivityKeys?: ReactivityKeysInput } | undefined;
 
-  let handle: MutationEffectHandle<Input, E> | null = null;
-  const ensureHandle = (): MutationEffectHandle<Input, E> => {
+  let handle: ActionHandle<Input, E> | null = null;
+  const ensureHandle = (): ActionHandle<Input, E> => {
     if (handle !== null) return handle;
-    const baseOptions = {
-      onSuccess: () => {
-        if (options?.reactivityKeys !== undefined) {
-          invalidateReactivity(options.reactivityKeys);
-        }
-      },
-    };
     handle = runtimeArg === undefined
-      ? mutationEffect((input: Input) => effectFn(input) as Effect.Effect<unknown, E, never>, baseOptions)
-      : mutationEffectStrict(runtimeArg as RuntimeLike<R, unknown>, effectFn, baseOptions);
+      ? action((input: Input) => effectFn(input) as Effect.Effect<A, E, never>, {
+        reactivityKeys: options?.reactivityKeys,
+      })
+      : action(runtimeArg as RuntimeLike<R, unknown>, effectFn, {
+        reactivityKeys: options?.reactivityKeys,
+      });
     return handle;
   };
 
@@ -670,7 +660,8 @@ export function action<A, E, R, Input = void>(
         options?.onError?.(error as E);
       },
     })
-    : mutationEffectStrict(runtimeArg as RuntimeLike<R, unknown>, effectFn, {
+    : mutationEffect(effectFn, {
+      runtime: runtimeArg as RuntimeLike<R, unknown>,
       onSuccess: (input) => {
         options?.onSuccess?.(input);
         if (options?.reactivityKeys !== undefined) {
@@ -1414,7 +1405,7 @@ export function query<A, E, R>(
 /**
  * Create an atom backed by `queryEffect(...)` semantics.
  *
- * This is the atom-native equivalent of `queryEffect` / `queryEffectStrict`:
+ * This is the atom-native equivalent of `queryEffect`:
  * - tracks dependencies read inside `fn()`
  * - interrupts stale fibers on dependency changes
  * - exposes `AsyncResult<A, E>` through normal atom reads
@@ -1438,9 +1429,9 @@ export function query<A, E, R>(
     if (arg2 === undefined) {
       accessor = queryEffect(arg1 as () => Effect.Effect<A, E, R>);
     } else {
-      accessor = queryEffectStrict(arg1 as RuntimeLike<R, unknown>, arg2);
+      accessor = queryEffect(arg2, { runtime: arg1 as RuntimeLike<R, unknown> });
     }
-    return accessor;
+    return accessor as Accessor<AsyncResult<A, E>>;
   };
 
   return readable(() => getAccessor()());

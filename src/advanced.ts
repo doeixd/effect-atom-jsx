@@ -9,13 +9,9 @@
 export {
   atomEffect,
   queryEffect,
-  queryEffectStrict,
   defineQuery,
-  defineQueryStrict,
   mutationEffect,
-  mutationEffectStrict,
   defineMutation,
-  defineMutationStrict,
   scopedRoot,
   scopedRootEffect,
   scopedQuery,

@@ -332,7 +332,7 @@ HTTP API client factory for grouped endpoints.
 
 For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOURCE.md`](ACTION_EFFECT_USE_RESOURCE.md).
 
-Note: `AsyncResult` and scoped/strict constructors are considered advanced and are also available from `effect-atom-jsx/advanced`.
+Note: `AsyncResult` and scoped constructors are considered advanced and are also available from `effect-atom-jsx/advanced`.
 
 ### Async Data
 
@@ -341,8 +341,6 @@ Note: `AsyncResult` and scoped/strict constructors are considered advanced and a
 - **`defineQuery(fn, options?)`** — Ergonomic keyed query bundle returning `{ key, result, pending, latest, invalidate, refresh }`.
 - **`scopedQueryEffect(scope, fn, options?)`** — Effect constructor variant that creates a scope-bound query accessor.
 - **`scopedQuery(scope, fn, options?)`** — Sync convenience wrapper over `scopedQueryEffect(...)`.
-- **`queryEffectStrict(runtime, fn, options?)`** — Strict explicit-runtime query helper with optional key tracking.
-- **`defineQueryStrict(runtime, fn, options?)`** — Strict explicit-runtime query bundle helper.
 - **`createQueryKey<A>(name?)`** — Create typed invalidation keys for queries.
 - **`invalidate(key)` / `refresh(key)`** — Invalidate one or many query keys.
 - **`isPending(result)`** — `true` only during `Refreshing` (not initial `Loading`).
@@ -364,11 +362,9 @@ Note: `AsyncResult` and scoped/strict constructors are considered advanced and a
 
 - **`createOptimistic(source)`** — Create an optimistic overlay with `get`, `set`, `clear`, `isPending`.
 - **`defineMutation(fn, options?)`** — Alias for `mutationEffect(...)` with query-style naming symmetry.
-- **`defineMutationStrict(runtime, fn, options?)`** — Strict explicit-runtime alias for `mutationEffectStrict(...)`.
 - **`mutationEffect(fn, options?)`** — Create an Effect-powered mutation action with `optimistic`, `rollback`, `onSuccess`, `onFailure`, `refresh` hooks. Returns `{ run, result, pending }`. Supports `invalidates` query keys.
 - **`scopedMutationEffect(scope, fn, options?)`** — Effect constructor variant that creates a scope-bound mutation handle.
 - **`scopedMutation(scope, fn, options?)`** — Sync convenience wrapper over `scopedMutationEffect(...)`.
-- **`mutationEffectStrict(runtime, fn, options?)`** — Strict explicit-runtime mutation helper.
 
 
 ### OO Facade

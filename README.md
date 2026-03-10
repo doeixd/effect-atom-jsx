@@ -437,8 +437,7 @@ import {
 } from "effect-atom-jsx";
 
 import {
-  atomEffect, queryEffect, queryEffectStrict, defineQueryStrict,
-  mutationEffect, defineMutationStrict, mutationEffectStrict,
+  atomEffect, queryEffect, mutationEffect,
   layerContext,
   scopedRoot, scopedRootEffect,
   scopedQuery, scopedQueryEffect,

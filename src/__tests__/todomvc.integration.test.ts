@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Effect, Layer, ManagedRuntime, ServiceMap } from "effect";
 import {
-  mutationEffectStrict,
+  mutationEffect,
   createOptimistic,
   createSignal,
   createRoot,
-  queryEffectStrict,
+  queryEffect,
 } from "../index.js";
 import { AsyncResult } from "../advanced.js";
 import { setBatchingMode } from "../api.js";
@@ -61,27 +61,27 @@ function makeApi(initial: ReadonlyArray<Todo>): TodoApi {
 }
 
 describe("TodoMVC integration", () => {
-  it("supports optimistic add + refresh over queryEffectStrict", async () => {
+  it("supports optimistic add + refresh with explicit runtime", async () => {
     const runtime = ManagedRuntime.make(Layer.succeed(TodoApi, makeApi([
       { id: "1", title: "first", completed: false },
     ])));
 
     let readTodos!: () => AsyncResult<ReadonlyArray<Todo>, ApiError>;
     let optimistic!: ReturnType<typeof createOptimistic<ReadonlyArray<Todo>>>;
-    let add!: ReturnType<typeof mutationEffectStrict<string, ApiError, TodoApi>>;
+    let add!: ReturnType<typeof mutationEffect<string, ApiError, TodoApi>>;
     let refresh!: () => void;
 
     const dispose = createRoot((d) => {
       const [refreshTick, setRefreshTick] = createSignal(0);
       refresh = () => setRefreshTick((n) => n + 1);
 
-      readTodos = queryEffectStrict(runtime, () =>
+      readTodos = queryEffect(() =>
         Effect.sync(refreshTick).pipe(
           Effect.flatMap(() => Effect.gen(function* () {
             const api = yield* Effect.service(TodoApi);
             return yield* api.list();
           })),
-        ));
+        ), { runtime });
 
       optimistic = createOptimistic(() => {
         const r = readTodos();
@@ -90,13 +90,13 @@ describe("TodoMVC integration", () => {
         return [];
       });
 
-      add = mutationEffectStrict(
-        runtime,
+      add = mutationEffect(
         (title: string) => Effect.gen(function* () {
           const api = yield* Effect.service(TodoApi);
           yield* api.add(title);
         }),
         {
+          runtime,
           optimistic: (title: string) => optimistic.set((list) => [{ id: "temp", title, completed: false }, ...list]),
           rollback: () => optimistic.clear(),
           onSuccess: () => {
@@ -136,14 +136,14 @@ describe("TodoMVC integration", () => {
     ])));
 
     let optimistic!: ReturnType<typeof createOptimistic<ReadonlyArray<Todo>>>;
-    let add!: ReturnType<typeof mutationEffectStrict<string, ApiError, TodoApi>>;
+    let add!: ReturnType<typeof mutationEffect<string, ApiError, TodoApi>>;
 
     const dispose = createRoot((d) => {
-      const readTodos = queryEffectStrict(runtime, () =>
+      const readTodos = queryEffect(() =>
         Effect.gen(function* () {
           const api = yield* Effect.service(TodoApi);
           return yield* api.list();
-        }));
+        }), { runtime });
 
       optimistic = createOptimistic(() => {
         const r = readTodos();
@@ -152,13 +152,13 @@ describe("TodoMVC integration", () => {
         return [];
       });
 
-      add = mutationEffectStrict(
-        runtime,
+      add = mutationEffect(
         (title: string) => Effect.gen(function* () {
           const api = yield* Effect.service(TodoApi);
           yield* api.add(title);
         }),
         {
+          runtime,
           optimistic: (title: string) => optimistic.set((list) => [{ id: "temp", title, completed: false }, ...list]),
           rollback: () => optimistic.clear(),
         },

@@ -509,17 +509,6 @@ export function queryEffect<A, E, R>(
 }
 
 /**
- * Strict explicit-runtime variant of `queryEffect(...)`.
- */
-export function queryEffectStrict<A, E, R>(
-  runtime: RuntimeLike<R, unknown>,
-  fn: () => Effect.Effect<A, E, R>,
-  options?: { key?: QueryKey<any> | ReadonlyArray<QueryKey<any>> },
-): Accessor<AsyncResult<A, E>> {
-  return queryEffect(fn, { runtime, key: options?.key });
-}
-
-/**
  * Create a keyed query bundle for ergonomic query + invalidation wiring.
  *
  * @example
@@ -540,17 +529,6 @@ export function defineQuery<A, E, R>(
     invalidate: () => invalidate(key),
     refresh: () => refresh(key),
   };
-}
-
-/**
- * Strict explicit-runtime variant of `defineQuery(...)`.
- */
-export function defineQueryStrict<A, E, R>(
-  runtime: RuntimeLike<R, unknown>,
-  fn: () => Effect.Effect<A, E, R>,
-  options?: { key?: QueryKey<A>; name?: string },
-): QueryRef<A, E> {
-  return defineQuery(fn, { runtime, key: options?.key, name: options?.name });
 }
 
 /**
@@ -1100,19 +1078,8 @@ export function Async<A, E>(props: {
 /**
  * Strict explicit-runtime variant of `mutationEffect(...)`.
  */
-export function mutationEffectStrict<A, E, R>(
-  runtime: RuntimeLike<R, unknown>,
-  fn: (input: A) => Effect.Effect<unknown, E, R>,
-  options?: Omit<MutationEffectOptions<A, E, R>, "runtime">,
-): MutationEffectHandle<A, E> {
-  return mutationEffect(fn, { ...options, runtime });
-}
-
 /** Alias for `mutationEffect(...)` with query-style naming symmetry. */
 export const defineMutation = mutationEffect;
-
-/** Strict explicit-runtime alias for `mutationEffectStrict(...)`. */
-export const defineMutationStrict = mutationEffectStrict;
 
 function isAccessor<T>(u: unknown): u is Accessor<T> {
   return typeof u === "function";

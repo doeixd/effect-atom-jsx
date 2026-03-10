@@ -10,7 +10,7 @@
 ## API and Docs
 
 - [ ] Public API exports match intended surface in `src/index.ts`
-- [ ] `README.md` reflects current API (`createMount`, `useService`, `defineQuery` / `queryEffect`, `queryEffectStrict`, `mutationEffect`, `createOptimistic`)
+- [ ] `README.md` reflects current API (`createMount`, `useService`, `defineQuery` / `queryEffect`, `mutationEffect`, `createOptimistic`)
 - [ ] Breaking changes called out (if any)
 - [ ] Effect version compatibility documented
 

@@ -45,8 +45,8 @@ This draft is intentionally opinionated and allows breaking changes.
 | `Loading` / `Errored` / `Show` / `For` / `Switch` / `Match` | Keep | core | Core rendering controls |
 | `createOptimistic` | Keep | core | Mutation UX primitive |
 | `queryEffect` / `mutationEffect` | Keep as aliases | legacy | Prefer `defineQuery` / `defineMutation` |
-| `queryEffectStrict` / `mutationEffectStrict` | Move behind option or advanced | legacy/advanced | Avoid strict-function proliferation |
-| `defineQueryStrict` / `defineMutationStrict` | Deprecate toward config-based strictness | legacy | Evaluate removal post-migration |
+| `queryEffectStrict` / `mutationEffectStrict` | Removed | removed | Use `queryEffect(..., { runtime })` / `mutationEffect(..., { runtime })` |
+| `defineQueryStrict` / `defineMutationStrict` | Removed | removed | Use `defineQuery(..., { runtime })` / `defineMutation(..., { runtime })` |
 | `atomEffect` | Keep | advanced | Explicit low-level async primitive |
 | `scoped*` constructors | Keep | advanced | Move off top-level docs |
 
