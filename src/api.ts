@@ -7,8 +7,8 @@
 
 import { Signal, type EqualityFn } from "./signal.js";
 import { Computation, Memo } from "./computation.js";
-import { Owner, getOwner, runWithOwner, setOwner } from "./owner.js";
-import { runUntracked, runBatch } from "./tracking.js";
+import { Owner, getOwner, runWithOwner } from "./owner.js";
+import { runUntracked, runBatch, flush as flushComputations, setMicrotaskBatching } from "./tracking.js";
 
 // ─── Signals ──────────────────────────────────────────────────────────────────
 
@@ -114,6 +114,23 @@ export const sample = untrack;
  */
 export function batch<T>(fn: () => T): T {
   return runBatch(fn);
+}
+
+/**
+ * Flush queued reactive invalidations immediately.
+ *
+ * Useful when microtask batching is enabled and imperative code needs
+ * deterministic DOM/update ordering.
+ */
+export function flush(): void {
+  flushComputations();
+}
+
+export type BatchingMode = "sync" | "microtask";
+
+/** Configure default notification batching mode for signal updates. */
+export function setBatchingMode(mode: BatchingMode): void {
+  setMicrotaskBatching(mode === "microtask");
 }
 
 // ─── Owner / Root ─────────────────────────────────────────────────────────────

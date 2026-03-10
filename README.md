@@ -413,7 +413,7 @@ import * as AtomSchema from "effect-atom-jsx/AtomSchema";
 
 | Module | Key Exports |
 |--------|-------------|
-| `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `projection`, `projectionAsync`, `withReactivity`, `invalidateReactivity`, `keepAlive`, `runtime`, `fn`, `pull`, `Stream.*` (advanced OOO helpers), `searchParam`, `kvs`, `batch`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue`, `query` |
+| `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `projection`, `projectionAsync`, `withReactivity`, `invalidateReactivity`, `keepAlive`, `runtime`, `action`, `fn`, `effect`, `pull`, `Stream.*` (advanced OOO helpers), `searchParam`, `kvs`, `batch`, `flush`, `setBatchingMode`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue`, `query` |
 | `AtomRef` | `make`, `collection` |
 | `Registry` | `make` (returns instance with `get`, `set`, `update`, `modify`, `mount`, `refresh`, `subscribe`, `reset`, `dispose`) |
 | `Result` | `initial`, `success`, `failure`, `isInitial`, `isSuccess`, `isFailure`, `isWaiting`, `fromAsyncResult`, `toAsyncResult`, `map`, `flatMap`, `match`, `all` |
@@ -452,7 +452,7 @@ import {
   createSignal, createEffect, createMemo, createRoot,
   createContext, useContext,
   onCleanup, onMount,
-  untrack, sample, batch,
+  untrack, sample, batch, flush, setBatchingMode,
   mergeProps, splitProps,
   getOwner, runWithOwner,
 } from "effect-atom-jsx/advanced";

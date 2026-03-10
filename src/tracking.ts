@@ -48,6 +48,8 @@ export function runUntracked<T>(fn: () => T): T {
  */
 let batchDepth = 0;
 const batchQueue: Set<IComputation> = new Set();
+let microtaskBatching = false;
+let microtaskScheduled = false;
 
 export function isBatching(): boolean {
   return batchDepth > 0;
@@ -55,6 +57,32 @@ export function isBatching(): boolean {
 
 export function enqueueComputation(comp: IComputation): void {
   batchQueue.add(comp);
+  if (microtaskBatching && batchDepth === 0 && !microtaskScheduled) {
+    microtaskScheduled = true;
+    queueMicrotask(() => {
+      microtaskScheduled = false;
+      flush();
+    });
+  }
+}
+
+export function isMicrotaskBatchingEnabled(): boolean {
+  return microtaskBatching;
+}
+
+export function setMicrotaskBatching(enabled: boolean): void {
+  microtaskBatching = enabled;
+}
+
+export function flush(): void {
+  if (batchQueue.size === 0) return;
+  while (batchQueue.size > 0) {
+    const toRun = [...batchQueue];
+    batchQueue.clear();
+    for (const comp of toRun) {
+      comp.invalidate();
+    }
+  }
 }
 
 export function runBatch<T>(fn: () => T): T {
@@ -64,12 +92,7 @@ export function runBatch<T>(fn: () => T): T {
   } finally {
     batchDepth--;
     if (batchDepth === 0) {
-      // Flush — snapshot so re-entrant writes queue into next flush.
-      const toRun = [...batchQueue];
-      batchQueue.clear();
-      for (const comp of toRun) {
-        comp.invalidate();
-      }
+      flush();
     }
   }
 }

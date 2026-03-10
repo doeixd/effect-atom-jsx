@@ -104,7 +104,7 @@ This draft is intentionally opinionated and allows breaking changes.
 - Runtime read API simplification (`apiRuntime.atom`) as the canonical query/read primitive.
 - Standalone effect primitive rename/alignment (`Atom.effect`) for non-runtime async sources. (Started)
 - Declarative invalidation path (`withReactivity` / `reactivityKeys`) alongside imperative `refresh`. (Started)
-- Microtask batching model + `flush` escape hatch evaluation.
+- Microtask batching model + `flush` escape hatch evaluation. (Started)
 
 ## Exit Criteria for This Draft
 

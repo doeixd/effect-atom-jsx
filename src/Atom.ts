@@ -1,5 +1,13 @@
 import { Effect, Stream as FxStream, Queue, Fiber, Layer, ManagedRuntime, Cause, Option } from "effect";
-import { createSignal, batch as runBatch, type Accessor, createEffect, onCleanup } from "./api.js";
+import {
+  createSignal,
+  batch as runBatch,
+  flush as flushBatch,
+  setBatchingMode as setReactiveBatchingMode,
+  type Accessor,
+  createEffect,
+  onCleanup,
+} from "./api.js";
 import { Owner, runWithOwner } from "./owner.js";
 import {
   atomEffect,
@@ -1166,6 +1174,16 @@ export function withFallback<A, E>(
  */
 export const batch = (f: () => void): void => {
   runBatch(f);
+};
+
+/** Flush pending reactive updates immediately. */
+export const flush = (): void => {
+  flushBatch();
+};
+
+/** Configure signal notification batching mode (`sync` or `microtask`). */
+export const setBatchingMode = (mode: "sync" | "microtask"): void => {
+  setReactiveBatchingMode(mode);
 };
 
 /**

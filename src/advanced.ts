@@ -45,6 +45,8 @@ export {
   untrack,
   sample,
   batch,
+  flush,
+  setBatchingMode,
   mergeProps,
   splitProps,
   getOwner,
