@@ -172,6 +172,6 @@ Deliverables:
 
 ## Immediate Next Steps
 
-1. Draft `docs/V1_API_CONTRACT_DRAFT.md` with explicit keep/remove/rename decisions.
+1. Draft `docs/V1_API_CONTRACT_DRAFT.md` with explicit keep/remove/rename decisions. (Started)
 2. Build TodoMVC v1 prototype constrained to core APIs.
 3. Decide async model direction (single vs dual with strict boundary) and lock it.
