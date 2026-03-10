@@ -365,16 +365,6 @@ export interface AtomRuntime<R, E = unknown> {
       readonly onSuccess?: (input: Input) => void;
     },
   ): ActionHandle<Input, E2>;
-  /**
-   * Create a function-style mutation atom bound to this runtime.
-   *
-   * `set(fnAtom, input)` runs the Effect and updates `fnAtom` with
-   * `AsyncResult<void, E2>` state.
-   */
-  fn<A, E2, Input = void>(
-    effect: (input: Input) => Effect.Effect<A, E2, R>,
-    options?: { readonly reactivityKeys?: ReactivityKeysInput },
-  ): Writable<AsyncResult<void, E2>, Input>;
   dispose(): Promise<void>;
 }
 
@@ -442,27 +432,6 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
       out.result = handle.result;
       out.pending = handle.pending;
       return out;
-    },
-    fn<A, E2, Input = void>(
-      effect: (input: Input) => Effect.Effect<A, E2, R>,
-      options?: { readonly reactivityKeys?: ReactivityKeysInput },
-    ): Writable<AsyncResult<void, E2>, Input> {
-      let handle: ActionHandle<Input, E2> | null = null;
-      const ensureHandle = (): ActionHandle<Input, E2> => {
-        if (handle !== null) return handle;
-        handle = action(
-          managed as RuntimeLike<R, unknown>,
-          (input: Input) => effect(input),
-          {
-            reactivityKeys: options?.reactivityKeys,
-          },
-        );
-        return handle;
-      };
-      return writable(
-        () => ensureHandle().result(),
-        (_ctx, input) => ensureHandle().run(input),
-      );
     },
     dispose(): Promise<void> {
       return managed.dispose();
@@ -568,44 +537,6 @@ export function withReactivity<A>(
     for (const key of keys) ensureReactivityKey(key)();
     return get(self);
   });
-}
-
-export function fn<A, E, Input = void>(
-  effect: (input: Input) => Effect.Effect<A, E, never>,
-  options?: { readonly reactivityKeys?: ReactivityKeysInput },
-): Writable<AsyncResult<void, E>, Input>;
-export function fn<A, E, R, Input = void>(
-  runtime: RuntimeLike<R, unknown>,
-  effect: (input: Input) => Effect.Effect<A, E, R>,
-  options?: { readonly reactivityKeys?: ReactivityKeysInput },
-): Writable<AsyncResult<void, E>, Input>;
-export function fn<A, E, R, Input = void>(
-  arg1: RuntimeLike<R, unknown> | ((input: Input) => Effect.Effect<A, E, R>),
-  arg2?: ((input: Input) => Effect.Effect<A, E, R>) | { readonly reactivityKeys?: ReactivityKeysInput },
-  arg3?: { readonly reactivityKeys?: ReactivityKeysInput },
-): Writable<AsyncResult<void, E>, Input> {
-  const hasRuntime = typeof arg1 !== "function";
-  const runtimeArg = hasRuntime ? arg1 as RuntimeLike<R, unknown> : undefined;
-  const effectFn = (hasRuntime ? arg2 : arg1) as (input: Input) => Effect.Effect<A, E, R>;
-  const options = (hasRuntime ? arg3 : arg2) as { readonly reactivityKeys?: ReactivityKeysInput } | undefined;
-
-  let handle: ActionHandle<Input, E> | null = null;
-  const ensureHandle = (): ActionHandle<Input, E> => {
-    if (handle !== null) return handle;
-    handle = runtimeArg === undefined
-      ? action((input: Input) => effectFn(input) as Effect.Effect<A, E, never>, {
-        reactivityKeys: options?.reactivityKeys,
-      })
-      : action(runtimeArg as RuntimeLike<R, unknown>, effectFn, {
-        reactivityKeys: options?.reactivityKeys,
-      });
-    return handle;
-  };
-
-  return writable(
-    () => ensureHandle().result(),
-    (_ctx, input) => ensureHandle().run(input),
-  );
 }
 
 export function action<A, E, Input = void>(

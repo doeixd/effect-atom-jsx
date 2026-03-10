@@ -346,16 +346,16 @@ describe("effect-atom style API", () => {
     await rt.dispose();
   });
 
-  it("supports Atom.runtime(...).fn for effectful function atoms", async () => {
+  it("supports Atom.runtime(...).action for effectful actions", async () => {
     const values: number[] = [];
     const rt = Atom.runtime(Layer.empty);
-    const fnAtom = rt.fn((n: number) => Effect.sync(() => { values.push(n); }));
+    const fnAtom = rt.action((n: number) => Effect.sync(() => { values.push(n); }));
 
-    Effect.runSync(Atom.set(fnAtom, 42));
+    fnAtom(42);
     await Effect.runPromise(Effect.sleep("5 millis"));
 
     expect(values).toEqual([42]);
-    const state = Effect.runSync(Atom.get(fnAtom));
+    const state = fnAtom.result();
     expect(state._tag === "Success" || state._tag === "Refreshing").toBe(true);
 
     await rt.dispose();
@@ -590,16 +590,16 @@ describe("effect-atom style API", () => {
     expect(Effect.runSync(Atom.get(reactive))).toBe(2);
   });
 
-  it("supports Atom.fn with reactivity key invalidation", async () => {
+  it("supports Atom.action with reactivity key invalidation", async () => {
     let runCount = 0;
     const counter = Atom.withReactivity(Atom.make(() => ++runCount), ["counter"]);
-    const increment = Atom.fn(
+    const increment = Atom.action(
       (_: void) => Effect.void,
       { reactivityKeys: ["counter"] },
     );
 
     expect(Effect.runSync(Atom.get(counter))).toBe(1);
-    Effect.runSync(Atom.set(undefined)(increment));
+    increment(undefined);
     await Effect.runPromise(Effect.sleep("10 millis"));
     expect(Effect.runSync(Atom.get(counter))).toBe(2);
   });
