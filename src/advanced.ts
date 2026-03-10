@@ -8,9 +8,7 @@
 
 export {
   atomEffect,
-  queryEffect,
   defineQuery,
-  mutationEffect,
   defineMutation,
   scopedRoot,
   scopedRootEffect,
