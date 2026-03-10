@@ -289,7 +289,7 @@ function runForkWithRuntime<R, A, E>(
  *   return <Async result={result()} loading={() => "Loading..."} success={(n) => n} />
  * }
  */
-export function use<I, S>(tag: ServiceMap.Key<I, S>): S {
+export function useService<I, S>(tag: ServiceMap.Key<I, S>): S {
   const runtime = getAmbientManagedRuntime();
   if (runtime === null) {
     throw new Error("[effect-atom-jsx] use(tag): no ambient ManagedRuntime found. Mount with mount(..., layer).");
@@ -349,14 +349,6 @@ export function invalidate(keyOrKeys: QueryKey<any> | ReadonlyArray<QueryKey<any
   }
 }
 
-/** Alias for `invalidate(...)`. */
-export const refresh = invalidate;
-
-/**
- * Alias for `use(tag)` with Effect-centric naming.
- */
-export const useService = use;
-
 /**
  * Resolve multiple services from the ambient runtime in one call.
  *
@@ -368,7 +360,7 @@ export function useServices<T extends Record<string, ServiceMap.Key<any, any>>>(
 ): { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never } {
   const out = {} as { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never };
   for (const key in tags) {
-    out[key] = use(tags[key]) as { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never }[typeof key];
+    out[key] = useService(tags[key]) as { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never }[typeof key];
   }
   return out;
 }
@@ -527,7 +519,7 @@ export function defineQuery<A, E, R>(
     pending: isPending(result),
     latest: latest(result),
     invalidate: () => invalidate(key),
-    refresh: () => refresh(key),
+    refresh: () => invalidate(key),
   };
 }
 
@@ -1191,8 +1183,6 @@ export function createMount<R, E>(
   return (fn, container) => mount(fn, container, layer);
 }
 
-/** Alias for `createMount(layer)` */
-export const mountWith = createMount;
 
 /**
  * Renders the first matching `Match` case.

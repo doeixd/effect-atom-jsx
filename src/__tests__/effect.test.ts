@@ -20,13 +20,11 @@ import {
   defineQuery,
   createQueryKey,
   invalidate,
-  refresh,
   isPending,
   latest,
   createOptimistic,
   mutationEffect,
   defineMutation,
-  use,
   useService,
   useServices,
   signal,
@@ -394,9 +392,9 @@ describe("signal / computed", () => {
 });
 
 describe("use / queryEffect (ambient runtime behavior)", () => {
-  it("use(tag) throws when no ambient ManagedRuntime is present", () => {
+  it("useService(tag) throws when no ambient ManagedRuntime is present", () => {
     const Name = ServiceMap.Service<{ readonly value: string }>("Name");
-    expect(() => use(Name)).toThrow(/no ambient ManagedRuntime/i);
+    expect(() => useService(Name)).toThrow(/no ambient ManagedRuntime/i);
   });
 
   it("resource(fn) returns a defect when no ambient runtime is available", async () => {
@@ -434,7 +432,7 @@ describe("use / queryEffect (ambient runtime behavior)", () => {
     await runtime.dispose();
   });
 
-  it("useService(tag) aliases use(tag)", () => {
+  it("useService(tag) throws without ambient runtime", () => {
     const Name = ServiceMap.Service<{ readonly value: string }>("Name");
     expect(() => useService(Name)).toThrow(/no ambient ManagedRuntime/i);
   });
@@ -469,7 +467,7 @@ describe("query keys / queryEffect", () => {
     invalidate(key);
     await tick();
     expect(result()).toEqual(AsyncResult.success(2));
-    refresh(key);
+    invalidate(key);
     await tick();
     expect(result()).toEqual(AsyncResult.success(3));
     dispose();

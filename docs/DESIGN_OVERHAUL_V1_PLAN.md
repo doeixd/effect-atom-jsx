@@ -108,6 +108,7 @@ These directives are now explicit inputs to implementation planning.
    - If full migration is risky, ship behind an opt-in runtime flag first.
    - Progress: `flush()` + `setBatchingMode("sync" | "microtask")` added, with `microtask` as the default mode.
 
+
 ## Breaking Changes Policy
 
 - Allowed in v1 with migration notes.
