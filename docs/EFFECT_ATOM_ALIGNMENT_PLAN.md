@@ -1,5 +1,7 @@
 # Effect-Atom Alignment Plan
 
+> Note (2026-03-10): superseded for API direction by `docs/DESIGN_OVERHAUL_V1_PLAN.md`. This document remains useful as compatibility/background context.
+
 Date: 2026-03-08
 Scope: Align `effect-atom-jsx` to feel natural for `@effect-atom/atom` users while keeping Effect v4 + JSX runtime goals.
 

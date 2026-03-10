@@ -1,8 +1,16 @@
 # Effect-Native Enhancement Plan
 
 Date: 2026-03-10
-Status: Proposed
+Status: Active (superseded by redesign track for API decisions)
 Scope: Implement seven high-impact improvements to align `effect-atom-jsx` more deeply with Effect's structured concurrency, typed errors, and observability model.
+
+## Strategic Pivot (2026-03-10)
+
+This plan remains the implementation backlog for lifecycle, observability, RPC, and stream capabilities, but API-level decisions are now governed by a breaking redesign track.
+
+- New primary design plan: `docs/DESIGN_OVERHAUL_V1_PLAN.md`
+- This file now acts as feature backlog input to that redesign.
+- Where this file conflicts with the redesign plan, the redesign plan wins.
 
 ## Goals
 
