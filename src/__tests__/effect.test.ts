@@ -58,6 +58,7 @@ import {
 } from "../effect-ts.js";
 import { createSignal, createRoot, createEffect, onCleanup } from "../api.js";
 import { Owner, runWithOwner } from "../owner.js";
+import { currentComponentScope } from "../component-scope.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1117,6 +1118,20 @@ describe("WithLayer", () => {
 // ─── scopedRoot ───────────────────────────────────────────────────────────────
 
 describe("scopedRoot", () => {
+  it("provides the scope through component context", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const scope = yield* Scope.make();
+        let observed: Scope.Closeable | null = null;
+        scopedRoot(scope, () => {
+          observed = currentComponentScope();
+        });
+        expect(observed).toBe(scope);
+        yield* Scope.close(scope, Exit.void);
+      })
+    );
+  });
+
   it("runs fn under the provided owner", () => {
     Effect.runPromise(
       Effect.gen(function* () {
@@ -1212,5 +1227,12 @@ describe("scopedRootEffect", () => {
 
     setN(2);
     expect(log).toEqual([0, 1]);
+  });
+});
+
+describe("component scope context", () => {
+  it("returns null for detached createRoot usage", () => {
+    const seen = createRoot(() => currentComponentScope());
+    expect(seen).toBeNull();
   });
 });

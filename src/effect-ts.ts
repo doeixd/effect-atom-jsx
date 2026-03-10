@@ -49,6 +49,11 @@ import { Owner, getOwner, runWithOwner } from "./owner.js";
 import { createSignal, createEffect, onCleanup, type Accessor, createContext, useContext, untrack } from "./api.js";
 import { createMemo } from "./api.js";
 import { render } from "./dom.js";
+import {
+  closeComponentScope,
+  currentComponentScope,
+  withComponentScope,
+} from "./component-scope.js";
 
 // ─── AsyncResult ──────────────────────────────────────────────────────────────
 
@@ -256,13 +261,18 @@ function runForkWithRuntime<R, A, E>(
   runtime: RuntimeLike<R, unknown> | undefined,
   effect: Effect.Effect<A, E, R>,
 ): Fiber.Fiber<A, E | unknown> {
+  const scope = currentComponentScope();
+  const scopedEffect = scope === null
+    ? effect
+    : Scope.provide(scope)(effect as Effect.Effect<A, E, R | Scope.Scope>) as Effect.Effect<A, E, R>;
+
   if (ManagedRuntime.isManagedRuntime(runtime)) {
-    return runtime.runFork(effect);
+    return runtime.runFork(scopedEffect);
   }
   if (runtime !== undefined) {
-    return Effect.runForkWith(runtime as ServiceMap.ServiceMap<R>)(effect);
+    return Effect.runForkWith(runtime as ServiceMap.ServiceMap<R>)(scopedEffect);
   }
-  return Effect.runFork(effect as Effect.Effect<A, E, never>) as Fiber.Fiber<A, E | unknown>;
+  return Effect.runFork(scopedEffect as Effect.Effect<A, E, never>) as Fiber.Fiber<A, E | unknown>;
 }
 
 /**
@@ -854,7 +864,7 @@ export function scopedRootEffect<T>(
   return Effect.gen(function* () {
     const owner = new Owner(getOwner());
     yield* Scope.addFinalizer(scope, Effect.sync(() => owner.dispose()));
-    return runWithOwner(owner, fn);
+    return runWithOwner(owner, () => withComponentScope(scope, fn));
   });
 }
 
@@ -986,16 +996,18 @@ export function mount<R, E>(
   layer: Layer.Layer<R, E, never>,
 ): () => void {
   const managed = ManagedRuntime.make(layer);
+  const rootScope = Scope.makeUnsafe();
   const disposeRender = render(
     () => ManagedRuntimeContext.Provider({
       value: managed as ManagedRuntime.ManagedRuntime<unknown, unknown>,
-      children: fn(),
+      children: withComponentScope(rootScope, fn),
     }),
     container,
   );
 
   return () => {
     disposeRender();
+    closeComponentScope(rootScope);
     void managed.dispose().catch((err) => {
       console.error("[effect-atom-jsx] mount: failed to dispose ManagedRuntime:", err);
     });

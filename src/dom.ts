@@ -11,6 +11,12 @@
 import { Computation } from "./computation.js";
 import { runUntracked } from "./tracking.js";
 import { createRoot, mergeProps, onCleanup } from "./api.js";
+import {
+  bindScopeCleanup,
+  currentComponentScope,
+  forkComponentScope,
+  withComponentScope,
+} from "./component-scope.js";
 
 /**
  * Create a reusable DOM template from an HTML string.
@@ -151,7 +157,11 @@ export function createComponent<P extends object>(
   Comp: (props: P) => unknown,
   props: P,
 ): unknown {
-  return createRoot(() => runUntracked(() => Comp(props)));
+  return createRoot(() => {
+    const childScope = forkComponentScope(currentComponentScope());
+    bindScopeCleanup(childScope);
+    return withComponentScope(childScope, () => runUntracked(() => Comp(props)));
+  });
 }
 
 // ─── spread ───────────────────────────────────────────────────────────────────
