@@ -8,31 +8,6 @@
  * "effect-atom-jsx/runtime" for compiled JSX output.
  */
 
-// ─── Reactive core ────────────────────────────────────────────────────────────
-export {
-  createSignal,
-  createEffect,
-  createMemo,
-  createRoot,
-  createContext,
-  useContext,
-  onCleanup,
-  onMount,
-  untrack,
-  sample,
-  batch,
-  flush,
-  setBatchingMode,
-  mergeProps,
-  splitProps,
-  getOwner,
-  runWithOwner,
-  type Accessor,
-  type Setter,
-  type SignalOptions,
-  type Context,
-} from "./api.js";
-
 // ─── Atom API (Jotai-style ergonomics on top of reactive core) ────────────────
 export {
   createAtom,
@@ -94,31 +69,3 @@ export {
   type MutationEffectHandle,
   type MutationEffectOptions,
 } from "./effect-ts.js";
-
-// ─── DOM runtime helpers (also exported from ./runtime for compiled JSX) ──────
-export {
-  template,
-  insert,
-  createComponent,
-  spread,
-  attr,
-  prop,
-  classList,
-  style,
-  delegateEvents,
-  render,
-  renderWithHMR,
-  withViteHMR,
-  // SSR / Hydration:
-  isServer,
-  renderToString,
-  hydrateRoot,
-  isHydrating,
-  getNextHydrateNode,
-  getRequestEvent,
-  setRequestEvent,
-  // Reactive primitives re-exported for runtime consumers:
-  effect,
-  memo,
-  type ViteHotContext,
-} from "./dom.js";

@@ -3,12 +3,10 @@ import { Effect, Layer, ManagedRuntime, ServiceMap } from "effect";
 import {
   defineMutation,
   createOptimistic,
-  createSignal,
-  createRoot,
   defineQuery,
 } from "../index.js";
 import { AsyncResult } from "../advanced.js";
-import { setBatchingMode } from "../api.js";
+import { createSignal, createRoot, setBatchingMode } from "../api.js";
 
 beforeAll(() => {
   setBatchingMode("sync");

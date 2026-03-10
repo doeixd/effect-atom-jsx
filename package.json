@@ -26,6 +26,10 @@
       "import": "./dist/advanced.js",
       "types": "./dist/advanced.d.ts"
     },
+    "./internals": {
+      "import": "./dist/internals.js",
+      "types": "./dist/internals.d.ts"
+    },
     "./Atom": {
       "import": "./dist/Atom.js",
       "types": "./dist/Atom.d.ts"

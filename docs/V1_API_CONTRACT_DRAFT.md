@@ -79,6 +79,8 @@ This draft is intentionally opinionated and allows breaking changes.
 - `./advanced` (scoped constructors, explicit low-level effect helpers)
 - `./internals` (reactive primitives + owner/runtime internals)
 
+Status update: `./internals` export path has been added; top-level now omits reactive-core and dom runtime helper re-exports.
+
 ### Transitional
 
 - Keep top-level compatibility re-exports for one beta cycle with warnings in docs.
@@ -108,6 +110,4 @@ This draft is intentionally opinionated and allows breaking changes.
 
 ## Exit Criteria for This Draft
 
-- All current exports mapped to `core/advanced/internals/legacy`.
-- Each `legacy` item has migration guidance.
 - `package.json` exports update plan drafted before implementation.
