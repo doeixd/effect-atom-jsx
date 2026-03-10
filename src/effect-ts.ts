@@ -973,45 +973,6 @@ export function mount<R, E>(
   };
 }
 
-// ─── OO signal/computed API ───────────────────────────────────────────────────
-
-export interface SignalRef<T> {
-  get(): T;
-  set(value: T | ((prev: T) => T)): void;
-  update(fn: (prev: T) => T): void;
-  subscribe(listener: (value: T) => void): () => void;
-}
-
-export interface ComputedRef<T> {
-  get(): T;
-  subscribe(listener: (value: T) => void): () => void;
-}
-
-/**
- * Object-oriented signal API, analogous to Ref/SubscriptionRef ergonomics.
- */
-export function signal<T>(initial: T): SignalRef<T> {
-  const atom = createAtom(initial);
-  return atom;
-}
-
-/**
- * Object-oriented derived value API, analogous to read-only computed refs.
- */
-export function computed<T>(fn: () => T): ComputedRef<T> {
-  const memo = createMemo(fn);
-  return {
-    get() { return memo(); },
-    subscribe(listener) {
-      const owner = new Owner();
-      runWithOwner(owner, () => {
-        createEffect(() => listener(memo()));
-      });
-      return () => owner.dispose();
-    },
-  };
-}
-
 // ─── Async ────────────────────────────────────────────────────────────────────
 
 /**

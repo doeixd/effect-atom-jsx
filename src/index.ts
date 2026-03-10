@@ -68,8 +68,6 @@ export {
   useServices,
   mount,
   createMount,
-  signal,
-  computed,
   scopedRootEffect,
   scopedQueryEffect,
   scopedMutationEffect,
@@ -95,8 +93,6 @@ export {
   type OptimisticRef,
   type MutationEffectHandle,
   type MutationEffectOptions,
-  type SignalRef,
-  type ComputedRef,
 } from "./effect-ts.js";
 
 // ─── DOM runtime helpers (also exported from ./runtime for compiled JSX) ──────

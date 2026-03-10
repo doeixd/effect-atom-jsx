@@ -27,8 +27,6 @@ import {
   defineMutation,
   useService,
   useServices,
-  signal,
-  computed,
   createAtom,
   AsyncResult,
   Async,
@@ -368,25 +366,6 @@ describe("atomEffect — runtime compatibility", () => {
     expect(result()).toEqual(AsyncResult.success("hello world"));
     dispose();
     await runtime.dispose();
-  });
-});
-
-describe("signal / computed", () => {
-  it("signal exposes object-oriented read/write API", () => {
-    const count = signal(1);
-    expect(count.get()).toBe(1);
-    count.set(5);
-    expect(count.get()).toBe(5);
-    count.update((n) => n + 2);
-    expect(count.get()).toBe(7);
-  });
-
-  it("computed derives reactively from signal", () => {
-    const count = signal(2);
-    const doubled = computed(() => count.get() * 2);
-    expect(doubled.get()).toBe(4);
-    count.set(9);
-    expect(doubled.get()).toBe(18);
   });
 });
 
