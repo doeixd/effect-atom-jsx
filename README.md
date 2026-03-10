@@ -96,6 +96,18 @@ mountApp(() => <App />, document.getElementById("root")!);
 
 ## Core Concepts
 
+### Golden Path (Current)
+
+For most apps, start with this stack:
+
+- Local state: `Atom.make` + component-local `Registry.make()`
+- Service/runtime wiring: `createMount(layer)` + `useService(Tag)`
+- Async reads: `defineQuery(...)` (or `queryEffect(...)` for lower-level control)
+- Writes: `mutationEffect(...)` + `createOptimistic(...)`
+- Async UI rendering: `Async`, `Loading`, `Errored`
+
+Everything else (`scoped*` constructors, explicit registries outside components, deep runtime helpers) is advanced.
+
 ### Atom & Registry — Local State
 
 Atoms are reactive values. A `Registry` reads, writes, and subscribes to atoms.
@@ -169,6 +181,18 @@ const data = queryEffect(() => useService(Api).load());
 
 For ergonomic key + invalidation wiring, prefer `defineQuery(...)` and pass `query.key` into `mutationEffect({ invalidates })`.
 
+#### `Async` state mapping defaults
+
+`Async` supports all `AsyncResult` states:
+
+- `Loading` -> `loading()`
+- `Refreshing(previous)` -> `refreshing(previous)` if provided, otherwise reuses the settled previous renderer
+- `Success(value)` -> `success(value)`
+- `Failure(error)` -> `error(error)` if provided, otherwise `null`
+- `Defect(cause)` -> `defect(cause)` if provided, otherwise `null`
+
+If you want defects or typed failures to escalate globally, leave local handlers undefined and use boundaries at higher levels.
+
 
 
 ### AsyncResult vs Result
@@ -181,6 +205,8 @@ The library has two result types for different use cases:
 | `Result<A, E>` | `Result.ts` | `AtomRpc`, `AtomHttpApi` | Data fetching state (Initial / Success / Failure) with waiting flag |
 
 Convert between them with `Result.fromAsyncResult()` and `Result.toAsyncResult()`.
+
+Important: conversion is useful but not semantically identical in every state. In particular, `AsyncResult` carries explicit fiber-lifecycle states (`Loading`, `Refreshing`, `Defect`) while `Result` models data-centric waiting semantics. Treat conversion as an interop bridge, not a one-to-one state machine equivalence.
 
 `AsyncResult` is **Exit-first internally** — each settled state (`Success`, `Failure`, `Defect`) carries a `.exit` field holding the canonical Effect `Exit`. This enables lossless round-trips and integration with Effect's error model. Combinators `AsyncResult.match`, `.map`, `.flatMap`, `.getOrElse`, and `.getOrThrow` are available for ergonomic pattern matching and transformation.
 
@@ -404,6 +430,8 @@ Dedicated Effect integration guide: [`docs/ACTION_EFFECT_USE_RESOURCE.md`](docs/
 
 Effect-atom migration/equivalents guide: [`docs/EFFECT_ATOM_EQUIVALENTS.md`](docs/EFFECT_ATOM_EQUIVALENTS.md)
 
+Architecture decisions (in progress): `docs/adr/`
+
 ## Examples
 
 | Example | Location | What it shows |
@@ -422,9 +450,10 @@ Effect-atom migration/equivalents guide: [`docs/EFFECT_ATOM_EQUIVALENTS.md`](doc
 2. Components call **`useService(Tag)`** to synchronously access services from that runtime
 3. **`defineQuery()` / `queryEffect()` / `atomEffect()`** run service effects reactively, exposing `AsyncResult` state
 4. **`mutationEffect()`** handles writes with optimistic UI, rollback, and post-success refresh
-5. **`scopedRootEffect()` / `scopedQueryEffect()` / `scopedMutationEffect()`** provide Effect-first scoped constructors
-6. **`scopedQuery()` / `scopedMutation()`** remain sync convenience wrappers over the scoped constructors
-7. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
+5. Component lifetimes are scope-backed: mount/root and component boundaries map to Effect scopes so parent disposal interrupts descendant fibers transitively
+6. **`scopedRootEffect()` / `scopedQueryEffect()` / `scopedMutationEffect()`** provide Effect-first scoped constructors
+7. **`scopedQuery()` / `scopedMutation()`** remain sync convenience wrappers over the scoped constructors
+8. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
 
 ## Testing
 

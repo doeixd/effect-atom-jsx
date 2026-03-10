@@ -337,12 +337,13 @@ For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOUR
 
 ### Services
 
-- **`useService(tag)`** — Synchronously access a service from the ambient runtime. Throws if called outside a `mount(..., layer)` tree.
+- **`useService(tag)`** — Synchronously access a service from the ambient runtime. Throws if called outside a `mount(..., layer)` tree and includes the missing service key when runtime exists but service is not provided.
 - **`use(tag)`** — Alias of `useService(tag)`.
 - **`useServices({ ...tags })`** — Resolve multiple services at once with inferred return types.
 - **`mount(fn, container, layer)`** — Bootstrap a `ManagedRuntime` from a `Layer` and render.
 - **`createMount(layer)` / `mountWith(layer)`** — Create a mount function pre-bound to a layer.
 - **`layerContext(layer, fn, runtime?)`** — Run a function with a Layer-provided context.
+- Component and mount lifetimes are scope-backed internally: disposing a parent root interrupts descendant Effect fibers transitively.
 - **`scopedRootEffect(scope, fn)`** — Effect constructor variant for creating a reactive root tied to an Effect Scope.
 - **`scopedRoot(scope, fn)`** — Sync convenience wrapper over `scopedRootEffect(...)`.
 
@@ -378,7 +379,7 @@ Guards: `AsyncResult.isLoading`, `isRefreshing`, `isSuccess`, `isFailure`, `isDe
 
 ### Control-Flow Components
 
-- **`Async({ result, loading?, success?, error? })`** — Render slots based on AsyncResult state.
+- **`Async({ result, loading?, refreshing?, success, error?, defect? })`** — Render slots based on AsyncResult state with explicit handling for `Refreshing` and `Defect`.
 - **`Loading({ when, fallback?, children })`** — Show children while loading.
 - **`Errored({ result, children })`** — Show children on error.
 - **`Show({ when, fallback?, children })`** — Conditional rendering.
