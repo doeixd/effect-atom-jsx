@@ -103,7 +103,7 @@ For most apps, start with this stack:
 - Local state: `Atom.make` + component-local `Registry.make()`
 - Service/runtime wiring: `createMount(layer)` + `useService(Tag)`
 - Async reads: `defineQuery(...)` (or `queryEffect(...)` for lower-level control)
-- Writes: `mutationEffect(...)` + `createOptimistic(...)`
+- Writes: `defineMutation(...)` (alias: `mutationEffect(...)`) + `createOptimistic(...)`
 - Async UI rendering: `Async`, `Loading`, `Errored`
 
 Everything else (`scoped*` constructors, explicit registries outside components, deep runtime helpers) is advanced.
@@ -181,7 +181,7 @@ const data = queryEffect(() => useService(Api).load());
 
 **Key difference:** `queryEffect` / `defineQuery` uses the ambient runtime injected by `mount()`, while `atomEffect` runs Effects directly (or accepts an explicit runtime parameter).
 
-For ergonomic key + invalidation wiring, prefer `defineQuery(...)` and pass `query.key` into `mutationEffect({ invalidates })`.
+For ergonomic key + invalidation wiring, prefer `defineQuery(...)` and pass `query.key` into `defineMutation({ invalidates })` (or `mutationEffect`).
 
 #### `Async` state mapping defaults
 
@@ -212,7 +212,7 @@ Important: conversion is useful but not semantically identical in every state. I
 
 `AsyncResult` is **Exit-first internally** — each settled state (`Success`, `Failure`, `Defect`) carries a `.exit` field holding the canonical Effect `Exit`. This enables lossless round-trips and integration with Effect's error model. Combinators `AsyncResult.match`, `.map`, `.flatMap`, `.getOrElse`, and `.getOrThrow` are available for ergonomic pattern matching and transformation.
 
-### mutationEffect — Mutations
+### defineMutation / mutationEffect — Mutations
 
 Handles writes with optimistic UI, rollback, and automatic refresh.
 
@@ -402,8 +402,8 @@ import {
   atomEffect, queryEffect, defineQuery,
   queryEffectStrict, defineQueryStrict, createQueryKey, invalidate, refresh,
   isPending, latest,
-  createOptimistic, mutationEffect,
-  mutationEffectStrict,
+  createOptimistic, defineMutation, mutationEffect,
+  defineMutationStrict, mutationEffectStrict,
   useService, useServices, createMount, mount,
   layerContext,
   scopedRoot, scopedRootEffect,

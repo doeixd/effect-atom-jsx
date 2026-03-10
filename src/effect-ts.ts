@@ -1108,6 +1108,12 @@ export function mutationEffectStrict<A, E, R>(
   return mutationEffect(fn, { ...options, runtime });
 }
 
+/** Alias for `mutationEffect(...)` with query-style naming symmetry. */
+export const defineMutation = mutationEffect;
+
+/** Strict explicit-runtime alias for `mutationEffectStrict(...)`. */
+export const defineMutationStrict = mutationEffectStrict;
+
 function isAccessor<T>(u: unknown): u is Accessor<T> {
   return typeof u === "function";
 }

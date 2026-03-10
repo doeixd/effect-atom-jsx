@@ -28,6 +28,8 @@ import {
   createOptimistic,
   mutationEffect,
   mutationEffectStrict,
+  defineMutation,
+  defineMutationStrict,
   use,
   useService,
   useServices,
@@ -717,6 +719,30 @@ describe("mutationEffect", () => {
     await tick(30);
     expect(calls).toEqual([1]);
     expect(tickValue()).toBe(1);
+  });
+
+  it("defineMutation aliases mutationEffect", async () => {
+    let saved = 0;
+    const action = defineMutation((n: number) => Effect.sync(() => { saved = n; }));
+    action.run(11);
+    await tick();
+    expect(saved).toBe(11);
+  });
+
+  it("defineMutationStrict aliases mutationEffectStrict", async () => {
+    const Svc = ServiceMap.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("AliasSvc");
+    let saved = 0;
+    const runtime = ManagedRuntime.make(Layer.succeed(Svc, { save: (n) => Effect.sync(() => { saved = n; }) }));
+
+    const action = defineMutationStrict(
+      runtime,
+      (n: number) => Effect.service(Svc).pipe(Effect.flatMap((svc) => svc.save(n))),
+    );
+
+    action.run(13);
+    await tick();
+    expect(saved).toBe(13);
+    await runtime.dispose();
   });
 });
 

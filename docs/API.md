@@ -351,6 +351,8 @@ For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOUR
 ### Mutations
 
 - **`createOptimistic(source)`** — Create an optimistic overlay with `get`, `set`, `clear`, `isPending`.
+- **`defineMutation(fn, options?)`** — Alias for `mutationEffect(...)` with query-style naming symmetry.
+- **`defineMutationStrict(runtime, fn, options?)`** — Strict explicit-runtime alias for `mutationEffectStrict(...)`.
 - **`mutationEffect(fn, options?)`** — Create an Effect-powered mutation action with `optimistic`, `rollback`, `onSuccess`, `onFailure`, `refresh` hooks. Returns `{ run, result, pending }`. Supports `invalidates` query keys.
 - **`scopedMutationEffect(scope, fn, options?)`** — Effect constructor variant that creates a scope-bound mutation handle.
 - **`scopedMutation(scope, fn, options?)`** — Sync convenience wrapper over `scopedMutationEffect(...)`.

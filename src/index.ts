@@ -67,6 +67,8 @@ export {
   createOptimistic,
   mutationEffect,
   mutationEffectStrict,
+  defineMutation,
+  defineMutationStrict,
   use,
   useService,
   useServices,
