@@ -1,7 +1,7 @@
 /**
  * phase3.test.ts — Tests for Phase 3 vNext Cleanup features.
  *
- *   - Naming consolidation (queryEffect/mutationEffect primary)
+ *   - Naming consolidation (defineQuery/defineMutation primary)
  *   - Exit-first internals (.exit field on Success/Failure/Defect)
  *   - Scoped lifecycle primitives (Effect constructors)
  */
@@ -9,8 +9,8 @@
 import { describe, it, expect } from "vitest";
 import { Effect, Exit, Scope, Layer, ManagedRuntime, Option } from "effect";
 import {
-  queryEffect,
-  mutationEffect,
+  defineQuery,
+  defineMutation,
   AsyncResult,
   scopedQueryEffect,
   scopedMutationEffect,
@@ -26,20 +26,20 @@ const tick = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 // ─── Naming Consolidation ────────────────────────────────────────────────────
 
 describe("Naming consolidation", () => {
-  it("queryEffect is the primary query API and accepts a runtime option", () => {
+  it("defineQuery is the primary query API and accepts a runtime option", () => {
     let result: any;
     const rt = ManagedRuntime.make(Layer.empty);
     createRoot(() => {
-      result = queryEffect(() => Effect.succeed(1), { runtime: rt });
+      result = defineQuery(() => Effect.succeed(1), { runtime: rt }).result;
     });
     expect(result).toBeDefined();
     expect(typeof result).toBe("function");
   });
 
-  it("mutationEffect is the primary mutation API", () => {
+  it("defineMutation is the primary mutation API", () => {
     let handle: any;
     createRoot(() => {
-      handle = mutationEffect(
+      handle = defineMutation(
         (_n: number) => Effect.succeed(undefined),
         { runtime: ManagedRuntime.make(Layer.empty) },
       );
@@ -49,10 +49,10 @@ describe("Naming consolidation", () => {
     expect(handle).toHaveProperty("pending");
   });
 
-  it("queryEffect returns defect when no ambient runtime is present", () => {
+  it("defineQuery returns defect when no ambient runtime is present", () => {
     let result: any;
     createRoot(() => {
-      result = queryEffect(() => Effect.succeed(2));
+      result = defineQuery(() => Effect.succeed(2)).result;
     });
     expect(result()._tag).toBe("Defect");
   });

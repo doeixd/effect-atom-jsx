@@ -16,14 +16,12 @@ import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime, Option } from "effect";
 import {
   atomEffect,
-  queryEffect,
   defineQuery,
   createQueryKey,
   invalidate,
   isPending,
   latest,
   createOptimistic,
-  mutationEffect,
   defineMutation,
   useService,
   useServices,
@@ -371,7 +369,7 @@ describe("atomEffect — runtime compatibility", () => {
   });
 });
 
-describe("use / queryEffect (ambient runtime behavior)", () => {
+describe("useService / defineQuery (ambient runtime behavior)", () => {
   it("useService(tag) throws when no ambient ManagedRuntime is present", () => {
     const Name = ServiceMap.Service<{ readonly value: string }>("Name");
     expect(() => useService(Name)).toThrow(/no ambient ManagedRuntime/i);
@@ -380,7 +378,7 @@ describe("use / queryEffect (ambient runtime behavior)", () => {
   it("resource(fn) returns a defect when no ambient runtime is available", async () => {
     let result!: () => AsyncResultType<number, never>;
     const dispose = createRoot((d) => {
-      result = queryEffect(() => Effect.succeed(123));
+      result = defineQuery(() => Effect.succeed(123)).result;
       return d;
     });
     await tick();
@@ -398,11 +396,11 @@ describe("use / queryEffect (ambient runtime behavior)", () => {
 
     let result!: () => AsyncResultType<string, never>;
     const dispose = createRoot((d) => {
-      result = queryEffect(() =>
+      result = defineQuery(() =>
         Effect.gen(function* () {
           const svc = yield* Effect.service(Greeting);
           return `${svc.prefix}!`;
-        }), { runtime });
+        }), { runtime }).result;
       return d;
     });
 
@@ -430,15 +428,15 @@ describe("use / queryEffect (ambient runtime behavior)", () => {
   });
 });
 
-describe("query keys / queryEffect", () => {
-  it("invalidate(key) triggers queryEffect re-run", async () => {
+describe("query keys / defineQuery", () => {
+  it("invalidate(key) triggers defineQuery re-run", async () => {
     const key = createQueryKey<number>("counter");
     const runtime = ManagedRuntime.make(Layer.empty);
     let runs = 0;
     let result!: () => AsyncResultType<number, never>;
 
     const dispose = createRoot((d) => {
-      result = queryEffect(() => Effect.sync(() => ++runs), { key, runtime });
+      result = defineQuery(() => Effect.sync(() => ++runs), { key, runtime }).result;
       return d;
     });
 
@@ -454,17 +452,17 @@ describe("query keys / queryEffect", () => {
     await runtime.dispose();
   });
 
-  it("queryEffect runs with explicit runtime", async () => {
+  it("defineQuery runs with explicit runtime", async () => {
     const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "hey" }));
 
     let result!: () => AsyncResultType<string, never>;
     const dispose = createRoot((d) => {
-      result = queryEffect(() =>
+      result = defineQuery(() =>
         Effect.gen(function* () {
           const svc = yield* Effect.service(Greeting);
           return `${svc.prefix}!`;
-        }), { runtime });
+        }), { runtime }).result;
       return d;
     });
 
@@ -504,18 +502,18 @@ describe("query keys / queryEffect", () => {
 });
 
 describe("strict aliases", () => {
-  it("mutationEffect invalidates query keys", async () => {
+  it("defineMutation invalidates query keys", async () => {
     const key = createQueryKey<number>("todos");
     const runtime = ManagedRuntime.make(Layer.empty);
     let observed = 0;
 
     const dispose = createRoot((d) => {
-      const q = queryEffect(() => Effect.sync(() => {
+      const q = defineQuery(() => Effect.sync(() => {
         key.read();
         observed += 1;
         return observed;
-      }), { runtime });
-      const mutate = mutationEffect(
+      }), { runtime }).result;
+      const mutate = defineMutation(
         (_: void) => Effect.void,
         { invalidates: key },
       );
@@ -530,12 +528,12 @@ describe("strict aliases", () => {
     await runtime.dispose();
   });
 
-  it("mutationEffect injects runtime", async () => {
+  it("defineMutation injects runtime", async () => {
     const Svc = ServiceMap.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("Svc");
     let saved = 0;
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { save: (n) => Effect.sync(() => { saved = n; }) }));
 
-    const action = mutationEffect(
+    const action = defineMutation(
       (n: number) => Effect.service(Svc).pipe(Effect.flatMap((svc) => svc.save(n))),
       { runtime },
     );
@@ -629,9 +627,9 @@ describe("createOptimistic", () => {
   });
 });
 
-describe("mutationEffect", () => {
+describe("defineMutation", () => {
   it("runs effect and transitions result to Success", async () => {
-    const action = mutationEffect((n: number) =>
+    const action = defineMutation((n: number) =>
       Effect.succeed(n).pipe(Effect.delay("10 millis"))
     );
 
@@ -647,7 +645,7 @@ describe("mutationEffect", () => {
     const [count, setCount] = createSignal(1);
     const optimistic = createOptimistic(count);
 
-    const action = mutationEffect(
+    const action = defineMutation(
       (_n: number) => Effect.fail("nope").pipe(Effect.delay("10 millis")),
       {
         optimistic: (n) => optimistic.set(n),
@@ -668,7 +666,7 @@ describe("mutationEffect", () => {
     const Greeting = ServiceMap.Service<{ readonly prefix: string }>("ActionGreeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "ok" }));
 
-    const action = mutationEffect(
+    const action = defineMutation(
       (_: void) => Effect.gen(function* () {
         const svc = yield* Effect.service(Greeting);
         return svc.prefix;
@@ -686,7 +684,7 @@ describe("mutationEffect", () => {
     const [tickValue, setTickValue] = createSignal(0);
     const calls: number[] = [];
 
-    const action = mutationEffect(
+    const action = defineMutation(
       () => Effect.succeed("ok").pipe(Effect.delay("10 millis")),
       {
         refresh: [
@@ -702,7 +700,7 @@ describe("mutationEffect", () => {
     expect(tickValue()).toBe(1);
   });
 
-  it("defineMutation aliases mutationEffect", async () => {
+  it("defineMutation works for simple effects", async () => {
     let saved = 0;
     const action = defineMutation((n: number) => Effect.sync(() => { saved = n; }));
     action.run(11);

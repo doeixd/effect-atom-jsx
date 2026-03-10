@@ -44,7 +44,7 @@ This draft is intentionally opinionated and allows breaking changes.
 | `refresh` / `isPending` / `latest` | Keep | core | Core async UI controls |
 | `Loading` / `Errored` / `Show` / `For` / `Switch` / `Match` | Keep | core | Core rendering controls |
 | `createOptimistic` | Keep | core | Mutation UX primitive |
-| `queryEffect` / `mutationEffect` | Keep as aliases | legacy | Prefer `defineQuery` / `defineMutation` |
+| `queryEffect` / `mutationEffect` | Removed | removed | Use `defineQuery` / `defineMutation` |
 | `queryEffectStrict` / `mutationEffectStrict` | Removed | removed | Use `queryEffect(..., { runtime })` / `mutationEffect(..., { runtime })` |
 | `defineQueryStrict` / `defineMutationStrict` | Removed | removed | Use `defineQuery(..., { runtime })` / `defineMutation(..., { runtime })` |
 | `atomEffect` | Keep | advanced | Explicit low-level async primitive |

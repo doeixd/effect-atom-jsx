@@ -44,9 +44,14 @@ Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.m
 - Export tiering advanced:
   - top-level no longer re-exports reactive core + DOM runtime helpers
   - new `effect-atom-jsx/internals` subpath added
+- Legacy query/mutation constructors removed from Effect surface:
+  - `queryEffect(...)`
+  - `mutationEffect(...)`
+  - internal flow now uses `defineQuery(...)` / `defineMutation(...)`
 
 ## Recently Completed Commits (most recent first)
 
+- `063cad2` refactor: remove sync batching mode and make microtask-only
 - `b4f0bf4` refactor: move reactive core exports to internals subpath
 - `dd41a61` refactor: remove signal/computed OO facade
 - `9d82b43` refactor: remove sync scoped wrapper APIs

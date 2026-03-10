@@ -476,7 +476,7 @@ export interface QueryRef<A, E> {
  * Uses the ambient ManagedRuntime from `mount(...)` when available.
  * If no ambient runtime is present, returns a `Defect` result with guidance.
  */
-export function queryEffect<A, E, R>(
+function queryEffect<A, E, R>(
   fn: () => Effect.Effect<A, E, R>,
   options?: QueryEffectOptions<R>,
 ): Accessor<AsyncResult<A, E>> {
@@ -647,7 +647,7 @@ function runRefreshHooks(refresh: MutationEffectOptions<any, any, any>["refresh"
  *   refresh: () => refreshTodos(),
  * })
  */
-export function mutationEffect<A, E, R>(
+function mutationEffect<A, E, R>(
   fn: (input: A) => Effect.Effect<unknown, E, R>,
   options?: MutationEffectOptions<A, E, R>,
 ): MutationEffectHandle<A, E> {
@@ -1008,11 +1008,12 @@ export function Async<A, E>(props: {
 }
 
 
-/**
- * Strict explicit-runtime variant of `mutationEffect(...)`.
- */
-/** Alias for `mutationEffect(...)` with query-style naming symmetry. */
-export const defineMutation = mutationEffect;
+export function defineMutation<A, E, R>(
+  fn: (input: A) => Effect.Effect<unknown, E, R>,
+  options?: MutationEffectOptions<A, E, R>,
+): MutationEffectHandle<A, E> {
+  return mutationEffect(fn, options);
+}
 
 function isAccessor<T>(u: unknown): u is Accessor<T> {
   return typeof u === "function";

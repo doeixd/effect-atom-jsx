@@ -10,8 +10,8 @@ import {
 import { Owner, runWithOwner } from "./owner.js";
 import {
   atomEffect,
-  queryEffect,
-  mutationEffect,
+  defineQuery,
+  defineMutation,
   type AsyncResult,
   type Refreshing,
   type Success,
@@ -407,7 +407,7 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
         readonly onSuccess?: (input: Input) => void;
       },
     ): ActionHandle<Input, E2> {
-      const handle = mutationEffect(
+      const handle = defineMutation(
         (input: Input) => effect(input),
         {
           runtime: managed as RuntimeLike<R, unknown>,
@@ -578,7 +578,7 @@ export function action<A, E, R, Input = void>(
   } | undefined;
 
   const handle = runtimeArg === undefined
-    ? mutationEffect((input: Input) => effectFn(input) as Effect.Effect<unknown, E, never>, {
+    ? defineMutation((input: Input) => effectFn(input) as Effect.Effect<unknown, E, never>, {
       onSuccess: (input) => {
         options?.onSuccess?.(input);
         if (options?.reactivityKeys !== undefined) {
@@ -590,7 +590,7 @@ export function action<A, E, R, Input = void>(
         options?.onError?.(error as E);
       },
     })
-    : mutationEffect(effectFn, {
+    : defineMutation(effectFn, {
       runtime: runtimeArg as RuntimeLike<R, unknown>,
       onSuccess: (input) => {
         options?.onSuccess?.(input);
@@ -1328,9 +1328,9 @@ export function query<A, E, R>(
   fn: () => Effect.Effect<A, E, R>,
 ): Atom<AsyncResult<A, E>>;
 /**
- * Create an atom backed by `queryEffect(...)` semantics.
+ * Create an atom backed by `defineQuery(...).result` semantics.
  *
- * This is the atom-native equivalent of `queryEffect`:
+ * This is the atom-native equivalent of a runtime query accessor:
  * - tracks dependencies read inside `fn()`
  * - interrupts stale fibers on dependency changes
  * - exposes `AsyncResult<A, E>` through normal atom reads
@@ -1352,9 +1352,9 @@ export function query<A, E, R>(
   const getAccessor = (): Accessor<AsyncResult<A, E>> => {
     if (accessor !== null) return accessor;
     if (arg2 === undefined) {
-      accessor = queryEffect(arg1 as () => Effect.Effect<A, E, R>);
+      accessor = defineQuery(arg1 as () => Effect.Effect<A, E, R>).result;
     } else {
-      accessor = queryEffect(arg2, { runtime: arg1 as RuntimeLike<R, unknown> });
+      accessor = defineQuery(arg2, { runtime: arg1 as RuntimeLike<R, unknown> }).result;
     }
     return accessor as Accessor<AsyncResult<A, E>>;
   };

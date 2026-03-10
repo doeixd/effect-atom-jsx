@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Effect, Layer, ServiceMap } from "effect";
 import { createSignal, createMemo } from "../api.js";
-import { queryEffect, mutationEffect } from "../effect-ts.js";
-import { useService } from "../effect-ts.js";
+import { defineQuery, defineMutation, useService } from "../effect-ts.js";
 import { mockService, renderWithLayer, withTestLayer } from "../testing.js";
 
 interface Api {
@@ -22,8 +21,7 @@ describe("testing.ts harness", () => {
 
     // Run logic inside the harness's boundary
     const result = harness.run(() => {
-      const query = queryEffect(() => useService(Api).fetchData());
-      return query;
+      return defineQuery(() => useService(Api).fetchData()).result;
     });
 
     // Effect.succeed resolves synchronously, so the result is immediately Success
@@ -47,7 +45,7 @@ describe("testing.ts harness", () => {
     });
 
     const harness = renderWithLayer(ApiMock, () => {
-      const save = mutationEffect((n: number) => useService(Api).saveData(n));
+      const save = defineMutation((n: number) => useService(Api).saveData(n));
       save.run(42);
     });
 
@@ -70,7 +68,7 @@ describe("testing.ts harness", () => {
     });
 
     const harness = renderWithLayer(ApiMock, () => {
-      queryEffect(() => useService(Api).fetchData());
+      defineQuery(() => useService(Api).fetchData());
     });
 
     await harness.tick();
