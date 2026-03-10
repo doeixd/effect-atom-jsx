@@ -48,7 +48,6 @@ export function runUntracked<T>(fn: () => T): T {
  */
 let batchDepth = 0;
 const batchQueue: Set<IComputation> = new Set();
-let microtaskBatching = true;
 let microtaskScheduled = false;
 
 export function isBatching(): boolean {
@@ -57,21 +56,13 @@ export function isBatching(): boolean {
 
 export function enqueueComputation(comp: IComputation): void {
   batchQueue.add(comp);
-  if (microtaskBatching && batchDepth === 0 && !microtaskScheduled) {
+  if (batchDepth === 0 && !microtaskScheduled) {
     microtaskScheduled = true;
     queueMicrotask(() => {
       microtaskScheduled = false;
       flush();
     });
   }
-}
-
-export function isMicrotaskBatchingEnabled(): boolean {
-  return microtaskBatching;
-}
-
-export function setMicrotaskBatching(enabled: boolean): void {
-  microtaskBatching = enabled;
 }
 
 export function flush(): void {

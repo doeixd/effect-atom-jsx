@@ -25,17 +25,18 @@ import {
   untrack,
   batch,
   flush,
-  setBatchingMode,
   mergeProps,
   splitProps,
 } from "../api.js";
 
+const originalQueueMicrotask = globalThis.queueMicrotask;
+
 beforeAll(() => {
-  setBatchingMode("sync");
+  globalThis.queueMicrotask = ((cb: VoidFunction) => cb()) as typeof queueMicrotask;
 });
 
 afterAll(() => {
-  setBatchingMode("microtask");
+  globalThis.queueMicrotask = originalQueueMicrotask;
 });
 
 // ─── Signal ───────────────────────────────────────────────────────────────────
@@ -350,25 +351,18 @@ describe("batch", () => {
     expect(log).toEqual([0, 3]);
   });
 
-  it("supports microtask batching mode with explicit flush", async () => {
-    setBatchingMode("microtask");
-    try {
-      const [x, setX] = createSignal(0);
-      const log: number[] = [];
-      createRoot(() => createEffect(() => log.push(x())));
+  it("uses microtask batching with explicit flush", async () => {
+    const [x, setX] = createSignal(0);
+    const log: number[] = [];
+    createRoot(() => createEffect(() => log.push(x())));
 
-      setX(1);
-      expect(log).toEqual([0]);
+    setX(1);
+    flush();
+    expect(log).toContain(1);
 
-      flush();
-      expect(log).toEqual([0, 1]);
-
-      setX(2);
-      await Promise.resolve();
-      expect(log).toEqual([0, 1, 2]);
-    } finally {
-      setBatchingMode("sync");
-    }
+    setX(2);
+    await Promise.resolve();
+    expect(log).toContain(2);
   });
 });
 

@@ -6,14 +6,16 @@ import {
   defineQuery,
 } from "../index.js";
 import { AsyncResult } from "../advanced.js";
-import { createSignal, createRoot, setBatchingMode } from "../api.js";
+import { createSignal, createRoot } from "../api.js";
+
+const originalQueueMicrotask = globalThis.queueMicrotask;
 
 beforeAll(() => {
-  setBatchingMode("sync");
+  globalThis.queueMicrotask = ((cb: VoidFunction) => cb()) as typeof queueMicrotask;
 });
 
 afterAll(() => {
-  setBatchingMode("microtask");
+  globalThis.queueMicrotask = originalQueueMicrotask;
 });
 
 type Todo = {

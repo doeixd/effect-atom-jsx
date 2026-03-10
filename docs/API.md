@@ -15,11 +15,10 @@ The core reactive state primitive. Atoms are plain objects with `read`/`write` m
 - **`Atom.readable(read, refresh?)`** — Low-level read-only atom constructor.
 - **`Atom.writable(read, write, refresh?)`** — Low-level writable atom constructor.
 - **`Atom.family(fn)`** — Create a memoized atom factory keyed by argument identity. Same arg returns same atom instance.
-- **`Atom.runtime(layer)`** — Create an Atom runtime bound to an Effect `Layer` with `atom(...)`, `action(...)`, and `fn(...)` helpers.
+- **`Atom.runtime(layer)`** — Create an Atom runtime bound to an Effect `Layer` with `atom(...)` and `action(...)` helpers.
 - **`Atom.runtime.addGlobalLayer(layer)`** — Add a global layer applied to newly-created atom runtimes.
 - **`Atom.keepAlive(atom)`** — Compatibility helper matching effect-atom ergonomics (identity in this package).
 - **`Atom.action(effect, options?)`** / **`Atom.action(runtime, effect, options?)`** — Create linear action handles from Effect functions. Supports `reactivityKeys`, `onSuccess`, and `onError` hooks.
-- **`Atom.fn(effect, options?)`** / **`Atom.fn(runtime, effect, options?)`** — Legacy function-style mutation atom wrapper over action semantics.
 - **`Atom.effect(fn)`** — Standalone async Effect atom (no runtime required).
 - **`Atom.pull(stream, options?)`** — Create pull-based stream pagination atom. Call `set(void 0)` to pull next chunk.
 - **`Atom.projection(derive, initial, options?)`** — Mutable derived projection. Mutate draft or return a next value with keyed reconciliation.
@@ -73,8 +72,7 @@ const prev = Effect.runSync(Atom.modify(count, n => [n, n + 1]));
 - **`Atom.subscribe(atom, listener, options?)`** — Subscribe to value changes. Returns unsubscribe function. Calls listener immediately by default (pass `{ immediate: false }` to skip).
 - **`Atom.batch(fn)`** — Batch multiple writes into a single notification cycle.
 - **`Atom.flush()`** — Flush queued reactive invalidations immediately.
-- **`Atom.setBatchingMode(mode)`** — Set batching mode: `"sync"` or `"microtask"`.
-  - Default mode is `"microtask"` in the v1 redesign direction.
+  - Notification mode is always microtask.
 
 ### Stream Integration
 
@@ -101,7 +99,7 @@ const user = Atom.fromResource(() => useService(Api).getUser("1"));
 - `Atom.Writable<R, W>` — Readable as `R`, writable as `W`.
 - `Atom.Context` — Callable read context with `get`, `refresh`, `set`, `result`, `addFinalizer` methods.
 - `Atom.WriteContext<A>` — Write context with `get`, `set`, `refreshSelf`, `setSelf`, `result`, `addFinalizer`.
-- `Atom.AtomRuntime<R, E>` — Runtime wrapper with `managed`, `atom(...)`, `fn(...)`, and `dispose()`.
+- `Atom.AtomRuntime<R, E>` — Runtime wrapper with `managed`, `atom(...)`, `action(...)`, and `dispose()`.
 - `Atom.ProjectionOptions<T>` / `Atom.ProjectionAsyncOptions<T, R>` — Projection configuration.
 
 <br />
@@ -425,8 +423,6 @@ Solid.js-compatible reactive primitives:
 - `untrack(fn)` / `sample(fn)` — Read without tracking.
 - `batch(fn)` — Batch updates.
 - `flush()` — Flush queued updates immediately.
-- `setBatchingMode(mode)` — Configure notification mode (`sync` or `microtask`).
-  - Default mode is `microtask`.
 - `mergeProps(...sources)` / `splitProps(props, keys)` — Props utilities.
 - `getOwner()` / `runWithOwner(owner, fn)` — Ownership utilities.
 

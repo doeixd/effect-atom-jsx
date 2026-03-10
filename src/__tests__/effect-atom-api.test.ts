@@ -9,14 +9,16 @@ import * as Hydration from "../Hydration.js";
 import * as Result from "../Result.js";
 import * as Registry from "../Registry.js";
 import { AsyncResult } from "../effect-ts.js";
-import { createRoot } from "../api.js";
+import { createRoot, flush } from "../api.js";
+
+const originalQueueMicrotask = globalThis.queueMicrotask;
 
 beforeAll(() => {
-  Atom.setBatchingMode("sync");
+  globalThis.queueMicrotask = ((cb: VoidFunction) => cb()) as typeof queueMicrotask;
 });
 
 afterAll(() => {
-  Atom.setBatchingMode("microtask");
+  globalThis.queueMicrotask = originalQueueMicrotask;
 });
 
 describe("effect-atom style API", () => {

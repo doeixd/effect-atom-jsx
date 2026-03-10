@@ -3,7 +3,6 @@ import {
   createSignal,
   batch as runBatch,
   flush as flushBatch,
-  setBatchingMode as setReactiveBatchingMode,
   type Accessor,
   createEffect,
   onCleanup,
@@ -1101,11 +1100,6 @@ export const batch = (f: () => void): void => {
 /** Flush pending reactive updates immediately. */
 export const flush = (): void => {
   flushBatch();
-};
-
-/** Configure signal notification batching mode (`sync` or `microtask`). */
-export const setBatchingMode = (mode: "sync" | "microtask"): void => {
-  setReactiveBatchingMode(mode);
 };
 
 /**

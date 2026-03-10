@@ -1,16 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { Schema, Option, Effect, Exit } from "effect";
 import * as Atom from "../Atom.js";
 import * as AtomSchema from "../AtomSchema.js";
-import { createRoot, setBatchingMode } from "../api.js";
-
-beforeAll(() => {
-  setBatchingMode("sync");
-});
-
-afterAll(() => {
-  setBatchingMode("microtask");
-});
+import { createRoot, flush } from "../api.js";
 
 // Schema.Int properly rejects non-integers (including NaN, strings, etc.)
 // Schema.NumberFromString in v4 permissively converts via Number() and doesn't throw on NaN
@@ -51,6 +43,7 @@ describe("AtomSchema", () => {
     expect(Option.isNone(currentVal)).toBe(true);
 
     Effect.runSync(Atom.set(field.input, 42));
+    flush();
     expect(Option.isSome(currentVal) && currentVal.value === 42).toBe(true);
 
     dispose();
@@ -63,6 +56,7 @@ describe("AtomSchema", () => {
     expect(Effect.runSync(Atom.get(field.isValid))).toBe(true);
 
     Effect.runSync(Atom.set(input, 1.5));
+    flush();
     expect(Effect.runSync(Atom.get(field.isValid))).toBe(false);
   });
 
@@ -73,6 +67,7 @@ describe("AtomSchema", () => {
     expect(Effect.runSync(Atom.get(field.touched))).toBe(false);
 
     Effect.runSync(Atom.set(field.input, 42));
+    flush();
     expect(Effect.runSync(Atom.get(field.touched))).toBe(true);
   });
 
@@ -83,10 +78,12 @@ describe("AtomSchema", () => {
     expect(Effect.runSync(Atom.get(field.dirty))).toBe(false);
 
     Effect.runSync(Atom.set(field.input, 42));
+    flush();
     expect(Effect.runSync(Atom.get(field.dirty))).toBe(true);
 
     // Reset back to initial
     Effect.runSync(Atom.set(field.input, 0));
+    flush();
     expect(Effect.runSync(Atom.get(field.dirty))).toBe(false);
   });
 
@@ -95,6 +92,7 @@ describe("AtomSchema", () => {
     const field = AtomSchema.make(Schema.Int, input, { initial: 10 });
 
     Effect.runSync(Atom.set(field.input, 42));
+    flush();
     expect(Effect.runSync(Atom.get(field.touched))).toBe(true);
     expect(Effect.runSync(Atom.get(field.dirty))).toBe(true);
 
@@ -122,6 +120,7 @@ describe("AtomSchema", () => {
     expect(Option.isSome(Effect.runSync(Atom.get(field.value)))).toBe(true);
 
     Effect.runSync(Atom.set(field.input, 1.5));
+    flush();
     expect(Effect.runSync(Atom.get(field.isValid))).toBe(false);
 
     field.reset();
@@ -138,6 +137,7 @@ describe("AtomSchema", () => {
 
     expect(Effect.runSync(Atom.get(nameField))).toBe("Ada");
     Effect.runSync(Atom.set(nameField, "Grace"));
+    flush();
     expect(Effect.runSync(Atom.get(form))).toEqual({ user: { name: "Grace" }, age: "42" });
   });
 

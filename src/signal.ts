@@ -10,8 +10,6 @@ import {
   type IComputation,
   type ISignal,
   getObserver,
-  isBatching,
-  isMicrotaskBatchingEnabled,
   enqueueComputation,
 } from "./tracking.js";
 
@@ -69,17 +67,8 @@ export class Signal<T> implements ISignal<T> {
   private _notify(): void {
     if (this._subscribers.size === 0) return;
 
-    if (isBatching() || isMicrotaskBatchingEnabled()) {
-      for (const sub of this._subscribers) {
-        enqueueComputation(sub);
-      }
-    } else {
-      // Snapshot before notifying so that new subscribers added during
-      // notification are not included in this round.
-      const subs = [...this._subscribers];
-      for (const sub of subs) {
-        sub.invalidate();
-      }
+    for (const sub of this._subscribers) {
+      enqueueComputation(sub);
     }
   }
 }

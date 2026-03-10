@@ -49,7 +49,7 @@ import {
   type Success,
   type Defect,
 } from "../effect-ts.js";
-import { createSignal, createRoot, createEffect, onCleanup, setBatchingMode } from "../api.js";
+import { createSignal, createRoot, createEffect, onCleanup } from "../api.js";
 import { Owner, runWithOwner } from "../owner.js";
 import { currentComponentScope, withComponentScope } from "../component-scope.js";
 import { createComponent } from "../dom.js";
@@ -60,12 +60,14 @@ import { withTestLayer } from "../testing.js";
 /** Wait for the microtask / promise queue to drain. */
 const tick = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 
+const originalQueueMicrotask = globalThis.queueMicrotask;
+
 beforeAll(() => {
-  setBatchingMode("sync");
+  globalThis.queueMicrotask = ((cb: VoidFunction) => cb()) as typeof queueMicrotask;
 });
 
 afterAll(() => {
-  setBatchingMode("microtask");
+  globalThis.queueMicrotask = originalQueueMicrotask;
 });
 
 // ─── AsyncResult ──────────────────────────────────────────────────────────────

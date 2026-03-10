@@ -1,7 +1,7 @@
 # Current Status In Redesign Plan
 
 Last updated: 2026-03-10
-Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`
+Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`
 
 ## Overall
 
@@ -24,8 +24,7 @@ Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`
 - Reactivity invalidation integrated across action + RPC/HTTP client paths (`reactivityKeys`).
 - Batching redesign started and shipped:
   - `flush()` added
-  - `setBatchingMode("sync" | "microtask")` added
-  - microtask batching is now the default mode
+  - microtask batching is now always on (sync mode removed)
 - Strict API variants removed:
   - `queryEffectStrict`
   - `defineQueryStrict`

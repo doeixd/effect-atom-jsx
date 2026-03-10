@@ -112,7 +112,7 @@ For runtime-bound atom APIs, prefer:
 - `Atom.runtime(layer).action(...)` for writes (linear Effect flow)
 - `Atom.effect(...)` for standalone async atoms
 
-Batching defaults to microtask mode in v1 design direction. Use `flush()` when you need immediate deterministic commit ordering, or switch modes with `setBatchingMode("sync")` for legacy behavior.
+Batching uses microtask mode by default. Use `flush()` when you need immediate deterministic commit ordering.
 
 Everything else (`scoped*` constructors, explicit registries outside components, deep runtime helpers) is advanced.
 
@@ -415,7 +415,7 @@ import * as AtomSchema from "effect-atom-jsx/AtomSchema";
 
 | Module | Key Exports |
 |--------|-------------|
-| `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `projection`, `projectionAsync`, `withReactivity`, `invalidateReactivity`, `keepAlive`, `runtime`, `action`, `fn`, `effect`, `pull`, `Stream.*` (advanced OOO helpers), `searchParam`, `kvs`, `batch`, `flush`, `setBatchingMode`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue`, `query` |
+| `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `projection`, `projectionAsync`, `withReactivity`, `invalidateReactivity`, `keepAlive`, `runtime`, `action`, `effect`, `pull`, `Stream.*` (advanced OOO helpers), `searchParam`, `kvs`, `batch`, `flush`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue`, `query` |
 | `AtomRef` | `make`, `collection` |
 | `Registry` | `make` (returns instance with `get`, `set`, `update`, `modify`, `mount`, `refresh`, `subscribe`, `reset`, `dispose`) |
 | `Result` | `initial`, `success`, `failure`, `isInitial`, `isSuccess`, `isFailure`, `isWaiting`, `fromAsyncResult`, `toAsyncResult`, `map`, `flatMap`, `match`, `all` |
@@ -453,7 +453,7 @@ import {
   createSignal, createEffect, createMemo, createRoot,
   createContext, useContext,
   onCleanup, onMount,
-  untrack, sample, batch, flush, setBatchingMode,
+  untrack, sample, batch, flush,
   mergeProps, splitProps,
   getOwner, runWithOwner,
 } from "effect-atom-jsx/advanced";

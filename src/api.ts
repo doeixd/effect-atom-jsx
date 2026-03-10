@@ -8,7 +8,7 @@
 import { Signal, type EqualityFn } from "./signal.js";
 import { Computation, Memo } from "./computation.js";
 import { Owner, getOwner, runWithOwner } from "./owner.js";
-import { runUntracked, runBatch, flush as flushComputations, setMicrotaskBatching } from "./tracking.js";
+import { runUntracked, runBatch, flush as flushComputations } from "./tracking.js";
 
 // ─── Signals ──────────────────────────────────────────────────────────────────
 
@@ -124,13 +124,6 @@ export function batch<T>(fn: () => T): T {
  */
 export function flush(): void {
   flushComputations();
-}
-
-export type BatchingMode = "sync" | "microtask";
-
-/** Configure default notification batching mode for signal updates. */
-export function setBatchingMode(mode: BatchingMode): void {
-  setMicrotaskBatching(mode === "microtask");
 }
 
 // ─── Owner / Root ─────────────────────────────────────────────────────────────
