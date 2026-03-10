@@ -15,10 +15,12 @@ The core reactive state primitive. Atoms are plain objects with `read`/`write` m
 - **`Atom.readable(read, refresh?)`** — Low-level read-only atom constructor.
 - **`Atom.writable(read, write, refresh?)`** — Low-level writable atom constructor.
 - **`Atom.family(fn)`** — Create a memoized atom factory keyed by argument identity. Same arg returns same atom instance.
-- **`Atom.runtime(layer)`** — Create an Atom runtime bound to an Effect `Layer` with `atom(...)` and `fn(...)` helpers.
+- **`Atom.runtime(layer)`** — Create an Atom runtime bound to an Effect `Layer` with `atom(...)`, `action(...)`, and `fn(...)` helpers.
 - **`Atom.runtime.addGlobalLayer(layer)`** — Add a global layer applied to newly-created atom runtimes.
 - **`Atom.keepAlive(atom)`** — Compatibility helper matching effect-atom ergonomics (identity in this package).
-- **`Atom.fn(effect, options?)`** / **`Atom.fn(runtime, effect, options?)`** — Create function-style mutation atoms from Effect functions.
+- **`Atom.action(effect, options?)`** / **`Atom.action(runtime, effect, options?)`** — Create linear action handles from Effect functions. Supports `reactivityKeys`, `onSuccess`, and `onError` hooks.
+- **`Atom.fn(effect, options?)`** / **`Atom.fn(runtime, effect, options?)`** — Legacy function-style mutation atom wrapper over action semantics.
+- **`Atom.effect(fn)`** — Standalone async Effect atom (no runtime required).
 - **`Atom.pull(stream, options?)`** — Create pull-based stream pagination atom. Call `set(void 0)` to pull next chunk.
 - **`Atom.projection(derive, initial, options?)`** — Mutable derived projection. Mutate draft or return a next value with keyed reconciliation.
 - **`Atom.projectionAsync(derive, initial, options?)`** — Async projection variant returning `AsyncResult<T, E>`. Uses `options.runtime` or ambient mount runtime.

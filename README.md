@@ -106,6 +106,12 @@ For most apps, start with this stack:
 - Writes: `defineMutation(...)` (alias: `mutationEffect(...)`) + `createOptimistic(...)`
 - Async UI rendering: `Async`, `Loading`, `Errored`
 
+For runtime-bound atom APIs, prefer:
+
+- `Atom.runtime(layer).atom(...)` for reads
+- `Atom.runtime(layer).action(...)` for writes (linear Effect flow)
+- `Atom.effect(...)` for standalone async atoms
+
 Everything else (`scoped*` constructors, explicit registries outside components, deep runtime helpers) is advanced.
 
 ### Atom & Registry — Local State

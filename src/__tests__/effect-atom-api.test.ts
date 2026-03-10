@@ -353,6 +353,31 @@ describe("effect-atom style API", () => {
     await rt.dispose();
   });
 
+  it("supports Atom.runtime(...).action linear mutation flow", async () => {
+    const values: number[] = [];
+    const rt = Atom.runtime(Layer.empty);
+    const act = rt.action((n: number) => Effect.sync(() => { values.push(n); }));
+
+    act(7);
+    await Effect.runPromise(Effect.sleep("5 millis"));
+
+    expect(values).toEqual([7]);
+    expect(act.pending()).toBe(false);
+    await rt.dispose();
+  });
+
+  it("supports Atom.effect standalone async atoms", async () => {
+    const source = Atom.effect(() => Effect.promise(() => Promise.resolve(42)));
+
+    Effect.runSync(Atom.get(source));
+    await Effect.runPromise(Effect.sleep("5 millis"));
+    const settled = Effect.runSync(Atom.get(source));
+    expect(settled._tag).toBe("Success");
+    if (settled._tag === "Success") {
+      expect(settled.value).toBe(42);
+    }
+  });
+
   it("supports Atom.projectionAsync for async derived projection state", async () => {
     const source = Atom.make(1);
     const rt = Atom.runtime(Layer.empty);

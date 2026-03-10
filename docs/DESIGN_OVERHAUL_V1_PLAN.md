@@ -82,12 +82,14 @@ These directives are now explicit inputs to implementation planning.
    - Support two invalidation styles:
      - imperative `refresh(queryAtom)`
      - declarative `reactivityKeys` invalidation
+   - Progress: `Atom.runtime(...).action(...)` and `Atom.action(...)` introduced as linear handles.
 
 2. **Collapse async primitives to three primary concepts**
    - `apiRuntime.atom` for reads
    - `apiRuntime.action` for writes
    - `Atom.effect` for standalone non-runtime effects
    - Treat scoped and strict constructor variants as advanced/internal implementation details.
+   - Progress: `Atom.effect(...)` added; further consolidation still in progress.
 
 3. **Keep `isPending` and `latest` as first-class async UI tools**
    - Preserve expression-level pending checks (`isPending(() => expr)`).

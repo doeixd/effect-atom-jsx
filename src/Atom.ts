@@ -2,6 +2,7 @@ import { Effect, Stream as FxStream, Queue, Fiber, Layer, ManagedRuntime, Cause,
 import { createSignal, batch as runBatch, type Accessor, createEffect, onCleanup } from "./api.js";
 import { Owner, runWithOwner } from "./owner.js";
 import {
+  atomEffect,
   queryEffect,
   queryEffectStrict,
   mutationEffect,
@@ -341,9 +342,24 @@ export const family = <Arg, T>(f: (arg: Arg) => T): ((arg: Arg) => T) => {
  */
 export const keepAlive = <A>(self: Atom<A>): Atom<A> => self;
 
+export interface ActionHandle<Input, E> {
+  (input: Input): void;
+  run: (input: Input) => void;
+  result: Accessor<AsyncResult<void, E>>;
+  pending: Accessor<boolean>;
+}
+
 export interface AtomRuntime<R, E = unknown> {
   readonly managed: ManagedRuntime.ManagedRuntime<R, E>;
   atom<A, E2>(effect: Effect.Effect<A, E2, R>): Atom<AsyncResult<A, E2>>;
+  action<A, E2, Input = void>(
+    effect: (input: Input) => Effect.Effect<A, E2, R>,
+    options?: {
+      readonly reactivityKeys?: ReactivityKeysInput;
+      readonly onError?: (error: E2) => void;
+      readonly onSuccess?: (input: Input) => void;
+    },
+  ): ActionHandle<Input, E2>;
   /**
    * Create a function-style mutation atom bound to this runtime.
    *
@@ -388,6 +404,39 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
     managed,
     atom<A, E2>(effect: Effect.Effect<A, E2, R>): Atom<AsyncResult<A, E2>> {
       return query(managed as RuntimeLike<R, unknown>, () => effect);
+    },
+    action<A, E2, Input = void>(
+      effect: (input: Input) => Effect.Effect<A, E2, R>,
+      options?: {
+        readonly reactivityKeys?: ReactivityKeysInput;
+        readonly onError?: (error: E2) => void;
+        readonly onSuccess?: (input: Input) => void;
+      },
+    ): ActionHandle<Input, E2> {
+      const handle = mutationEffectStrict(
+        managed as RuntimeLike<R, unknown>,
+        (input: Input) => effect(input),
+        {
+          onSuccess: (input) => {
+            options?.onSuccess?.(input);
+            if (options?.reactivityKeys !== undefined) {
+              invalidateReactivity(options.reactivityKeys);
+            }
+          },
+          onFailure: (error) => {
+            if (typeof error === "object" && error !== null && "defect" in error) return;
+            options?.onError?.(error as E2);
+          },
+        },
+      );
+
+      const out = ((input: Input) => {
+        handle.run(input);
+      }) as ActionHandle<Input, E2>;
+      out.run = (input: Input) => handle.run(input);
+      out.result = handle.result;
+      out.pending = handle.pending;
+      return out;
     },
     fn<A, E2, Input = void>(
       effect: (input: Input) => Effect.Effect<A, E2, R>,
@@ -552,6 +601,80 @@ export function fn<A, E, R, Input = void>(
     () => ensureHandle().result(),
     (_ctx, input) => ensureHandle().run(input),
   );
+}
+
+export function action<A, E, Input = void>(
+  effectFn: (input: Input) => Effect.Effect<A, E, never>,
+  options?: {
+    readonly reactivityKeys?: ReactivityKeysInput;
+    readonly onError?: (error: E) => void;
+    readonly onSuccess?: (input: Input) => void;
+  },
+): ActionHandle<Input, E>;
+export function action<A, E, R, Input = void>(
+  runtimeArg: RuntimeLike<R, unknown>,
+  effectFn: (input: Input) => Effect.Effect<A, E, R>,
+  options?: {
+    readonly reactivityKeys?: ReactivityKeysInput;
+    readonly onError?: (error: E) => void;
+    readonly onSuccess?: (input: Input) => void;
+  },
+): ActionHandle<Input, E>;
+export function action<A, E, R, Input = void>(
+  arg1: RuntimeLike<R, unknown> | ((input: Input) => Effect.Effect<A, E, R>),
+  arg2?: ((input: Input) => Effect.Effect<A, E, R>) | {
+    readonly reactivityKeys?: ReactivityKeysInput;
+    readonly onError?: (error: E) => void;
+    readonly onSuccess?: (input: Input) => void;
+  },
+  arg3?: {
+    readonly reactivityKeys?: ReactivityKeysInput;
+    readonly onError?: (error: E) => void;
+    readonly onSuccess?: (input: Input) => void;
+  },
+): ActionHandle<Input, E> {
+  const hasRuntime = typeof arg1 !== "function";
+  const runtimeArg = hasRuntime ? arg1 as RuntimeLike<R, unknown> : undefined;
+  const effectFn = (hasRuntime ? arg2 : arg1) as (input: Input) => Effect.Effect<A, E, R>;
+  const options = (hasRuntime ? arg3 : arg2) as {
+    readonly reactivityKeys?: ReactivityKeysInput;
+    readonly onError?: (error: E) => void;
+    readonly onSuccess?: (input: Input) => void;
+  } | undefined;
+
+  const handle = runtimeArg === undefined
+    ? mutationEffect((input: Input) => effectFn(input) as Effect.Effect<unknown, E, never>, {
+      onSuccess: (input) => {
+        options?.onSuccess?.(input);
+        if (options?.reactivityKeys !== undefined) {
+          invalidateReactivity(options.reactivityKeys);
+        }
+      },
+      onFailure: (error) => {
+        if (typeof error === "object" && error !== null && "defect" in error) return;
+        options?.onError?.(error as E);
+      },
+    })
+    : mutationEffectStrict(runtimeArg as RuntimeLike<R, unknown>, effectFn, {
+      onSuccess: (input) => {
+        options?.onSuccess?.(input);
+        if (options?.reactivityKeys !== undefined) {
+          invalidateReactivity(options.reactivityKeys);
+        }
+      },
+      onFailure: (error) => {
+        if (typeof error === "object" && error !== null && "defect" in error) return;
+        options?.onError?.(error as E);
+      },
+    });
+
+  const out = ((input: Input) => {
+    handle.run(input);
+  }) as ActionHandle<Input, E>;
+  out.run = (input: Input) => handle.run(input);
+  out.result = handle.result;
+  out.pending = handle.pending;
+  return out;
 }
 
 /** Pull atom payload for incremental stream loading. */
@@ -1297,3 +1420,21 @@ export function query<A, E, R>(
 
   return readable(() => getAccessor()());
 }
+
+/**
+ * Standalone async effect atom (no runtime required).
+ *
+ * Alias for `query(fn)` to support a smaller v1 mental model:
+ * `apiRuntime.atom` / `apiRuntime.action` / `Atom.effect`.
+ */
+export const effect = <A, E>(
+  fn: () => Effect.Effect<A, E, never>,
+): Atom<AsyncResult<A, E>> => {
+  let accessor: Accessor<AsyncResult<A, E>> | null = null;
+  const getAccessor = (): Accessor<AsyncResult<A, E>> => {
+    if (accessor !== null) return accessor;
+    accessor = atomEffect(fn);
+    return accessor;
+  };
+  return readable(() => getAccessor()());
+};
