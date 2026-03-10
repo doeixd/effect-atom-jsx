@@ -46,6 +46,204 @@ Scope: Implement seven high-impact improvements to align `effect-atom-jsx` more 
 - Add sampling/cardinality controls in the first observability release, not later.
 - Revisit stream shaping API to support both atom-level and query-source-level composition patterns.
 
+## Deep API Review Additions (2026-03-10)
+
+The following track incorporates a deeper architecture/API review focused on reducing conceptual load and clarifying a single golden path.
+
+### Golden path target (user-facing)
+
+- Read/write atoms directly in UI code without explicit registry ceremony.
+- Use one primary query API and one primary mutation API for most apps.
+- Keep Effect-first and scope-first variants as explicit advanced escape hatches.
+- Make service/runtime wiring obvious at the app boundary.
+
+### Guiding principles
+
+- Prefer one obvious pattern per use-case (read/write, query, mutation, hydration).
+- Keep "advanced" APIs available but move them to clearly marked modules/docs.
+- Reduce top-level API ambiguity through naming, tiering, and deprecations.
+- Preserve backward compatibility with aliases/migration guides before removals.
+
+## API Simplification Workstream (parallel to Phases 2-7)
+
+This workstream runs in parallel with feature phases and feeds API decisions back into implementation.
+
+### Track A - Registry ergonomics and atom read/write unification
+
+#### Objective
+
+Make JSX usage registry-implicit while keeping explicit registry APIs for non-JSX and advanced scenarios.
+
+#### Plan
+
+- Introduce a component-ambient registry access pattern (`useRegistry`) for advanced cases.
+- Prototype callable/ergonomic atom reads in JSX (`atom()` style) and evaluate migration impact.
+- Keep `Registry.make()` for tests/servers/standalone scripts, but move docs to advanced section.
+- Clarify write path guidance:
+  - primary UI path: direct atom writes (`set` / `update` pattern)
+  - Effect composition path: Effect-returning helpers in explicit namespace/module
+
+#### Edge cases
+
+- Shared atoms observed from multiple component trees with different registry lifetimes.
+- Mixed write paths (direct + Effect-based) with concurrent updates.
+- Subscription consistency when a read occurs in JSX and in external registry listeners.
+
+#### Docs/tests tasks
+
+- Add explicit consistency guarantees for mixed write paths.
+- Add race-condition tests (interleaved direct and Effect-based writes).
+- Document registry as "implicit by default, explicit for advanced use".
+
+### Track B - Runtime and service access model clarity
+
+#### Objective
+
+Reduce ambiguity between ambient runtime (`mount` / `useService`) and explicit runtime-bound APIs.
+
+#### Plan
+
+- Evaluate elevating `Atom.runtime(layer)` style as first-class documentation path (possibly alongside mount-based sugar).
+- Keep `useService` but improve diagnostics now:
+  - missing ambient runtime error must be actionable
+  - missing service error should include available service keys when feasible
+- Align typed requirements (Phase 2) with whichever runtime model is declared primary.
+
+#### Edge cases
+
+- Multiple runtimes in one app tree.
+- `WithLayer` boundaries interacting with service requirement typing.
+- Dynamic components crossing runtime boundaries.
+
+#### Docs/tests tasks
+
+- Add side-by-side examples: ambient mount vs explicit runtime-bound atoms.
+- Add diagnostic snapshot tests for service lookup errors.
+
+### Track C - Async primitive consolidation and naming
+
+#### Objective
+
+Reduce async API surface complexity and make capability boundaries obvious.
+
+#### Plan
+
+- Define three-tier async API documentation model:
+  - Tier 1 (default): query + mutation high-level APIs
+  - Tier 2: custom reactive async (`atomEffect`-style)
+  - Tier 3: scope/Effect-constructor escape hatches
+- Evaluate introducing naming symmetry (`defineMutation` counterpart to `defineQuery`).
+- Evaluate strict-mode options vs separate `*Strict` functions (migration via aliases).
+- Clarify distinction between raw reactive execution and cache/invalidation-enabled queries.
+
+#### Edge cases
+
+- Migration path from `queryEffect` to keyed/invalidation-aware queries.
+- Keeping scoped constructors discoverable for advanced users without cluttering defaults.
+
+#### Docs/tests tasks
+
+- Add API matrix showing "recommended", "advanced", and "legacy alias" entries.
+- Add deprecation warning strategy (soft docs deprecation first).
+
+### Track D - Async state model coherence (`AsyncResult` vs `Result`)
+
+#### Objective
+
+Resolve semantic confusion between fiber-lifecycle state and data-fetch state.
+
+#### Plan
+
+- Write explicit comparison doc:
+  - what each state machine models
+  - where conversion is lossy
+  - recommended usage boundaries
+- Evaluate renaming `Result` to clearer domain name (e.g. `FetchState`) or reducing dual-surface exposure.
+- Clarify `Async` state mapping defaults (Loading/Refreshing/Failure/Defect behavior).
+
+#### Edge cases
+
+- `Refreshing(previous success)` conversion semantics.
+- Defect propagation across boundaries when mapped to data-level state.
+
+#### Docs/tests tasks
+
+- Add conversion round-trip tests documenting intentional loss.
+- Add table in README/API docs for `Async` slot precedence and default collapse behavior.
+
+### Track E - Atom families, hydration, and memory safety
+
+#### Objective
+
+Harden real-world state identity features (family caches and hydration keys).
+
+#### Plan
+
+- Expand `Atom.family` with explicit cache lifecycle strategy:
+  - decide on eviction API (`evict`, `clear`, optional TTL)
+  - document key stability requirements
+- Add hydration validation mode:
+  - unknown server keys
+  - missing client registrations
+- Evaluate optional keyed-atom registration helpers to reduce manual hydration wiring.
+
+#### Edge cases
+
+- Long-lived sessions with unbounded family key growth.
+- Silent hydration drift when key names change.
+
+#### Docs/tests tasks
+
+- Add family docs section with memory warning + eviction patterns.
+- Add hydration mismatch warnings in development mode and corresponding tests.
+
+### Track F - Public export surface cleanup
+
+#### Objective
+
+Separate golden-path APIs from low-level internals to reduce accidental misuse.
+
+#### Plan
+
+- Audit top-level exports and classify each as:
+  - core user API
+  - advanced API
+  - internal/runtime primitive
+- Move low-level reactive core exports behind explicit subpath if feasible.
+- Keep compatibility exports during migration window.
+
+#### Edge cases
+
+- Existing users importing core primitives from top-level.
+- Tooling/docs links relying on current export locations.
+
+#### Docs/tests tasks
+
+- Add migration map for moved exports.
+- Add compatibility tests for subpath exports.
+
+### Track G - Batching semantics clarity
+
+#### Objective
+
+Clarify and simplify batching guarantees across atom layer and reactive core.
+
+#### Plan
+
+- Document exact semantics of current `batch`/`Atom.batch` interaction.
+- Evaluate unifying into one recommended batch API.
+- Evaluate optional `flush` escape hatch if microtask batching model is adopted.
+
+#### Edge cases
+
+- Nested batches across atom writes and signal writes.
+- DOM update timing guarantees expected by users.
+
+#### Docs/tests tasks
+
+- Add timing tests for batched writes and DOM commit behavior.
+- Add one canonical batching recommendation in README.
+
 ## Phase 0 - Architecture and API Design Notes
 
 ### Things to do
@@ -424,16 +622,22 @@ const search = Atom.Stream.debounce(queryStream, "250 millis");
 - Update `docs/API.md` for each new export/options shape.
 - Add a "Behavior Changes" section in changelog entries.
 - Add migration notes where defaults or semantics may surprise existing users.
+- Restructure README to learning path format:
+  - Quick Start (golden path)
+  - Advanced patterns
+  - Internals / library-author APIs
 
 ### Examples
 
 - Add or update examples for:
+  - golden-path app (minimal API surface)
   - typed service requirements
   - query concurrency strategies
   - router auto-binding
   - typed boundaries
   - observability flow
   - PubSub/debounce usage
+  - family eviction and hydration validation
 
 ### Tests
 
@@ -441,6 +645,7 @@ const search = Atom.Stream.debounce(queryStream, "250 millis");
 - Integration tests: real component trees and mount/unmount paths.
 - Type tests: compile-time requirement enforcement.
 - Regression tests: ensure current APIs still behave identically by default.
+- Add API-ergonomics snapshot tests for docs-driven recommended patterns.
 
 ### Comments and code quality
 
@@ -453,12 +658,14 @@ const search = Atom.Stream.debounce(queryStream, "250 millis");
 ### PR sequence (recommended)
 
 1. Internal scope tree plumbing + tests
-2. Typed component requirements + type tests
-3. Query concurrency and stale/dedupe options
-4. Typed boundaries
-5. Router auto-binding
-6. Observability hooks + toggles
-7. PubSub/operators and docs polish
+2. API simplification RFC + golden-path doc skeleton (no breaking changes)
+3. Typed component requirements + type tests
+4. Query concurrency and stale/dedupe options
+5. Async API tiering + naming alignment (`defineMutation`, strict-mode options)
+6. Typed boundaries + explicit Async precedence docs
+7. Router auto-binding
+8. Observability hooks + zero-cost defaults + sampling
+9. PubSub/operators + family/hydration hardening + docs polish
 
 ### Release strategy
 
@@ -471,6 +678,7 @@ const search = Atom.Stream.debounce(queryStream, "250 millis");
 - Query scheduler complexity causing subtle race conditions.
 - Instrumentation overhead in high-frequency apps.
 - Type-level API complexity reducing usability.
+- API churn causing user confusion during migration.
 
 ### Mitigations
 
@@ -478,6 +686,7 @@ const search = Atom.Stream.debounce(queryStream, "250 millis");
 - Keep strategy defaults conservative.
 - Add instrumentation sampling/disable toggles.
 - Document type helper patterns with practical examples.
+- Use phased deprecations and compatibility aliases before removals.
 
 ## Definition of Done (Per Feature)
 
