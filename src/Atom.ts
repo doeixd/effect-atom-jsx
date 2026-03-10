@@ -529,6 +529,13 @@ export function invalidateReactivity(input: ReactivityKeysInput): void {
   }
 }
 
+/** Read and track reactivity keys in the current reactive scope. */
+export function trackReactivity(input: ReactivityKeysInput): void {
+  for (const key of normalizeReactivityKeys(input)) {
+    ensureReactivityKey(key)();
+  }
+}
+
 /**
  * Make an atom depend on logical reactivity keys.
  *

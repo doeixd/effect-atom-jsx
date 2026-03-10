@@ -100,6 +100,7 @@ These directives are now explicit inputs to implementation planning.
    - Keep manual invalidation wiring available.
    - Add/retain key-based reactivity invalidation as a clean alternative.
    - Integrate this path with runtime actions and RPC helpers.
+   - Progress: `AtomRpc` / `AtomHttpApi` now support `reactivityKeys` on query/mutation/action paths.
 
 5. **Move toward microtask batching + explicit `flush`**
    - Evaluate replacing user-facing `batch` guidance with microtask-default batching.

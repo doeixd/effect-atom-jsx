@@ -53,6 +53,43 @@ describe("AtomRpc", () => {
     const ok = await Effect.runPromise(mutate({ id: "1", name: "ok" }));
     expect(ok.ok).toBe(true);
   });
+
+  it("supports reactivityKeys invalidation via action", async () => {
+    type Defs = {
+      getUser: { payload: { id: string }; success: { id: string; name: string }; error: never };
+      renameUser: { payload: { id: string; name: string }; success: { ok: true }; error: string };
+    };
+
+    let queryCount = 0;
+    const client = AtomRpc.Tag()<"RpcClient2", Defs>("RpcClient2", {
+      call: (tag, payload) => {
+        if (tag === "getUser") {
+          queryCount += 1;
+          return Effect.succeed({ id: (payload as any).id, name: `user-${queryCount}` }).pipe(Effect.delay("5 millis")) as any;
+        }
+        return Effect.succeed({ ok: true }) as any;
+      },
+    });
+
+    let user!: () => Result.Result<{ id: string; name: string }, never>;
+    createRoot(() => {
+      user = client.query("getUser", { id: "1" }, { reactivityKeys: ["users"] });
+    });
+
+    await tick(20);
+    const first = user();
+    expect(Result.isSuccess(first)).toBe(true);
+
+    const rename = client.action("renameUser", { reactivityKeys: ["users"] });
+    rename({ id: "1", name: "next" });
+
+    await tick(20);
+    const second = user();
+    expect(Result.isSuccess(second)).toBe(true);
+    if (Result.isSuccess(second)) {
+      expect(second.value.name).toBe("user-2");
+    }
+  });
 });
 
 describe("AtomHttpApi", () => {
@@ -102,5 +139,44 @@ describe("AtomHttpApi", () => {
     const rename = client.mutation("users", "rename");
     const out = await Effect.runPromise(rename({ id: "a", name: "next" }));
     expect(out.ok).toBe(true);
+  });
+
+  it("supports reactivityKeys invalidation via action", async () => {
+    type Defs = {
+      users: {
+        get: { request: { id: string }; success: { id: string; name: string }; error: never };
+        rename: { request: { id: string; name: string }; success: { ok: true }; error: string };
+      };
+    };
+
+    let queryCount = 0;
+    const client = AtomHttpApi.Tag()<"HttpClient2", Defs>("HttpClient2", {
+      call: (group, endpoint, request) => {
+        if (group === "users" && endpoint === "get") {
+          queryCount += 1;
+          return Effect.succeed({ id: (request as any).id, name: `name-${queryCount}` }).pipe(Effect.delay("5 millis")) as any;
+        }
+        return Effect.succeed({ ok: true }) as any;
+      },
+    });
+
+    let user!: () => Result.Result<{ id: string; name: string }, never>;
+    createRoot(() => {
+      user = client.query("users", "get", { id: "a" }, { reactivityKeys: ["users"] });
+    });
+
+    await tick(20);
+    const first = user();
+    expect(Result.isSuccess(first)).toBe(true);
+
+    const rename = client.action("users", "rename", { reactivityKeys: ["users"] });
+    rename({ id: "a", name: "next" });
+
+    await tick(20);
+    const second = user();
+    expect(Result.isSuccess(second)).toBe(true);
+    if (Result.isSuccess(second)) {
+      expect(second.value.name).toBe("name-2");
+    }
   });
 });

@@ -2,6 +2,13 @@ import { Effect } from "effect";
 import { createSignal, type Accessor } from "./api.js";
 import { atomEffect, type RuntimeLike } from "./effect-ts.js";
 import * as Result from "./Result.js";
+import {
+  action as atomAction,
+  invalidateReactivity,
+  trackReactivity,
+  type ActionHandle,
+  type ReactivityKeysInput,
+} from "./Atom.js";
 
 type EndpointDef = {
   readonly request: unknown;
@@ -20,9 +27,21 @@ export interface AtomHttpApiClient<Defs extends HttpApiDefinitions, R = never> {
   >(
     group: Group,
     endpoint: Endpoint,
+    options?: { readonly reactivityKeys?: ReactivityKeysInput },
   ) => (
     request: Defs[Group][Endpoint]["request"],
   ) => Effect.Effect<Defs[Group][Endpoint]["success"], Defs[Group][Endpoint]["error"], R>;
+  readonly action: <
+    Group extends keyof Defs & string,
+    Endpoint extends keyof Defs[Group] & string,
+  >(
+    group: Group,
+    endpoint: Endpoint,
+    options?: {
+      readonly reactivityKeys?: ReactivityKeysInput;
+      readonly onError?: (error: Defs[Group][Endpoint]["error"]) => void;
+    },
+  ) => ActionHandle<Defs[Group][Endpoint]["request"], Defs[Group][Endpoint]["error"]>;
   readonly query: <
     Group extends keyof Defs & string,
     Endpoint extends keyof Defs[Group] & string,
@@ -30,6 +49,7 @@ export interface AtomHttpApiClient<Defs extends HttpApiDefinitions, R = never> {
     group: Group,
     endpoint: Endpoint,
     request: Defs[Group][Endpoint]["request"],
+    options?: { readonly reactivityKeys?: ReactivityKeysInput },
   ) => Accessor<Result.Result<Defs[Group][Endpoint]["success"], Defs[Group][Endpoint]["error"]>>;
   readonly refresh: <
     Group extends keyof Defs & string,
@@ -75,10 +95,27 @@ export const Tag = <Self extends object = {}>() =>
     const client: AtomHttpApiClient<Defs, R> = {
       id,
       runtime: options.runtime,
-      mutation(group, endpoint) {
-        return (request) => options.call(group, endpoint, request);
+      mutation(group, endpoint, mutationOptions) {
+        return (request) => {
+          const base = options.call(group, endpoint, request);
+          if (mutationOptions?.reactivityKeys === undefined) return base;
+          return base.pipe(Effect.tap(() => Effect.sync(() => invalidateReactivity(mutationOptions.reactivityKeys!))));
+        };
       },
-      query(group, endpoint, request) {
+      action(group, endpoint, actionOptions) {
+        const effectFn = (request: Defs[typeof group][typeof endpoint]["request"]) =>
+          options.call(group, endpoint, request);
+        return options.runtime === undefined
+          ? atomAction(effectFn as (input: Defs[typeof group][typeof endpoint]["request"]) => Effect.Effect<Defs[typeof group][typeof endpoint]["success"], Defs[typeof group][typeof endpoint]["error"], never>, {
+            reactivityKeys: actionOptions?.reactivityKeys,
+            onError: actionOptions?.onError,
+          })
+          : atomAction(options.runtime as RuntimeLike<R, unknown>, effectFn as any, {
+            reactivityKeys: actionOptions?.reactivityKeys,
+            onError: actionOptions?.onError,
+          }) as ActionHandle<Defs[typeof group][typeof endpoint]["request"], Defs[typeof group][typeof endpoint]["error"]>;
+      },
+      query(group, endpoint, request, queryOptions) {
         const key = keyOf(group, endpoint, request);
         const existing = cache.get(key);
         if (existing) {
@@ -89,9 +126,14 @@ export const Tag = <Self extends object = {}>() =>
         refreshers.set(key, () => setTick((n) => n + 1));
 
         const async = atomEffectAny(
-          () => Effect.sync(tick).pipe(
+          () => {
+            if (queryOptions?.reactivityKeys !== undefined) {
+              trackReactivity(queryOptions.reactivityKeys);
+            }
+            return Effect.sync(tick).pipe(
             Effect.flatMap(() => options.call(group, endpoint, request)),
-          ),
+            );
+          },
           options.runtime as RuntimeLike<any, unknown> | undefined,
         );
 

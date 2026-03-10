@@ -298,8 +298,9 @@ Hydration.hydrate(registry, state, { count: countAtom });
 RPC client factory for flat endpoint maps.
 
 - **`AtomRpc.Tag()(id, { call, runtime? })`** — Create a typed RPC client.
-  - `query(tag, payload, options?)` — reactive query
-  - `mutation(tag)` — mutation action
+  - `query(tag, payload, options?)` — reactive query (`options.reactivityKeys` supported)
+  - `mutation(tag, options?)` — effect mutation (`options.reactivityKeys` invalidates declaratively)
+  - `action(tag, options?)` — linear action handle with `.run/.result/.pending` (`reactivityKeys`, `onError`)
   - `refresh(tag, payload)` — force refresh a query
 
 ### Types
@@ -313,8 +314,9 @@ RPC client factory for flat endpoint maps.
 HTTP API client factory for grouped endpoints.
 
 - **`AtomHttpApi.Tag()(id, { call, runtime? })`** — Create a typed HTTP API client.
-  - `query(group, endpoint, request)` — reactive query
-  - `mutation(group, endpoint)` — mutation action
+  - `query(group, endpoint, request, options?)` — reactive query (`options.reactivityKeys` supported)
+  - `mutation(group, endpoint, options?)` — effect mutation (`options.reactivityKeys` invalidates declaratively)
+  - `action(group, endpoint, options?)` — linear action handle with `.run/.result/.pending` (`reactivityKeys`, `onError`)
   - `refresh(group, endpoint, request)` — force refresh
 
 ### Types
