@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Effect, Layer, ManagedRuntime, ServiceMap } from "effect";
 import {
   mutationEffectStrict,
@@ -8,6 +8,15 @@ import {
   queryEffectStrict,
 } from "../index.js";
 import { AsyncResult } from "../advanced.js";
+import { setBatchingMode } from "../api.js";
+
+beforeAll(() => {
+  setBatchingMode("sync");
+});
+
+afterAll(() => {
+  setBatchingMode("microtask");
+});
 
 type Todo = {
   readonly id: string;

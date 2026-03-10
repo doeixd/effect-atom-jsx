@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Effect } from "effect";
 import { Exit, Option } from "effect";
 import { Layer, ServiceMap } from "effect";
@@ -10,6 +10,14 @@ import * as Result from "../Result.js";
 import * as Registry from "../Registry.js";
 import { AsyncResult } from "../effect-ts.js";
 import { createRoot } from "../api.js";
+
+beforeAll(() => {
+  Atom.setBatchingMode("sync");
+});
+
+afterAll(() => {
+  Atom.setBatchingMode("microtask");
+});
 
 describe("effect-atom style API", () => {
   it("supports Atom.make writable values", () => {

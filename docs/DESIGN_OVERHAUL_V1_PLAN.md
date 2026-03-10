@@ -106,7 +106,7 @@ These directives are now explicit inputs to implementation planning.
    - Evaluate replacing user-facing `batch` guidance with microtask-default batching.
    - Add `flush()` escape hatch for imperative DOM sequencing.
    - If full migration is risky, ship behind an opt-in runtime flag first.
-   - Progress: `flush()` + `setBatchingMode("sync" | "microtask")` added.
+   - Progress: `flush()` + `setBatchingMode("sync" | "microtask")` added, with `microtask` as the default mode.
 
 ## Breaking Changes Policy
 

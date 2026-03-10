@@ -8,7 +8,7 @@
  * No DOM, no Effect-TS required — pure synchronous reactive graph.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { Signal } from "../signal.js";
 import { Computation, Memo } from "../computation.js";
 import { Owner, getOwner, runWithOwner } from "../owner.js";
@@ -29,6 +29,14 @@ import {
   mergeProps,
   splitProps,
 } from "../api.js";
+
+beforeAll(() => {
+  setBatchingMode("sync");
+});
+
+afterAll(() => {
+  setBatchingMode("microtask");
+});
 
 // ─── Signal ───────────────────────────────────────────────────────────────────
 

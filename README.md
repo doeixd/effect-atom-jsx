@@ -112,6 +112,8 @@ For runtime-bound atom APIs, prefer:
 - `Atom.runtime(layer).action(...)` for writes (linear Effect flow)
 - `Atom.effect(...)` for standalone async atoms
 
+Batching defaults to microtask mode in v1 design direction. Use `flush()` when you need immediate deterministic commit ordering, or switch modes with `setBatchingMode("sync")` for legacy behavior.
+
 Everything else (`scoped*` constructors, explicit registries outside components, deep runtime helpers) is advanced.
 
 ### Atom & Registry — Local State

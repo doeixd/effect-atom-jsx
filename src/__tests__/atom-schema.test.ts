@@ -1,8 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Schema, Option, Effect, Exit } from "effect";
 import * as Atom from "../Atom.js";
 import * as AtomSchema from "../AtomSchema.js";
-import { createRoot } from "../api.js";
+import { createRoot, setBatchingMode } from "../api.js";
+
+beforeAll(() => {
+  setBatchingMode("sync");
+});
+
+afterAll(() => {
+  setBatchingMode("microtask");
+});
 
 // Schema.Int properly rejects non-integers (including NaN, strings, etc.)
 // Schema.NumberFromString in v4 permissively converts via Number() and doesn't throw on NaN

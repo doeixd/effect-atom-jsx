@@ -12,7 +12,7 @@
  * All tests are async because Effect fibers execute on the microtask queue.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime, Option } from "effect";
 import {
   atomEffect,
@@ -58,7 +58,7 @@ import {
   type Success,
   type Defect,
 } from "../effect-ts.js";
-import { createSignal, createRoot, createEffect, onCleanup } from "../api.js";
+import { createSignal, createRoot, createEffect, onCleanup, setBatchingMode } from "../api.js";
 import { Owner, runWithOwner } from "../owner.js";
 import { currentComponentScope, withComponentScope } from "../component-scope.js";
 import { createComponent } from "../dom.js";
@@ -68,6 +68,14 @@ import { withTestLayer } from "../testing.js";
 
 /** Wait for the microtask / promise queue to drain. */
 const tick = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
+
+beforeAll(() => {
+  setBatchingMode("sync");
+});
+
+afterAll(() => {
+  setBatchingMode("microtask");
+});
 
 // ─── AsyncResult ──────────────────────────────────────────────────────────────
 

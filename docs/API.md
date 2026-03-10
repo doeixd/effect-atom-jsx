@@ -74,6 +74,7 @@ const prev = Effect.runSync(Atom.modify(count, n => [n, n + 1]));
 - **`Atom.batch(fn)`** — Batch multiple writes into a single notification cycle.
 - **`Atom.flush()`** — Flush queued reactive invalidations immediately.
 - **`Atom.setBatchingMode(mode)`** — Set batching mode: `"sync"` or `"microtask"`.
+  - Default mode is `"microtask"` in the v1 redesign direction.
 
 ### Stream Integration
 
@@ -429,6 +430,7 @@ Solid.js-compatible reactive primitives:
 - `batch(fn)` — Batch updates.
 - `flush()` — Flush queued updates immediately.
 - `setBatchingMode(mode)` — Configure notification mode (`sync` or `microtask`).
+  - Default mode is `microtask`.
 - `mergeProps(...sources)` / `splitProps(props, keys)` — Props utilities.
 - `getOwner()` / `runWithOwner(owner, fn)` — Ownership utilities.
 

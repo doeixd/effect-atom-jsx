@@ -48,7 +48,7 @@ export function runUntracked<T>(fn: () => T): T {
  */
 let batchDepth = 0;
 const batchQueue: Set<IComputation> = new Set();
-let microtaskBatching = false;
+let microtaskBatching = true;
 let microtaskScheduled = false;
 
 export function isBatching(): boolean {
