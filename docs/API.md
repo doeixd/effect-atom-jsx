@@ -270,8 +270,10 @@ SSR state transfer — serialize atom values on the server and restore them on t
 - **`Hydration.dehydrate(registry, entries)`** — Snapshot atom values to a serializable array.
   - `entries`: `Iterable<[key: string, atom: Atom<any>]>`
   - Returns `DehydratedAtomValue[]`
-- **`Hydration.hydrate(registry, state, resolvers)`** — Restore atom values from a dehydrated snapshot.
+- **`Hydration.hydrate(registry, state, resolvers, options?)`** — Restore atom values from a dehydrated snapshot.
   - `resolvers`: `Record<string, Writable<any, any>>` mapping keys to atoms
+  - `options.validate`: emit warnings for unknown server keys and missing resolver keys
+  - `options.onUnknownKey` / `options.onMissingKey`: custom validation callbacks
 - **`Hydration.toValues(state)`** — Filter dehydrated state to typed value entries.
 
 ```ts
@@ -284,7 +286,7 @@ Hydration.hydrate(registry, state, { count: countAtom });
 
 ### Types
 
-- `Hydration.DehydratedAtom`, `Hydration.DehydratedAtomValue`
+- `Hydration.DehydratedAtom`, `Hydration.DehydratedAtomValue`, `Hydration.HydrateOptions`
 
 <br />
 

@@ -344,6 +344,12 @@ Hydration.hydrate(registry, window.__STATE__, {
   user: userAtom,
 });
 
+// Optional validation hooks for development diagnostics:
+Hydration.hydrate(registry, window.__STATE__, { count: countAtom, user: userAtom }, {
+  onUnknownKey: (key) => console.warn("Unknown hydration key:", key),
+  onMissingKey: (key) => console.warn("Missing hydration key:", key),
+});
+
 // Attach reactivity to existing DOM
 const dispose = hydrateRoot(() => <App />, document.getElementById("root")!);
 ```

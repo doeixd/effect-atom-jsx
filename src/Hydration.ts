@@ -24,6 +24,12 @@ export interface DehydratedAtomValue extends DehydratedAtom {
   readonly dehydratedAt: number;
 }
 
+export interface HydrateOptions {
+  readonly validate?: boolean;
+  readonly onUnknownKey?: (key: string) => void;
+  readonly onMissingKey?: (key: string) => void;
+}
+
 /**
  * Snapshot atom values from a Registry into a serializable array.
  *
@@ -86,10 +92,38 @@ export const hydrate = (
   registry: Registry.Registry,
   dehydratedState: Iterable<DehydratedAtom>,
   resolvers: Readonly<Record<string, Atom.Writable<any, any>>>,
+  options?: HydrateOptions,
 ): void => {
-  for (const value of toValues(Array.from(dehydratedState))) {
+  const values = toValues(Array.from(dehydratedState));
+  const matchedResolvers = new Set<string>();
+
+  const reportUnknown = options?.onUnknownKey ?? (options?.validate
+    ? (key: string) => {
+      console.warn(`[effect-atom-jsx] Hydration: server key "${key}" has no matching resolver.`);
+    }
+    : undefined);
+
+  const reportMissing = options?.onMissingKey ?? (options?.validate
+    ? (key: string) => {
+      console.warn(`[effect-atom-jsx] Hydration: resolver key "${key}" missing from dehydrated state.`);
+    }
+    : undefined);
+
+  for (const value of values) {
     const atom = resolvers[value.key];
-    if (!atom) continue;
+    if (!atom) {
+      reportUnknown?.(value.key);
+      continue;
+    }
+    matchedResolvers.add(value.key);
     registry.set(atom, value.value);
+  }
+
+  if (reportMissing !== undefined) {
+    for (const key of Object.keys(resolvers)) {
+      if (!matchedResolvers.has(key)) {
+        reportMissing(key);
+      }
+    }
   }
 };

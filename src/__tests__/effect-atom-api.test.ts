@@ -220,6 +220,48 @@ describe("effect-atom style API", () => {
     expect(registry.get(title)).toBe("hello");
   });
 
+  it("supports hydration validation callbacks", () => {
+    const registry = Registry.make();
+    const count = Atom.make(1);
+    const title = Atom.make("hello");
+
+    const unknown: string[] = [];
+    const missing: string[] = [];
+
+    const validState: Array<Hydration.DehydratedAtomValue> = [
+      { "~@effect-atom-jsx/DehydratedAtom": true, key: "count", value: 5, dehydratedAt: Date.now() },
+    ];
+
+    Hydration.hydrate(
+      registry,
+      validState,
+      { count, title },
+      {
+        onUnknownKey: (key) => unknown.push(key),
+        onMissingKey: (key) => missing.push(key),
+      },
+    );
+
+    expect(unknown).toEqual([]);
+    expect(missing).toEqual(["title"]);
+    expect(registry.get(count)).toBe(5);
+
+    const unknownState: Array<Hydration.DehydratedAtomValue> = [
+      { "~@effect-atom-jsx/DehydratedAtom": true, key: "missing", value: 1, dehydratedAt: Date.now() },
+    ];
+
+    Hydration.hydrate(
+      registry,
+      unknownState,
+      { count },
+      {
+        onUnknownKey: (key) => unknown.push(key),
+      },
+    );
+
+    expect(unknown).toEqual(["missing"]);
+  });
+
   it("converts AsyncResult <-> Result", () => {
     const fromLoading = Result.fromAsyncResult(AsyncResult.loading);
     expect(Result.isInitial(fromLoading)).toBe(true);
