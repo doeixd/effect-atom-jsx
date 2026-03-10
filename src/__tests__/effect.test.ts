@@ -60,6 +60,7 @@ import { createSignal, createRoot, createEffect, onCleanup } from "../api.js";
 import { Owner, runWithOwner } from "../owner.js";
 import { currentComponentScope, withComponentScope } from "../component-scope.js";
 import { createComponent } from "../dom.js";
+import { withTestLayer } from "../testing.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -436,6 +437,12 @@ describe("use / queryEffect (ambient runtime behavior)", () => {
     const A = ServiceMap.Service<{ readonly value: string }>("A");
     const B = ServiceMap.Service<{ readonly n: number }>("B");
     expect(() => useServices({ a: A, b: B })).toThrow(/no ambient ManagedRuntime/i);
+  });
+
+  it("useService reports missing service key clearly", () => {
+    const Missing = ServiceMap.Service<{ readonly value: string }>("Missing");
+    const harness = withTestLayer(Layer.empty);
+    expect(() => harness.run(() => useService(Missing))).toThrow(/useService\(Missing\): service not found/i);
   });
 });
 

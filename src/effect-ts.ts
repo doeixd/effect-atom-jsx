@@ -294,7 +294,16 @@ export function use<I, S>(tag: ServiceMap.Key<I, S>): S {
   if (runtime === null) {
     throw new Error("[effect-atom-jsx] use(tag): no ambient ManagedRuntime found. Mount with mount(..., layer).");
   }
-  return runtime.runSync(Effect.service(tag));
+  try {
+    return runtime.runSync(Effect.service(tag));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[effect-atom-jsx] useService(${tag.key}): service not found in ambient runtime. ` +
+      `Add ${tag.key} to the Layer passed to mount/createMount. ` +
+      `Original error: ${message}`,
+    );
+  }
 }
 
 export interface QueryKey<A = unknown> {
