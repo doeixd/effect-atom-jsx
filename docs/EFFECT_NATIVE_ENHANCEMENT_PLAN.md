@@ -181,7 +181,7 @@ Replace the next-step order with:
 ### G. Explicit anti-goals from feedback
 
 - Do not add more top-level async entrypoints before consolidation.
-- Do not expand AtomRef-like parallel state models without proving integration story.
+- Keep `AtomRef` supported for effect-atom compatibility; avoid introducing additional parallel state models beyond `Atom` + `AtomRef` without a proven integration story.
 - Do not ship observability defaults that can explode metric cardinality.
 - Do not rely on implicit semantic conversions between result types without documenting loss.
 

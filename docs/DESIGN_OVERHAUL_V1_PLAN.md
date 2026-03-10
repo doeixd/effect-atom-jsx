@@ -54,7 +54,8 @@ Success means:
 - Consolidate duplicated async entrypoints into tiered aliases then remove legacy names.
 - Move low-level reactive exports out of top-level.
 - Reclassify `Registry` as advanced unless golden-path prototype proves it should be implicit.
-- Decide fate of `AtomRef` (align with Atom model, move to addon, or deprecate).
+- Keep `AtomRef` as a first-class supported module for effect-atom compatibility.
+- Improve `AtomRef` docs and interop guidance instead of deprecating it.
 
 ## Major Architecture Decisions to Finalize
 
@@ -68,6 +69,8 @@ Success means:
    - Top-level minimal set + subpaths for advanced/internals.
 5. **Identity model**
    - `Atom.family` lifecycle/eviction and hydration key strategy must be explicit.
+6. **AtomRef interoperability model**
+   - Preserve effect-atom familiarity while clarifying how `AtomRef` composes with Atom/query/mutation flows.
 
 ## Breaking Changes Policy
 
