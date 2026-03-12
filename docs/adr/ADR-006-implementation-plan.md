@@ -817,6 +817,8 @@ Progress notes:
 - `ServerRoute.document(...)` now accepts unified route roots, so one of the bigger remaining migration blockers has started to move.
 - The next cleanup step is continuing that migration in the remaining runtime/server tests and then deleting more node-era helpers once those callsites no longer depend on them.
 - The next cleanup target is finishing the leftover route/runtime tests that still exercise node-era helpers directly so those helpers can be removed from the public surface instead of merely de-emphasized.
+- More route/runtime/server tests now use unified route roots directly, and `titleFor` / `metaFor` / `loaderErrorFor` have been removed from the implementation entirely.
+- Several node-era helpers have now been downgraded to internal-only implementation details, which is the intended direction before full deletion.
 
 ### Objectives
 
