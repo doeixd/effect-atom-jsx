@@ -371,6 +371,7 @@ Progress notes:
 - `runMatchedLoaders`, `runStreamingNavigation`, `prefetch`, and `collectSitemapEntries` now accept explicit route trees directly, which shifts more of the public helper surface toward tree-first usage without forcing separate helper names.
 - The next cleanup target is internally demoting the legacy-only helper branches now that these public APIs can route through explicit trees directly.
 - The next cleanup target is consolidating internal callsites onto those main tree-capable helper overloads so runtime and SSR stop branching between parallel helper entrypoints unnecessarily.
+- Runtime and SSR now route more of their helper usage through the main overload-based APIs, which reduces the amount of bespoke `*ForTree` branching in the internal callsites.
 
 ### Objectives
 
@@ -803,6 +804,7 @@ Progress notes:
 - The remaining cleanup is increasingly about removing or shrinking the legacy-only fallbacks now that more public helpers can route through explicit unified trees directly.
 - The next likely step is separating truly legacy registry-backed code from the default helper flow so unified-route execution stays on the clearer tree-first path by default.
 - The next likely implementation slice is consolidating runtime and SSR onto the main overload-based helper surface, then shrinking the duplicate `*ForTree` wiring where it no longer adds independent value.
+- The next cleanup step is deciding which remaining legacy helpers should stay as explicit legacy escape hatches versus which ones can now be collapsed further behind the main tree-capable APIs.
 
 ### Objectives
 
