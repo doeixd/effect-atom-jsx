@@ -813,6 +813,7 @@ Progress notes:
 - The next likely implementation slice is reducing legacy emphasis in `API.md`, pruning safe public exports, and continuing to narrow the remaining node-era surface to the minimum still required during active refactoring.
 - The next cleanup step is continuing that pruning on the remaining node-era constructors and metadata helper surface, not keeping them around as a parallel long-term API.
 - The next likely implementation slice is migrating more node-era tests/examples to unified route-first authoring so additional legacy exports can be removed safely.
+- Type tests and docs are starting to move first; some server-route and route-component tests still depend on node-era APIs and should be migrated or removed before those helpers disappear completely.
 
 ### Objectives
 
