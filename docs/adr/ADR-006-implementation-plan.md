@@ -361,6 +361,7 @@ Progress notes:
 - Loader execution now also has an initial tree-based unified-route path, which reduces reliance on the global routed-component registry for newer runtime flows.
 - The next cleanup focus is head/title/meta resolution and further removal of registry-first execution assumptions.
 - SSR head resolution now has an initial unified-route tree path, so route-owned title/meta callbacks can contribute to server-rendered head output without going through component-attached metadata.
+- The next route-execution cleanup target is tree-driven navigation/prefetch/sitemap support so unified routes no longer need to lean on the registry in those paths.
 
 ### Objectives
 
@@ -783,6 +784,7 @@ Progress notes:
 - SSR/request rendering now has an initial unified-route branch as well, using tree-based loader streaming for unified route roots.
 - The next runtime/SSR step is to carry more route-owned metadata directly through matching and render-time head resolution.
 - The next runtime focus is removing more remaining registry and component-materialization dependencies from non-legacy flows.
+- Navigation-adjacent helpers are the next likely place to remove registry-first assumptions in favor of explicit unified-route trees.
 
 ### Objectives
 
