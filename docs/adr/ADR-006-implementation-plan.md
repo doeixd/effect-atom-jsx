@@ -373,6 +373,7 @@ Progress notes:
 - The next cleanup target is consolidating internal callsites onto those main tree-capable helper overloads so runtime and SSR stop branching between parallel helper entrypoints unnecessarily.
 - Runtime and SSR now route more of their helper usage through the main overload-based APIs, which reduces the amount of bespoke `*ForTree` branching in the internal callsites.
 - We are not preserving legacy escape hatches as an end state. Once a tree-first helper path fully covers a workflow, the legacy-only branch should be removed rather than retained indefinitely.
+- The next cleanup target is aligning the user-facing docs and exported surface with that reality so the public story matches the implementation direction.
 
 ### Objectives
 
@@ -807,6 +808,7 @@ Progress notes:
 - The next likely implementation slice is consolidating runtime and SSR onto the main overload-based helper surface, then shrinking the duplicate `*ForTree` wiring where it no longer adds independent value.
 - The next cleanup step is deciding which remaining legacy helpers should stay as explicit legacy escape hatches versus which ones can now be collapsed further behind the main tree-capable APIs.
 - The next cleanup step is identifying which remaining legacy helpers can now be deleted outright, since the target design is the unified route model rather than a long-lived dual API surface.
+- The next likely implementation slice is reducing legacy emphasis in `API.md`, pruning safe public exports, and continuing to narrow the remaining node-era surface to the minimum still required during active refactoring.
 
 ### Objectives
 
