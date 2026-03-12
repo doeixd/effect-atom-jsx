@@ -830,6 +830,7 @@ Progress notes:
 - The immediate implementation priority is moving single-flight loader selection, hydration, and related cache seeding toward explicit route trees so the last substantial `Component.route(...)` dependency can be removed.
 - Single-flight and server-route docs now explicitly call out unified-route support where it exists, but the implementation still retains a narrower registration-based dependency in parts of the single-flight pipeline.
 - Unified route creation now registers enough route metadata for more single-flight flows to work without separate node-era exports, and single-flight APIs can accept explicit route trees for loader selection/hydration.
+- The next cleanup target is the remaining reactivity-heavy single-flight cases that still depend on `Component.route(...)`; once those are migrated or intentionally isolated, we can make a cleaner call on deleting `Component.route(...)` / `Component.guard(...)`.
 - The next immediate step is migrating the remaining single-flight-heavy tests and callsites to pass explicit route trees through those new hooks so `Component.route(...)` can finally stop carrying that fallback responsibility.
 - The next cleanup target is removing the remaining internal node-era helpers entirely where their only purpose is servicing already-migrated flows.
 - `API.md` should now move from "legacy still exists" language toward a fully unified route-first story unless a concrete remaining public dependency still exists.
