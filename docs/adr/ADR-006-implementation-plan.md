@@ -363,6 +363,7 @@ Progress notes:
 - SSR head resolution now has an initial unified-route tree path, so route-owned title/meta callbacks can contribute to server-rendered head output without going through component-attached metadata.
 - The next route-execution cleanup target is tree-driven navigation/prefetch/sitemap support so unified routes no longer need to lean on the registry in those paths.
 - Tree-based prefetch and sitemap helpers now exist for unified routes, which starts moving navigation-adjacent workflows onto explicit route trees instead of registry lookups.
+- The next navigation/runtime cleanup target is teaching more runtime-managed preload and navigation flows to prefer the explicit app tree when unified routes are in use.
 
 ### Objectives
 
@@ -787,6 +788,7 @@ Progress notes:
 - The next runtime focus is removing more remaining registry and component-materialization dependencies from non-legacy flows.
 - Navigation-adjacent helpers are the next likely place to remove registry-first assumptions in favor of explicit unified-route trees.
 - The remaining cleanup focus is broader runtime integration and eventual deletion of legacy registry-backed fallbacks once enough public flows prefer the tree-based helpers.
+- Runtime-managed preload/navigation behavior is the next likely place to consolidate around the explicit app tree.
 
 ### Objectives
 
