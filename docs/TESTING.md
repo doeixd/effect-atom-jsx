@@ -33,12 +33,12 @@ Create a `TestHarness` with the given Layer. The harness provides:
 ```ts
 const harness = withTestLayer(ApiMock);
 
-const result = harness.run(() => {
-  return queryEffect(() => useService(Api).load());
+const query = harness.run(() => {
+  return defineQuery(() => useService(Api).load(), { name: "load" });
 });
 
 await harness.tick();
-// result() is now Success(42)
+// query.result() is now Success(42)
 
 await harness.dispose();
 ```
@@ -49,7 +49,7 @@ Shorthand — creates a harness and immediately runs the `ui` callback inside it
 
 ```ts
 const harness = renderWithLayer(ApiMock, () => {
-  const save = mutationEffect((n: number) => useService(Api).save(n));
+  const save = defineMutation((n: number) => useService(Api).save(n));
   save.run(42);
 });
 
@@ -68,11 +68,11 @@ it("loads user data", async () => {
   });
 
   const harness = withTestLayer(UserApiMock);
-  const result = harness.run(() => queryEffect(() => useService(UserApi).getUser(1)));
+  const query = harness.run(() => defineQuery(() => useService(UserApi).getUser(1), { name: "user" }));
 
   await harness.tick();
 
-  const settled = result();
+  const settled = query.result();
   expect(settled._tag).toBe("Success");
   if (settled._tag === "Success") {
     expect(settled.value.name).toBe("Alice");
@@ -92,7 +92,7 @@ it("saves data via mutation", async () => {
   });
 
   const harness = renderWithLayer(ApiMock, () => {
-    const save = mutationEffect((n: number) => useService(Api).save(n));
+    const save = defineMutation((n: number) => useService(Api).save(n));
     save.run(42);
   });
 
@@ -116,7 +116,7 @@ it("interrupts fibers on dispose", async () => {
   });
 
   const harness = renderWithLayer(ApiMock, () => {
-    queryEffect(() => useService(Api).load());
+    defineQuery(() => useService(Api).load(), { name: "load" });
   });
 
   await harness.tick();

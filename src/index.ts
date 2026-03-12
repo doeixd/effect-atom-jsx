@@ -25,13 +25,25 @@ export * as AtomRpc from "./AtomRpc.js";
 export * as AtomLogger from "./AtomLogger.js";
 export * as AtomSchema from "./AtomSchema.js";
 export * as Hydration from "./Hydration.js";
-export * as Result from "./Result.js";
-export * as Registry from "./Registry.js";
-export { useRegistry } from "./Registry.js";
+export * as Component from "./Component.js";
+export * as Behavior from "./Behavior.js";
+export * as Element from "./Element.js";
+export * as Behaviors from "./behaviors.js";
+export * as Composables from "./composables.js";
+export * as Style from "./Style.js";
+export * as Theme from "./Theme.js";
+export * as Reactivity from "./Reactivity.js";
+export * as StyleUtils from "./style-utils.js";
+export * as StyledComposables from "./styled-composables.js";
+export * as Route from "./Route.js";
+export * as ServerRoute from "./ServerRoute.js";
+export * as RouterRuntime from "./RouterRuntime.js";
+export * as FetchResult from "./Result.js";
 
 // ─── Effect-TS integration ───────────────────────────────────────────────────
 export {
   atomEffect,
+  Result,
   defineQuery,
   createQueryKey,
   invalidate,
@@ -43,13 +55,10 @@ export {
   useServices,
   mount,
   createMount,
-  scopedRootEffect,
-  scopedQueryEffect,
-  scopedMutationEffect,
-  layerContext,
   Async,
   Loading,
   Errored,
+  TypedBoundary,
   Switch,
   Match,
   MatchTag,

@@ -5,7 +5,7 @@ import {
   createOptimistic,
   defineQuery,
 } from "../index.js";
-import { AsyncResult } from "../advanced.js";
+import { Result, type Result as AsyncState } from "../advanced.js";
 import { createSignal, createRoot } from "../api.js";
 
 const originalQueueMicrotask = globalThis.queueMicrotask;
@@ -66,7 +66,7 @@ describe("TodoMVC integration", () => {
       { id: "1", title: "first", completed: false },
     ])));
 
-    let readTodos!: () => AsyncResult<ReadonlyArray<Todo>, ApiError>;
+    let readTodos!: () => AsyncState<ReadonlyArray<Todo>, ApiError>;
     let optimistic!: ReturnType<typeof createOptimistic<ReadonlyArray<Todo>>>;
     let add!: ReturnType<typeof defineMutation<string, ApiError, TodoApi>>;
     let refresh!: () => void;
@@ -172,7 +172,7 @@ describe("TodoMVC integration", () => {
     add.run("boom");
     await tick(40);
     expect(optimistic.get()[0]?.title).toBe("stable");
-    expect(add.result()).toEqual(AsyncResult.failure({ _tag: "ApiError", message: "cannot add boom" }));
+    expect(add.result()).toEqual(Result.failure({ _tag: "ApiError", message: "cannot add boom" }));
 
     dispose();
     await runtime.dispose();

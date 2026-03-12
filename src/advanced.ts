@@ -15,13 +15,14 @@ export {
   scopedMutationEffect,
   layerContext,
   Async,
-  AsyncResult,
+  Result,
+  TypedBoundary,
   type Loading,
   type Refreshing,
   type Success,
   type Failure,
   type Defect,
-  type AsyncResult as AsyncResultType,
+  type Result as ResultType,
 } from "./effect-ts.js";
 
 export {
@@ -35,7 +36,6 @@ export {
   onMount,
   untrack,
   sample,
-  batch,
   flush,
   mergeProps,
   splitProps,

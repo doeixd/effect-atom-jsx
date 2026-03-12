@@ -1,0 +1,48 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90mC:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run[39m
+
+stderr | smoke.test.tsx > effect-atom-jsx smoke test > should render JSX and update reactively
+[effect-atom-jsx] Unhandled error in reactive computation: ReferenceError: React is not defined
+    at C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/smoke.test.tsx:23:7
+    at Computation._fn (file:///C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/node_modules/effect-atom-jsx/dist/dom.js:36:53)
+    at Computation._execute (file:///C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/node_modules/effect-atom-jsx/dist/computation.js:132:14)
+    at file:///C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/node_modules/effect-atom-jsx/dist/computation.js:94:26
+    at runWithOwner (file:///C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/node_modules/effect-atom-jsx/dist/owner.js:78:16)
+    at Computation._run (file:///C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/node_modules/effect-atom-jsx/dist/computation.js:92:13)
+    at new Computation (file:///C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/node_modules/effect-atom-jsx/dist/computation.js:52:18)
+    at insert (file:///C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/node_modules/effect-atom-jsx/dist/dom.js:35:9)
+    at file:///C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/node_modules/effect-atom-jsx/dist/dom.js:261:9
+    at file:///C:/Users/Patrick/effect-atom-jsx/.smoke-test/test-run/node_modules/effect-atom-jsx/dist/api.js:112:38
+
+ [32mΓ£ô[39m smoke.test.tsx[2m > [22meffect-atom-jsx smoke test[2m > [22mshould handle basic atom state[32m 3[2mms[22m[39m
+ [31m├ù[39m smoke.test.tsx[2m > [22meffect-atom-jsx smoke test[2m > [22mshould render JSX and update reactively[32m 11[2mms[22m[39m
+[31m   ΓåÆ expected undefined to be '0' // Object.is equality[39m
+ [32mΓ£ô[39m smoke.test.tsx[2m > [22meffect-atom-jsx smoke test[2m > [22mshould support effect integration[32m 1[2mms[22m[39m
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ» Failed Tests 1 ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»
+
+ FAIL  smoke.test.tsx > effect-atom-jsx smoke test > should render JSX and update reactively
+AssertionError: expected undefined to be '0' // Object.is equality
+
+- Expected: 
+"0"
+
++ Received: 
+undefined
+
+ Γ¥» smoke.test.tsx:28:60
+     26|     ), container);
+     27| 
+     28|     expect(container.querySelector("#value")?.textContent).toBe("0");
+       |                                                            ^
+     29|     
+     30|     setCount(1);
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[1/1]ΓÄ»
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m2 passed[39m[22m[90m (3)[39m
+[2m   Start at [22m 12:22:46
+[2m   Duration [22m 2.13s[2m (transform 40ms, setup 0ms, import 458ms, tests 16ms, environment 1.31s)[22m
+

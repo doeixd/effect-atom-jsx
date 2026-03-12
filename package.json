@@ -58,6 +58,50 @@
       "import": "./dist/Hydration.js",
       "types": "./dist/Hydration.d.ts"
     },
+    "./Component": {
+      "import": "./dist/Component.js",
+      "types": "./dist/Component.d.ts"
+    },
+    "./Behavior": {
+      "import": "./dist/Behavior.js",
+      "types": "./dist/Behavior.d.ts"
+    },
+    "./Element": {
+      "import": "./dist/Element.js",
+      "types": "./dist/Element.d.ts"
+    },
+    "./behaviors": {
+      "import": "./dist/behaviors.js",
+      "types": "./dist/behaviors.d.ts"
+    },
+    "./composables": {
+      "import": "./dist/composables.js",
+      "types": "./dist/composables.d.ts"
+    },
+    "./Style": {
+      "import": "./dist/Style.js",
+      "types": "./dist/Style.d.ts"
+    },
+    "./Theme": {
+      "import": "./dist/Theme.js",
+      "types": "./dist/Theme.d.ts"
+    },
+    "./Reactivity": {
+      "import": "./dist/Reactivity.js",
+      "types": "./dist/Reactivity.d.ts"
+    },
+    "./style-utils": {
+      "import": "./dist/style-utils.js",
+      "types": "./dist/style-utils.d.ts"
+    },
+    "./styled-composables": {
+      "import": "./dist/styled-composables.js",
+      "types": "./dist/styled-composables.d.ts"
+    },
+    "./Route": {
+      "import": "./dist/Route.js",
+      "types": "./dist/Route.d.ts"
+    },
     "./Result": {
       "import": "./dist/Result.js",
       "types": "./dist/Result.d.ts"
@@ -93,7 +137,7 @@
     "url": "https://github.com/doeixd/effect-atom-jsx/issues"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",

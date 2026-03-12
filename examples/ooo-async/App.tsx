@@ -1,4 +1,4 @@
-import { Atom, Registry, Async, AsyncResult, Result, Loading, Errored } from "effect-atom-jsx";
+import { Atom, Async, Result, FetchResult, Loading, Errored } from "effect-atom-jsx";
 import { Effect, Stream } from "effect";
 
 type Chunk = Atom.StreamChunk<number>;
@@ -10,23 +10,22 @@ const chunkStream: Stream.Stream<Chunk> = Stream.make(
 );
 
 export function createOOOAsyncDemo() {
-  const registry = Registry.make();
   const pullChunks = Atom.pull(chunkStream, { chunkSize: 1 });
   const forceError = Atom.make<boolean>(false);
 
-  const mergedState = Atom.make((get): AsyncResult<Atom.OOOStreamState<number>, string> => {
+  const mergedState = Atom.make((get): Result<Atom.OOOStreamState<number>, string> => {
     if (get(forceError)) {
-      return AsyncResult.failure("Manually forced stream error");
+      return Result.failure("Manually forced stream error");
     }
 
     const pulled = get(pullChunks);
 
-    if (Result.isInitial(pulled)) {
-      return AsyncResult.loading;
+    if (FetchResult.isInitial(pulled)) {
+      return Result.loading;
     }
 
-    if (Result.isFailure(pulled)) {
-      return AsyncResult.failure(String(pulled.error));
+    if (FetchResult.isFailure(pulled)) {
+      return Result.failure(String(pulled.error));
     }
 
     const chunks = pulled.value.items as ReadonlyArray<Chunk>;
@@ -35,7 +34,7 @@ export function createOOOAsyncDemo() {
       Atom.Stream.emptyState<number>(),
     );
 
-    return AsyncResult.success(state);
+    return Result.success(state);
   });
 
   const pullNext = () => {
@@ -46,10 +45,9 @@ export function createOOOAsyncDemo() {
     Effect.runSync(Atom.update(forceError, (v) => !v));
   };
 
-  const getState = () => registry.get(mergedState);
+  const getState = () => mergedState();
 
   return {
-    registry,
     pullChunks,
     forceError,
     mergedState,
@@ -62,7 +60,7 @@ export function createOOOAsyncDemo() {
 const demo = createOOOAsyncDemo();
 
 export function App() {
-  const stream = demo.registry.get(demo.mergedState);
+  const stream = demo.mergedState;
 
   return (
     <main>
@@ -75,7 +73,7 @@ export function App() {
       </p>
 
       <Async
-        result={stream}
+        result={stream()}
         loading={() => <p>Loading chunks...</p>}
         error={(e) => <p style="color:red">Error: {String(e)}</p>}
         success={(state) => (
@@ -95,8 +93,8 @@ export function App() {
       />
 
       <h2>Same state with Loading / Errored</h2>
-      <Loading when={stream} fallback={() => <p>Loading boundary fallback...</p>}>
-        <Errored result={stream} fallback={() => (
+      <Loading when={stream()} fallback={() => <p>Loading boundary fallback...</p>}>
+        <Errored result={stream()} fallback={() => (
           <p>Not errored. Ready to render content.</p>
         )}>
           {(e) => <p style="color:red">Errored boundary: {typeof e === "object" && e !== null && "defect" in e ? e.defect : String(e)}</p>}

@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { createRoot } from "../api.js";
 import * as AtomRpc from "../AtomRpc.js";
 import * as AtomHttpApi from "../AtomHttpApi.js";
-import * as Result from "../Result.js";
+import { Result, type Result as AsyncResultType } from "../effect-ts.js";
 
 const tick = (ms = 0) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -28,12 +28,12 @@ describe("AtomRpc", () => {
       },
     });
 
-    let user!: () => Result.Result<{ id: string; name: string }, never>;
+    let user!: () => AsyncResultType<{ id: string; name: string }, never>;
     createRoot(() => {
       user = client.query("getUser", { id: "1" });
     });
 
-    expect(Result.isInitial(user())).toBe(true);
+    expect(Result.isLoading(user())).toBe(true);
     await tick(25);
     expect(Result.isSuccess(user())).toBe(true);
     const first = user();
@@ -71,7 +71,7 @@ describe("AtomRpc", () => {
       },
     });
 
-    let user!: () => Result.Result<{ id: string; name: string }, never>;
+    let user!: () => AsyncResultType<{ id: string; name: string }, never>;
     createRoot(() => {
       user = client.query("getUser", { id: "1" }, { reactivityKeys: ["users"] });
     });
@@ -115,12 +115,12 @@ describe("AtomHttpApi", () => {
       },
     });
 
-    let user!: () => Result.Result<{ id: string; name: string }, never>;
+    let user!: () => AsyncResultType<{ id: string; name: string }, never>;
     createRoot(() => {
       user = client.query("users", "get", { id: "a" });
     });
 
-    expect(Result.isInitial(user())).toBe(true);
+    expect(Result.isLoading(user())).toBe(true);
     await tick(25);
     expect(Result.isSuccess(user())).toBe(true);
     const first = user();
@@ -160,7 +160,7 @@ describe("AtomHttpApi", () => {
       },
     });
 
-    let user!: () => Result.Result<{ id: string; name: string }, never>;
+    let user!: () => AsyncResultType<{ id: string; name: string }, never>;
     createRoot(() => {
       user = client.query("users", "get", { id: "a" }, { reactivityKeys: ["users"] });
     });

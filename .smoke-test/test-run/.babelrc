@@ -1,0 +1,9 @@
+{
+  "presets": ["@babel/preset-env", "@babel/preset-typescript"],
+  "plugins": [
+    ["babel-plugin-jsx-dom-expressions", {
+      "moduleName": "effect-atom-jsx",
+      "contextToCustomElements": true
+    }]
+  ]
+}

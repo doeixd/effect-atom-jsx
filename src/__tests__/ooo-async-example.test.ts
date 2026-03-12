@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Effect } from "effect";
-import { AsyncResult } from "../advanced.js";
+import { Result } from "../advanced.js";
 import { createOOOAsyncDemo } from "../../examples/ooo-async/App.js";
 
 describe("ooo-async example", () => {
@@ -46,7 +46,7 @@ describe("ooo-async example", () => {
     demo.toggleError();
 
     const state = demo.getState();
-    expect(AsyncResult.isFailure(state)).toBe(true);
+    expect(Result.isFailure(state)).toBe(true);
     if (state._tag === "Failure") {
       expect(state.error).toBe("Manually forced stream error");
     }

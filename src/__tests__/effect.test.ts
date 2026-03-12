@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
-import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime, Option } from "effect";
+import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime, Option, Schema, Schedule } from "effect";
 import {
   atomEffect,
   defineQuery,
@@ -26,10 +26,11 @@ import {
   useService,
   useServices,
   createAtom,
-  AsyncResult,
+  Result as AsyncResult,
   Async,
   Loading,
   Errored,
+  TypedBoundary,
   Switch,
   Match,
   MatchTag,
@@ -39,15 +40,17 @@ import {
   createFrame,
   Frame,
   WithLayer,
+  layerContext,
   For,
   Show,
   scopedRootEffect,
-  type AsyncResult as AsyncResultType,
+  type Result as AsyncResultType,
   type Failure,
   type Success,
   type Defect,
 } from "../effect-ts.js";
 import { createSignal, createRoot, createEffect, onCleanup } from "../api.js";
+import * as AtomNs from "../Atom.js";
 import { Owner, runWithOwner } from "../owner.js";
 import { currentComponentScope, withComponentScope } from "../component-scope.js";
 import { createComponent } from "../dom.js";
@@ -372,7 +375,7 @@ describe("atomEffect — runtime compatibility", () => {
 describe("useService / defineQuery (ambient runtime behavior)", () => {
   it("useService(tag) throws when no ambient ManagedRuntime is present", () => {
     const Name = ServiceMap.Service<{ readonly value: string }>("Name");
-    expect(() => useService(Name)).toThrow(/no ambient ManagedRuntime/i);
+    expect(() => useService(Name)).toThrow(/outside of an ambient runtime/i);
   });
 
   it("resource(fn) returns a defect when no ambient runtime is available", async () => {
@@ -412,13 +415,13 @@ describe("useService / defineQuery (ambient runtime behavior)", () => {
 
   it("useService(tag) throws without ambient runtime", () => {
     const Name = ServiceMap.Service<{ readonly value: string }>("Name");
-    expect(() => useService(Name)).toThrow(/no ambient ManagedRuntime/i);
+    expect(() => useService(Name)).toThrow(/outside of an ambient runtime/i);
   });
 
   it("useServices throws without ambient runtime", () => {
     const A = ServiceMap.Service<{ readonly value: string }>("A");
     const B = ServiceMap.Service<{ readonly n: number }>("B");
-    expect(() => useServices({ a: A, b: B })).toThrow(/no ambient ManagedRuntime/i);
+    expect(() => useServices({ a: A, b: B })).toThrow(/outside of an ambient runtime/i);
   });
 
   it("useService reports missing service key clearly", () => {
@@ -484,6 +487,19 @@ describe("query keys / defineQuery", () => {
     query.invalidate();
     await tick();
     expect(query.result()).toEqual(AsyncResult.success(2));
+    expect(Effect.runSync(query.effect())).toBe(2);
+    await runtime.dispose();
+  });
+
+  it("defineQuery.effect surfaces typed failures", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const query = createRoot(() => defineQuery(
+      () => Effect.fail("nope" as const),
+      { name: "failing", runtime },
+    ));
+
+    await tick();
+    expect(() => Effect.runSync(query.effect())).toThrow();
     await runtime.dispose();
   });
 
@@ -497,6 +513,152 @@ describe("query keys / defineQuery", () => {
 
     await tick();
     expect(query.result()).toEqual(AsyncResult.success("ok"));
+    await runtime.dispose();
+  });
+
+  it("defineQuery supports onTransition observability hooks", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const phases: string[] = [];
+    const query = createRoot(() => defineQuery(
+      () => Effect.succeed(1),
+      {
+        name: "obs-query",
+        runtime,
+        key: createQueryKey<number>("obs"),
+        onTransition: (event: { phase: string }) => phases.push(event.phase),
+      },
+    ));
+
+    await tick();
+    expect(phases.includes("start")).toBe(true);
+    expect(phases.includes("success")).toBe(true);
+    expect(query.result()).toEqual(AsyncResult.success(1));
+    await runtime.dispose();
+  });
+
+  it("defineQuery supports retrySchedule for transient failures", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    let attempts = 0;
+    const query = createRoot(() => defineQuery(
+      () => Effect.sync(() => ++attempts).pipe(
+        Effect.flatMap((n) => n < 3 ? Effect.fail("retry" as const) : Effect.succeed(n)),
+      ),
+      {
+        name: "retrying",
+        runtime,
+        retrySchedule: Schedule.recurs(2),
+      },
+    ));
+
+    await tick(40);
+    expect(query.result()).toEqual(AsyncResult.success(3));
+    await runtime.dispose();
+  });
+
+  it("defineQuery supports pollSchedule for periodic refresh", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    let runs = 0;
+    const query = createRoot(() => defineQuery(
+      () => Effect.sync(() => ++runs),
+      {
+        name: "polling",
+        runtime,
+        pollSchedule: Schedule.recurs(2),
+      },
+    ));
+
+    await tick(50);
+    expect(runs).toBeGreaterThan(1);
+    expect(AsyncResult.isSuccess(query.result())).toBe(true);
+    await runtime.dispose();
+  });
+
+  it("defineQuery emits observe metrics with duration", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const observed: Array<{ phase: string; durationMs?: number }> = [];
+    const query = createRoot(() => defineQuery(
+      () => Effect.succeed(1).pipe(Effect.delay("10 millis")),
+      {
+        name: "metrics",
+        runtime,
+        observe: (event) => observed.push({ phase: event.phase, durationMs: event.durationMs }),
+      },
+    ));
+
+    await tick(40);
+    expect(observed.some((event) => event.phase === "start")).toBe(true);
+    const success = observed.find((event) => event.phase === "success");
+    expect(success).toBeDefined();
+    expect(typeof success?.durationMs).toBe("number");
+    expect(query.result()).toEqual(AsyncResult.success(1));
+    await runtime.dispose();
+  });
+
+  it("defineQuery observe emits failure phase", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const phases: string[] = [];
+    const query = createRoot(() => defineQuery(
+      () => Effect.fail("boom" as const),
+      {
+        name: "metrics-failure",
+        runtime,
+        observe: (event) => phases.push(event.phase),
+      },
+    ));
+
+    await tick(20);
+    expect(phases.includes("start")).toBe(true);
+    expect(phases.includes("failure")).toBe(true);
+    expect(query.result()).toEqual(AsyncResult.failure("boom"));
+    await runtime.dispose();
+  });
+
+  it("supports query-to-query composition via query.effect()", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const [userId, setUserId] = createSignal("u1");
+
+    const base = createRoot(() => defineQuery(
+      () => Effect.succeed(userId()),
+      { name: "base-user", runtime },
+    ));
+
+    const derived = createRoot(() => defineQuery(
+      () => Effect.gen(function* () {
+        const id = yield* base.effect();
+        return `${id}-profile`;
+      }),
+      { name: "derived-user", runtime },
+    ));
+
+    await tick();
+    expect(derived.result()).toEqual(AsyncResult.success("u1-profile"));
+
+    setUserId("u2");
+    await tick();
+    expect(derived.result()).toEqual(AsyncResult.success("u2-profile"));
+
+    await runtime.dispose();
+  });
+
+  it("propagates typed failures through query.effect() composition", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const base = createRoot(() => defineQuery(
+      () => Effect.fail({ _tag: "AuthError", message: "no-session" } as const),
+      { name: "auth", runtime },
+    ));
+
+    const composed = createRoot(() => defineQuery(
+      () => Effect.gen(function* () {
+        const id = yield* base.effect();
+        return `${id}-profile`;
+      }),
+      { name: "profile", runtime },
+    ));
+
+    await tick();
+    expect(composed.result()).toEqual(
+      AsyncResult.failure({ _tag: "AuthError", message: "no-session" }),
+    );
     await runtime.dispose();
   });
 });
@@ -605,10 +767,12 @@ describe("createOptimistic", () => {
     const optimistic = createOptimistic(count);
 
     expect(optimistic.get()).toBe(1);
+    expect(optimistic()).toBe(1);
     expect(optimistic.isPending()).toBe(false);
 
     optimistic.set(5);
     expect(optimistic.get()).toBe(5);
+    expect(optimistic()).toBe(5);
     expect(optimistic.isPending()).toBe(true);
 
     setCount(2);
@@ -624,6 +788,15 @@ describe("createOptimistic", () => {
     const optimistic = createOptimistic(value);
     optimistic.set((n) => n + 3);
     expect(optimistic.get()).toBe(13);
+  });
+
+  it("accepts callable atoms directly", () => {
+    const value = AtomNs.make(10);
+    const optimistic = createOptimistic(value);
+    optimistic.set(12);
+    expect(optimistic.get()).toBe(12);
+    optimistic.clear();
+    expect(optimistic.get()).toBe(10);
   });
 });
 
@@ -722,6 +895,69 @@ describe("defineMutation", () => {
     await tick();
     expect(saved).toBe(13);
     await runtime.dispose();
+  });
+
+  it("defineMutation.effect composes as Effect", async () => {
+    const action = defineMutation((n: number) =>
+      n > 0 ? Effect.void : Effect.fail("bad" as const),
+    );
+
+    await Effect.runPromise(action.effect(1));
+    await expect(Effect.runPromise(action.effect(0))).rejects.toBe("bad");
+  });
+
+  it("defineMutation supports onTransition observability hooks", async () => {
+    const phases: string[] = [];
+    const action = defineMutation((n: number) =>
+      n > 0 ? Effect.void : Effect.fail("bad" as const),
+      {
+        onTransition: (event) => phases.push(event.phase),
+      },
+    );
+
+    action.run(1);
+    await tick();
+    action.run(0);
+    await tick();
+
+    expect(phases.includes("start")).toBe(true);
+    expect(phases.includes("success")).toBe(true);
+    expect(phases.includes("failure") || phases.includes("defect")).toBe(true);
+  });
+
+  it("defineMutation emits observe metrics with duration", async () => {
+    const observed: Array<{ phase: string; durationMs?: number }> = [];
+    const action = defineMutation(
+      () => Effect.void.pipe(Effect.delay("10 millis")),
+      {
+        name: "save",
+        observe: (event) => observed.push({ phase: event.phase, durationMs: event.durationMs }),
+      },
+    );
+
+    action.run(undefined);
+    await tick(40);
+    expect(observed.some((event) => event.phase === "start")).toBe(true);
+    const success = observed.find((event) => event.phase === "success");
+    expect(success).toBeDefined();
+    expect(typeof success?.durationMs).toBe("number");
+  });
+
+  it("defineMutation observe emits failure phase", async () => {
+    const phases: string[] = [];
+    const action = defineMutation(
+      () => Effect.fail("boom" as const),
+      {
+        name: "save-failure",
+        observe: (event) => phases.push(event.phase),
+      },
+    );
+
+    action.run(undefined);
+    await tick(20);
+    expect(phases.includes("start")).toBe(true);
+    expect(phases.includes("failure") || phases.includes("defect")).toBe(true);
+    expect(action.result()).toEqual(AsyncResult.failure("boom"));
   });
 });
 
@@ -1214,6 +1450,65 @@ describe("scopedRoot", () => {
     );
 
     expect(scopeClosed).toBe(true);
+  });
+});
+
+describe("layerContext", () => {
+  it("binds layer cleanup to component scope finalizers", async () => {
+    const Tmp = ServiceMap.Service<{ readonly value: number }>("TmpLayer");
+    const delayedLayer = Layer.effect(Tmp, Effect.succeed({ value: 1 }).pipe(Effect.delay("80 millis")));
+    const scope = Scope.makeUnsafe();
+    let rendered = 0;
+
+    createRoot(() => withComponentScope(scope, () => {
+      const ctx = layerContext(delayedLayer, () => {
+        rendered += 1;
+        return null;
+      });
+      createEffect(() => {
+        void ctx.children;
+      });
+      return null;
+    }));
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+    await tick(150);
+    expect(rendered).toBe(0);
+  });
+});
+
+describe("TypedBoundary", () => {
+  it("matches typed failures via type guard", () => {
+    const result = TypedBoundary({
+      result: AsyncResult.failure({ _tag: "ApiError", message: "nope" } as const),
+      catch: (e: unknown): e is { readonly _tag: "ApiError"; readonly message: string } =>
+        typeof e === "object" && e !== null && (e as any)._tag === "ApiError",
+      children: (e) => `api:${e.message}`,
+      fallback: () => "fallback",
+    });
+    expect(result).toBe("api:nope");
+  });
+
+  it("matches failures via Schema", () => {
+    const ApiError = Schema.Struct({ _tag: Schema.Literal("ApiError"), message: Schema.String });
+    const result = TypedBoundary({
+      result: AsyncResult.failure({ _tag: "ApiError", message: "bad" }),
+      catch: ApiError,
+      children: (e) => `schema:${e.message}`,
+      fallback: () => "fallback",
+    });
+    expect(result).toBe("schema:bad");
+  });
+
+  it("falls back when catch does not match", () => {
+    const result = TypedBoundary({
+      result: AsyncResult.failure({ _tag: "Other", message: "x" }),
+      catch: (e: unknown): e is { readonly _tag: "ApiError" } =>
+        typeof e === "object" && e !== null && (e as any)._tag === "ApiError",
+      children: () => "matched",
+      fallback: () => "fallback",
+    });
+    expect(result).toBe("fallback");
   });
 });
 

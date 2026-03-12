@@ -8,6 +8,7 @@
 
 import type * as Atom from "./Atom.js";
 import type * as Registry from "./Registry.js";
+import { Effect } from "effect";
 
 /** Branded marker interface for dehydrated atom entries. */
 export interface DehydratedAtom {
@@ -29,6 +30,10 @@ export interface HydrateOptions {
   readonly onUnknownKey?: (key: string) => void;
   readonly onMissingKey?: (key: string) => void;
 }
+
+export type HydrationError =
+  | { readonly _tag: "HydrationUnknownKeys"; readonly keys: ReadonlyArray<string> }
+  | { readonly _tag: "HydrationMissingKeys"; readonly keys: ReadonlyArray<string> };
 
 /**
  * Snapshot atom values from a Registry into a serializable array.
@@ -127,3 +132,48 @@ export const hydrate = (
     }
   }
 };
+
+/**
+ * Effect constructor variant of `hydrate`.
+ *
+ * When `strict` is enabled, unknown/missing resolver keys fail with typed
+ * `HydrationError` values.
+ */
+export const hydrateEffect = (
+  registry: Registry.Registry,
+  dehydratedState: Iterable<DehydratedAtom>,
+  resolvers: Readonly<Record<string, Atom.Writable<any, any>>>,
+  options?: HydrateOptions & { readonly strict?: boolean },
+): Effect.Effect<void, HydrationError> =>
+  Effect.sync(() => {
+    const values = toValues(Array.from(dehydratedState));
+    const matched = new Set<string>();
+    const unknown: Array<string> = [];
+
+    for (const value of values) {
+      const atom = resolvers[value.key];
+      if (!atom) {
+        unknown.push(value.key);
+        options?.onUnknownKey?.(value.key);
+        continue;
+      }
+      matched.add(value.key);
+      registry.set(atom, value.value);
+    }
+
+    const missing = Object.keys(resolvers).filter((key) => !matched.has(key));
+    for (const key of missing) {
+      options?.onMissingKey?.(key);
+    }
+
+    if (options?.strict === true) {
+      if (unknown.length > 0) {
+        throw { _tag: "HydrationUnknownKeys", keys: unknown } as const;
+      }
+      if (missing.length > 0) {
+        throw { _tag: "HydrationMissingKeys", keys: missing } as const;
+      }
+    }
+  }).pipe(
+    Effect.mapError((error) => error as HydrationError),
+  );

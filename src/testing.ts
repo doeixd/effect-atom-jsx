@@ -25,7 +25,7 @@ export interface TestHarness<R> {
    * Run a function inside the harness's reactive root.
    *
    * Services from the layer are available via `useService` and
-   * `queryEffect`/`mutationEffect` operations run against the runtime.
+   * `defineQuery`/`defineMutation` operations run against the runtime.
    */
   run<T>(fn: () => T): T;
 
@@ -53,7 +53,7 @@ export interface TestHarness<R> {
  * @example
  * const harness = withTestLayer(MyMockLayer);
  * harness.run(() => {
- *   const data = queryEffect(() => useService(Api).fetchData());
+ *   const data = defineQuery(() => useService(Api).fetchData(), { name: "fetch-data" });
  *   // ...
  * });
  * await harness.dispose();
@@ -104,7 +104,7 @@ export function withTestLayer<R>(layer: Layer.Layer<R, never, never>): TestHarne
  *
  * @example
  * const harness = renderWithLayer(MyMockLayer, () => {
- *   const save = mutationEffect((n: number) => useService(Api).save(n));
+ *   const save = defineMutation((n: number) => useService(Api).save(n));
  *   save.run(42);
  * });
  * await harness.tick();

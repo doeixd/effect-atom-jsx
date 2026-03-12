@@ -127,6 +127,29 @@ describe("AtomSchema", () => {
     expect(Effect.runSync(Atom.get(field.isValid))).toBe(true);
   });
 
+  it("supports pipeable AtomSchema.validated", () => {
+    const input = Atom.value("25");
+    const field = input.pipe(AtomSchema.validated(Schema.NumberFromString));
+    const value = field.value();
+    expect(Option.isSome(value)).toBe(true);
+    if (Option.isSome(value)) {
+      expect(value.value).toBe(25);
+    }
+  });
+
+  it("supports validateEffect for fields and structs", async () => {
+    const age = AtomSchema.makeInitial(Schema.Int, 20);
+    const score = AtomSchema.makeInitial(Schema.Int, 10);
+    const form = AtomSchema.struct({ age, score });
+
+    const ok = await Effect.runPromise(AtomSchema.validateEffect(form));
+    expect(ok).toEqual({ age: 20, score: 10 });
+
+    score.input.set(1.5);
+    flush();
+    await expect(Effect.runPromise(AtomSchema.validateEffect(form))).rejects.toBeDefined();
+  });
+
   it("path focuses nested writable form state", () => {
     const form = Atom.make<{ user: { name: string }; age: string }>({ user: { name: "Ada" }, age: "42" });
     const nameField = AtomSchema.path<{ user: { name: string }; age: string }, string>(
@@ -146,5 +169,81 @@ describe("AtomSchema", () => {
     expect(AtomSchema.HtmlInput.optionalString.input("x")).toBe("x");
     expect(AtomSchema.HtmlInput.optionalNumber.input(" ")).toBeNull();
     expect(AtomSchema.HtmlInput.optionalNumber.input("12")).toBe("12");
+  });
+
+  it("struct composes multiple validated fields", () => {
+    const age = AtomSchema.makeInitial(Schema.Int, 20);
+    const score = AtomSchema.makeInitial(Schema.Int, 10);
+    const form = AtomSchema.struct({ age, score });
+
+    expect(form.isValid()).toBe(true);
+    expect(form.touched()).toBe(false);
+    expect(form.dirty()).toBe(false);
+
+    form.input.set({ age: 30, score: 11 });
+    flush();
+    expect(form.isValid()).toBe(true);
+    expect(form.touched()).toBe(true);
+    expect(form.dirty()).toBe(true);
+    const value = form.value();
+    expect(Option.isSome(value)).toBe(true);
+    if (Option.isSome(value)) {
+      expect(value.value).toEqual({ age: 30, score: 11 });
+    }
+
+    score.input.set(1.5);
+    flush();
+    expect(form.isValid()).toBe(false);
+    const err = form.error();
+    expect(Option.isSome(err)).toBe(true);
+    if (Option.isSome(err)) {
+      expect(err.value.score).toBeDefined();
+    }
+
+    form.reset();
+    flush();
+    expect(form.isValid()).toBe(true);
+    expect(form.touched()).toBe(false);
+    expect(form.dirty()).toBe(false);
+    expect(form.input()).toEqual({ age: 20, score: 10 });
+  });
+
+  it("struct supports touch() and nested structs", () => {
+    const name = AtomSchema.makeInitial(Schema.String, "");
+    const age = AtomSchema.makeInitial(Schema.Int, 10);
+    const address = AtomSchema.struct({
+      city: AtomSchema.makeInitial(Schema.String, ""),
+      zip: AtomSchema.makeInitial(Schema.Int, 12345),
+    });
+    const form = AtomSchema.struct({ name, age, address });
+
+    expect(form.touched()).toBe(false);
+    form.touch();
+    flush();
+    expect(form.touched()).toBe(true);
+
+    form.input.set({
+      name: "Alice",
+      age: 11,
+      address: { city: "Paris", zip: 75001 },
+    });
+    flush();
+    const value = form.value();
+    expect(Option.isSome(value)).toBe(true);
+    if (Option.isSome(value)) {
+      expect(value.value).toEqual({
+        name: "Alice",
+        age: 11,
+        address: { city: "Paris", zip: 75001 },
+      });
+    }
+
+    form.reset();
+    flush();
+    expect(form.input()).toEqual({
+      name: "",
+      age: 10,
+      address: { city: "", zip: 12345 },
+    });
   });
 });

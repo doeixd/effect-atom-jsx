@@ -111,6 +111,167 @@ export interface ValidatedAtom<A, I> {
   readonly reset: () => void;
 }
 
+type FieldModel = ValidatedAtom<any, any> | ValidatedStruct<any>;
+
+type StructValue<Fields extends Record<string, FieldModel>> = {
+  [K in keyof Fields]: Fields[K] extends ValidatedAtom<infer A, any>
+    ? A
+    : Fields[K] extends ValidatedStruct<infer Nested>
+      ? StructValue<Nested>
+      : never;
+};
+
+type StructInput<Fields extends Record<string, FieldModel>> = {
+  [K in keyof Fields]: Fields[K] extends ValidatedAtom<any, infer I>
+    ? I
+    : Fields[K] extends ValidatedStruct<infer Nested>
+      ? StructInput<Nested>
+      : never;
+};
+
+type StructError<Fields extends Record<string, FieldModel>> = {
+  [K in keyof Fields]?: Fields[K] extends ValidatedAtom<any, any>
+    ? SchemaError
+    : Fields[K] extends ValidatedStruct<infer Nested>
+      ? StructError<Nested>
+      : never;
+};
+
+export interface ValidatedStruct<Fields extends Record<string, FieldModel>> {
+  readonly fields: Fields;
+  readonly input: Atom.Writable<StructInput<Fields>, StructInput<Fields>>;
+  readonly value: Atom.Atom<Option.Option<StructValue<Fields>>>;
+  readonly error: Atom.Atom<Option.Option<StructError<Fields>>>;
+  readonly touched: Atom.Atom<boolean>;
+  readonly dirty: Atom.Atom<boolean>;
+  readonly isValid: Atom.Atom<boolean>;
+  readonly touch: () => void;
+  readonly reset: () => void;
+}
+
+/**
+ * Compose many validated fields into one typed form model.
+ *
+ * `input` allows writing all field inputs at once while preserving each field's
+ * touched/dirty bookkeeping via `field.input` setters.
+ */
+export function struct<Fields extends Record<string, FieldModel>>(
+  fields: Fields,
+): ValidatedStruct<Fields> {
+  const keys = Object.keys(fields) as Array<Extract<keyof Fields, string>>;
+
+  const isStruct = (field: FieldModel): field is ValidatedStruct<any> =>
+    typeof field === "object" && field !== null && "fields" in field && "touch" in field;
+
+  const input = Atom.writable<StructInput<Fields>, StructInput<Fields>>(
+    (get) => {
+      const out = {} as StructInput<Fields>;
+      for (const key of keys) {
+        const field = fields[key] as unknown as FieldModel;
+        if (isStruct(field)) {
+          out[key] = get(field.input) as StructInput<Fields>[typeof key];
+        } else {
+          out[key] = get((field as ValidatedAtom<any, any>).input) as StructInput<Fields>[typeof key];
+        }
+      }
+      return out;
+    },
+    (ctx, next) => {
+      for (const key of keys) {
+        const field = fields[key] as unknown as FieldModel;
+        if (isStruct(field)) {
+          ctx.set(field.input as Atom.Writable<any, any>, next[key]);
+        } else {
+          ctx.set((field as ValidatedAtom<any, any>).input as Atom.Writable<any, any>, next[key]);
+        }
+      }
+    },
+  );
+
+  const value = Atom.readable<Option.Option<StructValue<Fields>>>((get) => {
+    const out = {} as StructValue<Fields>;
+    for (const key of keys) {
+      const field = fields[key] as unknown as FieldModel;
+      const current = isStruct(field)
+        ? get(field.value)
+        : get((field as ValidatedAtom<any, any>).value);
+      if (Option.isNone(current)) return Option.none();
+      out[key] = current.value as StructValue<Fields>[typeof key];
+    }
+    return Option.some(out);
+  });
+
+  const error = Atom.readable<Option.Option<StructError<Fields>>>((get) => {
+    const out = {} as StructError<Fields>;
+    let hasError = false;
+    for (const key of keys) {
+      const field = fields[key] as unknown as FieldModel;
+      const current = isStruct(field)
+        ? get(field.error)
+        : get((field as ValidatedAtom<any, any>).error);
+      if (Option.isSome(current as Option.Option<unknown>)) {
+        hasError = true;
+        out[key] = (current as Option.Some<unknown>).value as StructError<Fields>[typeof key];
+      }
+    }
+    return hasError ? Option.some(out) : Option.none();
+  });
+
+  const touched = Atom.readable<boolean>((get) =>
+    keys.some((key) => {
+      const field = fields[key] as unknown as FieldModel;
+      return isStruct(field) ? get(field.touched) : get((field as ValidatedAtom<any, any>).touched);
+    }),
+  );
+  const dirty = Atom.readable<boolean>((get) =>
+    keys.some((key) => {
+      const field = fields[key] as unknown as FieldModel;
+      return isStruct(field) ? get(field.dirty) : get((field as ValidatedAtom<any, any>).dirty);
+    }),
+  );
+  const isValid = Atom.readable<boolean>((get) =>
+    keys.every((key) => {
+      const field = fields[key] as unknown as FieldModel;
+      return isStruct(field) ? get(field.isValid) : get((field as ValidatedAtom<any, any>).isValid);
+    }),
+  );
+
+  const touch = () => {
+    for (const key of keys) {
+      const field = fields[key] as unknown as FieldModel;
+      if (isStruct(field)) {
+        field.touch();
+        continue;
+      }
+      const model = field as ValidatedAtom<any, any>;
+      model.input.set(model.input());
+    }
+  };
+
+  const reset = () => {
+    for (const key of keys) {
+      const field = fields[key] as unknown as FieldModel;
+      if (isStruct(field)) {
+        field.reset();
+      } else {
+        (field as ValidatedAtom<any, any>).reset();
+      }
+    }
+  };
+
+  return {
+    fields,
+    input,
+    value,
+    error,
+    touched,
+    dirty,
+    isValid,
+    touch,
+    reset,
+  };
+}
+
 /**
  * Wrap a Writable atom with a Schema to create a validated form field.
  *
@@ -230,4 +391,51 @@ export function makeInitial<A, I>(
   );
 
   return make(schema, inputAtom, { initial });
+}
+
+/**
+ * Pipeable schema wrapper for existing writable atoms.
+ *
+ * @example
+ * const age = Atom.make("25").pipe(AtomSchema.validated(Schema.NumberFromString))
+ */
+export function validated<A, I>(
+  schema: Schema.Schema<A>,
+  options?: { readonly initial?: I },
+): (input: Atom.Writable<I, I>) => ValidatedAtom<A, I> {
+  return (input) => make(schema, input, options);
+}
+
+/** Alias of `validated` to emphasize parse-first usage in forms. */
+export const parsed = validated;
+
+/**
+ * Read and validate a form model as a composable Effect.
+ *
+ * Succeeds with the typed value when valid; fails with schema/form errors when invalid.
+ */
+export function validateEffect<A, I>(field: ValidatedAtom<A, I>): Effect.Effect<A, SchemaError>;
+export function validateEffect<Fields extends Record<string, FieldModel>>(
+  model: ValidatedStruct<Fields>,
+): Effect.Effect<StructValue<Fields>, StructError<Fields>>;
+export function validateEffect(
+  model: ValidatedAtom<any, any> | ValidatedStruct<any>,
+): Effect.Effect<any, any> {
+  if ("fields" in model) {
+    return Effect.suspend(() => {
+      const value = model.value();
+      if (Option.isSome(value)) return Effect.succeed(value.value);
+      const error = model.error();
+      if (Option.isSome(error)) return Effect.fail(error.value);
+      return Effect.fail({ _tag: "FormInvalid", message: "Form is invalid" } as unknown as StructError<any>);
+    });
+  }
+
+  return Effect.suspend(() => {
+    const value = model.value();
+    if (Option.isSome(value)) return Effect.succeed(value.value);
+    const error = model.error();
+    if (Option.isSome(error)) return Effect.fail(error.value);
+    return Effect.fail({ _tag: "FormInvalid", message: "Field is invalid" } as unknown as SchemaError);
+  });
 }

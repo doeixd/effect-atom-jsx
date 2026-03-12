@@ -10,15 +10,15 @@
 ## API and Docs
 
 - [ ] Public API exports match intended surface in `src/index.ts`
-- [ ] `README.md` reflects current API (`createMount`, `useService`, `defineQuery` / `queryEffect`, `mutationEffect`, `createOptimistic`)
+- [ ] `README.md` reflects current API (`createMount`, `useService`, `defineQuery`, `defineMutation`, `createOptimistic`)
 - [ ] Breaking changes called out (if any)
 - [ ] Effect version compatibility documented
 
 ## Runtime and Behavior
 
-- [ ] `queryEffect(...)` behavior without ambient runtime is intentional and documented
+- [ ] `defineQuery(...)` behavior without ambient runtime is intentional and documented
 - [ ] `atomEffect(...)` cancellation/revalidation behavior validated
-- [ ] `AsyncResult` state model validated (`Loading` / `Refreshing` / settled states)
+- [ ] `Result` async state model validated (`Loading` / `Refreshing` / settled states)
 
 ## Packaging
 
@@ -34,3 +34,12 @@
 - [ ] `examples/todomvc/` smoke tested (add/toggle/remove/filter)
 - [ ] Integration suite `src/__tests__/todomvc.integration.test.ts` passing
 - [ ] Tag and publish plan confirmed
+
+## Latest Validation Snapshot (2026-03-10)
+
+- `npm run typecheck` ✅
+- `npm test` ✅ (279 passing)
+- `npm run build` ✅
+- `npm pack --dry-run` ✅
+  - publish tarball includes `dist/` + docs/license only
+  - build now cleans `dist/` before emit to avoid stale artifacts

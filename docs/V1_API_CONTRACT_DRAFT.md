@@ -30,7 +30,8 @@ This draft is intentionally opinionated and allows breaking changes.
 | `AtomHttpApi` | Keep | advanced | Power-user/service integrations |
 | `AtomLogger` | Keep | advanced | Supplemental to structural observability |
 | `Hydration` | Keep | advanced | SSR-focused API |
-| `Result` | Keep | core (explicit opt-in path) | Fluent explicit rendering path for non-suspense flows |
+| `Result` | Keep | core | Primary async state model (Loading/Refreshing/Success/Failure/Defect) |
+| `FetchResult` | Keep | advanced/compat | Legacy three-state waiting model + adapters |
 | `Registry` | Keep | advanced | Explicit registry remains supported |
 
 ### Primary function exports
@@ -41,11 +42,11 @@ This draft is intentionally opinionated and allows breaking changes.
 | `defineMutation` | Keep | core | Canonical mutation API |
 | `createMount` / `mount` | Keep | core | Canonical runtime entry |
 | `useService` / `useServices` | Keep | core | Keep with strong diagnostics |
-| `refresh` / `isPending` / `latest` | Keep | core | Core async UI controls |
+| `invalidate` / `isPending` / `latest` | Keep | core | Core async UI controls |
 | `Loading` / `Errored` / `Show` / `For` / `Switch` / `Match` | Keep | core | Core rendering controls |
 | `createOptimistic` | Keep | core | Mutation UX primitive |
 | `queryEffect` / `mutationEffect` | Removed | removed | Use `defineQuery` / `defineMutation` |
-| `queryEffectStrict` / `mutationEffectStrict` | Removed | removed | Use `queryEffect(..., { runtime })` / `mutationEffect(..., { runtime })` |
+| `queryEffectStrict` / `mutationEffectStrict` | Removed | removed | Use `defineQuery(..., { runtime })` / `defineMutation(..., { runtime })` |
 | `defineQueryStrict` / `defineMutationStrict` | Removed | removed | Use `defineQuery(..., { runtime })` / `defineMutation(..., { runtime })` |
 | `atomEffect` | Keep | advanced | Explicit low-level async primitive |
 | `scoped*` constructors | Keep | advanced | Move off top-level docs |
@@ -83,29 +84,29 @@ Status update: `./internals` export path has been added; top-level now omits rea
 
 ### Transitional
 
-- Keep top-level compatibility re-exports for one beta cycle with warnings in docs.
+- No top-level compatibility window for removed query/mutation aliases; removals are active in redesign track.
 
 ## Breaking Change Matrix (initial)
 
 | Change | Type | Migration path |
 |---|---|---|
 | Reactive core moved from top-level to `/internals` | breaking | replace imports to `effect-atom-jsx/internals` |
-| `queryEffect` and `mutationEffect` become legacy aliases | soft-breaking/docs-first | rename to `defineQuery` / `defineMutation` |
+| `queryEffect` and `mutationEffect` removed from public surface | breaking | migrate to `defineQuery` / `defineMutation` |
 | Strict variants consolidated | breaking (if removed) | use options-based strictness or `/advanced` |
 | DOM runtime helper top-level exports removed | breaking | import from `effect-atom-jsx/runtime` |
 
 ## Open Decisions Before Lock
 
-1. Async model: locked by ADR-002 -> suspension-first default + `Result` opt-in; finalize API signatures.
+1. Result surface scope: continue consolidation to unified `Result` model (see `docs/RESULT_CONSOLIDATION_PROPOSAL.md`).
 2. Registry ergonomics: default implicit in JSX vs explicit everywhere.
 3. Final strictness API shape: option flags vs dedicated constructors.
 
 ## Pending Major Additions for v1 Redesign
 
-- Runtime actions API (`apiRuntime.action`) with linear Effect-generator mutation flow. (Started)
+- Runtime actions API (`apiRuntime.action`) with linear Effect-generator mutation flow. (Done)
 - Runtime read API simplification (`apiRuntime.atom`) as the canonical query/read primitive.
-- Standalone effect primitive rename/alignment (`Atom.effect`) for non-runtime async sources. (Started)
-- Declarative invalidation path (`withReactivity` / `reactivityKeys`) alongside imperative `refresh`. (Started)
+- Standalone effect primitive rename/alignment (`Atom.effect`) for non-runtime async sources. (Done)
+- Declarative invalidation path (`withReactivity` / `reactivityKeys`) alongside imperative `invalidate`. (Started)
 - Microtask batching model + `flush` escape hatch evaluation. (Started)
 
 ## Exit Criteria for This Draft

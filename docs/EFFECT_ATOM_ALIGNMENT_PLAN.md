@@ -37,15 +37,26 @@ From `Atom.d.ts` and related modules, the important user-facing semantics are:
 - Effect helpers: `get`, `set`, `update`, `modify`, `getResult`, `refresh`, stream conversions
 - Integration helpers: `AtomRef`, hydration, RPC/HttpApi bridges
 
-## Current Library State (Gap Summary)
+## Historical Snapshot (Pre-Redesign)
+
+The following reflected an earlier API snapshot before the redesign removals.
+
+## Current Library State (During Redesign)
 
 Already present in `effect-atom-jsx`:
 
-- Atom-like ergonomics: `signal`, `computed`, `createAtom`
-- Async effects with cancellation: `atomEffect`, `queryEffect` / `defineQuery`, `resource`, `resourceWith`
-- Async state model: `Loading/Refreshing/Success/Failure/Defect`
-- Mutation helpers: `createOptimistic`, `mutationEffect` / `actionEffect`
-- Layer/runtime injection: `createMount` / `mount`, `useService` / `use`
+- Effect-atom style namespaces: `Atom`, `Registry`, `Result`, `AtomRef`, `Hydration`, `AtomRpc`, `AtomHttpApi` (`FetchResult` as compatibility namespace)
+- Async/query model: `defineQuery`, `atomEffect`, `Result`
+- Mutation model: `defineMutation`, `createOptimistic`, action-centric `Atom.action`/`runtime.action`
+- Runtime wiring: `createMount` / `mount`, `useService`
+
+Removed during redesign:
+
+- `queryEffect`, `mutationEffect`, strict variants, and `use` alias
+- `Atom.fn` / `runtime.fn`
+- OO facade (`signal`, `computed`)
+
+## Legacy Gap Notes (kept for context)
 
 Missing vs effect-atom expectations:
 
@@ -64,7 +75,7 @@ Implement a **v4-native compatibility layer** first, not a direct dependency swa
 - Keep existing internals for v4 correctness and JSX performance.
 - Add `effect-atom-like` API modules that mirror naming/behavior where feasible.
 - Mark strict parity targets and intentionally unsupported areas.
-- Keep current API stable; add compatibility as additive surface.
+- Follow redesign API contract first; compatibility helpers should not reintroduce removed aliases.
 
 ## Detailed Implementation Plan
 
@@ -73,7 +84,7 @@ Implement a **v4-native compatibility layer** first, not a direct dependency swa
 1. Add `compat/Result` module
 - Introduce `Initial | Success | Failure` result union with `waiting` semantics.
 - Add constructors/guards similar to effect-atom: `initial`, `success`, `failure`, `isInitial`, `isSuccess`, `isFailure`, `isWaiting`.
-- Add conversion helpers between current `AsyncResult` and compat `Result`.
+- Add conversion helpers between current `Result` and compat `FetchResult`.
 
 2. Add `compat/Atom` base model
 - Define `Atom<A>`, `Writable<R, W>`, and minimal `Context` signatures.
@@ -123,7 +134,7 @@ Deliverables:
 - `keepAlive` / `autoDispose` semantics compatible with current owner model
 
 3. Optimistic parity
-- Align current `createOptimistic/mutationEffect` with effect-atom-style optimistic patterns and naming.
+- Align current `createOptimistic/defineMutation` with effect-atom-style optimistic patterns and naming.
 
 Deliverables:
 - `src/compat/combinators.ts`
@@ -169,7 +180,7 @@ Deliverables:
 - `Atom.batch` -> existing `batch`
 - `Atom.optimistic` -> current `createOptimistic` wrapper
 - `Atom.get/set/update/refresh` -> effect-returning helpers over compat registry
-- `Result.*` -> compat result module (plus converters to/from current `AsyncResult`)
+- `FetchResult.*` -> compat result module (plus converters to/from current `Result`)
 
 ## Risks And Constraints
 

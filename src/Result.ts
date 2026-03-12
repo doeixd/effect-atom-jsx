@@ -2,12 +2,12 @@
  * Result.ts — Synchronous result type with revalidation tracking.
  *
  * `Result<A, E>` is a three-state union (Initial | Success | Failure) designed
- * for atom-based data fetching. Unlike `AsyncResult`, Result carries `waiting`
+ * for atom-based data fetching. Unlike core `Result`, FetchResult carries `waiting`
  * and `previousSuccess` metadata so UI can show stale-while-revalidate patterns
  * without separate loading state.
  */
 
-import { AsyncResult, type Defect } from "./effect-ts.js";
+import { Result as ResultState, type Defect } from "./effect-ts.js";
 import { Cause, Exit, Option, pipe } from "effect";
 
 export type Initial<A, E = never> = {
@@ -111,16 +111,16 @@ export const waiting = <A, E>(r: Result<A, E>): Result<A, E> => {
 };
 
 /**
- * Convert an `AsyncResult` (from `atomEffect`) to a `Result`.
+ * Convert core `Result` (from `atomEffect`) to a `FetchResult`.
  *
  * Maps Loading to Initial(waiting), Refreshing to the previous value with
  * `waiting=true`, and settles Success/Failure directly.
  *
  * @example
- * const result = Result.fromAsyncResult(userAsync())
+ * const result = Result.fromResult(userResult())
  */
-export function fromAsyncResult<A, E>(
-  value: AsyncResult<A, E>,
+export function fromResult<A, E>(
+  value: ResultState<A, E>,
 ): Result<A, E> {
   if (value._tag === "Loading") return initial(true);
   if (value._tag === "Refreshing") {
@@ -137,7 +137,7 @@ export function fromAsyncResult<A, E>(
   if (value._tag === "Failure") return failure(value.error, { previousSuccess: null });
   // Instead of creating defect from cause string, use the rawCause from the exit field
   // if available.
-  const raw = AsyncResult.rawCause(value);
+  const raw = ResultState.rawCause(value);
   return Option.isSome(raw)
     ? failure({ defect: Cause.pretty(raw.value) } as unknown as E)
     : failure({ defect: value.cause });
@@ -201,26 +201,26 @@ export function fromExitWithPrevious<A, E>(
 }
 
 /**
- * Convert a `Result` back to an `AsyncResult` for use with UI components
+ * Convert a `FetchResult` back to core `Result` for use with UI components
  * like `<Async>` or `<Loading>`.
  *
  * @example
- * const asyncResult = Result.toAsyncResult(result)
+ * const result = Result.toResult(fetchResult)
  */
-export function toAsyncResult<A, E>(
+export function toResult<A, E>(
   value: Result<A, E>,
-): AsyncResult<A, E> {
-  if (value._tag === "Initial") return AsyncResult.loading;
-  if (value._tag === "Success") return value.waiting ? AsyncResult.refreshing(AsyncResult.success(value.value)) : AsyncResult.success(value.value);
+): ResultState<A, E> {
+  if (value._tag === "Initial") return ResultState.loading;
+  if (value._tag === "Success") return value.waiting ? ResultState.refreshing(ResultState.success(value.value)) : ResultState.success(value.value);
   if (typeof value.error === "object" && value.error !== null && "defect" in value.error) {
-    const defect = AsyncResult.defect((value.error as { readonly defect: string }).defect);
+    const defect = ResultState.defect((value.error as { readonly defect: string }).defect);
     return value.waiting && value.previousSuccess !== null
-      ? AsyncResult.refreshing(AsyncResult.success(value.previousSuccess.value))
+      ? ResultState.refreshing(ResultState.success(value.previousSuccess.value))
       : defect;
   }
   return value.waiting && value.previousSuccess !== null
-    ? AsyncResult.refreshing(AsyncResult.success(value.previousSuccess.value))
-    : AsyncResult.failure(value.error as E);
+    ? ResultState.refreshing(ResultState.success(value.previousSuccess.value))
+    : ResultState.failure(value.error as E);
 }
 
 /**

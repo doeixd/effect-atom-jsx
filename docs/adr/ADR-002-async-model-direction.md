@@ -1,55 +1,46 @@
-# ADR-002: Async Model Direction (Solid-style Suspension + Result Opt-in)
+# ADR-002: Async Model Direction (`Result` Primary, `FetchResult` Compatibility)
 
 - Status: Accepted
 - Date: 2026-03-10
 
 ## Context
 
-The existing async surface mixes two models:
+The async surface historically mixed two models:
 
-- `AsyncResult` (Loading/Refreshing/Success/Failure/Defect)
-- `Result` (Initial/Success/Failure + waiting)
+- `Result` (Loading/Refreshing/Success/Failure/Defect)
+- `FetchResult` (Initial/Success/Failure + waiting)
 
 This has created conceptual overlap and migration friction.
 
 ## Decision
 
-Adopt a Solid 2.0-style default async model:
+Adopt a single primary async model:
 
-1. **Default user model**: suspension + boundaries
-   - Async atoms/queries suspend naturally.
-   - `Loading` handles initial load.
-   - `isPending` handles stale-while-revalidate UI.
-2. **Explicit state model (opt-in)**: `Result`
-   - Users can opt out of suspension (`suspend: false`) and receive `Result`.
-   - `Result.builder(...)` is the fluent explicit rendering path.
-3. **`AsyncResult` role**
-   - Keep as internal/advanced compatibility type.
-   - Remove it from the golden-path docs.
+1. **Primary user model**: `Result`
+   - `defineQuery`, `atomEffect`, runtime atoms, RPC, and HTTP wrappers expose `Result`.
+   - `Loading` and `isPending` remain first-class UI primitives over this model.
+2. **Compatibility model**: `FetchResult`
+   - Keep as advanced compatibility for effect-atom-style waiting semantics.
+   - Conversion helpers are `FetchResult.fromResult(...)` and `FetchResult.toResult(...)`.
 
 ## Rationale
 
-- Aligns with fine-grained UI ergonomics (boundaries + pending expressions).
-- Preserves an explicit effect-atom-friendly path through `Result`.
-- Reduces conceptual burden by making one default path obvious.
+- Keeps one obvious default async model (`Result`).
+- Preserves effect-atom-style data-state ergonomics through explicit compatibility namespace (`FetchResult`).
+- Reduces naming overlap and migration ambiguity.
 
 ## API Implications
 
-- Golden path docs use:
-  - `Loading`
-  - `isPending(() => expr)`
-  - `Show` for refresh indicators
-- Explicit path docs use:
-  - `Result.builder(...)`
-  - `suspend: false` where applicable
-- `AsyncResult` is moved to advanced/internal docs.
+- Golden path docs use `Result`, `Loading`, and `isPending`.
+- `FetchResult` is documented as advanced compatibility, not primary flow.
+- Legacy `AsyncResult` naming is removed from public API/docs.
 
 ## Migration Impact
 
-- Existing `AsyncResult` users remain supported during transition.
-- New docs/examples prioritize suspension + `Result.builder` opt-in path.
-- `Async` component remains available as compatibility/advanced API.
+- Existing users migrate by replacing old conversion names with `fromResult` / `toResult`.
+- New docs/examples prioritize `Result` as the default async surface.
+- `Async` component remains available and consumes `Result`.
 
 ## Rollback Plan
 
-- If suspension-first defaults regress real apps, keep dual-model docs with stricter boundaries and retain `AsyncResult` as advanced documented model.
+- If compatibility pressure increases, expand `FetchResult` adapters without reintroducing dual primary async models.

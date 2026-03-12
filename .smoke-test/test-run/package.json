@@ -1,0 +1,27 @@
+{
+  "name": "test-run",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "type": "module",
+  "dependencies": {
+    "effect": "^4.0.0-beta.29",
+    "effect-atom-jsx": "file:../../effect-atom-jsx-0.5.0.tgz"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-env": "^7.29.0",
+    "@babel/preset-typescript": "^7.28.5",
+    "@babel/register": "^7.28.6",
+    "babel-plugin-jsx-dom-expressions": "^0.40.5",
+    "jsdom": "^28.1.0",
+    "vite-plugin-babel": "^1.5.1",
+    "vitest": "^4.0.18"
+  }
+}

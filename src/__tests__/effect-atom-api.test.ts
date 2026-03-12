@@ -3,12 +3,13 @@ import { Effect } from "effect";
 import { Exit, Option } from "effect";
 import { Layer, ServiceMap } from "effect";
 import { Stream } from "effect";
+import { Schedule } from "effect";
 import * as Atom from "../Atom.js";
 import * as AtomRef from "../AtomRef.js";
 import * as Hydration from "../Hydration.js";
 import * as Result from "../Result.js";
 import * as Registry from "../Registry.js";
-import { AsyncResult } from "../effect-ts.js";
+import { Result as AsyncResult } from "../effect-ts.js";
 import { createRoot, flush } from "../api.js";
 
 const originalQueueMicrotask = globalThis.queueMicrotask;
@@ -25,10 +26,52 @@ describe("effect-atom style API", () => {
   it("supports Atom.make writable values", () => {
     const count = Atom.make(0);
     expect(Effect.runSync(Atom.get(count))).toBe(0);
+    expect(count()).toBe(0);
     Effect.runSync(Atom.set(count, 2));
     expect(Effect.runSync(Atom.get(count))).toBe(2);
+    expect(count()).toBe(2);
     Effect.runSync(Atom.update(count, (n) => n + 3));
     expect(Effect.runSync(Atom.get(count))).toBe(5);
+
+    count.set(8);
+    expect(count()).toBe(8);
+    count.update((n) => n + 1);
+    expect(count()).toBe(9);
+    const previous = count.modify((n) => [n, n + 2]);
+    expect(previous).toBe(9);
+    expect(count()).toBe(11);
+
+    const readViaEffect = Effect.runSync(count.effect());
+    expect(readViaEffect).toBe(11);
+
+    Effect.runSync(count.setEffect(20));
+    expect(count()).toBe(20);
+
+    Effect.runSync(count.updateEffect((n) => n + 2));
+    expect(count()).toBe(22);
+
+    const before = Effect.runSync(count.modifyEffect((n) => [n, n + 1]));
+    expect(before).toBe(22);
+    expect(count()).toBe(23);
+  });
+
+  it("supports Atom.value for function-valued writable atoms", () => {
+    const callback = Atom.value((n: number) => n + 1);
+    expect(callback()(1)).toBe(2);
+
+    callback.set((n: number) => n + 2);
+    expect(callback()(1)).toBe(3);
+
+    callback.update((fn) => (n: number) => fn(n) + 1);
+    expect(callback()(1)).toBe(4);
+  });
+
+  it("supports Atom.derived as explicit derived constructor", () => {
+    const count = Atom.make(2);
+    const doubled = Atom.derived((get) => get(count) * 2);
+    expect(doubled()).toBe(4);
+    count.set(3);
+    expect(doubled()).toBe(6);
   });
 
   it("supports Atom.make readable values", () => {
@@ -43,6 +86,48 @@ describe("effect-atom style API", () => {
     const byId = Atom.family((id: number) => Atom.make(id * 10));
     expect(byId(1)).toBe(byId(1));
     expect(Effect.runSync(Atom.get(byId(3)))).toBe(30);
+
+    const first = byId(7);
+    byId.evict(7);
+    const second = byId(7);
+    expect(second).not.toBe(first);
+
+    byId.clear();
+    const third = byId(7);
+    expect(third).not.toBe(second);
+  });
+
+  it("supports variadic Atom.family keys", () => {
+    const byPair = Atom.family((group: string, id: number) => Atom.make(`${group}:${id}`));
+
+    const a1 = byPair("users", 1);
+    const a2 = byPair("users", 1);
+    const b = byPair("users", 2);
+
+    expect(a1).toBe(a2);
+    expect(a1).not.toBe(b);
+
+    byPair.evict("users", 1);
+    const a3 = byPair("users", 1);
+    expect(a3).not.toBe(a1);
+    expect(a3()).toBe("users:1");
+  });
+
+  it("supports Atom.family custom equals", () => {
+    const byKey = Atom.family(
+      (key: { id: string; version: number }) => Atom.make(`${key.id}:${key.version}`),
+      {
+        equals: (a, b) => a[0].id === b[0].id && a[0].version === b[0].version,
+      },
+    );
+
+    const a1 = byKey({ id: "u1", version: 1 });
+    const a2 = byKey({ id: "u1", version: 1 });
+    expect(a1).toBe(a2);
+
+    byKey.evict({ id: "u1", version: 1 });
+    const a3 = byKey({ id: "u1", version: 1 });
+    expect(a3).not.toBe(a1);
   });
 
   it("supports Atom.keepAlive compatibility helper", () => {
@@ -198,12 +283,34 @@ describe("effect-atom style API", () => {
 
   it("supports AtomRef prop and updates", () => {
     const ref = AtomRef.make({ title: "a", done: false });
+    expect(ref()).toEqual({ title: "a", done: false });
     const titleRef = ref.prop("title");
+    expect(titleRef()).toBe("a");
     expect(titleRef.value).toBe("a");
+    expect(titleRef.get()).toBe("a");
     titleRef.set("b");
     expect(ref.value.title).toBe("b");
+    const previous = titleRef.modify((value) => [value, `${value}!`]);
+    expect(previous).toBe("b");
+    expect(ref.value.title).toBe("b!");
     ref.update((v) => ({ ...v, done: true }));
     expect(ref.value.done).toBe(true);
+  });
+
+  it("keeps nested AtomRef props linked to root state", () => {
+    const ref = AtomRef.make({ meta: { title: "a", count: 1 } });
+    const title = ref.prop("meta").prop("title");
+    const count = ref.prop("meta").prop("count");
+
+    title.set("b");
+    expect(ref().meta.title).toBe("b");
+
+    count.update((n) => n + 2);
+    expect(ref().meta.count).toBe(3);
+
+    ref.prop("meta").set({ title: "c", count: 10 });
+    expect(title()).toBe("c");
+    expect(count()).toBe(10);
   });
 
   it("supports AtomRef collections", () => {
@@ -214,6 +321,17 @@ describe("effect-atom style API", () => {
     const first = todos.value[0]!;
     todos.remove(first);
     expect(todos.toArray().map((t) => t.title)).toEqual(["two", "three"]);
+  });
+
+  it("supports AtomRef.toAtom interop", () => {
+    const todo = AtomRef.make({ title: "a", done: false });
+    const titleRef = todo.prop("title");
+    const titleAtom = AtomRef.toAtom(titleRef);
+    const upper = Atom.map(titleAtom, (s) => s.toUpperCase());
+
+    expect(upper()).toBe("A");
+    titleRef.set("b");
+    expect(upper()).toBe("B");
   });
 
   it("supports Hydration dehydrate/hydrate", () => {
@@ -272,15 +390,27 @@ describe("effect-atom style API", () => {
     expect(unknown).toEqual(["missing"]);
   });
 
-  it("converts AsyncResult <-> Result", () => {
-    const fromLoading = Result.fromAsyncResult(AsyncResult.loading);
+  it("supports Hydration.hydrateEffect with strict typed errors", async () => {
+    const registry = Registry.make();
+    const count = Atom.make(1);
+    const state: Array<Hydration.DehydratedAtomValue> = [
+      { "~@effect-atom-jsx/DehydratedAtom": true, key: "missing", value: 1, dehydratedAt: Date.now() },
+    ];
+
+    await expect(
+      Effect.runPromise(Hydration.hydrateEffect(registry, state, { count }, { strict: true })),
+    ).rejects.toMatchObject({ _tag: "HydrationUnknownKeys" });
+  });
+
+  it("converts Result <-> FetchResult", () => {
+    const fromLoading = Result.fromResult(AsyncResult.loading);
     expect(Result.isInitial(fromLoading)).toBe(true);
     expect(Result.isWaiting(fromLoading)).toBe(true);
 
-    const fromSuccess = Result.fromAsyncResult(AsyncResult.success(42));
+    const fromSuccess = Result.fromResult(AsyncResult.success(42));
     expect(Result.isSuccess(fromSuccess)).toBe(true);
 
-    const asyncAgain = Result.toAsyncResult(fromSuccess);
+    const asyncAgain = Result.toResult(fromSuccess);
     expect(asyncAgain).toEqual(AsyncResult.success(42));
 
     expect(Result.isWaiting(Result.waiting(fromSuccess))).toBe(true);
@@ -348,6 +478,56 @@ describe("effect-atom style API", () => {
     await rt.dispose();
   });
 
+  it("supports Atom.runtime(...).atom factory with get/result composition", async () => {
+    const Greeting = ServiceMap.Service<{ readonly value: string }>("Greeting");
+    const rt = Atom.runtime(Layer.succeed(Greeting, { value: "hello" }));
+
+    const suffix = Atom.make("!");
+    const greeting = rt.atom(
+      Effect.service(Greeting).pipe(Effect.map((svc) => svc.value)),
+    );
+    const combined = rt.atom((get) => Effect.gen(function* () {
+      const base = yield* get.result(greeting);
+      const s = get(suffix);
+      return `${base}${s}`;
+    }));
+
+    await Effect.runPromise(Effect.sleep("5 millis"));
+    const first = Effect.runSync(Atom.get(combined));
+    expect(first._tag).toBe("Success");
+    if (first._tag === "Success") {
+      expect(first.value).toBe("hello!");
+    }
+
+    suffix.set("?");
+    await Effect.runPromise(Effect.sleep("5 millis"));
+    const second = Effect.runSync(Atom.get(combined));
+    expect(second._tag).toBe("Success");
+    if (second._tag === "Success") {
+      expect(second.value).toBe("hello?");
+    }
+
+    await rt.dispose();
+  });
+
+  it("propagates dependency failures through runtime.atom(get => Effect)", async () => {
+    const rt = Atom.runtime(Layer.empty);
+    const failing = rt.atom(Effect.fail("boom" as const));
+    const composed = rt.atom((get) => Effect.gen(function* () {
+      const value = yield* get.result(failing);
+      return `${value}!`;
+    }));
+
+    await Effect.runPromise(Effect.sleep("5 millis"));
+    const settled = Effect.runSync(Atom.get(composed));
+    expect(settled._tag).toBe("Failure");
+    if (settled._tag === "Failure") {
+      expect(settled.error).toBe("boom");
+    }
+
+    await rt.dispose();
+  });
+
   it("supports Atom.runtime(...).action for effectful actions", async () => {
     const values: number[] = [];
     const rt = Atom.runtime(Layer.empty);
@@ -359,6 +539,16 @@ describe("effect-atom style API", () => {
     expect(values).toEqual([42]);
     const state = fnAtom.result();
     expect(state._tag === "Success" || state._tag === "Refreshing").toBe(true);
+
+    await rt.dispose();
+  });
+
+  it("supports action.runEffect for typed composition", async () => {
+    const rt = Atom.runtime(Layer.empty);
+    const add = rt.action((n: number) => Effect.succeed(n + 1));
+
+    const value = await Effect.runPromise(add.runEffect(1));
+    expect(value).toBe(2);
 
     await rt.dispose();
   });
@@ -492,6 +682,14 @@ describe("effect-atom style API", () => {
     expect(finalized).toBe(true);
   });
 
+  it("supports Atom.result helper", () => {
+    const ok = Atom.readable(() => AsyncResult.success(123));
+    expect(Effect.runSync(Atom.result(ok))).toBe(123);
+
+    const fail = Atom.readable(() => AsyncResult.failure("boom" as const));
+    expect(() => Effect.runSync(Atom.result(fail))).toThrow();
+  });
+
   it("supports Atom.pull for incremental stream pagination", async () => {
     const pullAtom = Atom.pull(Stream.make(1, 2, 3), { chunkSize: 2 });
 
@@ -592,6 +790,101 @@ describe("effect-atom style API", () => {
     expect(Effect.runSync(Atom.get(reactive))).toBe(2);
   });
 
+  it("supports atom.pipe for composable transforms", () => {
+    const value = Atom.make<string | null>("  hello  ").pipe(
+      Atom.map((s) => s?.trim() ?? null),
+      Atom.withFallback(""),
+    );
+    expect(value()).toBe("hello");
+  });
+
+  it("supports Atom.withOptimistic as a pipeable wrapper", () => {
+    const count = Atom.make(1);
+    const optimistic = count.pipe(Atom.withOptimistic());
+
+    expect(optimistic()).toBe(1);
+    optimistic.set(5);
+    expect(optimistic()).toBe(5);
+    optimistic.clear();
+    expect(optimistic()).toBe(1);
+  });
+
+  it("supports optimistic.withEffect lifecycle composition", async () => {
+    const count = Atom.make(1);
+    const optimistic = count.pipe(Atom.withOptimistic());
+    const program = optimistic.withEffect(
+      (prev) => prev + 10,
+      Effect.succeed("ok").pipe(Effect.delay("10 millis")),
+    );
+
+    expect(optimistic()).toBe(11);
+    const out = await Effect.runPromise(program);
+    expect(out).toBe("ok");
+    expect(optimistic()).toBe(1);
+  });
+
+  it("supports Atom.runtimeEffect for effectful bootstrap", async () => {
+    const runtime = await Effect.runPromise(Atom.runtimeEffect(Layer.empty));
+    const value = runtime.atom(Effect.succeed(42));
+    await Effect.runPromise(Effect.sleep("10 millis"));
+    expect(value()._tag).toBe("Success");
+    await runtime.dispose();
+  });
+
+  it("supports withRetry / withPolling / withStaleTime pipeables", async () => {
+    let attempts = 0;
+    const source = Atom.readable(
+      () => {
+        attempts += 1;
+        return attempts < 2
+          ? AsyncResult.failure("retry" as const)
+          : AsyncResult.success(attempts);
+      },
+      (refresh) => {
+        refresh(source);
+      },
+    );
+
+    const retried = source.pipe(Atom.withRetry(Schedule.recurs(2)));
+    void retried();
+    await Effect.runPromise(Effect.sleep("20 millis"));
+    void retried();
+    await Effect.runPromise(Effect.sleep("40 millis"));
+    expect(attempts).toBeGreaterThan(1);
+    expect(retried()._tag === "Success" || retried()._tag === "Failure").toBe(true);
+
+    let ticks = 0;
+    const polledSource = Atom.readable(
+      () => {
+        ticks += 1;
+        return AsyncResult.success(ticks);
+      },
+      (refresh) => {
+        refresh(polledSource);
+      },
+    );
+    const polled = polledSource.pipe(Atom.withPolling(Schedule.recurs(2)));
+    void polled();
+    await Effect.runPromise(Effect.sleep("40 millis"));
+    expect(polled()._tag).toBe("Success");
+
+    let staleRuns = 0;
+    const staleSource = Atom.readable(
+      () => {
+        staleRuns += 1;
+        return AsyncResult.success(staleRuns);
+      },
+      (refresh) => {
+        refresh(staleSource);
+      },
+    );
+    const stale = staleSource.pipe(Atom.withStaleTime(10));
+    void stale();
+    await Effect.runPromise(Effect.sleep("40 millis"));
+    expect(stale()._tag).toBe("Success");
+
+  });
+
   it("supports Atom.action with reactivity key invalidation", async () => {
     let runCount = 0;
     const counter = Atom.withReactivity(Atom.make(() => ++runCount), ["counter"]);
@@ -604,6 +897,48 @@ describe("effect-atom style API", () => {
     increment(undefined);
     await Effect.runPromise(Effect.sleep("10 millis"));
     expect(Effect.runSync(Atom.get(counter))).toBe(2);
+  });
+
+  it("supports Atom.action onTransition hooks", async () => {
+    const phases: string[] = [];
+    const save = Atom.action(
+      (n: number) => n > 0 ? Effect.void : Effect.fail("bad" as const),
+      {
+        name: "save-count",
+        onTransition: (event) => phases.push(event.phase),
+      },
+    );
+
+    save(1);
+    await Effect.runPromise(Effect.sleep("10 millis"));
+    save(0);
+    await Effect.runPromise(Effect.sleep("10 millis"));
+
+    expect(phases.includes("start")).toBe(true);
+    expect(phases.includes("success")).toBe(true);
+    expect(phases.includes("failure") || phases.includes("defect")).toBe(true);
+  });
+
+  it("supports runtime.action onTransition hooks", async () => {
+    const runtime = Atom.runtime(Layer.empty);
+    const phases: string[] = [];
+    const run = runtime.action(
+      (n: number) => n > 0 ? Effect.succeed(n) : Effect.fail("bad" as const),
+      {
+        name: "runtime-save",
+        onTransition: (event) => phases.push(event.phase),
+      },
+    );
+
+    run(1);
+    await Effect.runPromise(Effect.sleep("10 millis"));
+    run(0);
+    await Effect.runPromise(Effect.sleep("10 millis"));
+
+    expect(phases.includes("start")).toBe(true);
+    expect(phases.includes("success")).toBe(true);
+    expect(phases.includes("failure") || phases.includes("defect")).toBe(true);
+    await runtime.dispose();
   });
 
   it("supports out-of-order stream chunk merge and hydration", () => {

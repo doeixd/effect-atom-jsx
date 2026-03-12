@@ -15,7 +15,7 @@ top of the JSX runtime + Effect v4 integration.
 | `Atom.keepAlive` | `Atom.keepAlive` (compat identity helper) |
 | `Atom.runtime(layer)` | `Atom.runtime(layer)` |
 | `runtime.atom(effect)` | `runtime.atom(effect)` |
-| `Atom.fn(...)` / `runtime.fn(...)` | `Atom.fn(...)` / `runtime.fn(...)` |
+| `Atom.fn(...)` / `runtime.fn(...)` | `Atom.action(...)` / `runtime.action(...)` |
 | `createProjection(...)` / derived store | `Atom.projection(...)` / `Atom.projectionAsync(...)` |
 | reactivity keys (`withReactivity`, invalidation) | `Atom.withReactivity(...)`, `Atom.invalidateReactivity(...)` |
 | stream pull atom (`Atom.pull`) | `Atom.pull(stream, { chunkSize? })` |
@@ -40,13 +40,13 @@ const usersAtom = runtime.atom(
 );
 ```
 
-## Function Atoms
+## Action Atoms
 
 ```ts
 import { Atom } from "effect-atom-jsx";
 import { Effect } from "effect";
 
-const saveAtom = Atom.fn((payload: { id: string }) =>
+const saveAtom = Atom.action((payload: { id: string }) =>
   Effect.sync(() => {
     // write side effect
     void payload.id;
@@ -54,7 +54,7 @@ const saveAtom = Atom.fn((payload: { id: string }) =>
 );
 
 // run
-Effect.runSync(Atom.set(saveAtom, { id: "1" }));
+saveAtom.set({ id: "1" });
 ```
 
 ## Projection Atoms
@@ -118,8 +118,8 @@ import { Effect, Stream } from "effect";
 
 const feed = Atom.pull(Stream.make(1, 2, 3), { chunkSize: 2 });
 
-Effect.runSync(Atom.set(feed, undefined)); // first pull
-const first = Effect.runSync(Atom.get(feed));
+feed.set(undefined); // first pull
+const first = feed();
 
 if (Result.isSuccess(first)) {
   console.log(first.value.items); // [1, 2]
@@ -149,7 +149,7 @@ import { Atom } from "effect-atom-jsx";
 import { Effect } from "effect";
 
 const page = Atom.searchParam("page");
-Effect.runSync(Atom.set(page, "2"));
+page.set("2");
 ```
 
 With custom parse/serialize:
@@ -172,7 +172,7 @@ const darkMode = Atom.kvs({
   defaultValue: () => false,
 });
 
-Effect.runSync(Atom.set(darkMode, true));
+darkMode.set(true);
 ```
 
 ## Notes

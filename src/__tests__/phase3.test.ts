@@ -11,10 +11,10 @@ import { Effect, Exit, Scope, Layer, ManagedRuntime, Option } from "effect";
 import {
   defineQuery,
   defineMutation,
-  AsyncResult,
+  Result as AsyncResult,
   scopedQueryEffect,
   scopedMutationEffect,
-  type AsyncResult as AsyncResultType,
+  type Result as AsyncResultType,
   type Success,
   type Failure,
   type Defect,

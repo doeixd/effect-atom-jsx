@@ -25,7 +25,7 @@ This plan remains the implementation backlog for lifecycle, observability, RPC, 
 ## Non-Goals (for this plan)
 
 - Rewriting the reactive core (`Signal`, `Computation`, `Owner`).
-- Breaking existing APIs (`queryEffect`, `defineQuery`, `mutationEffect`, `AtomRpc.Tag`, `AtomHttpApi.Tag`).
+- Breaking APIs is allowed under redesign governance; this plan does not block API removals.
 - Requiring tracing packages for all users by default.
 
 ## Current Baseline (Reference)
@@ -40,9 +40,9 @@ This plan remains the implementation backlog for lifecycle, observability, RPC, 
 ## Proposed Delivery Strategy
 
 - Ship across multiple small PRs, each independently testable.
-- Preserve old behavior as default unless user opts in.
+- Follow redesign-first defaults even when breaking old behavior.
 - Introduce internal abstractions first, then public APIs.
-- Prefer additive overloads and helpers over API replacement.
+- Prefer coherent API replacement over additive aliases when overlap exists.
 
 ## Review-Driven Adjustments (2026-03-10)
 
@@ -70,7 +70,7 @@ The following track incorporates a deeper architecture/API review focused on red
 - Prefer one obvious pattern per use-case (read/write, query, mutation, hydration).
 - Keep "advanced" APIs available but move them to clearly marked modules/docs.
 - Reduce top-level API ambiguity through naming, tiering, and deprecations.
-- Preserve backward compatibility with aliases/migration guides before removals.
+- Preserve migration clarity in docs; compatibility aliases are optional and may be skipped.
 
 ## Design Feedback Integration (2026-03-10)
 
@@ -90,7 +90,7 @@ This section translates the latest design feedback into concrete plan decisions,
 Create short architecture decision records in `docs/adr/` for:
 
 1. `ADR-001` Registry ergonomics and ambient behavior
-2. `ADR-002` Async model direction (`AsyncResult`, `Result`, or split responsibilities)
+2. `ADR-002` Async model direction (`Result`, `FetchResult`, or split responsibilities)
 3. `ADR-003` Runtime model priority (ambient `mount` vs explicit `Atom.runtime`)
 4. `ADR-004` Public export tiers (core vs advanced vs internals)
 5. `ADR-005` Family eviction and hydration key strategy
@@ -116,7 +116,7 @@ Each ADR should include:
 - Build a typed facade around existing internals:
   - one recommended query entrypoint
   - one recommended mutation entrypoint
-  - existing variants preserved as aliases
+  - legacy variants may be removed instead of preserved as aliases
 - Validate no behavior regressions in current tests.
 
 #### Experiment 3 - Runtime-model comparison spike (2 days)
@@ -143,7 +143,7 @@ Each ADR should include:
 #### API surface reduction
 
 - Public docs present <=3 recommended async primitives at top level.
-- All other async constructors are marked advanced/legacy alias in API docs.
+- All other async constructors are marked advanced or removed in API docs.
 - Naming symmetry exists for query/mutation golden path.
 
 #### Hydration and family safety
@@ -259,15 +259,15 @@ Reduce async API surface complexity and make capability boundaries obvious.
 
 #### Edge cases
 
-- Migration path from `queryEffect` to keyed/invalidation-aware queries.
+- Migration path from removed `queryEffect`/`mutationEffect` to `defineQuery`/`defineMutation`.
 - Keeping scoped constructors discoverable for advanced users without cluttering defaults.
 
 #### Docs/tests tasks
 
-- Add API matrix showing "recommended", "advanced", and "legacy alias" entries.
-- Add deprecation warning strategy (soft docs deprecation first).
+- Add API matrix showing "recommended", "advanced", and "removed" entries.
+- Keep migration notes concise; avoid reintroducing alias-based deprecation tracks.
 
-### Track D - Async state model coherence (`AsyncResult` vs `Result`)
+### Track D - Async state model coherence (`Result` vs `FetchResult`)
 
 #### Objective
 
@@ -279,7 +279,7 @@ Resolve semantic confusion between fiber-lifecycle state and data-fetch state.
   - what each state machine models
   - where conversion is lossy
   - recommended usage boundaries
-- Evaluate renaming `Result` to clearer domain name (e.g. `FetchState`) or reducing dual-surface exposure.
+- Keep unified `Result` as primary and limit `FetchResult` to compatibility/advanced docs.
 - Clarify `Async` state mapping defaults (Loading/Refreshing/Failure/Defect behavior).
 
 #### Edge cases
@@ -331,7 +331,7 @@ Separate golden-path APIs from low-level internals to reduce accidental misuse.
   - advanced API
   - internal/runtime primitive
 - Move low-level reactive core exports behind explicit subpath if feasible.
-- Keep compatibility exports during migration window.
+- Keep subpath exports clear (`core`/`advanced`/`internals`) and avoid restoring removed top-level aliases.
 
 #### Edge cases
 
@@ -371,7 +371,7 @@ Clarify and simplify batching guarantees across atom layer and reactive core.
 
 - Define internal RFC notes in this file before coding each phase.
 - Lock naming and defaults for new options to avoid churn.
-- Add compatibility table to docs for old vs new behavior.
+- Add migration table to docs for removed vs current behavior.
 
 ### Considerations
 
@@ -395,7 +395,7 @@ Guarantee that parent unmount interrupts all descendant fibers transitively by b
 - At root mount (`mount`) create a root closeable scope and provide it via context.
 - In component creation path (`createComponent` / root boundaries), create child scope from current scope.
 - Register scope close in owner cleanup and owner dispose as scope finalizer (bidirectional cleanup).
-- Ensure `queryEffect`/`mutationEffect` launched fibers are associated with current scope.
+- Ensure `defineQuery`/`defineMutation` launched fibers are associated with current scope.
 
 ### Notes/considerations
 
@@ -606,7 +606,7 @@ Allow typed `Failure<E>` to bubble through component tree and be caught by typed
 ### Implementation plan
 
 - Add boundary context and bubbling mechanism in `src/effect-ts.ts`.
-- Extend `AsyncResult` handling utilities with boundary-aware propagation helpers.
+- Extend `Result` handling utilities with boundary-aware propagation helpers.
 - Differentiate typed failures (`Failure<E>`) and defects (`Defect`) in boundary resolution.
 
 ### Notes/considerations
@@ -807,7 +807,7 @@ const search = Atom.Stream.debounce(queryStream, "250 millis");
 - Keep strategy defaults conservative.
 - Add instrumentation sampling/disable toggles.
 - Document type helper patterns with practical examples.
-- Use phased deprecations and compatibility aliases before removals.
+- Prefer direct removals when overlap is high; provide concise migration notes.
 
 ## Definition of Done (Per Feature)
 

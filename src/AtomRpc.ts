@@ -1,7 +1,6 @@
 import { Effect } from "effect";
 import { createSignal, type Accessor } from "./api.js";
-import { atomEffect, type RuntimeLike } from "./effect-ts.js";
-import * as Result from "./Result.js";
+import { atomEffect, type RuntimeLike, type Result as ResultState } from "./effect-ts.js";
 import {
   action as atomAction,
   invalidateReactivity,
@@ -35,12 +34,12 @@ export interface AtomRpcClient<Defs extends RpcDefinitions, R = never> {
       readonly onError?: (error: Defs[Tag]["error"]) => void;
       readonly headers?: Record<string, string>;
     },
-  ) => ActionHandle<Defs[Tag]["payload"], Defs[Tag]["error"]>;
+  ) => ActionHandle<Defs[Tag]["payload"], Defs[Tag]["error"], Defs[Tag]["success"]>;
   readonly query: <Tag extends keyof Defs & string>(
     tag: Tag,
     payload: Defs[Tag]["payload"],
     options?: { readonly headers?: Record<string, string>; readonly reactivityKeys?: ReactivityKeysInput },
-  ) => Accessor<Result.Result<Defs[Tag]["success"], Defs[Tag]["error"]>>;
+  ) => Accessor<ResultState<Defs[Tag]["success"], Defs[Tag]["error"]>>;
   readonly refresh: <Tag extends keyof Defs & string>(
     tag: Tag,
     payload: Defs[Tag]["payload"],
@@ -65,7 +64,7 @@ export const Tag = <Self extends object = {}>() =>
       readonly runtime?: RuntimeLike<R, unknown>;
     },
   ): AtomRpcClient<Defs, R> & Self => {
-    const cache = new Map<string, Accessor<Result.Result<any, any>>>();
+    const cache = new Map<string, Accessor<ResultState<any, any>>>();
     const refreshers = new Map<string, () => void>();
     const atomEffectAny = atomEffect as unknown as (
       fn: () => Effect.Effect<any, any, any>,
@@ -96,12 +95,12 @@ export const Tag = <Self extends object = {}>() =>
           : atomAction(options.runtime as RuntimeLike<R, unknown>, effectFn as any, {
             reactivityKeys: actionOptions?.reactivityKeys,
             onError: actionOptions?.onError,
-          }) as ActionHandle<Defs[typeof tag]["payload"], Defs[typeof tag]["error"]>;
+          }) as ActionHandle<Defs[typeof tag]["payload"], Defs[typeof tag]["error"], Defs[typeof tag]["success"]>;
       },
       query(tag, payload, queryOptions) {
         const key = keyOf(tag, payload);
         const existing = cache.get(key);
-        if (existing) return existing as Accessor<Result.Result<Defs[typeof tag]["success"], Defs[typeof tag]["error"]>>;
+        if (existing) return existing as Accessor<ResultState<Defs[typeof tag]["success"], Defs[typeof tag]["error"]>>;
 
         const [tick, setTick] = createSignal(0);
         refreshers.set(key, () => setTick((n) => n + 1));
@@ -118,8 +117,8 @@ export const Tag = <Self extends object = {}>() =>
           options.runtime as RuntimeLike<any, unknown> | undefined,
         );
 
-        const result = () => Result.fromAsyncResult(async()) as Result.Result<Defs[typeof tag]["success"], Defs[typeof tag]["error"]>;
-        cache.set(key, result as Accessor<Result.Result<any, any>>);
+        const result = () => async() as ResultState<Defs[typeof tag]["success"], Defs[typeof tag]["error"]>;
+        cache.set(key, result as Accessor<ResultState<any, any>>);
         return result;
       },
       refresh(tag, payload) {

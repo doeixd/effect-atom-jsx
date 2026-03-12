@@ -4,6 +4,8 @@ Date: 2026-03-10
 Status: Proposed (breaking changes allowed)
 Owner: Core library redesign
 
+Implementation note (2026-03-10): this document includes exploratory and historical analysis sections written before several removals landed. Treat `docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md` and `docs/V1_API_CONTRACT_DRAFT.md` as the source of truth for current active surface decisions.
+
 ## Intent
 
 Redesign the public API to be smaller, clearer, and more coherent even if it requires major/breaking changes.
@@ -38,7 +40,7 @@ Success means:
 - `defineQuery` / `defineMutation`
 - `createMount` / `mount`
 - `Loading` / `Errored` / `Show` / `For` / `Switch` / `Match`
-- `refresh` / `isPending` / `latest`
+- `invalidate` / `isPending` / `latest`
 
 ### Advanced APIs (subpaths)
 
@@ -60,7 +62,7 @@ Success means:
 ## Major Architecture Decisions to Finalize
 
 1. **Async model**
-   - Keep dual `AsyncResult` + `Result` with strict boundaries, or converge to one user-facing model.
+   - Resolved: unified `Result` as primary async model; `FetchResult` kept as advanced compatibility (`ADR-002`).
 2. **Registry model**
    - Ambient/implicit by default vs explicit in userland.
 3. **Runtime model**
@@ -105,8 +107,7 @@ These directives are now explicit inputs to implementation planning.
 5. **Move toward microtask batching + explicit `flush`**
    - Evaluate replacing user-facing `batch` guidance with microtask-default batching.
    - Add `flush()` escape hatch for imperative DOM sequencing.
-   - If full migration is risky, ship behind an opt-in runtime flag first.
-   - Progress: `flush()` added and microtask batching is now always-on (sync mode removed).
+   - Progress: `flush()` added, microtask batching is always-on, and `Atom.batch(...)` removed from core namespace.
 
 
 ## Breaking Changes Policy
@@ -193,7 +194,7 @@ Deliverables:
 - Top-level exports are reduced and intentional.
 - Async and mutation APIs are symmetric and easily teachable.
 - Service/runtime errors are explicit and actionable.
-- Tests cover lifecycle, cancellation, and migration aliases.
+- Tests cover lifecycle, cancellation, and migration paths.
 
 ## Risks
 
@@ -204,16 +205,22 @@ Deliverables:
 ## Mitigations
 
 - Ship v1 beta with migration docs before stable.
-- Keep a temporary compatibility layer with warnings.
+- Prefer direct removals where overlap is high, with concise migration notes.
 - Validate with real example apps, not only unit tests.
 
 ## Immediate Next Steps
 
-1. Draft `docs/V1_API_CONTRACT_DRAFT.md` with explicit keep/remove/rename decisions. (Started)
-2. Build TodoMVC v1 prototype constrained to core APIs.
-3. Decide async model direction (single vs dual with strict boundary) and lock it.
+1. Continue doc alignment so all active guides match removed legacy surface.
+2. Build TodoMVC v1 prototype constrained to current core APIs.
+3. Finalize remaining export-tier and async guidance decisions in contract docs.
 
 
+
+## Historical Analysis Notes (Pre-Removal Snapshot)
+
+The following sections capture exploratory analysis and proposal drafts from before several redesign removals landed. Keep them as rationale/history, but treat `docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md` and `docs/V1_API_CONTRACT_DRAFT.md` as authoritative for active API state.
+
+Important: below this line, references to removed names (`queryEffect`, `mutationEffect`, `Atom.fn`, legacy strict/scoped aliases, older async naming) are historical analysis only, not current recommendations.
 
 context: 
 Let me dig into the specific design decisions more carefully.
