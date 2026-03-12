@@ -822,6 +822,7 @@ Progress notes:
 - `API.md` now tells a unified route-first story more directly, with less transition-language around the old authoring styles.
 - The next cleanup target is `Component.route(...)` / `Component.guard(...)` and the remaining `AppRouteNode` scaffolding that still props up older internal paths.
 - Some of the remaining component-route usage has now been migrated in route/runtime/server tests, but `route-loader.test.ts` still contains a substantial amount of old component-route coverage that must be rewritten before `Component.route(...)` can be removed cleanly.
+- The immediate next step is finishing that `route-loader.test.ts` migration so `Component.route(...)` / `Component.guard(...)` can be deleted instead of remaining as a temporary compatibility layer.
 - The next cleanup target is removing the remaining internal node-era helpers entirely where their only purpose is servicing already-migrated flows.
 - `API.md` should now move from "legacy still exists" language toward a fully unified route-first story unless a concrete remaining public dependency still exists.
 
