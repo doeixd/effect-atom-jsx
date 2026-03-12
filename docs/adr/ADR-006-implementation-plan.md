@@ -827,6 +827,7 @@ Progress notes:
 - This means `Component.route(...)` and some `AppRouteNode` scaffolding are not yet safe to delete completely; the remaining dependency is now narrower and more explicit.
 - The next cleanup target is single-flight and server-route integration, so those systems work natively with unified routes and stop forcing the remaining component-route registration fallback.
 - Docs should track that work closely: single-flight, server-route, and API reference material should describe the unified route-first behavior accurately as the implementation changes.
+- The immediate implementation priority is moving single-flight loader selection, hydration, and related cache seeding toward explicit route trees so the last substantial `Component.route(...)` dependency can be removed.
 - The next cleanup target is removing the remaining internal node-era helpers entirely where their only purpose is servicing already-migrated flows.
 - `API.md` should now move from "legacy still exists" language toward a fully unified route-first story unless a concrete remaining public dependency still exists.
 
