@@ -819,6 +819,7 @@ Progress notes:
 - The next cleanup target is finishing the leftover route/runtime tests that still exercise node-era helpers directly so those helpers can be removed from the public surface instead of merely de-emphasized.
 - More route/runtime/server tests now use unified route roots directly, and `titleFor` / `metaFor` / `loaderErrorFor` have been removed from the implementation entirely.
 - Several node-era helpers have now been downgraded to internal-only implementation details, which is the intended direction before full deletion.
+- `API.md` now tells a unified route-first story more directly, with less transition-language around the old authoring styles.
 - The next cleanup target is removing the remaining internal node-era helpers entirely where their only purpose is servicing already-migrated flows.
 - `API.md` should now move from "legacy still exists" language toward a fully unified route-first story unless a concrete remaining public dependency still exists.
 
