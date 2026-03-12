@@ -360,6 +360,7 @@ Progress notes:
 - Loader/title/meta/guard metadata now has an initial route-owned path for unified routes, but more cleanup is still needed before the old component-decorated path can be deleted.
 - Loader execution now also has an initial tree-based unified-route path, which reduces reliance on the global routed-component registry for newer runtime flows.
 - The next cleanup focus is head/title/meta resolution and further removal of registry-first execution assumptions.
+- SSR head resolution now has an initial unified-route tree path, so route-owned title/meta callbacks can contribute to server-rendered head output without going through component-attached metadata.
 
 ### Objectives
 
@@ -781,6 +782,7 @@ Progress notes:
 - This is still transitional work; request rendering and deeper runtime flows have not been fully converted yet.
 - SSR/request rendering now has an initial unified-route branch as well, using tree-based loader streaming for unified route roots.
 - The next runtime/SSR step is to carry more route-owned metadata directly through matching and render-time head resolution.
+- The next runtime focus is removing more remaining registry and component-materialization dependencies from non-legacy flows.
 
 ### Objectives
 
