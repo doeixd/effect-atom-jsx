@@ -820,6 +820,7 @@ Progress notes:
 - More route/runtime/server tests now use unified route roots directly, and `titleFor` / `metaFor` / `loaderErrorFor` have been removed from the implementation entirely.
 - Several node-era helpers have now been downgraded to internal-only implementation details, which is the intended direction before full deletion.
 - `API.md` now tells a unified route-first story more directly, with less transition-language around the old authoring styles.
+- The next cleanup target is `Component.route(...)` / `Component.guard(...)` and the remaining `AppRouteNode` scaffolding that still props up older internal paths.
 - The next cleanup target is removing the remaining internal node-era helpers entirely where their only purpose is servicing already-migrated flows.
 - `API.md` should now move from "legacy still exists" language toward a fully unified route-first story unless a concrete remaining public dependency still exists.
 
