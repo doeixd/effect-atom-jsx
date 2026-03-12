@@ -814,6 +814,8 @@ Progress notes:
 - The next cleanup step is continuing that pruning on the remaining node-era constructors and metadata helper surface, not keeping them around as a parallel long-term API.
 - The next likely implementation slice is migrating more node-era tests/examples to unified route-first authoring so additional legacy exports can be removed safely.
 - Type tests and docs are starting to move first; some server-route and route-component tests still depend on node-era APIs and should be migrated or removed before those helpers disappear completely.
+- `ServerRoute.document(...)` now accepts unified route roots, so one of the bigger remaining migration blockers has started to move.
+- The next cleanup step is continuing that migration in the remaining runtime/server tests and then deleting more node-era helpers once those callsites no longer depend on them.
 
 ### Objectives
 
