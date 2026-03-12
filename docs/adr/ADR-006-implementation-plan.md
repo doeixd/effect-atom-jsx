@@ -365,6 +365,7 @@ Progress notes:
 - Tree-based prefetch and sitemap helpers now exist for unified routes, which starts moving navigation-adjacent workflows onto explicit route trees instead of registry lookups.
 - The next navigation/runtime cleanup target is teaching more runtime-managed preload and navigation flows to prefer the explicit app tree when unified routes are in use.
 - Runtime loader refresh now prefers the tree-based unified-route execution path when the app root is unified, reducing non-legacy dependence on registry-backed execution.
+- The next cleanup target is deleting more duplicated node-era execution paths where unified route coverage is now broad enough to support a tree-first default.
 
 ### Objectives
 
@@ -791,6 +792,7 @@ Progress notes:
 - The remaining cleanup focus is broader runtime integration and eventual deletion of legacy registry-backed fallbacks once enough public flows prefer the tree-based helpers.
 - Runtime-managed preload/navigation behavior is the next likely place to consolidate around the explicit app tree.
 - Runtime navigation by route reference now uses `Route.link(...)` for unified routes, which better aligns runtime navigation with the typed unified route surface.
+- The next runtime simplification step is to stop routing unified flows back through legacy node/component materialization where an explicit route tree already carries the needed information.
 
 ### Objectives
 
