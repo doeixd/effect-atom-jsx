@@ -368,6 +368,7 @@ Progress notes:
 - The next cleanup target is deleting more duplicated node-era execution paths where unified route coverage is now broad enough to support a tree-first default.
 - Single-flight cache hydration and route collection now have explicit tree-aware paths as well, which further reduces the need for unified routes to fall back through registry-only lookups.
 - The next cleanup target is the remaining public helper surface that still defaults to registry-backed behavior when a tree-aware route path is already available.
+- `runMatchedLoaders`, `runStreamingNavigation`, `prefetch`, and `collectSitemapEntries` now accept explicit route trees directly, which shifts more of the public helper surface toward tree-first usage without forcing separate helper names.
 
 ### Objectives
 
@@ -797,6 +798,7 @@ Progress notes:
 - The next runtime simplification step is to stop routing unified flows back through legacy node/component materialization where an explicit route tree already carries the needed information.
 - The next cleanup step is deciding which legacy registry-backed helpers can now be demoted, deprecated internally, or deleted once the explicit-tree variants cover the needed callsites.
 - The next likely implementation slice is turning more remaining helper internals into tree-first logic and shrinking the number of codepaths that still need `componentOf(...)` for unified flows.
+- The remaining cleanup is increasingly about removing or shrinking the legacy-only fallbacks now that more public helpers can route through explicit unified trees directly.
 
 ### Objectives
 
