@@ -375,6 +375,7 @@ Progress notes:
 - We are not preserving legacy escape hatches as an end state. Once a tree-first helper path fully covers a workflow, the legacy-only branch should be removed rather than retained indefinitely.
 - The next cleanup target is aligning the user-facing docs and exported surface with that reality so the public story matches the implementation direction.
 - Some duplicate tree-specific helper exports have now been collapsed back into the main overload-based helpers, which is the preferred direction for the final surface.
+- The next cleanup target is the remaining node-era tests, examples, and internal callsites that still normalize the old constructors as the default authoring path.
 
 ### Objectives
 
@@ -811,6 +812,7 @@ Progress notes:
 - The next cleanup step is identifying which remaining legacy helpers can now be deleted outright, since the target design is the unified route model rather than a long-lived dual API surface.
 - The next likely implementation slice is reducing legacy emphasis in `API.md`, pruning safe public exports, and continuing to narrow the remaining node-era surface to the minimum still required during active refactoring.
 - The next cleanup step is continuing that pruning on the remaining node-era constructors and metadata helper surface, not keeping them around as a parallel long-term API.
+- The next likely implementation slice is migrating more node-era tests/examples to unified route-first authoring so additional legacy exports can be removed safely.
 
 ### Objectives
 
