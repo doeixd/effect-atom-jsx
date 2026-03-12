@@ -211,6 +211,7 @@ Progress notes:
 
 - Started the first implementation slice by introducing initial unified route core types and `Route.path(...)` scaffolding in `src/Route.ts`.
 - This is intentionally an additive first step; old route-node code still exists and will be removed in later workstreams once the unified route path is wired through more of the runtime.
+- Tightened several early migration helpers after the first pass to reduce temporary `any`-based implementation signatures and keep the unified route work aligned with the plan's casting-discipline goals.
 
 ### Objectives
 
@@ -356,6 +357,9 @@ Progress notes:
 
 - Initial compatibility work has started for route pipe helpers like `Route.id(...)` and schema helpers so unified routes can begin participating in the existing API surface.
 - This work is not complete yet; loader/title/meta/guard/runtime integration still needs to move to route-owned metadata.
+- Loader/title/meta/guard metadata now has an initial route-owned path for unified routes, but more cleanup is still needed before the old component-decorated path can be deleted.
+- Loader execution now also has an initial tree-based unified-route path, which reduces reliance on the global routed-component registry for newer runtime flows.
+- The next cleanup focus is head/title/meta resolution and further removal of registry-first execution assumptions.
 
 ### Objectives
 
@@ -486,7 +490,6 @@ Component.require(Route.Context)
 
 ### Important constraint
 
-Do not spend implementation time on circular route-specific component typing unless it falls out naturally. The priority is a correct unified route model, not maximal component-local route inference.
 
 That said, any place where the implementation can improve inference without introducing route/component circularity should be treated as worthwhile work, not optional polish.
 
@@ -768,6 +771,16 @@ Recommended choice: Option B as an internal implementation detail if it minimize
 - the entire `guard(...)` implementation in `src/Component.ts`
 
 ## Workstream 10: Rebuild `src/RouterRuntime.ts` around unified routes
+
+Status: in progress
+
+Progress notes:
+
+- The runtime has started accepting unified routes in its config and matching pipeline.
+- Loader refresh now has an initial branch for unified routes, while legacy node execution still remains in place for compatibility during the refactor.
+- This is still transitional work; request rendering and deeper runtime flows have not been fully converted yet.
+- SSR/request rendering now has an initial unified-route branch as well, using tree-based loader streaming for unified route roots.
+- The next runtime/SSR step is to carry more route-owned metadata directly through matching and render-time head resolution.
 
 ### Objectives
 
