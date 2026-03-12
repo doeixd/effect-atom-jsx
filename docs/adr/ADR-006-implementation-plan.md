@@ -816,6 +816,7 @@ Progress notes:
 - Type tests and docs are starting to move first; some server-route and route-component tests still depend on node-era APIs and should be migrated or removed before those helpers disappear completely.
 - `ServerRoute.document(...)` now accepts unified route roots, so one of the bigger remaining migration blockers has started to move.
 - The next cleanup step is continuing that migration in the remaining runtime/server tests and then deleting more node-era helpers once those callsites no longer depend on them.
+- The next cleanup target is finishing the leftover route/runtime tests that still exercise node-era helpers directly so those helpers can be removed from the public surface instead of merely de-emphasized.
 
 ### Objectives
 
