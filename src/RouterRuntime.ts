@@ -1,5 +1,6 @@
 import { Effect, Fiber, Layer, ServiceMap } from "effect";
 import * as Route from "./Route.js";
+import * as RouteResult from "./Result.js";
 import * as ServerRoute from "./ServerRoute.js";
 import type { AnyRoute, AppRouteNode } from "./Route.js";
 import type { ServerRouteNode } from "./ServerRoute.js";
@@ -169,6 +170,12 @@ export const NavigationTag = ServiceMap.Service<NavigationService>("Navigation")
 export const RouterRuntimeTag = ServiceMap.Service<RouterRuntimeInstance>("RouterRuntime");
 
 export interface RouterRuntimeConfig {
+  /**
+   * The application route tree.
+   *
+   * This accepts both legacy node trees and unified route roots during the
+   * migration, but new runtime flows should prefer unified route trees.
+   */
   readonly app: AppRouteNode<any, any, any, any, any, any> | AnyRoute;
   readonly server?: ReadonlyArray<ServerRouteNode<any, any, any, any>>;
   readonly history: HistoryAdapter;
@@ -179,6 +186,7 @@ export interface RouterRuntimeInstance {
   readonly snapshot: () => Effect.Effect<RouterRuntimeSnapshot>;
   readonly subscribe: (listener: (snapshot: RouterRuntimeSnapshot) => void) => () => void;
   readonly navigate: (to: string | number, options?: { readonly replace?: boolean }) => Effect.Effect<void>;
+  /** Navigate by route reference with typed params. */
   readonly navigateApp: (route: AppRouteNode<any, any, any, any, any, any> | AnyRoute, options?: { readonly params?: Record<string, string>; readonly replace?: boolean }) => Effect.Effect<void>;
   readonly submit: (to: string | ServerRouteNode<any, any, any, any>, options: { readonly method?: string; readonly formData?: FormData; readonly body?: unknown }) => Effect.Effect<void>;
   readonly fetch: (key: string, to: string | ServerRouteNode<any, any, any, any>, options?: { readonly method?: string; readonly formData?: FormData; readonly body?: unknown }) => Effect.Effect<void>;
@@ -249,20 +257,26 @@ function collectAppNodes(root: AppRouteNode<any, any, any, any, any, any> | AnyR
   return out;
 }
 
+function isUnifiedAppRoute(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): node is AnyRoute {
+  return Route.UnifiedRouteSymbol in node;
+}
+
 function nodePath(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
-  return Route.fullPathOf(node as any, node as any);
+  return isUnifiedAppRoute(node)
+    ? Route.fullPathOf(node, node)
+    : Route.fullPathOf(node, node);
 }
 
 function nodeExact(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): boolean | undefined {
-  return Route.UnifiedRouteSymbol in (node as object)
-    ? (node as AnyRoute)[Route.UnifiedRouteSymbol].meta.exact ?? ((node as AnyRoute).kind === "index" ? true : undefined)
-    : (node as AppRouteNode<any, any, any, any, any, any>).kind === "index" ? true : (node as AppRouteNode<any, any, any, any, any, any>).options.exact;
+  return isUnifiedAppRoute(node)
+    ? node[Route.UnifiedRouteSymbol].meta.exact ?? (node.kind === "index" ? true : undefined)
+    : node.kind === "index" ? true : node.options.exact;
 }
 
 function nodeId(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
-  return Route.UnifiedRouteSymbol in (node as object)
-    ? (node as AnyRoute)[Route.UnifiedRouteSymbol].meta.id ?? nodePath(node)
-    : (node as AppRouteNode<any, any, any, any, any, any>).options.id ?? nodePath(node);
+  return isUnifiedAppRoute(node)
+    ? node[Route.UnifiedRouteSymbol].meta.id ?? nodePath(node)
+    : node.options.id ?? nodePath(node);
 }
 
 function matchedAppNodes(
@@ -270,6 +284,25 @@ function matchedAppNodes(
   pathname: string,
 ): ReadonlyArray<AppRouteNode<any, any, any, any, any, any> | AnyRoute> {
   return nodes.filter((node) => nodePath(node).length > 0 && Route.matchPattern(nodePath(node), pathname, nodeExact(node)));
+}
+
+function routeResultEntriesToMaps(
+  results: ReadonlyArray<{ readonly routeId: string; readonly result: RouteResult.Result<unknown, unknown> }>,
+): {
+  readonly loaderData: Map<string, unknown>;
+  readonly errors: Map<string, unknown> | null;
+} {
+  const nextLoaderData = new Map<string, unknown>();
+  let nextErrors: Map<string, unknown> | null = null;
+  for (const item of results) {
+    if (item.result._tag === "Success") {
+      nextLoaderData.set(item.routeId, item.result.value);
+    } else if (item.result._tag === "Failure") {
+      if (nextErrors === null) nextErrors = new Map();
+      nextErrors.set(item.routeId, item.result.error);
+    }
+  }
+  return { loaderData: nextLoaderData, errors: nextErrors };
 }
 
 function createSnapshot(state: {
@@ -376,50 +409,24 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
   const serverRoutes = config.server ?? [];
   let unsubscribeHistory: (() => void) | null = null;
 
+  const loadMatchedRouteResultsAt = (nextLocation: URL): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: RouteResult.Result<unknown, unknown> }>> => {
+    return Route.runMatchedLoaders(config.app, nextLocation, { includeDeferred: true });
+  };
+
   const refreshMatchedLoaders = (): Effect.Effect<void> => Effect.gen(function* () {
+    const results = yield* loadMatchedRouteResultsAt(location);
+    const next = routeResultEntriesToMaps(results);
     loaderData.clear();
-      errors = null;
-      const matched = matchedAppNodes(appNodes, location.pathname);
-      for (const node of matched) {
-        const result = Route.UnifiedRouteSymbol in (node as object)
-          ? yield* Route.runRouteLoader(node as AnyRoute, location)
-          : yield* (() => {
-            const component = Route.componentOf(node as AppRouteNode<any, any, any, any, any, any>);
-            const meta = Route.routeMetaOf(component);
-            if (!meta) return Effect.succeed(Route.Result.initial(false));
-            return Route.runRouteLoader(component, meta, location);
-          })();
-        const routeId = nodeId(node);
-        if (result._tag === "Success") {
-          loaderData.set(routeId, result.value);
-        } else if (result._tag === "Failure") {
-        if (errors === null) errors = new Map();
-        errors.set(routeId, result.error);
-      }
-    }
+    for (const [key, value] of next.loaderData) loaderData.set(key, value);
+    errors = next.errors;
   });
 
   const refreshMatchedLoadersAt = (nextLocation: URL): Effect.Effect<void> => Effect.gen(function* () {
+    const results = yield* loadMatchedRouteResultsAt(nextLocation);
+    const next = routeResultEntriesToMaps(results);
     loaderData.clear();
-      errors = null;
-      const matched = matchedAppNodes(appNodes, nextLocation.pathname);
-      for (const node of matched) {
-        const result = Route.UnifiedRouteSymbol in (node as object)
-          ? yield* Route.runRouteLoader(node as AnyRoute, nextLocation)
-          : yield* (() => {
-            const component = Route.componentOf(node as AppRouteNode<any, any, any, any, any, any>);
-            const meta = Route.routeMetaOf(component);
-            if (!meta) return Effect.succeed(Route.Result.initial(false));
-            return Route.runRouteLoader(component, meta, nextLocation);
-          })();
-        const routeId = nodeId(node);
-        if (result._tag === "Success") {
-          loaderData.set(routeId, result.value);
-        } else if (result._tag === "Failure") {
-        if (errors === null) errors = new Map();
-        errors.set(routeId, result.error);
-      }
-    }
+    for (const [key, value] of next.loaderData) loaderData.set(key, value);
+    errors = next.errors;
   });
 
   const prepareRequestLocation = (request: Request): Effect.Effect<void> => Effect.gen(function* () {
@@ -673,10 +680,15 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
     }),
     navigateApp: (route, options) => Effect.sync(() => {
       Effect.runFork(interruptTrackedFiber("navigation"));
-      let to = route.path;
-      for (const [key, value] of Object.entries(options?.params ?? {})) {
-        to = to.replace(`:${key}`, encodeURIComponent(String(value)));
-      }
+      const to = isUnifiedAppRoute(route)
+        ? Route.link(route)(options?.params ?? {})
+        : (() => {
+          let next = route.path;
+          for (const [key, value] of Object.entries(options?.params ?? {})) {
+            next = next.replace(`:${key}`, encodeURIComponent(String(value)));
+          }
+          return next;
+        })();
       const taskId = allocateTaskId();
       inFlightNavigation = taskId;
       supersedeTask(navigation, (state) => {

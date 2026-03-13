@@ -11,7 +11,6 @@ This solves three major ecosystem pain points:
 2. **The shadcn/ui Problem:** You no longer need to copy/paste and fork underlying components just to change a border radius or add an aria-attribute. You simply override the component's published `Style Handles` via context, completely avoiding fork rot.
 3. **The Platform Lock-in Problem:** Because Styles and Behaviors are data, they are completely decoupled from the Web DOM. The exact same Component can be compiled to Web (CSS/HTML), Terminal (TUI), or React Native just by swapping the Platform Layer.
 
-
 ## Architecture: From Tag to Platform
 
 AF-UI is designed with a clear hierarchy that maintains type safety from the lowest-level element up to the platform rendering boundary:
@@ -52,13 +51,6 @@ In this model:
 4. **Both compose from outside** the view through piped transformations.
 5. **Everything is type-safe** - invalid attachments are compile-time errors.
 
-This separation enables:
-- Independent development of view, behavior, and style concerns
-- Reusable behavior and style libraries
-- External customization without forking
-- Platform-agnostic implementations (Web, TUI, Mobile)
-- Granular reactive updates
-
 ## The Effect Influence
 
 AF-UI's design is fundamentally influenced by **Effect-TS**, inheriting its core patterns and guarantees:
@@ -73,7 +65,7 @@ AF-UI's design is fundamentally influenced by **Effect-TS**, inheriting its core
 Here is a complete example demonstrating the inside-out workflow:
 
 ```tsx
-import { Component, Style, Behavior, view, Element } from "af-ui";
+import { Component, Style, Behavior, view, Element, Effect } from "af-ui";
 
 // 1. Define the Component (Setup Logic & Structural View)
 const BaseButton = Component.make(
@@ -96,6 +88,7 @@ const BaseButton = Component.make(
 
 // 2. Define the Style (Appearance)
 const buttonStyle = Style.make({
+  // Use typed tokens for colors, spacing, etc.
   root: { padding: ["sm", "md"], borderRadius: "md", backgroundColor: "primary" },
   label: { color: "inverse", fontWeight: "bold" }
 });
@@ -452,7 +445,7 @@ Because AF-UI's styles and behaviors are defined as plain data structures refere
 
 ### Platform-Specific Typed Tags
 
-A key enabler of this agnosticism is how JSX tags (like `<Box>`, `<Button>`) are typed. AF-UI doesn't hardcode HTML types into the global `JSX.IntrinsicElements`. Instead, **the JSX namespace is parameterized by the platform** via `jsxImportSource`:
+A key enabler of this agnosticism is how JSX tags (like `<Box>`, `<Button>`) are typed. AF-UI doesn't hardcode HTML types into the global `JSX.Elements`. Instead, **the JSX namespace is parameterized by the platform** via `jsxImportSource`:
 
 ```ts
 // For web projects (tsconfig.json)
@@ -480,6 +473,204 @@ Component.mount(App, { layer: WebPlatformLive });
 
 // Terminal Environment
 Component.mount(App, { layer: TuiPlatformLive });
+```
+
+## Advanced Examples
+
+### 1. The Composable Modal (Behavior + Style + View)
+
+This example shows how a complex component like a Modal is assembled from independent parts.
+
+```tsx
+import { Component, Style, Behavior, view, Element, Effect } from "af-ui";
+import { disclosure, focusTrap, keyboardNav } from "af-ui/behaviors";
+
+// 1. Structural View
+const BaseModal = Component.make(
+  Component.props<{ title: string; children: ViewNode }>(),
+  Component.require()
+)(
+  () => Effect.succeed({}),
+  (props) => view({
+    root: Element.Container,
+    backdrop: Element.Interactive,
+    content: Element.Container,
+    closeButton: Element.Interactive
+  }, () => (
+    <div slot="root">
+      <div slot="backdrop" />
+      <div slot="content">
+        <h2>{props.title}</h2>
+        {props.children}
+        <button slot="closeButton">Close</button>
+      </div>
+    </div>
+  ))
+);
+
+// 2. Behavioral Composition
+// We combine multiple behaviors into one "Modal Behavior"
+const modalBehavior = Behavior.compose(
+  disclosure({ defaultOpen: false }), // State management
+  focusTrap(),                        // Accessibility: trap focus inside modal
+  keyboardNav({                       // Accessibility: close on Escape
+    onEscape: (bindings) => bindings.close()
+  })
+);
+
+// 3. Complete Component
+export const Modal = BaseModal.pipe(
+  Behavior.attach(modalBehavior, {
+    trigger: "closeButton", // Map behavior "trigger" to modal "closeButton"
+    root: "content",        // Map behavior "root" to modal "content"
+    backdrop: "backdrop"    // Map behavior "backdrop" to modal "backdrop"
+  }),
+  Style.attach(modalStyle)   // Attach visual design
+);
+```
+
+### 2. Multi-Slot Recipe: DataGrid
+
+Recipes are perfect for complex components with many slots that need to stay visually consistent.
+
+```tsx
+const dataGridRecipe = Style.recipe({
+  slots: ["root", "header", "row", "cell", "footer"],
+  base: {
+    root: Style.compose(
+      bordered(),
+      Style.slot({ width: "100%", borderCollapse: "collapse" })
+    ),
+    header: Style.compose(
+      padded("sm"),
+      Style.slot({ backgroundColor: "surface.muted", fontWeight: "bold" })
+    ),
+    row: Style.compose(
+      Style.slot({ transition: "fast" }),
+      Style.states({ hover: { backgroundColor: "surface.hover" } })
+    ),
+    cell: padded("md")
+  },
+  variants: {
+    striped: {
+      true: {
+        row: Style.nest({ "&:nth-child(even)": { backgroundColor: "surface.muted" } })
+      }
+    },
+    compact: {
+      true: {
+        cell: padded("sm"),
+        header: padded("xs")
+      }
+    }
+  },
+  defaults: { striped: true, compact: false }
+});
+
+// Usage in a component
+const DataGrid = Component.make(...)(
+  (props) => Effect.gen(function* () {
+    const styles = yield* Component.derived(() => 
+      dataGridRecipe({ striped: props.striped, compact: props.compact })
+    );
+    return { styles };
+  }),
+  (props, { styles }) => view({ ... }, () => (
+    <table slot="root" style={styles().root}>
+      <thead slot="header" style={styles().header}>...</thead>
+      <tbody slot="body">
+        <For each={props.data}>
+          {(item) => (
+            <tr slot="row" style={styles().row}>
+              <td slot="cell" style={styles().cell}>{item().name}</td>
+            </tr>
+          )}
+        </For>
+      </tbody>
+    </table>
+  ))
+);
+```
+
+### 3. Cross-Platform StatusBadge
+
+A single component definition that adapts its rendering to the active platform.
+
+```tsx
+const StatusBadge = Component.make(
+  Component.props<{ status: "online" | "offline" }>(),
+  Component.require()
+)(
+  () => Effect.succeed({}),
+  (props) => view({
+    root: Element.Container,
+    indicator: Element.Base
+  }, () => (
+    <Box slot="root">
+      <Circle slot="indicator" />
+      <Text>{props.status}</Text>
+    </Box>
+  ))
+).pipe(
+  Style.attach(Style.make({
+    root: Style.compose(
+      flexRow({ gap: "xs", align: "center" }),
+      padded(["xs", "sm"]),
+      rounded("full"),
+      Style.slot({ backgroundColor: "surface.muted" })
+    ),
+    indicator: (props) => Style.slot({
+      width: 8,
+      height: 8,
+      backgroundColor: props.status === "online" ? "success" : "neutral"
+    })
+  }))
+);
+
+// RENDERED ON WEB:
+// <div class="badge"><div class="dot online"></div>online</div>
+
+// RENDERED ON TUI:
+// [ (●) online ]  <-- rendered using ANSI colors and characters
+
+### 4. View Composition & Slot Remapping
+
+This example shows how to wrap a component while remapping its internal slots to a new public API.
+
+```tsx
+const Panel = Component.make(
+  Component.props<{ title: string; children: ViewNode }>(),
+  Component.require()
+)(
+  () => Effect.succeed({}),
+  (props) => {
+    // We wrap the BaseModal but expose a different slot API
+    return view({
+      panelRoot: Element.Container,
+      panelTitle: Element.Text,
+      panelBody: Element.Container
+    }, () => (
+      <BaseModal 
+        title={props.title}
+        // Remap BaseModal's internal slots to Panel's public slots
+        slots={{
+          root: "panelRoot",
+          content: "panelBody",
+          title: "panelTitle"
+        }}
+      >
+        {props.children}
+      </BaseModal>
+    ));
+  }
+);
+
+// Consumers now target 'panelTitle' instead of 'title'
+const StyledPanel = Panel.pipe(
+  Style.attach(Style.make({
+    panelTitle: { color: "accent.primary", fontWeight: "bold" }
+  }))
+);
 ```
 
 ## Comparison to Other Systems

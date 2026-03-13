@@ -19,8 +19,8 @@ describe("ServerRoute", () => {
     expect(typeof SaveUser.handler).toBe("function");
   });
 
-  it("supports document routes that reference app route nodes", () => {
-    const App = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+  it("supports document routes that reference app routes", () => {
+    const App = Route.path("/users")(Component.from<{}>(() => null));
     const Document = ServerRoute.document(App).pipe(
       ServerRoute.method("GET"),
       ServerRoute.path("/users/*"),
@@ -65,7 +65,7 @@ describe("ServerRoute", () => {
   });
 
   it("validates missing handlers and invalid document decode wiring", () => {
-    const App = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const App = Route.path("/users")(Component.from<{}>(() => null));
     const badAction = ServerRoute.action({ key: "bad-action" }).pipe(
       ServerRoute.method("POST"),
       ServerRoute.path("/bad-action"),
@@ -82,7 +82,7 @@ describe("ServerRoute", () => {
   });
 
   it("detects overlapping document route patterns", () => {
-    const App = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const App = Route.path("/users")(Component.from<{}>(() => null));
     const A = ServerRoute.document(App).pipe(
       ServerRoute.method("GET"),
       ServerRoute.path("/users/:id"),

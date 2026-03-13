@@ -7,7 +7,7 @@ import * as ServerRoute from "../ServerRoute.js";
 
 describe("RouterRuntime", () => {
   it("initializes and exposes a snapshot", () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.id("users")(Route.path("/users")(Component.from<{}>(() => null)));
     const runtime = RouterRuntime.create({
       app,
       history: RouterRuntime.createMemoryHistory("/users"),
@@ -18,11 +18,11 @@ describe("RouterRuntime", () => {
 
     expect(snapshot.initialized).toBe(true);
     expect(snapshot.location.pathname).toBe("/users");
-    expect(snapshot.appMatches).toContain("/users");
+    expect(snapshot.appMatches).toContain("users");
   });
 
   it("tracks navigation through history adapter", () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const runtime = RouterRuntime.create({
       app,
       history: RouterRuntime.createMemoryHistory("/"),
@@ -37,11 +37,11 @@ describe("RouterRuntime", () => {
   });
 
   it("matches app route graphs and document server routes in snapshots", () => {
-    const UserPage = Route.page("/users/:userId", Component.from<{}>(() => null)).pipe(
-      Route.id("users.detail"),
-      Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+    const app = Route.id("users.detail")(
+      Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+        Route.path("/users/:userId")(Component.from<{}>(() => null)),
+      ),
     );
-    const app = Route.define(UserPage);
     const document = ServerRoute.document(app).pipe(
       ServerRoute.method("GET"),
       ServerRoute.path("/users/*"),
@@ -60,11 +60,11 @@ describe("RouterRuntime", () => {
   });
 
   it("supports route-node navigation by reference", () => {
-    const UserPage = Route.page("/users/:userId", Component.from<{}>(() => null)).pipe(
-      Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+    const UserPage = Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+      Route.path("/users/:userId")(Component.from<{}>(() => null)),
     );
     const runtime = RouterRuntime.create({
-      app: Route.define(UserPage),
+      app: UserPage,
       history: RouterRuntime.createMemoryHistory("/"),
     });
 
@@ -74,14 +74,31 @@ describe("RouterRuntime", () => {
     expect(snapshot.location.pathname).toBe("/users/alice");
   });
 
-  it("loads matched route-node loaders into runtime snapshots", () => {
-    const UserPage = Route.page("/users/:userId", Component.from<{}>(() => null)).pipe(
-      Route.id("users.detail"),
-      Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
-      Route.loader((params: { readonly userId: string }) => Effect.succeed({ id: params.userId, name: "Alice" })),
+  it("supports unified-route navigation by reference", () => {
+    const UserRoute = Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+      Route.path("/runtime-users/:userId")(Component.from<{}>(() => null)),
     );
     const runtime = RouterRuntime.create({
-      app: Route.define(UserPage),
+      app: UserRoute,
+      history: RouterRuntime.createMemoryHistory("/"),
+    });
+
+    Effect.runSync(runtime.initialize());
+    Effect.runSync(runtime.navigateApp(UserRoute, { params: { userId: "alice" } }));
+    const snapshot = Effect.runSync(runtime.snapshot());
+    expect(snapshot.location.pathname).toBe("/runtime-users/alice");
+  });
+
+  it("loads matched route loaders into runtime snapshots", () => {
+    const UserPage = Route.loader((params: { readonly userId: string }) => Effect.succeed({ id: params.userId, name: "Alice" }))(
+      Route.id("users.detail")(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/users/:userId")(Component.from<{}>(() => null)),
+        ),
+      ),
+    );
+    const runtime = RouterRuntime.create({
+      app: UserPage,
       history: RouterRuntime.createMemoryHistory("/users/alice"),
     });
 
@@ -90,18 +107,39 @@ describe("RouterRuntime", () => {
     expect(snapshot.loaderData.get("users.detail")).toEqual({ id: "alice", name: "Alice" });
   });
 
-  it("revalidates matched loaders", () => {
-    let runs = 0;
-    const UserPage = Route.page("/users/:userId", Component.from<{}>(() => null)).pipe(
-      Route.id("users.detail"),
-      Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
-      Route.loader((params: { readonly userId: string }) => Effect.sync(() => {
-        runs += 1;
-        return { id: params.userId, count: runs };
-      })),
+  it("loads matched unified-route loaders into runtime snapshots", () => {
+    const UserRoute = Route.loader((params: { readonly userId: string }) => Effect.succeed({ id: params.userId, name: "Alice" }))(
+      Route.id("users.unified.detail")(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/unified-users/:userId")(Component.from<{}>(() => null)),
+        ),
+      ),
     );
     const runtime = RouterRuntime.create({
-      app: Route.define(UserPage),
+      app: UserRoute,
+      history: RouterRuntime.createMemoryHistory("/unified-users/alice"),
+    });
+
+    Effect.runSync(runtime.initialize());
+    const snapshot = Effect.runSync(runtime.snapshot());
+    expect(snapshot.loaderData.get("users.unified.detail")).toEqual({ id: "alice", name: "Alice" });
+    expect(snapshot.appMatches).toContain("users.unified.detail");
+  });
+
+  it("revalidates matched unified-route loaders", () => {
+    let runs = 0;
+    const UserPage = Route.loader((params: { readonly userId: string }) => Effect.sync(() => {
+        runs += 1;
+        return { id: params.userId, count: runs };
+      }))( 
+      Route.id("users.detail")(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/users/:userId")(Component.from<{}>(() => null)),
+        ),
+      ),
+    );
+    const runtime = RouterRuntime.create({
+      app: UserPage,
       history: RouterRuntime.createMemoryHistory("/users/alice"),
     });
 
@@ -113,7 +151,7 @@ describe("RouterRuntime", () => {
   });
 
   it("tracks fetcher and submission state in snapshots", async () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const action = ServerRoute.action({ key: "save-user" }).pipe(
       ServerRoute.method("POST"),
       ServerRoute.path(ServerRoute.generatedPath("save-user")),
@@ -138,7 +176,7 @@ describe("RouterRuntime", () => {
   });
 
   it("executes typed ServerRoute actions through submit", async () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const action = ServerRoute.action({ key: "save-user" }).pipe(
       ServerRoute.method("POST"),
       ServerRoute.path(ServerRoute.generatedPath("save-user")),
@@ -179,7 +217,7 @@ describe("RouterRuntime", () => {
   });
 
   it("executes typed ServerRoute fetches through fetch", async () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const resource = ServerRoute.json({ key: "user-search" }).pipe(
       ServerRoute.method("POST"),
       ServerRoute.path("/api/users/search"),
@@ -229,7 +267,7 @@ describe("RouterRuntime", () => {
   });
 
   it("exposes runtime/history/navigation as Effect services", () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const history = RouterRuntime.createMemoryHistory("/");
     const runtime = RouterRuntime.create({ app, history });
 
@@ -252,10 +290,8 @@ describe("RouterRuntime", () => {
   });
 
   it("tracks last document and dispatch outcomes in snapshots", async () => {
-    const App = Route.define(
-      Route.page("/users", Component.from<{}>(() => "Users Runtime Document")).pipe(
-        Route.loader(() => Effect.succeed({ list: true })),
-      ),
+    const App = Route.loader((_: {}) => Effect.succeed({ list: true as const }))(
+      Route.path("/users")(Component.from<{}>(() => "Users Runtime Document")),
     );
     const Health = ServerRoute.json({ key: "health" }).pipe(
       ServerRoute.method("GET"),
@@ -285,7 +321,7 @@ describe("RouterRuntime", () => {
   });
 
   it("can represent cancelled task state in snapshots", () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const runtime = RouterRuntime.create({
       app,
       history: RouterRuntime.createMemoryHistory("/users"),
@@ -299,7 +335,7 @@ describe("RouterRuntime", () => {
   });
 
   it("can cancel fetch task state explicitly", async () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const runtime = RouterRuntime.create({
       app,
       history: RouterRuntime.createMemoryHistory("/users"),
@@ -313,7 +349,7 @@ describe("RouterRuntime", () => {
   });
 
   it("supersedes fetcher state for the same key", async () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const runtime = RouterRuntime.create({
       app,
       history: RouterRuntime.createMemoryHistory("/users"),
@@ -333,7 +369,7 @@ describe("RouterRuntime", () => {
   });
 
   it("keeps latest in-flight id when repeated fetch work supersedes prior work", async () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const runtime = RouterRuntime.create({
       app,
       history: RouterRuntime.createMemoryHistory("/users"),
@@ -349,10 +385,8 @@ describe("RouterRuntime", () => {
   });
 
   it("tracks in-flight ids for request/render/revalidate paths", async () => {
-    const App = Route.define(
-      Route.page("/users", Component.from<{}>(() => "Users Runtime Document")).pipe(
-        Route.loader(() => Effect.succeed({ list: true })),
-      ),
+    const App = Route.loader((_: {}) => Effect.succeed({ list: true as const }))(
+      Route.path("/users")(Component.from<{}>(() => "Users Runtime Document")),
     );
     const runtime = RouterRuntime.create({
       app: App,
@@ -370,7 +404,7 @@ describe("RouterRuntime", () => {
   });
 
   it("tracks in-flight ids for submit and clears them after completion", async () => {
-    const app = Route.define(Route.page("/users", Component.from<{}>(() => null)));
+    const app = Route.path("/users")(Component.from<{}>(() => null));
     const action = ServerRoute.action({ key: "save-user" }).pipe(
       ServerRoute.method("POST"),
       ServerRoute.path(ServerRoute.generatedPath("save-user")),

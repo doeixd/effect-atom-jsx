@@ -1,7 +1,7 @@
 import { Cause, Effect, Option, Schema } from "effect";
 import * as Route from "./Route.js";
 import type { RouterRuntimeInstance } from "./RouterRuntime.js";
-import type { AppRouteNode } from "./Route.js";
+import type { AnyRoute, AppRouteNode } from "./Route.js";
 
 export const ServerRouteNodeSymbol: unique symbol = Symbol.for("effect-atom-jsx/ServerRouteNode");
 
@@ -22,7 +22,7 @@ export interface ServerRouteMeta<P = unknown, F = unknown, B = unknown, R = unkn
   readonly headersSchema?: Schema.Schema<H>;
   readonly cookiesSchema?: Schema.Schema<C>;
   readonly responseSchema?: Schema.Schema<R>;
-  readonly app?: AppRouteNode<any, any, any, any, any, any>;
+  readonly app?: AppRouteNode<any, any, any, any, any, any> | AnyRoute;
   readonly documentRenderer?: unknown;
   readonly handler?: (input: { readonly params: P; readonly form: F; readonly body: B; readonly query: Q; readonly headers: H; readonly cookies: C }) => Effect.Effect<R, unknown, unknown>;
 }
@@ -41,7 +41,7 @@ export interface ServerRouteNode<P = unknown, F = unknown, B = unknown, R = unkn
   readonly headersSchema?: Schema.Schema<H>;
   readonly cookiesSchema?: Schema.Schema<C>;
   readonly responseSchema?: Schema.Schema<R>;
-  readonly app?: AppRouteNode<any, any, any, any, any, any>;
+  readonly app?: AppRouteNode<any, any, any, any, any, any> | AnyRoute;
   readonly documentRenderer?: unknown;
   readonly handler?: (input: { readonly params: P; readonly form: F; readonly body: B; readonly query: Q; readonly headers: H; readonly cookies: C }) => Effect.Effect<R, unknown, unknown>;
   pipe<R1 extends ServerRouteNode<any, any, any, any, any, any, any>>(op1: ServerRouteEnhancer<this, R1>): R1;
@@ -231,8 +231,13 @@ export function action(seed?: { readonly key?: string }): ServerRouteNode<unknow
   return makeServerRouteNode("action", { key: seed?.key });
 }
 
-/** Create a first-class server document route node. */
-export function document(app: AppRouteNode<any, any, any, any, any, any>): ServerRouteNode<unknown, unknown, unknown, unknown> {
+/**
+ * Create a first-class server document route node.
+ *
+ * Document routes now accept unified route roots as well as remaining legacy
+ * node trees.
+ */
+export function document(app: AppRouteNode<any, any, any, any, any, any> | AnyRoute): ServerRouteNode<unknown, unknown, unknown, unknown> {
   return makeServerRouteNode("document", { app });
 }
 

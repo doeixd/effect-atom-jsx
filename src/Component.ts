@@ -611,6 +611,13 @@ function routeErrorTag(error: unknown): string {
     : "_";
 }
 
+/**
+ * Transitional routed-component helper.
+ *
+ * The unified route-first API should prefer `Route.path(...)` and route pipe
+ * composition. This helper remains only for the narrower remaining
+ * routed-component setup cases still under migration.
+ */
 export function route<P = Record<string, string>, Q = Record<string, string | undefined>, H = string>(
   pattern: string,
   options?: {
@@ -849,6 +856,11 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
   };
 }
 
+/**
+ * Transitional routed-component guard helper.
+ *
+ * New code should prefer `Route.guard(...)` on unified routes.
+ */
 export function guard<Req, E>(
   check: Effect.Effect<unknown, E, Req>,
 ): <C extends Component<any, any, any, any>>(
@@ -957,7 +969,6 @@ export const Component = {
   withSetupRetry,
   withSetupTimeout,
   route,
-  guard,
   withBehavior,
   slotInteractive,
   slotContainer,

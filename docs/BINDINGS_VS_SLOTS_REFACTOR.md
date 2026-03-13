@@ -317,6 +317,13 @@ The final step is bridging the high-level `Slots` API with the internal JSX comp
 2. **Preserve Slot Identity:** Update the compiler to recognize the `slot="name"` attribute. Instead of compiling it into an opaque attribute, it must elevate that node's typed holes and expose them on the final `View<Slots>` object.
 3. **Bridge Style.attach to Holes:** Refactor `Style.attach` so that it doesn't just check for a slot's existence, but specifically targets the `StyleHole` and `ClassHole` of that slot for property injection.
 
+### Step 9: Support Slot Remapping in Composition
+To enable advanced view composition (wrapping components), the system must support remapping slots at the component boundary.
+
+1. **Add `slots` Prop to Components**: Update the base component prop type to optionally accept a `slots` map.
+2. **Compiler support**: When the compiler encounters a child component with a `slots` mapping, it must redirect the child's typed holes to the parent's named slots.
+3. **Type-safe Mapping**: Ensure that remapping is checked at compile-time—mapping a child's `root` to a parent's `panelRoot` should only work if their abstract element capabilities are compatible.
+
 ## Conclusion
 
 By isolating `Bindings` (Logic/Data) from `Slots` (Structure/View) at the type level, we remove the final architectural compromise in AF-UI. Components become cleaner, headless usage becomes native, and the "Inside-Out" philosophy is perfectly reflected in the TypeScript signatures. This refactoring will make the framework significantly easier to explain, maintain, and extend.

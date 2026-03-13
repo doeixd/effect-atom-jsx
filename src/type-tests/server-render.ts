@@ -3,9 +3,7 @@ import { Schema } from "effect";
 import * as Route from "../Route.js";
 import * as ServerRoute from "../ServerRoute.js";
 
-const App = Route.define(
-  Route.page("/hello", Component.from<{}>(() => "Hello SSR")),
-);
+const App = Route.path("/hello")(Component.from<{}>(() => "Hello SSR"));
 
 const Document = ServerRoute.document(App).pipe(
   ServerRoute.method("GET"),

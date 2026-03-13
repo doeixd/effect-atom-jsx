@@ -542,26 +542,26 @@ Example: `examples/styled-combobox/App.tsx`
 
 ## Route / Router (`src/Route.ts`)
 
-Component-first routing with schema-typed params/query and layer-provided router implementations. The routing API is in the middle of a unification refactor, so both legacy and new entrypoints currently exist. The long-term direction is `Component.pipe(Route.path(...), ...)`, with route metadata accumulating on a first-class route value instead of being split across components and route nodes.
+Routing uses a unified route-first model built around `Component.pipe(Route.path(...), ...)`. The intended authoring flow is:
 
-Today, multiple authoring styles still exist during the transition:
+```ts
+const UserRoute = Component.from<{}>(() => null).pipe(
+  Route.path("/users/:userId"),
+  Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+  Route.loader((params) => Effect.succeed({ id: params.userId })),
+  Route.title((params, data) => `${params.userId}:${data?.id ?? "none"}`),
+)
+```
 
-- **Component-first:** use `Component.route(pattern)` to add routing metadata directly to a component. Works well for smaller apps where routes are tightly coupled to components.
-- **Unified route-first (new):** use `Component.from(...).pipe(Route.path(...), Route.paramsSchema(...), ...)` to build a first-class route value with strong inference.
-- **Node-first:** use `Route.page(...)`, `Route.layout(...)`, `Route.define(...)` pipe chains to build a separate route tree. Provides the strongest TypeScript inference for loader data and params since the metadata flows through a typed pipe chain.
-- component wrappers like `Component.withLoading(...)` and `Component.withSpan(...)` now preserve internal route metadata at runtime, so route registration/linking behavior survives more component-level transformations.
-- common component wrappers now also preserve route metadata in their return types more effectively, so unified helpers like `Route.link(...)` survive more component-first composition chains.
-- this now also applies to wrapper-style helpers such as `Component.withLayer(...)`, so route-aware components keep more of their route typing after safe component transformations.
-- wrapped component-first routes now preserve more extraction helper behavior too, including `Route.RouteParamsOf<T>`, `Route.RouteQueryOf<T>`, and loader-data extraction in more safe wrapper chains.
+The key design goal is that route metadata accumulates on a first-class route value, with strong inference flowing through the pipe chain.
 
-**Route pipe (component-first):**
-- `Component.route(pattern, options?)` — bind a component to a URL pattern
-- `Component.guard(effect)` — run an Effect before render; redirect or abort on failure
+Component wrappers like `Component.withLoading(...)`, `Component.withSpan(...)`, and `Component.withLayer(...)` preserve route metadata and extraction behavior, so helpers like `Route.link(...)` and `Route.ParamsOf<T>` survive more safe composition chains.
 
-**Unified route pipe (new):**
+**Unified route pipe:**
 - `Route.path(pattern)` — attach a URL pattern to a component and return a first-class route value
 - `Route.paramsSchema`, `Route.querySchema`, `Route.hashSchema` — replace raw URL inference with decoded schema output
 - `Route.id`, `Route.layout()`, `Route.index()`, `Route.children(...)` — refine the unified route value
+- `Route.loader`, `Route.title`, `Route.meta`, `Route.guard`, `Route.transition` — accumulate route behavior and metadata on the same route value
 
 **Route accessors (inside components):**
 - `Route.params` — typed URL params atom
@@ -582,20 +582,11 @@ Today, multiple authoring styles still exist during the transition:
 - `Route.queryAtom(key, schema, { default })` — atom backed by a URL query parameter; writes update the URL, reads come from it
 
 **Loader infrastructure:**
-- `Route.loader` — declare loader data and loader effect on a route node
+- `Route.loader` — declare loader data and loader effect on a route
 - `Route.loaderError`, `Route.prefetch`, `Route.reload`, `Route.action`
-- `Route.runMatchedLoaders` — run all matched loaders for current navigation
+- `Route.runMatchedLoaders` — run all matched loaders; accepts either a `URL` or `(root, url)`
 
-**Route node constructors (node-first):**
-- `Route.page`, `Route.layout`, `Route.index`, `Route.define` — create route nodes
-- `Route.ref`, `Route.mount`, `Route.children`, `Route.id`
-- `Route.paramsSchema`, `Route.querySchema`, `Route.hashSchema` — declare typed URL shapes
-- `Route.componentOf` — extract component from a route node
-
-**Route node metadata pipes:**
-- `Route.loader(...)`, `Route.title(...)`, `Route.meta(...)` — available as node pipes; inference flows through the chain
-
-**Route node extraction helpers:**
+**Extraction helpers:**
 - `Route.RouteNodeParamsOf<T>`, `Route.RouteNodeQueryOf<T>`, `Route.RouteNodeHashOf<T>`, `Route.RouteNodeLoaderDataOf<T>`, `Route.RouteNodeLoaderErrorOf<T>`
 - Aliases: `Route.ParamsOf<T>`, `Route.QueryOf<T>`, `Route.HashOf<T>`, `Route.LoaderDataOf<T>`, `Route.LoaderErrorOf<T>`
 
@@ -607,18 +598,15 @@ Today, multiple authoring styles still exist during the transition:
 - Title: deepest matched route wins
 - Meta: merged root → leaf (deeper keys override parent)
 - Callback forms for `Route.title` / `Route.meta` receive `(params, loaderData, loaderResult)`
-- For full callback inference without explicit generics: `Route.titleFor(...)` / `Route.metaFor(...)`
-- For typed loader error cases: `Route.loaderErrorFor(...)`
 - Route head callbacks stay reactive after setup and recompute on match/params/loader changes
 
 **Extra route pipes/utilities:**
 - `Route.guard`, `Route.title`, `Route.meta`, `Route.transition`, `Route.lazy`
 - `Route.Switch`, `Route.collect`, `Route.collectAll`, `Route.validateLinks`
-- `Route.titleFor(component, ...)`, `Route.metaFor(component, ...)` — inferred head helpers
 
 **SSR/SSG loader helpers:**
 - `Route.serializeLoaderData`, `Route.deserializeLoaderData`, `Route.streamDeferredLoaderScripts`
-- `Route.collectSitemapEntries`, `Route.sitemapParams`
+- `Route.collectSitemapEntries`, `Route.sitemapParams` — sitemap collection accepts either `baseUrl` alone or `(root, baseUrl)` for explicit trees
 
 **Head/meta utilities:**
 - `Route.mergeRouteMetaChain`, `Route.resolveRouteHead`, `Route.applyRouteHeadToDocument`
@@ -763,7 +751,11 @@ Route.singleFlight(fn, {
 
 **5. Client: cache seeding, no second request**
 
-`Route.hydrateSingleFlightPayload(payload)` runs on the client after the transport receives the response. For each entry in `payload.loaders`:
+`Route.hydrateSingleFlightPayload(payload)` runs on the client after the transport receives the response.
+
+If you already have an explicit unified route tree available, prefer `Route.hydrateSingleFlightPayload(payload, root)` so hydration can resolve loaders from the route tree directly.
+
+For each entry in `payload.loaders`:
 
 1. Finds the registered route by `routeId`.
 2. Extracts URL params from the target URL (using the route's pattern).
@@ -772,6 +764,8 @@ Route.singleFlight(fn, {
 Components that are already mounted read from this cache synchronously on next render — no loading state, no flash.
 
 `hydrateSingleFlightPayload` is called automatically by `Route.invokeSingleFlight(...)`. You can call it manually if you're managing the transport yourself, or pass `{ hydrate: false }` to `invokeSingleFlight` to skip it.
+
+When you already have an explicit route tree, `Route.actionSingleFlight(...)` and `Route.invokeSingleFlight(...)` can also be given that route tree through their `app` option so loader selection and hydration stay tree-first instead of relying on registry lookup.
 
 ---
 
@@ -920,6 +914,7 @@ Server-side route handlers with typed request decoding, schema-based params/form
 **Document rendering:**
 - `ServerRoute.documentRenderer`, `ServerRoute.generatedPath`
 - `ServerRoute.runDocument(...)` — run a document route within a runtime
+- `ServerRoute.document(app)` accepts unified route roots directly
 
 **Graph helpers:**
 - `ServerRoute.nodes(...)`, `ServerRoute.validate(...)` — validates overlapping document patterns and invalid decode wiring

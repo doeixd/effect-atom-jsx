@@ -3,10 +3,8 @@ import * as Component from "../Component.js";
 import * as Route from "../Route.js";
 import * as ServerRoute from "../ServerRoute.js";
 
-const App = Route.define(
-  Route.page("/users/:userId", Component.from<{}>(() => null)).pipe(
-    Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
-  ),
+const App = Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+  Route.path("/users/:userId")(Component.from<{}>(() => null)),
 );
 
 const SaveUser = ServerRoute.action({ key: "save-user" }).pipe(

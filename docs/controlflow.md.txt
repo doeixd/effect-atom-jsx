@@ -1,0 +1,297 @@
+Yes — probably **yes**, but only if they preserve the same “typed surface” idea as views and slots.
+
+My instinct is:
+
+**If AF-UI has typed control-flow primitives, they should not just render conditionally — they should preserve or transform slot information in a principled way.**
+
+That’s the important part.
+
+What this means
+
+In a system like AF-UI, control flow is not only about runtime branching. It also affects the **structural contract** exposed to external style/behavior attachment.
+
+So primitives like:
+
+* `If`
+* `Match`
+* `ForEach`
+* `Show`
+* `Switch`
+* maybe `Suspense`/`Boundary`
+
+should answer a type-level question:
+
+**After this control flow runs, what slots are guaranteed to exist?**
+
+That leads to a few rules.
+
+### 1. Typed control flow should preserve guarantees, not destroy them
+
+If a slot is always present across all branches, it can remain in the resulting `View<Slots>`.
+
+If a slot exists only in some branches, then the system needs to represent that somehow:
+
+* make it optional in the slot type
+* require both branches to expose the same slot contract
+* or disallow external attachment unless the slot is guaranteed
+
+That is the core design choice.
+
+For example:
+
+```ts
+If({
+  when: props.loading,
+  then: LoadingView,   // slots: { root, spinner }
+  else: ContentView    // slots: { root, body }
+})
+```
+
+What is the resulting slot surface?
+
+Not obvious. It might be:
+
+* only `root`, because that is the intersection
+* or `root` plus optional `spinner?` and `body?`
+* or a tagged union of slot maps
+
+I would strongly prefer **intersection / guaranteed slots only** for ergonomics.
+
+So the result would expose only:
+
+```ts
+{ root: Element.Container }
+```
+
+That keeps attachment safe and understandable.
+
+### 2. Branching views should probably compose by intersection, not union
+
+This is one of the most important choices.
+
+If two branches expose different slots, the output of the control flow primitive should probably expose only the slots common to all branches.
+
+Why?
+Because style/behavior attachment needs certainty.
+
+Union slot surfaces sound powerful, but they become painful fast:
+
+* attachments must narrow by branch
+* type errors get messy
+* external composition becomes harder to reason about
+
+So I’d suggest:
+
+**typed branching returns the intersection of all branch slot maps**, unless the user explicitly opts into a more advanced tagged-union mode.
+
+That is likely the right default.
+
+### 3. Iteration primitives should produce typed collections
+
+If AF-UI already cares about cardinality, then list-like control flow should preserve that.
+
+So `ForEach` or `Repeat` shouldn’t just return a bag of nodes. It should produce something like:
+
+```ts
+View<{
+  items: Collection<Element.Container>
+}>
+```
+
+or maybe a named repeated slot structure.
+
+That would let behaviors like:
+
+* selection
+* roving focus
+* keyboard navigation
+* drag-and-drop
+
+attach to the collection in a type-safe way.
+
+This feels like a very natural fit for AF-UI.
+
+### 4. Control-flow primitives should probably be first-class structural operators
+
+Meaning: don’t treat them as just helper components. Treat them as part of the **view algebra**.
+
+Because they’re really doing structural transformations:
+
+* `If` narrows or intersects slot surfaces
+* `Match` combines alternatives
+* `ForEach` lifts a slot into a collection
+* `Boundary` may wrap slots with fallback structure
+* `Portal` may preserve slots while changing render target
+
+That’s a deeper role than normal component composition.
+
+### 5. They should likely be constrained to prevent “slot instability”
+
+One of the biggest dangers in this architecture is that a component advertises slots that don’t reliably exist.
+
+Typed control flow should help prevent that.
+
+So a good rule would be:
+
+**externally attachable slots should be structurally stable by default**
+
+Meaning:
+
+* if a slot is conditional, it should not appear as a normal guaranteed slot
+* if it is repeated, it should be typed as a collection
+* if it is branch-specific, users should opt into more advanced branch-aware APIs
+
+That preserves the simplicity of the external attachment model.
+
+A good mental model
+
+You can think of typed control-flow primitives as **slot transformers**.
+
+For example:
+
+* `If<A, B>` → `CommonSlots<A, B>`
+* `Match<[A, B, C]>` → `IntersectSlots<A, B, C>`
+* `ForEach<A>` → `Collectionify<A>`
+* `Optional<A>` → maybe `PartialSlots<A>` or just `{}`
+* `Wrap<A>` → remapped or augmented slot surface
+
+That fits AF-UI very well.
+
+What I would avoid
+
+I would avoid making control-flow types too clever too early.
+
+Specifically, I would be cautious about:
+
+* full union slot exposure
+* branch-dependent external attachments
+* deeply inferred optional-slot semantics everywhere
+* dynamic slot names produced by loops
+
+Those would make the type story much harder to use.
+
+My recommendation
+
+So I’d complete your sentence like this:
+
+**If we have typed control-flow primitives, they should act as typed structural transformers that preserve only the slots guaranteed by the control flow, and lift repeated structure into typed collections.**
+
+That would be the cleanest fit with the rest of the system.
+
+A short design rule version:
+
+* conditionals return **common guaranteed slots**
+* loops return **collection slots**
+* optional structure is **not externally attachable unless explicitly modeled**
+* advanced branch-aware slot typing should be opt-in, not default
+
+That would keep AF-UI coherent.
+
+If you want, I can sketch what `If`, `Match`, and `ForEach` APIs should look like in AF-UI terms.
+
+Yes — **Effect already gives you good raw ingredients**, but not the finished UI abstraction.
+
+The most relevant primitives are:
+
+* **`Option`** for “maybe present” structure, which maps naturally to optional/conditional UI branches. Effect documents `Option` as the way to represent presence vs absence, with helpers like `Option.match` for branching. ([effect.website][1])
+* **`Match`** for typed pattern matching and exhaustiveness over values and discriminated unions, which is a strong fit for `If`/`Switch`/`Match`-style view selection. Effect’s `Match` module is specifically described as a type-safe pattern matching system with exhaustiveness checking. ([effect-ts.github.io][2])
+* **`Effect.all`** for traversing/collecting many effects across arrays, structs, and records, which is a natural base for typed list rendering / repeated structure. The docs show it combining effects from iterables, structs, and records into correspondingly typed outputs. ([effect.website][3])
+* **`Layer`** for environment-provided capabilities like theme, renderer, router, focus manager, platform services, and so on. Effect describes `Layer` as a recipe for producing services with dependencies and safe acquisition/release. ([effect-ts.github.io][4])
+
+So for AF-UI, I’d say:
+
+**Effect has the right semantic building blocks for typed control flow, but AF-UI would still need to define the UI-specific slot algebra on top of them.**
+
+That distinction matters.
+
+What Effect already solves well
+
+Effect is strong at:
+
+* typed branching
+* typed optionality
+* typed dependency provision
+* typed failure propagation
+* typed sequencing/traversal of collections
+
+That makes it a very good substrate for control-flow components.
+
+Examples:
+
+A conditional primitive could be conceptually backed by `Option` or `Match`:
+
+```ts
+Match.value(state).pipe(
+  Match.when({ _tag: "Loading" }, () => LoadingView),
+  Match.when({ _tag: "Ready" }, (s) => ReadyView(s)),
+  Match.exhaustive
+)
+```
+
+A repeated primitive could be conceptually backed by traversal:
+
+```ts
+Effect.all(items.map(renderItem))
+```
+
+A platform/rendering/context boundary could be naturally modeled with `Layer`. ([effect-ts.github.io][4])
+
+What Effect does **not** give you for free
+
+This is the key part:
+
+Effect does **not** natively know anything about:
+
+* UI slots
+* branch slot intersection
+* collection slot lifting
+* behavior/style attachment compatibility
+* renderer-level structural guarantees
+
+Those are AF-UI inventions, not Effect primitives.
+
+So if you build typed control-flow primitives in AF-UI, Effect can help with:
+
+* computation
+* branching
+* exhaustiveness
+* environment
+* sequencing
+
+But AF-UI still has to define rules like:
+
+* `If<A, B>` returns the **common guaranteed slots**
+* `ForEach<A>` returns **collection slots**
+* `Match` preserves only branch-stable externally attachable slots
+* slot exposure remains structurally stable across control flow
+
+That part is your framework design, not something Effect hands you. The docs support the underlying mechanisms, but not the UI semantics themselves. ([effect.website][1])
+
+My practical take
+
+So the answer is:
+
+**Yes, Effect has very good primitives for the logic side of typed control flow.**
+But **AF-UI still needs its own higher-level view/control-flow layer** that translates those primitives into structural slot guarantees.
+
+If I were designing it, I would lean on:
+
+* `Option` for optional rendering
+* `Match` for branch selection
+* `Effect.all` for repeated rendering / traversal
+* `Layer` for renderer/theme/platform/environment
+* ordinary `Effect` itself for async/suspense/boundary-style composition ([effect.website][1])
+
+But I would **not** expose raw Effect APIs as the UI API. I’d wrap them in AF-UI-specific primitives with slot-aware typing.
+
+A good AF-UI design principle would be:
+
+**Effect handles the control-flow computation; AF-UI handles the structural meaning of that control flow.**
+
+That’s the clean split.
+
+[1]: https://effect.website/docs/data-types/option/?utm_source=chatgpt.com "Option | Effect Documentation"
+[2]: https://effect-ts.github.io/effect/effect/Match.ts.html?utm_source=chatgpt.com "Match.ts - effect"
+[3]: https://effect.website/docs/getting-started/control-flow/?utm_source=chatgpt.com "Control Flow Operators"
+[4]: https://effect-ts.github.io/effect/effect/Layer.ts.html?utm_source=chatgpt.com "Layer.ts - effect"
+

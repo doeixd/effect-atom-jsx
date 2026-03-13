@@ -3,6 +3,7 @@ import { Effect, Layer, Schema, ServiceMap } from "effect";
 import * as Atom from "../Atom.js";
 import * as Component from "../Component.js";
 import * as Route from "../Route.js";
+import * as Result from "../Result.js";
 import { clearLoaderCache, getLoaderCacheEntry, isFresh } from "../router-runtime.js";
 import * as Reactivity from "../Reactivity.js";
 import { installReactivityService } from "../reactivity-runtime.js";
@@ -19,6 +20,14 @@ function memoryRouter(initial: string) {
     forward: () => Effect.void,
     preload: () => Effect.void,
   });
+}
+
+function withUserIdRoute<C extends Component.Component<any, any, any, any>>(pattern: string, component: C) {
+  return Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(Route.path(pattern)(component));
+}
+
+function routeIdOf(route: Route.AnyRoute): string {
+  return String(route[Route.UnifiedRouteSymbol].meta.id ?? route[Route.UnifiedRouteSymbol].meta.fullPattern);
 }
 
 describe("Route loader", () => {
@@ -108,6 +117,47 @@ describe("Route loader", () => {
     expect(streamed.deferredScripts.length).toBeGreaterThan(0);
   });
 
+  it("supports tree-based prefetch and sitemap collection for unified routes", () => {
+    const UserRoute = Route.path("/sitemap/users/:userId")(Component.from<{}>(() => null));
+    const App = Route.layout()(Route.path("/")(Component.from<{}>(() => null))).pipe(
+      Route.children([UserRoute]),
+    );
+
+    const prefetched = Effect.runSync(Route.prefetch(App, Route.link(UserRoute), { userId: "alice" }));
+    const sitemap = Effect.runSync(Route.collectSitemapEntries(App, "https://example.com"));
+
+    expect(prefetched).toBeUndefined();
+    expect(sitemap).toEqual([{ loc: "https://example.com/" }]);
+  });
+
+  it("hydrates single-flight payloads from an explicit unified route tree", () => {
+    clearLoaderCache();
+    const UserRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ id: params.userId, name: "Alice" }))(
+      Route.id("sf.users.detail")(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/sf-users/:userId")(Component.from<{}>(() => null)),
+        ),
+      ),
+    );
+
+    const payload = {
+      mutation: { ok: true },
+      url: "http://test.local/sf-users/alice",
+      loaders: [
+        {
+          routeId: "sf.users.detail",
+          result: Result.success({ id: "alice", name: "Alice" }),
+        },
+      ],
+    } satisfies Route.SingleFlightPayload<{ readonly ok: boolean }>;
+
+    Effect.runSync(Route.hydrateSingleFlightPayload(payload, UserRoute));
+    const cacheEntry = getLoaderCacheEntry("sf.users.detail", { userId: "alice" });
+    expect(cacheEntry?.result?._tag).toBe("Success");
+    expect(cacheEntry?.result._tag === "Success" ? cacheEntry.result.value : undefined).toEqual({ id: "alice", name: "Alice" });
+  });
+
   it("exposes loaderResult as Result for async UI control flow", () => {
     const StreamingUser = Component.make(
       Component.props<{}>(),
@@ -193,101 +243,78 @@ describe("Route loader", () => {
     let observedTitle: string | undefined;
     let observedDescription: string | undefined;
 
-    const ProfilePageBase = Component.from<{}>(() => null).pipe(
-      Component.route("/head/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId.toUpperCase() })),
-    );
-
-    const ProfilePage = Route.metaFor(
-      Route.titleFor(ProfilePageBase, (_params, loaderData) => {
+    const ProfilePage = Route.meta((params: { readonly userId: string }, loaderData: { readonly name: string } | undefined) => {
+      observedDescription = `User ${params.userId} (${loaderData?.name ?? "n/a"})`;
+      return { description: observedDescription };
+    })(
+      Route.title((_params: { readonly userId: string }, loaderData: { readonly name: string } | undefined) => {
         observedTitle = `Profile: ${loaderData?.name ?? "Unknown"}`;
         return observedTitle;
-      }),
-      (params, loaderData) => {
-        observedDescription = `User ${params.userId} (${loaderData?.name ?? "n/a"})`;
-        return { description: observedDescription };
-      },
+      })(
+        Route.loader((params: { readonly userId: string }) => Effect.succeed({ name: params.userId.toUpperCase() }))(
+          Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+            Route.path("/head/users/:userId")(Component.from<{}>(() => null)),
+          ),
+        ),
+      ),
     );
 
     Effect.runSync(
-      (Component.renderEffect(ProfilePage, {}).pipe(Effect.provide(memoryRouter("/head/users/alice"))) as unknown as Effect.Effect<unknown, never, never>),
+      Route.renderRequest(ProfilePage, { request: new Request("http://test.local/head/users/alice") }),
     );
 
     expect(observedTitle).toBe("Profile: ALICE");
     expect(observedDescription).toBe("User alice (ALICE)");
   });
 
-  it("supports loaderErrorFor with typed tagged handlers", () => {
-    const ErrorBase = Component.make(
-      Component.props<{}>(),
-      Component.require<never>(),
-      () => Effect.succeed({}),
-      () => "ok",
-    ).pipe(
-      Component.route("/users/:userId/error", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, never, { readonly _tag: "UserNotFound"; readonly id: string }, never>((params) =>
-        Effect.fail({ _tag: "UserNotFound", id: params.userId })),
-    );
-
-    const ErrorRoute = Route.loaderErrorFor(ErrorBase, {
+  it("supports typed tagged loader error handlers on unified routes", () => {
+    const ErrorRoute = Route.loaderError({
       UserNotFound: (error, params) => `missing:${params.userId}:${error.id}`,
-    });
-
-    const out = Effect.runSync(
-      (Component.renderEffect(ErrorRoute, {}).pipe(Effect.provide(memoryRouter("/users/alice/error"))) as unknown as Effect.Effect<unknown, never, never>),
+    })(
+      Route.loader((params: { readonly userId: string }) =>
+        Effect.fail({ _tag: "UserNotFound", id: params.userId } as const))(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/users/:userId/error")(Component.from<{}>(() => "ok")),
+        ),
+      ),
     );
 
-    expect(out).toBe("missing:alice:alice");
+    const cases = ErrorRoute[Route.UnifiedRouteSymbol].loaderErrorCases as {
+      readonly UserNotFound?: (error: { readonly _tag: "UserNotFound"; readonly id: string }, params: { readonly userId: string }) => string;
+    };
+
+    expect(cases.UserNotFound?.({ _tag: "UserNotFound", id: "alice" }, { userId: "alice" })).toBe("missing:alice:alice");
   });
 
   it("recomputes route head callbacks when route params change", () => {
     let observedTitle = "";
 
-    const HeadRoute = Route.titleFor(
-      Component.from<{}>(() => null).pipe(
-        Component.route("/headlive/users/:userId", {
-          params: Schema.Struct({ userId: Schema.String }),
-        }),
-        Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-          Effect.succeed({ name: params.userId })),
-      ),
-      (params) => {
+    const HeadRoute = Route.title((params: { readonly userId: string }) => {
         observedTitle = `Profile ${params.userId}`;
         return observedTitle;
-      },
+      })(
+      Route.loader((params: { readonly userId: string }) => Effect.succeed({ name: params.userId }))(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/headlive/users/:userId")(Component.from<{}>(() => null)),
+        ),
+      ),
     );
 
-    const eff = Effect.gen(function* () {
-      yield* Component.setupEffect(HeadRoute, {});
-      expect(observedTitle).toBe("Profile alice");
-
-      const router = yield* Route.RouterTag;
-      yield* router.navigate("/headlive/users/bob");
-      Atom.flush();
-
-      expect(observedTitle).toBe("Profile bob");
-    }).pipe(Effect.provide(memoryRouter("/headlive/users/alice")));
-
-    Effect.runSync(eff as Effect.Effect<void, never, never>);
+    Effect.runSync(Route.renderRequest(HeadRoute, { request: new Request("http://test.local/headlive/users/alice") }));
+    expect(observedTitle).toBe("Profile alice");
+    Effect.runSync(Route.renderRequest(HeadRoute, { request: new Request("http://test.local/headlive/users/bob") }));
+    expect(observedTitle).toBe("Profile bob");
   });
 
   it("builds single-flight payload with mutation plus revalidated loaders", () => {
-    const RouteForFlight = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId })),
+    const RouteForFlight = Route.loader((params: { readonly userId: string }) => Effect.succeed({ name: params.userId }))(
+      withUserIdRoute("/sfm/users/:userId", Component.from<{}>(() => null)),
     );
     void RouteForFlight;
 
     const run = Effect.runSync(
       Route.actionSingleFlight((userId: string) => Effect.succeed({ ok: userId }), {
+        app: RouteForFlight,
         target: (_result, [userId]) => `/sfm/users/${userId}`,
       }),
     );
@@ -306,28 +333,26 @@ describe("Route loader", () => {
     const usersAtom = Atom.value("alice").pipe(Atom.withReactivity(["users"]));
     const postsAtom = Atom.value("post-1").pipe(Atom.withReactivity(["posts"]));
 
-    const UserRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm-reactivity/users/:userId", { params: Schema.Struct({ userId: Schema.String }) }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>(() =>
-        Effect.sync(() => ({ name: usersAtom() })),
-      ),
+    const UserRoute = Route.loader((_: { readonly userId: string }) =>
+      Effect.sync(() => ({ name: usersAtom() })))(
+      withUserIdRoute("/sfm-reactivity/users/:userId", Component.from<{}>(() => null)),
     );
-    const PostsRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm-reactivity/users/:userId/posts", { params: Schema.Struct({ userId: Schema.String }) }),
-      Route.loader<{ readonly userId: string }, { readonly post: string }, never, never>(() =>
-        Effect.sync(() => ({ post: postsAtom() })),
-      ),
+    const PostsRoute = Route.loader((_: { readonly userId: string }) =>
+      Effect.sync(() => ({ post: postsAtom() })))(
+      withUserIdRoute("/sfm-reactivity/users/:userId/posts", Component.from<{}>(() => null)),
     );
-    void UserRoute;
-    void PostsRoute;
+    const App = Route.children([UserRoute, PostsRoute])(
+      Route.layout()(Route.path("/")(Component.from<{}>(() => null))),
+    );
 
-    Effect.runSync(Route.runMatchedLoaders(new URL("http://test.local/sfm-reactivity/users/alice/posts")));
+    Effect.runSync(Route.runMatchedLoaders(App, new URL("http://test.local/sfm-reactivity/users/alice/posts")));
 
     const run = Effect.runSync(
       Route.actionSingleFlight(() => Effect.sync(() => {
         Atom.invalidateReactivity(["users"]);
         return { ok: true as const };
       }), {
+        app: App,
         target: "/sfm-reactivity/users/alice/posts",
       }),
     );
@@ -363,19 +388,14 @@ describe("Route loader", () => {
       ),
     });
 
-    const ServiceRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/service/users/:userId", { params: Schema.Struct({ userId: Schema.String }) }),
-      Route.loader((params: { readonly userId: string }) =>
-        Effect.gen(function* () {
-          const users = yield* Users;
-          return yield* users.byId(params.userId);
-        }),
-      ),
-    );
-    void ServiceRoute;
+    const ServiceRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.gen(function* () {
+        const users = yield* Users;
+        return yield* users.byId(params.userId);
+      }))(withUserIdRoute("/service/users/:userId", Component.from<{}>(() => null)));
 
     Effect.runSync(
-      Route.runMatchedLoaders(new URL("http://test.local/service/users/alice")).pipe(Effect.provide(UsersLive)) as Effect.Effect<unknown, never, never>,
+      Route.runMatchedLoaders(ServiceRoute, new URL("http://test.local/service/users/alice")).pipe(Effect.provide(UsersLive)) as Effect.Effect<unknown, never, never>,
     );
 
     const run = Effect.runSync(Route.actionSingleFlight(
@@ -383,7 +403,7 @@ describe("Route loader", () => {
         const users = yield* Users;
         return yield* users.rename(id, name);
       }),
-      { target: (_result, [id]) => `/service/users/${id}` },
+      { app: ServiceRoute, target: (_result, [id]) => `/service/users/${id}` },
     ));
 
     const payload = Effect.runSync(
@@ -399,17 +419,15 @@ describe("Route loader", () => {
 
   it("hydrates loader cache from a single-flight payload", () => {
     clearLoaderCache();
-    const RouteForHydrate = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm-hydrate/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" }),
+    const RouteForHydrate = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
+      withUserIdRoute("/sfm-hydrate/users/:userId", Component.from<{}>(() => null)),
     );
     void RouteForHydrate;
 
     const run = Effect.runSync(
       Route.actionSingleFlight((userId: string) => Effect.succeed({ ok: userId }), {
+        app: RouteForHydrate,
         target: (_result, [userId]) => `/sfm-hydrate/users/${userId}`,
       }),
     );
@@ -418,7 +436,7 @@ describe("Route loader", () => {
     );
 
     clearLoaderCache();
-    Effect.runSync(Route.hydrateSingleFlightPayload(payload as Route.SingleFlightPayload<unknown>));
+    Effect.runSync(Route.hydrateSingleFlightPayload(payload as Route.SingleFlightPayload<unknown>, RouteForHydrate));
 
     const cached = payload.loaders
       .map((item) => getLoaderCacheEntry(item.routeId, { userId: "alice" }))
@@ -427,17 +445,13 @@ describe("Route loader", () => {
   });
 
   it("creates server single-flight handler bound to request url", () => {
-    const RouteForHandler = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm-handler/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId })),
-    );
+    const RouteForHandler = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ name: params.userId }))(withUserIdRoute("/sfm-handler/users/:userId", Component.from<{}>(() => null)));
     void RouteForHandler;
 
     const run = Effect.runSync(
       Route.actionSingleFlight((userId: string) => Effect.succeed({ ok: userId }), {
+        app: RouteForHandler,
         target: (_result, [userId]) => `/sfm-handler/users/${userId}`,
       }),
     );
@@ -456,16 +470,13 @@ describe("Route loader", () => {
 
   it("invokes single-flight endpoint and hydrates cache", async () => {
     clearLoaderCache();
-    const RouteForInvoke = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm-invoke/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" }),
+    const RouteForInvoke = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
+      withUserIdRoute("/sfm-invoke/users/:userId", Component.from<{}>(() => null)),
     );
     void RouteForInvoke;
 
-    const routeId = String((RouteForInvoke as any)[Route.RouteMetaSymbol]?.id ?? "");
+    const routeId = routeIdOf(RouteForInvoke);
     const payload: Route.SingleFlightPayload<{ readonly ok: string }> = {
       mutation: { ok: "alice" },
       url: "http://test.local/sfm-invoke/users/alice",
@@ -481,6 +492,7 @@ describe("Route loader", () => {
       "/api/sfm",
       { args: ["alice"], url: "/sfm-invoke/users/alice" },
       {
+        app: RouteForInvoke,
         fetch: async () => ({ json: async () => ({ ok: true as const, payload }) }),
       },
     ));
@@ -491,17 +503,13 @@ describe("Route loader", () => {
   });
 
   it("exposes mutation-style single-flight handle with pending/result ergonomics", () => {
-    const RouteForMutationHandle = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm-mutation/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId })),
-    );
+    const RouteForMutationHandle = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ name: params.userId }))(withUserIdRoute("/sfm-mutation/users/:userId", Component.from<{}>(() => null)));
     void RouteForMutationHandle;
 
     const seen: Array<string> = [];
     const make = Route.mutationSingleFlight((userId: string) => Effect.succeed({ ok: userId }), {
+      app: RouteForMutationHandle,
       target: (_result, [userId]) => `/sfm-mutation/users/${userId}`,
       onPayload: (payload) => Effect.sync(() => {
         seen.push(String(payload.mutation.ok));
@@ -519,16 +527,13 @@ describe("Route loader", () => {
 
   it("integrates single-flight transport into Atom.action", async () => {
     clearLoaderCache();
-    const AtomRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/atom-sfm/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" }),
+    const AtomRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
+      withUserIdRoute("/atom-sfm/users/:userId", Component.from<{}>(() => null)),
     );
     void AtomRoute;
 
-    const routeId = String((AtomRoute as any)[Route.RouteMetaSymbol]?.id ?? "");
+    const routeId = routeIdOf(AtomRoute);
     const saveUser = Atom.action(
       (userId: string) => Effect.succeed({ ok: userId }),
       {
@@ -561,16 +566,13 @@ describe("Route loader", () => {
 
   it("integrates single-flight transport into Atom.runtime(...).action", async () => {
     clearLoaderCache();
-    const RuntimeRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/runtime-sfm/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" }),
+    const RuntimeRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
+      withUserIdRoute("/runtime-sfm/users/:userId", Component.from<{}>(() => null)),
     );
     void RuntimeRoute;
 
-    const routeId = String((RuntimeRoute as any)[Route.RouteMetaSymbol]?.id ?? "");
+    const routeId = routeIdOf(RuntimeRoute);
     const runtime = Atom.runtime(Layer.empty);
     const saveUser = runtime.action(
       (userId: string) => Effect.succeed({ ok: userId }),
@@ -605,14 +607,11 @@ describe("Route loader", () => {
 
   it("uses installed transport automatically in Atom.runtime(...).action", async () => {
     clearLoaderCache();
-    const AutoRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/auto-runtime/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" }),
+    const AutoRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
+      withUserIdRoute("/auto-runtime/users/:userId", Component.from<{}>(() => null)),
     );
-    const routeId = String((AutoRoute as any)[Route.RouteMetaSymbol]?.id ?? "");
+    const routeId = routeIdOf(AutoRoute);
     const runtime = Atom.runtime(Layer.succeed(Route.SingleFlightTransportTag, {
       execute: () => Effect.succeed({
         ok: true as const,
@@ -621,7 +620,7 @@ describe("Route loader", () => {
           url: "http://test.local/auto-runtime/users/alice",
           loaders: [{ routeId, result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } as any }],
         },
-      }),
+      }) as any,
     }));
     const saveUser = runtime.action(
       (userId: string) => Effect.succeed({ ok: userId }),
@@ -636,14 +635,11 @@ describe("Route loader", () => {
 
   it("uses globally installed transport automatically in Atom.action", async () => {
     clearLoaderCache();
-    const AutoRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/auto-global/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" }),
+    const AutoRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
+      withUserIdRoute("/auto-global/users/:userId", Component.from<{}>(() => null)),
     );
-    const routeId = String((AutoRoute as any)[Route.RouteMetaSymbol]?.id ?? "");
+    const routeId = routeIdOf(AutoRoute);
     const restore = installSingleFlightTransport({
       execute: () => Effect.succeed({
         ok: true as const,
@@ -652,7 +648,7 @@ describe("Route loader", () => {
           url: "http://test.local/auto-global/users/alice",
           loaders: [{ routeId, result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } as any }],
         },
-      }),
+      }) as any,
     });
 
     try {
@@ -672,20 +668,15 @@ describe("Route loader", () => {
     clearLoaderCache();
     let loaderRuns = 0;
 
-    const SeededRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm-seeded/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.sync(() => {
-          loaderRuns += 1;
-          return { name: `server-${params.userId}` };
-        }),
-      ),
-    );
+    const SeededRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.sync(() => {
+        loaderRuns += 1;
+        return { name: `server-${params.userId}` };
+      }))(withUserIdRoute("/sfm-seeded/users/:userId", Component.from<{}>(() => null)));
 
     const run = Effect.runSync(
       Route.actionSingleFlight((userId: string) => Effect.succeed({ id: userId, name: `client-${userId}` }), {
+        app: SeededRoute,
         target: (_result, [userId]) => `/sfm-seeded/users/${userId}`,
         revalidate: "none",
         setLoaders: (result) => [Route.setLoaderData(SeededRoute, { name: result.name })],
@@ -700,8 +691,8 @@ describe("Route loader", () => {
     expect((payload.loaders[0]?.result as any).value.name).toBe("client-alice");
     expect(loaderRuns).toBe(0);
 
-    Effect.runSync(Route.hydrateSingleFlightPayload(payload as Route.SingleFlightPayload<unknown>));
-    const routeId = String((SeededRoute as any)[Route.RouteMetaSymbol]?.id ?? "");
+    Effect.runSync(Route.hydrateSingleFlightPayload(payload as Route.SingleFlightPayload<unknown>, SeededRoute));
+    const routeId = routeIdOf(SeededRoute);
     const cached = getLoaderCacheEntry(routeId, { userId: "alice" });
     expect((cached?.result as any).value.name).toBe("client-alice");
   });
@@ -710,21 +701,16 @@ describe("Route loader", () => {
     clearLoaderCache();
     let loaderRuns = 0;
 
-    const SeededRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm-endpoint/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly name: string }, never, never>((params) =>
-        Effect.sync(() => {
-          loaderRuns += 1;
-          return { name: `server-${params.userId}` };
-        }),
-      ),
-    );
+    const SeededRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.sync(() => {
+        loaderRuns += 1;
+        return { name: `server-${params.userId}` };
+      }))(withUserIdRoute("/sfm-endpoint/users/:userId", Component.from<{}>(() => null)));
 
     const handler = Route.singleFlight(
       (userId: string) => Effect.succeed({ id: userId, name: `client-${userId}` }),
       {
+        app: SeededRoute,
         baseUrl: "http://test.local",
         target: (_result, [userId]) => `/sfm-endpoint/users/${userId}`,
         revalidate: "none",
@@ -747,18 +733,15 @@ describe("Route loader", () => {
   it("supports seedLoader helper for common direct-set cases", () => {
     clearLoaderCache();
 
-    const UserRoute = Component.from<{}>(() => null).pipe(
-      Component.route("/sfm-seed-helper/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader<{ readonly userId: string }, { readonly id: string; readonly name: string }, never, never>((params) =>
-        Effect.succeed({ id: params.userId, name: `server-${params.userId}` }),
-      ),
+    const UserRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ id: params.userId, name: `server-${params.userId}` }))(
+      withUserIdRoute("/sfm-seed-helper/users/:userId", Component.from<{}>(() => null)),
     );
 
     const handler = Route.singleFlight(
       (userId: string) => Effect.succeed({ id: userId, name: `client-${userId}` }),
       {
+        app: UserRoute,
         baseUrl: "http://test.local",
         target: (_result, [userId]) => `/sfm-seed-helper/users/${userId}`,
         revalidate: "none",

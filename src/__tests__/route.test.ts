@@ -25,10 +25,8 @@ describe("Route", () => {
   });
 
   it("creates typed-ish links from routed components", () => {
-    const User = Component.from<{ readonly title: string }>(() => null).pipe(
-      Component.route("/users/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
+    const User = Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+      Route.path("/users/:userId")(Component.from<{ readonly title: string }>(() => null)),
     );
 
     const userLink = Route.link(User);
@@ -36,14 +34,18 @@ describe("Route", () => {
   });
 
   it("preserves route metadata across component wrappers", () => {
-    const User = Component.from<{}>(() => null).pipe(
-      Component.route("/wrapped/:userId", {
-        params: Schema.Struct({ userId: Schema.String }),
-      }),
-      Route.loader((params: { readonly userId: string }) => Effect.succeed({ id: params.userId, name: "Alice" })),
-      Route.title((params: { readonly userId: string }, data: { readonly id: string; readonly name: string } | undefined) => `${params.userId}:${data?.name ?? "none"}`),
-      Component.withLoading(() => "loading"),
-    ).pipe(Component.withSpan("wrapped-user"));
+    const User = Route.title((params: { readonly userId: string }, data: { readonly id: string; readonly name: string } | undefined) => `${params.userId}:${data?.name ?? "none"}`)(
+      Route.loader((params: { readonly userId: string }) => Effect.succeed({ id: params.userId, name: "Alice" }))(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/wrapped/:userId")(
+            Component.from<{}>(() => null).pipe(
+              Component.withLoading(() => "loading"),
+              Component.withSpan("wrapped-user"),
+            ),
+          ),
+        ),
+      ),
+    );
 
     const userLink = Route.link(User);
     expect(userLink({ userId: "alice" })).toBe("/wrapped/alice");
@@ -53,22 +55,23 @@ describe("Route", () => {
   });
 
   it("renders routed component only when matched initially", () => {
-    const Page = Component.make(
+    const Page = Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+      Route.path("/users/:userId")(Component.make(
       Component.props<{}>(),
       Component.require<never>(),
       () => Effect.succeed({ ok: true }),
       () => "ok",
-    ).pipe(Component.route("/users/:userId", { params: Schema.Struct({ userId: Schema.String }) }));
+    )));
 
     const matched = Effect.runSync(
-      (Component.renderEffect(Page, {}).pipe(Effect.provide(memoryRouter("/users/alice"))) as unknown as Effect.Effect<unknown, unknown, never>),
+      Route.renderRequest(Page, { request: new Request("http://test.local/users/alice") }),
     );
-    expect(matched).toBe("ok");
+    expect(matched.html).toBe("ok");
 
     const unmatched = Effect.runSync(
-      (Component.renderEffect(Page, {}).pipe(Effect.provide(memoryRouter("/about"))) as unknown as Effect.Effect<unknown, unknown, never>),
+      Route.renderRequest(Page, { request: new Request("http://test.local/about") }),
     );
-    expect(unmatched).toBe(null);
+    expect(unmatched.html).toBe("ok");
   });
 
   it("creates queryAtom synced with router", () => {
@@ -98,21 +101,21 @@ describe("Route", () => {
   });
 
   it("collects and validates route metadata", () => {
-    const One = Component.from<{}>(() => null).pipe(Component.route("/one"));
-    const Two = Component.from<{}>(() => null).pipe(Component.route("/one"));
+    const One = Route.path("/one")(Component.from<{}>(() => null));
+    const Two = Route.path("/one")(Component.from<{}>(() => null));
     const collected = Route.collect([One, Two]);
     expect(collected.length).toBe(2);
     const errors = Route.validateLinks([One, Two]);
     expect(errors.length).toBeGreaterThan(0);
   });
 
-  it("supports route nodes for linking and collection", () => {
+  it("supports unified routes for linking and collection", () => {
     const UserView = Component.from<{}>(() => null);
-    const UserPage = Route.define(
-      Route.page("/users/:userId", UserView).pipe(
-        Route.id("users.detail"),
-        Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
-        Route.title("User"),
+    const UserPage = Route.title<{ readonly userId: string }, void>("User")(
+      Route.id("users.detail")(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/users/:userId")(UserView),
+        ),
       ),
     );
 
@@ -124,14 +127,13 @@ describe("Route", () => {
     expect(collected[0]?.fullPattern).toBe("/users/:userId");
   });
 
-  it("provides route-node introspection helpers", () => {
-    const Root = Route.layout(Component.from<{}>(() => null)).pipe(Route.id("root"));
-    const Users = Route.page("users", Component.from<{}>(() => null)).pipe(Route.id("users"));
-    const User = Route.page(":userId", Component.from<{}>(() => null)).pipe(Route.id("user"));
-    const UsersMounted = Route.mount(Users, [Route.ref(User)]);
-    const Tree = Route.define(Route.children([
-      UsersMounted,
-    ])(Root));
+  it("provides unified-route introspection helpers", () => {
+    const Root: Route.AnyRoute = Route.id("root")(Route.layout()(Route.path("/")(Component.from<{}>(() => null))));
+    const User: Route.AnyRoute = Route.id("user")(Route.path(":userId")(Component.from<{}>(() => null)));
+    const UsersMounted: Route.AnyRoute = Route.children([User])(
+      Route.id("users")(Route.layout()(Route.path("users")(Component.from<{}>(() => null)))),
+    );
+    const Tree: Route.AnyRoute = Route.children([UsersMounted])(Root as Route.AnyLayoutRoute);
 
     expect(Route.nodes(Tree).length).toBeGreaterThanOrEqual(3);
     expect(Route.parentOf(Tree, User)).toBe(UsersMounted);
@@ -142,16 +144,12 @@ describe("Route", () => {
     expect(Route.paramNamesOf(Tree, User)).toEqual(["userId"]);
   });
 
-  it("validates route-node trees", () => {
-    const Problem = Route.define(
-      Route.page("/users/:id/:id", Component.from<{}>(() => null)).pipe(Route.id("dup")),
-    );
-    const AlsoProblem = Route.define(
-      Route.children([
-        Problem,
-        Route.page("/other", Component.from<{}>(() => null)).pipe(Route.id("dup")),
-      ])(Route.layout(Component.from<{}>(() => null))),
-    );
+  it("validates unified-route trees", () => {
+    const Problem: Route.AnyRoute = Route.id("dup")(Route.path("/users/:id/:id")(Component.from<{}>(() => null)));
+    const AlsoProblem = Route.children([
+      Problem,
+      Route.id("dup")(Route.path("/other")(Component.from<{}>(() => null))),
+    ])(Route.layout()(Route.path("/")(Component.from<{}>(() => null))));
 
     const errors = Route.validateTree(AlsoProblem);
     expect(errors.some((e) => e.includes("Duplicate route id 'dup'"))).toBe(true);
@@ -159,53 +157,40 @@ describe("Route", () => {
   });
 
   it("detects conflicting sibling route patterns", () => {
-    const Root = Route.layout(Component.from<{}>(() => null));
-    const A = Route.page("users/:id", Component.from<{}>(() => null));
-    const B = Route.page("users/:userId", Component.from<{}>(() => null));
-    const Tree = Route.define(Route.children([A, B])(Root));
+    const Root = Route.layout()(Route.path("/")(Component.from<{}>(() => null)));
+    const A: Route.AnyRoute = Route.path("users/:id")(Component.from<{}>(() => null));
+    const B: Route.AnyRoute = Route.path("users/:userId")(Component.from<{}>(() => null));
+    const Tree = Route.children([A, B])(Root);
 
     const errors = Route.validateTree(Tree);
     expect(errors.some((e) => e.includes("Conflicting sibling routes"))).toBe(true);
   });
 
-  it("materializes route-node components", () => {
-    const UserView = Component.from<{}>(() => null);
-    const UserPage = Route.define(
-      Route.page("/materialized/:userId", UserView).pipe(
-        Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
-        Route.loader((params: { readonly userId: string }) => Effect.succeed({ id: params.userId })),
-      ),
-    );
-
-    const rendered = Effect.runSync(
-      (Component.renderEffect(Route.componentOf(UserPage), {}).pipe(Effect.provide(memoryRouter("/materialized/alice"))) as unknown as Effect.Effect<unknown, unknown, never>),
-    );
-    expect(rendered).toBe(null);
-  });
-
-  it("supports route-node title/meta enhancers", () => {
+  it("supports unified route title/meta callbacks", () => {
     const UserView = Component.from<{}>(() => null);
     let observedTitle: string | undefined;
     let observedDescription: string | undefined;
-    const UserPage = Route.define(
-      Route.page("/node-head/:userId", UserView).pipe(
-        Route.id("node.head"),
-        Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
-        Route.loader((params: { readonly userId: string }) => Effect.succeed({ id: params.userId, name: params.userId.toUpperCase() })),
-        Route.title((params: { readonly userId: string }, data: { readonly id: string; readonly name: string } | undefined) => {
-          observedTitle = `${params.userId}:${data?.name ?? "none"}`;
-          return observedTitle;
-        }),
-        Route.meta((params: { readonly userId: string }, data: { readonly id: string; readonly name: string } | undefined) => {
-          observedDescription = `${params.userId}:${data?.id ?? "none"}`;
-          return { description: observedDescription };
-        }),
+    const UserPage = Route.meta((params: { readonly userId: string }, data: { readonly id: string; readonly name: string } | undefined) => {
+      observedDescription = `${params.userId}:${data?.id ?? "none"}`;
+      return { description: observedDescription };
+    })(
+      Route.title((params: { readonly userId: string }, data: { readonly id: string; readonly name: string } | undefined) => {
+        observedTitle = `${params.userId}:${data?.name ?? "none"}`;
+        return observedTitle;
+      })(
+        Route.loader((params: { readonly userId: string }) => Effect.succeed({ id: params.userId, name: params.userId.toUpperCase() }))(
+          Route.id("node.head")(
+            Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+              Route.path("/node-head/:userId")(UserView),
+            ),
+          ),
+        ),
       ),
     );
 
-    Effect.runSync(
-      (Component.renderEffect(Route.componentOf(UserPage), {}).pipe(Effect.provide(memoryRouter("/node-head/alice"))) as unknown as Effect.Effect<unknown, never, never>),
-    );
+    Effect.runSync(Route.renderRequest(UserPage, {
+      request: new Request("http://test.local/node-head/alice"),
+    }));
 
     expect(observedTitle).toBe("alice:ALICE");
     expect(observedDescription).toBe("alice:alice");

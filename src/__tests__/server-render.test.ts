@@ -6,11 +6,10 @@ import * as ServerRoute from "../ServerRoute.js";
 import * as RouterRuntime from "../RouterRuntime.js";
 
 describe("Server render bridge", () => {
-  it("renders an app route node into a structured request result", () => {
-    const App = Route.define(
-      Route.page("/hello", Component.from<{}>(() => "Hello SSR")).pipe(
-        Route.id("hello"),
-        Route.title("Hello"),
+  it("renders a route into a structured request result", () => {
+    const App = Route.title("Hello")(
+      Route.id("hello")(
+        Route.path("/hello")(Component.from<{}>(() => "Hello SSR")),
       ),
     );
 
@@ -24,10 +23,22 @@ describe("Server render bridge", () => {
     expect(result.loaderPayload).toEqual([]);
   });
 
-  it("executes a document server route through Route.renderRequest", () => {
-    const App = Route.define(
-      Route.page("/users", Component.from<{}>(() => "Users Document")),
+  it("renders a unified route tree into a structured request result", () => {
+    const App = Route.title("Unified Hello")(
+      Route.path("/unified-hello")(Component.from<{}>(() => "Hello Unified SSR")),
     );
+
+    const result = Effect.runSync(Route.renderRequest(App, {
+      request: new Request("http://example.com/unified-hello"),
+    }));
+
+    expect(result.status).toBe(200);
+    expect(result.html).toBe("Hello Unified SSR");
+    expect(result.head.title).toBe("Unified Hello");
+  });
+
+  it("executes a document server route through Route.renderRequest", () => {
+    const App = Route.path("/users")(Component.from<{}>(() => "Users Document"));
     const Document = ServerRoute.document(App).pipe(
       ServerRoute.method("GET"),
       ServerRoute.path("/users"),
@@ -43,10 +54,8 @@ describe("Server render bridge", () => {
   });
 
   it("dispatches document and data server routes", async () => {
-    const App = Route.define(
-      Route.page("/users", Component.from<{}>(() => "Users Document")).pipe(
-        Route.loader(() => Effect.succeed({ list: true })),
-      ),
+    const App = Route.loader((_: {}) => Effect.succeed({ list: true as const }))(
+      Route.path("/users")(Component.from<{}>(() => "Users Document")),
     );
     const Document = ServerRoute.document(App).pipe(
       ServerRoute.method("GET"),
@@ -85,10 +94,8 @@ describe("Server render bridge", () => {
   });
 
   it("supports runtime-backed render and dispatch helpers", async () => {
-    const App = Route.define(
-      Route.page("/users", Component.from<{}>(() => "Users Runtime Document")).pipe(
-        Route.loader(() => Effect.succeed({ list: true })),
-      ),
+    const App = Route.loader((_: {}) => Effect.succeed({ list: true as const }))(
+      Route.path("/users")(Component.from<{}>(() => "Users Runtime Document")),
     );
     const Health = ServerRoute.json({ key: "health" }).pipe(
       ServerRoute.method("GET"),

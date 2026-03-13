@@ -4,10 +4,9 @@ import * as Route from "../Route.js";
 import * as RouterRuntime from "../RouterRuntime.js";
 import * as ServerRoute from "../ServerRoute.js";
 
-const App = Route.define(
-  Route.page("/users/:userId", Component.from<{}>(() => null)).pipe(
-    Route.id("users.detail"),
-    Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+const App = Route.id("users.detail")(
+  Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+    Route.path("/users/:userId")(Component.from<{}>(() => null)),
   ),
 );
 
