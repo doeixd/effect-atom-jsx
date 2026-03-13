@@ -66,7 +66,15 @@ On the server, loader results are serialized into the HTML. On the client, the `
 - **Zero-Flicker Hydration**: Components have their data synchronously available during the first mount.
 - **Smart Reruns**: Loaders only rerun if their `reactivityKeys` are invalidated or if their parameters change.
 
-## 4. Server Routes & Document Rendering
+### 4. The Result Type: Bridging Async and UI
+
+AF-UI uses a standardized **Result** type (`loading`, `success`, `failure`) to handle asynchronous states consistently across the framework. 
+
+- **Atoms & Loaders**: Both produce `ReadonlyAtom<Result<A, E>>`.
+- **Match-Ready**: Because it is a tagged union, you can use `Match` or simple switch statements in your view to render loading spinners, error messages, or data without "conditional hook" errors.
+- **SingleFlight Integration**: The hydration process seeds these `Result` values directly into the client cache, allowing components to transition from `loading` to `success` synchronously upon mount.
+
+## 5. Server Routes & Document Rendering
 
 Server Routes extend the routing model to the backend, providing typed request decoding and document rendering.
 
