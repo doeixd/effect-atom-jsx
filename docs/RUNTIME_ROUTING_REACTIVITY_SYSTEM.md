@@ -107,13 +107,22 @@ AF-UI uses a standardized **Result** type union to handle asynchronous states co
 ### Reactive Integration
 Loaders produce `ReadonlyAtom<Result<A, E>>`. Because it is a tagged union, you can use the `<Loading>` and `<Error>` boundary components or simple switch statements to render UI states without "conditional hook" errors.
 
-## 5. Hydration: Zero-Flicker Bootstrapping
+## 5. Hydration: The Hydration Service & Layer
 
-AF-UI's hydration model is "Data-First." On the server, `SingleFlight` results are serialized into the HTML document. On the client, the `SingleFlightTransport` seeds the local cache **before** the component tree mounts.
+AF-UI manages server-to-client state transfer through an explicit `Hydration` service, ensuring a seamless transition from static HTML to an interactive application.
+
+### The Hydration Workflow
+1. **Dehydration (Server-Side)**: During SSR, the `Hydration` service snapshots the state of all tracked Atoms into a JSON-serializable payload. This payload is injected into the HTML document as a `window.__AF_STATE__` script tag.
+2. **Rehydration (Client-Side)**: Upon load, the client-side `Hydration` layer reads this payload and restores the `Atom` values directly into the `Registry` service. This occurs **before** the component tree mounts, ensuring components read the seeded state synchronously on first render.
+
+### The Hydration Layer
+By making hydration a formal `Layer`, AF-UI provides fine-grained control:
+- **Validation**: Configure `HydrationOptions` to enforce strict schema validation on incoming server state, throwing a `HydrationError` if the client-side app definitions mismatch the server's serialized state.
+- **Selective Hydration**: Easily define which atoms are dehydrated by passing specific registry entries, allowing you to exclude sensitive or large UI-only state from the SSR payload.
 
 This ensures:
-- **Synchronous First Render**: Components have their `Success` data available immediately on the first mount.
-- **No Double-Fetching**: The client knows exactly which loaders were already run on the server and won't re-execute them unless their `reactivityKeys` were invalidated.
+- **Zero-Flicker Bootstrapping**: Components have their `Success` data available immediately, so the UI doesn't "pop" from loading to success.
+- **State Continuity**: Complex reactive state (like form inputs or scroll positions) is preserved across the boundary.
 
 ## 6. Server Routes & Document Rendering
 
