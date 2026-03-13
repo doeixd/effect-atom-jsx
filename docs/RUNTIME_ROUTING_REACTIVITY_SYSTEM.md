@@ -37,29 +37,28 @@ When `addUser` completes, `Reactivity.invalidate(["users"])` fires. Every atom, 
 
 ## 2. How Auto-Tracking Works
 
-AF-UI bridges the gap between high-level semantic keys and low-level fine-grained signals through an automatic tracking system. You don't have to manually manage subscriptions; the framework "sees" what you read.
+AF-UI bridges the gap between high-level semantic keys and low-level fine-grained signals through an automatic tracking system. You don't have to manually manage subscriptions; the framework "sees" what you read within a **Reactivity Service** context.
 
-### 1. The Tracking Context
-When a reactive computation (like a component render, a `memo`, or an `Effect`) runs, AF-UI pushes a new "Capture Set" onto a global tracking stack.
+### 1. The Tracking Scope
+When a reactive computation (like a component render, a `memo`, or an `Effect`) runs, AF-UI establishes a **Tracking Scope**. This scope is managed by the active `Reactivity` service provided in your Effect layer.
 
 ### 2. Automatic Dependency Collection
-When you read an Atom or call a service method wrapped in `Reactivity.tracked`, it checks the tracking stack. If a Capture Set is active, the reactivity keys are added to it.
+When you read an Atom or call a service method wrapped in `Reactivity.tracked`, the operation interacts with the current `Reactivity` service to register its semantic keys.
 ```ts
-// Component render starts -> Tracking Context active
+// Within a Tracking Scope (e.g. Component render)
 (props, { userList }) => {
-  // Reading userList() automatically pushes "users" key into the current context
+  // Reading userList() automatically registers the "users" key with the Reactivity service
   const users = userList(); 
   // ...
 }
-// Render ends -> Framework now knows this component depends on "users"
 ```
 
 ### 3. The Version Signal Bridge
-Internally, every semantic reactivity key is mapped to a numeric **Version Signal**. 
-- **Read**: Tracking a key actually reads its Version Signal.
-- **Invalidate**: Invalidating a key bumps its Version Signal.
+The `Reactivity` service internally maps every semantic key to a numeric **Version Signal**. 
+- **Read**: Tracking a key subscribes the current scope to that key's Version Signal via the service.
+- **Invalidate**: Invalidating a key via the service bumps its Version Signal.
 
-This allows the framework to leverage a high-performance, fine-grained reactive core (similar to Solid.js) while exposing a much more powerful, semantic API to the developer.
+This design ensures that tracking is always bound to the active **Effect Layer**. Swapping the `Reactivity.live` layer for `Reactivity.test` allows you to manually flush invalidations and inspect the tracking state during unit tests, without changing a single line of component code.
 
 ## 3. The Routing System (Schema-First & Unified)
 
