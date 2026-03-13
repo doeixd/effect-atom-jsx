@@ -143,6 +143,54 @@ The JSX compiler transforms views into an Effect generator where every expressio
 - **Error Bubbling**: If a hole yields an Effect that can fail with `DatabaseError`, the entire component's error type `E` automatically includes `DatabaseError`.
 - **Security**: Specific holes like `HtmlHole` strictly require branded types (e.g., `SafeHtml`), preventing accidental XSS vulnerabilities.
 
+### 4. Typed Views and Element Slots
+If Typed Holes validate the *inside* of a view, the `View<Slots>` wrapper validates the *outside*. In AF-UI, a `View` is a formal type that encapsulates both the compiled JSX effect and the structural slots exposed to the outside world:
+
+```ts
+export interface View<Slots> {
+  readonly _Slots: Slots;
+  readonly effect: Effect.Effect<ViewNode, any, any>; // The underlying ViewEffect generator
+  (props: any): JSX.Element;
+}
+```
+
+Where `Slots` is a record mapping slot names to their permitted abstract element capabilities:
+```ts
+type SlotMap = {
+  root: Element.Container;
+  header: Element.Container;
+  title: Element.Text;
+  body: Element.Container;
+  // etc...
+};
+```
+
+#### Slot Type Definitions
+Element types form a hierarchy that describes what capabilities an element has:
+```ts
+// Base element type - all elements have this
+interface Element.Base {
+  readonly __elementBrand: unique symbol;
+}
+
+// Specialized element types build on the base
+interface Element.Container extends Element.Base {
+  readonly children: ViewNode[];
+}
+
+interface Element.Button extends Element.Base {
+  readonly disabled: WritableAtom<boolean>;
+  readonly onClick: () => void;
+}
+```
+
+#### Slot Constraints and Compatibility
+The type system enforces strict rules about what can be attached to slots:
+
+1. **Element Type Compatibility:** A behavior requiring `Element.TextInput` cannot attach to a slot defined as `Element.Container`.
+2. **Cardinality Constraints:** A behavior expecting a `Collection<Element.Item>` cannot attach to a single-element slot.
+3. **Capability Requirements:** Behaviors declare what capabilities they need (e.g., "needs onClick handler"). The type system verifies the slot's element type provides these capabilities.
+
 ## The Styling System
 
 AF-UI's styling system reimagines CSS as a type-safe, composable, platform-agnostic service.
@@ -255,12 +303,13 @@ const BaseModal = Component.make(
     root: Element.Container,
     backdrop: Element.Interactive,
     content: Element.Container,
-    closeButton: Element.Interactive
+    closeButton: Element.Interactive,
+    title: Element.Text
   }, () => (
     <div slot="root">
       <div slot="backdrop" />
       <div slot="content">
-        <h2>{props.title}</h2>
+        <h2 slot="title">{props.title}</h2>
         {props.children}
         <button slot="closeButton">Close</button>
       </div>
@@ -270,15 +319,15 @@ const BaseModal = Component.make(
 
 // 2. Behavioral Composition (Active Consumers)
 const modalBehavior = Behavior.make({
-  trigger: Element.Interactive,
-  root: Element.Container,
+  closeButton: Element.Interactive,
+  container: Element.Container,
   backdrop: Element.Interactive
 })((slots) => Effect.gen(function*() {
-  const isOpen = yield* Atom.make(false);
+  const isOpen = yield* Atom.make(true); // Assume it's already open
   
-  yield* slots.trigger.onPress(() => isOpen.set(true));
+  yield* slots.closeButton.onPress(() => isOpen.set(false));
   yield* slots.backdrop.onPress(() => isOpen.set(false));
-  yield* slots.root.setVisible(isOpen);
+  yield* slots.container.setVisible(isOpen);
   
   return { isOpen };
 }));
@@ -286,8 +335,8 @@ const modalBehavior = Behavior.make({
 // 3. Complete Component
 export const Modal = BaseModal.pipe(
   Behavior.attach(modalBehavior, {
-    trigger: "closeButton",
-    root: "content",
+    closeButton: "closeButton",
+    container: "content",
     backdrop: "backdrop"
   }),
   Style.attach(modalStyle) 

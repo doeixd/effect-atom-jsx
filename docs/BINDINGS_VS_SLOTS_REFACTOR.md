@@ -264,29 +264,38 @@ const MyComponent = Component.make(props, req)(
 )
 ```
 
-### Step 5: Refactor Behavior Attachments
-Update `src/Behavior.ts` to remove the awkward `{ readonly slots: Slots }` constraint. `attachBySlots` should map the behavior's required elements against the Component's `Slots` parameter, and merge the behavior's output into the Component's `Bindings` parameter.
+### Step 5: Refactor Behavior System (Active Consumers)
+Redefine `Behavior.make` and `Behavior.attach` to move away from "prop bags" toward "active element consumers."
 
-```ts
-// src/Behavior.ts
-export function attachBySlots<
-  Elements extends SlotMapLike, // What the Behavior needs
-  AddedBindings,                // What the Behavior provides
-  BR, BE,
-  Props, Req, E, Bindings, Slots extends SlotMapLike // Component generics
->(
-  behavior: Behavior<Elements, AddedBindings, BR, BE>,
-  elementMap: { readonly [K in keyof Elements]: CompatibleSlotKey<Slots, Elements[K]> }
-): (
-  component: Component<Props, Req, E, Bindings, Slots>
-) => Component<
-  Props, 
-  Req | BR, 
-  E | BE, 
-  Bindings & AddedBindings, // Bindings grow!
-  Slots                     // Slots remain unchanged!
->;
-```
+1. **`Behavior.make` Refinement**: It must now take a Slot Specification and a Logic Factory. The factory receives strictly-typed abstract elements.
+   ```ts
+   // Proposed Behavior.make
+   export function make<Elements extends SlotMapLike>(
+     spec: Elements
+   ): <Bindings, R, E>(
+     logic: (slots: MaterializedSlots<Elements>) => Effect.Effect<Bindings, E, R>
+   ) => Behavior<Elements, Bindings, R, E>;
+   ```
+2. **`attachBySlots` Refinement**: Update `src/Behavior.ts` to map the behavior's required elements against the Component's `Slots` parameter, and merge the behavior's output into the Component's `Bindings` parameter.
+   ```ts
+   export function attachBySlots<
+     Elements extends SlotMapLike,
+     AddedBindings,
+     BR, BE,
+     Props, Req, E, Bindings, Slots extends SlotMapLike
+   >(
+     behavior: Behavior<Elements, AddedBindings, BR, BE>,
+     elementMap: { readonly [K in keyof Elements]: CompatibleSlotKey<Slots, Elements[K]> }
+   ): (
+     component: Component<Props, Req, E, Bindings, Slots>
+   ) => Component<
+     Props, 
+     Req | BR, 
+     E | BE, 
+     Bindings & AddedBindings, // Intersect logical state
+     Slots                     // Preserve structural contract
+   >;
+   ```
 
 ### Step 6: Refactor Style Attachments
 Update `Style.attach` to operate strictly against the `Slots` generic.
