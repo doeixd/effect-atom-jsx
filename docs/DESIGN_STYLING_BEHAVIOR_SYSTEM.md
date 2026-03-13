@@ -129,132 +129,21 @@ interface Component<Props, Req, E, Bindings = unknown, Slots = {}> {
 **Important:** The component does not return a black-box `JSX.Element`. It returns a `View<Slots>`, which provides the exact structural interface that external Behaviors and Styles look at to ensure compile-time validation.
 
 ### 1. Explicit Requirements
-Components declare exactly what services, atoms, or context they need:
-```ts
-const UserCard = Component.make(
-  Component.props<{ id: string }>(),
-  Component.require(Api, Auth) // Explicit requirements
-)(
-  // ... setup and view
-);
-```
-Missing requirements become compile errors, not runtime surprises.
+Components declare exactly what services, atoms, or context they need. Missing requirements become compile errors, not runtime surprises.
 
 ### 2. Type-Safe Composition
-Both behaviors and styles use identical attachment patterns. Validation happens at compile time:
-```ts
-// Compile error if style references non-existent slot
-const badStyle = Style.make({
-  root: { padding: 16 },
-  footer: { padding: 8 }, // Error: "footer" slot doesn't exist on BaseButton
-});
-
-BaseButton.pipe(Style.attach(badStyle));
-```
+Both behaviors and styles use identical attachment patterns. Validation happens at compile time, ensuring all slots referenced exist on the component.
 
 ### 3. Typed Holes and View Compilation
-AF-UI's view system goes beyond simple JSX. The JSX compiler transforms the view into an Effect generator where every single expression becomes a "Typed Hole". 
-
-A Typed Hole (`ClassHole`, `HandlerHole`, `StyleHole`) enforces strict internal type-checking. For example:
-- An `<input onClick={...}>` creates a `HandlerHole<MouseEvent>`. Passing it a generic `Event` is a compile error.
-- An `<div innerHTML={...}>` creates an `HtmlHole` that rejects raw strings and requires a strictly branded `SafeHtml` type to prevent XSS.
-
-Because the JSX is compiled into an `Effect` tree, if an `onClick` handler yields an Effect that can fail with an `HttpError`, that error type `E` automatically bubbles up into the component's signature!
-
-### 4. Typed Views and Element Slots
-If Typed Holes validate the *inside* of a view, the `View<Slots>` wrapper validates the *outside*. In AF-UI, a `View` is a formal type that encapsulates both the compiled JSX effect and the structural slots exposed to the outside world:
-
-```ts
-export interface View<Slots> {
-  readonly _Slots: Slots;
-  (props: any): JSX.Element;
-}
-```
-
-Where `Slots` is a record mapping slot names to their permitted abstract element capabilities:
-```ts
-type SlotMap = {
-  root: Element.Container;
-  header: Element.Container;
-  title: Element.Text;
-  body: Element.Container;
-  // etc...
-};
-```
-
-#### Slot Type Definitions
-Element types form a hierarchy that describes what capabilities an element has:
-```ts
-// Base element type - all elements have this
-interface Element.Base {
-  readonly __elementBrand: unique symbol;
-}
-
-// Specialized element types build on the base
-interface Element.Container extends Element.Base {
-  readonly children: ViewNode[];
-}
-
-interface Element.Button extends Element.Base {
-  readonly disabled: WritableAtom<boolean>;
-  readonly onClick: () => void;
-}
-```
-
-#### Slot Constraints and Compatibility
-The type system enforces strict rules about what can be attached to slots:
-
-1. **Element Type Compatibility:** A behavior requiring `Element.TextInput` cannot attach to a slot defined as `Element.Container`.
-2. **Cardinality Constraints:** A behavior expecting a `Collection<Element.Item>` cannot attach to a single-element slot.
-3. **Capability Requirements:** Behaviors declare what capabilities they need (e.g., "needs onClick handler"). The type system verifies the slot's element type provides these capabilities.
+The JSX compiler transforms views into an Effect generator where every expression becomes a "Typed Hole" (`ClassHole`, `HandlerHole`, etc.). This enforces strict internal type-checking and allows error types (`E`) to bubble up automatically into the component's signature.
 
 ## The Styling System
 
-AF-UI's styling system reimagines CSS through Effect's lens, creating a type-safe, composable, platform-agnostic alternative to traditional styling approaches.
-
-### Core Principles
-
-1. **Styles as Typed Operations on Element Slots**
-   ```ts
-   const cardStyle = Style.make({
-     root: {
-       padding: [16, 24],
-       borderRadius: 8,
-       backgroundColor: "surface",
-     },
-   });
-   ```
-
-2. **Tokens as a Typed Service**
-   Instead of raw values, styles reference tokens resolved through a Theme service:
-   ```ts
-   class Theme extends Effect.Tag("Theme")<Theme, {
-     readonly tokens: ThemeTokens;
-     readonly resolve: (token: string) => string;
-     readonly mode: ReadonlyAtom<"light" | "dark">;
-   }>() {}
-   ```
-
-3. **Type-Checked Token References**
-   Invalid token names are compile errors:
-   ```ts
-   Style.make({
-     root: {
-       backgroundColor: "surfce", // Error: "surfce" not valid TokenPath<"color">
-     },
-   });
-   ```
+AF-UI's styling system reimagines CSS as a type-safe, composable, platform-agnostic service.
 
 ### Composable Style Utilities
-
-AF-UI provides a library of atomic style utilities that mirror Tailwind's granularity but with full type safety:
+AF-UI provides atomic utilities that mirror Tailwind's granularity with full type safety:
 ```ts
-// Atomic utilities
-const padded = (amount: StyleSpacing) => Style.slot({ padding: amount });
-const flexRow = (options: { gap?: StyleSpacing; align?: string }) => 
-  Style.slot({ flex: { direction: "row", ...options } });
-
-// Compose them onto slots
 const cardStyle = Style.make({
   root: Style.compose(
     padded("md"),
@@ -264,228 +153,57 @@ const cardStyle = Style.make({
 });
 ```
 
-### Advanced Layout and Selection
+### Flexibility and Cascading
+The system supports the full expressiveness of modern CSS (Responsive design, Container Queries, Transitions) while adding features like:
+1. **Typed Variables**: `Style.vars` allows declaring CSS custom properties that flow down the tree.
+2. **Internal Styling**: `Style.nest` lets you target un-slotted child elements without exposing them in the public API.
+3. **Order of Precedence**: Specificity is replaced by a predictable pipeline: Theme ➔ Recipe ➔ Variant ➔ Utility ➔ Handle Overrides.
 
-AF-UI supports the full expressiveness of modern CSS while maintaining platform agnosticism:
-
-1. **Typed Grid & Flex**: Define complex layouts with typed areas and templates.
-2. **Nested Selectors**: Use `Style.nest` or typed helpers like `Style.child("a", "hover")` to target elements relative to a slot.
-3. **Container & Media Queries**: Responsive design is built-in via `Style.responsive`, `Style.media`, and even the latest `Style.container` queries.
-4. **CSS Custom Properties (Vars)**: Use `Style.vars` to declare typed variables that cascade down the tree, enabling highly efficient dynamic theming.
-
-### Lifecycle and Layout Animations
-
-Unlike traditional libraries that require external animation engines, AF-UI integrates motion directly into the style system:
-
-- **Enter/Exit Animations**: Use `Style.enter` and `Style.exit` to tie animations to the component's DOM lifecycle.
-- **Staggered Lists**: `Style.enterStagger` makes animating list item entry trivial.
-- **Layout Transitions (FLIP)**: `Style.layoutAnimation` automatically animates elements when they reorder, sort, or move.
-
-### The Style Resolution Pipeline
-
-To eliminate the "Specificity Wars" of traditional CSS, AF-UI resolves styles in a strict, predictable order:
-1. Theme Defaults
-2. Recipe Base Styles
-3. Variant Styles
-4. Composed Utilities
-5. Handle Overrides (highest precedence)
-
-Additionally, AF-UI supports **CSS Layers** (`Style.layers`), allowing you to group styles into priority buckets (e.g., `reset` < `base` < `components` < `utilities`).
-
-### Dynamic and Reactive Styles
-
-Style pieces can accept reactive values for state-driven styling. When state changes, only the affected style properties update on the affected elements - no unnecessary re-renders.
-```ts
-const selectedStyle = (isSelected: () => boolean) =>
-  Style.slot({
-    backgroundColor: () => isSelected() ? "accent.subtle" : "surface",
-    border: {
-      width: () => isSelected() ? 2 : 1,
-      color: () => isSelected() ? "accent.default" : "border",
-    },
-  });
-```
-
-### Supporting Native CSS Features
-
-AF-UI's style objects seamlessly support native CSS features like pseudo-elements, media queries, and animations while keeping the typed constraints:
-
-**Keyframes & Animations:**
-```ts
-const pulse = Style.keyframes({
-  "0%": { opacity: 1 },
-  "50%": { opacity: 0.5 },
-  "100%": { opacity: 1 },
-});
-
-const animatedStyle = Style.make({
-  root: {
-    animation: `${pulse} 2s infinite ease-in-out`
-  }
-});
-```
-
-**Pseudo-elements & Nesting:**
-```ts
-const customCheckbox = Style.make({
-  root: {
-    position: "relative",
-    // Use '&' for nesting and pseudo-selectors
-    "&::before": {
-      content: '""',
-      position: "absolute",
-      inset: 0,
-      backgroundColor: "accent.default",
-      opacity: 0,
-      transition: "fast"
-    },
-    "&:checked::before": {
-      opacity: 1
-    }
-  }
-});
-```
-
-### State-Based Styles
-
-Define style variations for interaction states. The platform renderer maps these appropriately (e.g., CSS `:hover` pseudo-classes on Web, pressable state callbacks on Mobile).
-```ts
-const buttonStates = Style.states({
-  default: { backgroundColor: "accent.default" },
-  hover: { backgroundColor: "accent.hover" },
-  active: { transform: "scale(0.98)" },
-  disabled: { opacity: 0.5, cursor: "not-allowed" },
-});
-```
-
-### Variant Styles (Like CVA but Typed)
-
-```ts
-const buttonVariants = Style.variants({
-  base: Style.compose(/* ... */),
-  variants: {
-    intent: {
-      primary: Style.slot({ backgroundColor: "accent.default", color: "text.inverse" }),
-      secondary: Style.slot({ backgroundColor: "surface", color: "text.primary" }),
-    },
-    size: {
-      sm: padded(["xs", "sm"]),
-      md: padded(["sm", "md"]),
-    },
-  },
-  defaults: { intent: "primary", size: "md" },
-});
-
-// Used in a component:
-buttonVariants({ intent: props.intent, size: props.size })
-```
-
-### Style Handles for External Customization
-
-Components expose style handles for external override, enabling true design system customization **without forking**:
-
-```ts
-// Component exposes style handles
-const Card = Component.make(
-  Component.props<{ title: string }>(),
-  Component.require()
-)(
-  () => Effect.succeed({}), // Empty bindings
-  (props) => view({
-    root: Element.Container,
-    title: Element.Text
-  }, () => (
-    <Box slot="root" styleHandle="card.root">
-      <Text slot="title" styleHandle="card.title">{props.title}</Text>
-    </Box>
-  ))
-);
-
-// Consumer overrides specific handles
-const brandOverrides = Style.override({
-  "card.root": Style.compose(rounded("none"), Style.slot({ border: "none" })),
-  "card.title": textStyle({ color: "accent.default" }),
-});
-
-// Apply override to the entire application tree
-<Style.Provider overrides={brandOverrides}>
-  <App />
-</Style.Provider>
-```
+### Style Handles
+Components expose style handles for external override, enabling true design system customization **without forking**.
 
 ## The Behavior System
 
-While less documented in a single file, the behavior system follows identical principles to styling, but with a critical distinction: **Behaviors are active slot-consumers.**
+Behaviors in AF-UI are **active slot-consumers** that directly attach interaction logic to elements.
 
 ### Core Concepts
 
 1. **Direct Attachment (The "No Props" Rule)**: 
-   Traditional headless libraries (like Headless UI or Radix) require you to "spread" a bag of props onto your elements. This is fragile and error-prone. In AF-UI, behaviors **directly attach** event listeners and ARIA attributes to the elements provided by slots.
+   Behaviors **directly attach** event listeners and ARIA attributes to the elements provided by slots, avoiding fragile "prop spreading."
    ```ts
    // Behavior.attach finds the "trigger" slot and 
    // injects "onClick" and "aria-expanded" automatically.
    BaseButton.pipe(Behavior.attach(disclosure, { trigger: "root" }))
    ```
 
-2. **Identical Attachment Pattern**: (`Behavior.attach(focusBehavior)`)
+2. **Composable Behaviors**: 
+   Combine simple primitives like `disclosure`, `focusTrap`, and `keyboardNav` into complex interaction layers using `Behavior.compose`.
+   ```ts
+   const modalBehavior = Behavior.compose(
+     disclosure({ defaultOpen: false }),
+     focusTrap(),
+     keyboardNav({ onEscape: (b) => b.close() })
+   );
+   ```
 
-3. **Type-Safe Validation**: Behaviors declare what abstract capabilities they need (e.g., "needs `Element.Interactive`"). The system ensures the slot satisfies this before allowing attachment.
-
-### Dynamic and Reactive Behaviors
-
-Because behaviors have direct access to element refs, they can react to state changes without re-rendering the view. A behavior can subscribe to an atom and call `el.setAttr()` directly when it changes, resulting in zero virtual-dom overhead.
-
-### Collection Slots (Lists)
-
-When a slot is defined inside a loop (e.g., `<For each={...}>`), it automatically becomes an `Element.Collection`. Behaviors like multi-selection management or keyboard navigation use `collection.forEach((el) => ...)` to dynamically attach logic as items are added or removed from the DOM.
+3. **Capability-Based Matching**: 
+   Behaviors are matched based on **Element Capability** (e.g., `Element.Interactive`), ensuring they are only attached to elements that support the required logic.
 
 ## Renderer Agnosticism and Typed Tags
 
-Because AF-UI's styles and behaviors are defined as plain data structures referencing a `Theme` service, they are completely decoupled from the browser DOM. The system relies on a **Platform Renderer** layer to interpret the instructions.
+Styles and behaviors are plain data structures completely decoupled from the browser DOM. The system relies on a **Platform Renderer** layer to interpret the instructions.
 
 ### Platform-Specific Typed Tags
+JSX tags (like `<Box>`, `<Button>`) are typed by the active platform via `jsxImportSource`. This ensures that attributes, properties, and events are strictly typed for the target environment (Web, TUI, or Native).
 
-A key enabler of this agnosticism is how JSX tags (like `<Box>`, `<Button>`) are typed. AF-UI doesn't hardcode HTML types into the global `JSX.Elements`. Instead, **the JSX namespace is parameterized by the platform** via `jsxImportSource`:
-
-```ts
-// For web projects (tsconfig.json)
-{ "jsxImportSource": "af-ui/web" }
-
-// For TUI projects
-{ "jsxImportSource": "af-ui/tui" }
-```
-
-When you use the Web platform, `<Button onClick={e => ...}>` types `e` as a DOM `MouseEvent`. If you swap to the TUI platform, the exact same tag infers `e` as a `KeyEvent`. 
-
-The platform layer defines the element vocabulary (`PlatformElements`), and every attribute, property, and event on every element is typed by that specific platform. Universal elements (like `<Box>`) provide a cross-platform intersection, while the compiler will throw an error if you try to use a purely web-specific tag in a TUI project.
-
-### Swapping the Renderer
-
-At runtime, swapping the environment is as simple as swapping the platform layer when mounting:
-
-- **Web Browser:** The Web renderer (`WebPlatformLive`) compiles `padding: "sm"` into `padding: var(--spacing-sm)` and injects CSS rules, while attaching event listeners (`onClick`) to DOM nodes.
-- **Terminal (TUI):** A TUI renderer (`TuiPlatformLive`) resolves `padding: "sm"` to absolute positioning calculations or blessed object attributes, and maps `onClick` to terminal mouse events or keyboard shortcuts.
-- **Native Mobile:** A mobile renderer (`MobilePlatformLive`) translates the style data into `StyleSheet.create` objects and maps behaviors to `Pressable` components.
-
-```ts
-// Web Environment
-Component.mount(App, { layer: WebPlatformLive });
-
-// Terminal Environment
-Component.mount(App, { layer: TuiPlatformLive });
-```
+---
 
 ## Advanced Examples
 
 ### 1. The Composable Modal (Behavior + Style + View)
 
-This example shows how a complex component like a Modal is assembled from independent parts.
-
 ```tsx
-import { Component, Style, Behavior, view, Element, Effect } from "af-ui";
-import { disclosure, focusTrap, keyboardNav } from "af-ui/behaviors";
-
-// 1. Structural View
+// 1. Define Structural View with Slots
 const BaseModal = Component.make(
   Component.props<{ title: string; children: ViewNode }>(),
   Component.require()
@@ -508,134 +226,18 @@ const BaseModal = Component.make(
   ))
 );
 
-// 2. Behavioral Composition
-// We combine multiple behaviors into one "Modal Behavior"
-const modalBehavior = Behavior.compose(
-  disclosure({ defaultOpen: false }), // State management
-  focusTrap(),                        // Accessibility: trap focus inside modal
-  keyboardNav({                       // Accessibility: close on Escape
-    onEscape: (bindings) => bindings.close()
-  })
-);
-
-// 3. Complete Component
+// 2. Compose Behavior and Style
 export const Modal = BaseModal.pipe(
   Behavior.attach(modalBehavior, {
-    trigger: "closeButton", // Map behavior "trigger" to modal "closeButton"
-    root: "content",        // Map behavior "root" to modal "content"
-    backdrop: "backdrop"    // Map behavior "backdrop" to modal "backdrop"
+    trigger: "closeButton",
+    root: "content",
+    backdrop: "backdrop"
   }),
-  Style.attach(modalStyle)   // Attach visual design
+  Style.attach(modalStyle) 
 );
 ```
 
-### 2. Multi-Slot Recipe: DataGrid
-
-Recipes are perfect for complex components with many slots that need to stay visually consistent.
-
-```tsx
-const dataGridRecipe = Style.recipe({
-  slots: ["root", "header", "row", "cell", "footer"],
-  base: {
-    root: Style.compose(
-      bordered(),
-      Style.slot({ width: "100%", borderCollapse: "collapse" })
-    ),
-    header: Style.compose(
-      padded("sm"),
-      Style.slot({ backgroundColor: "surface.muted", fontWeight: "bold" })
-    ),
-    row: Style.compose(
-      Style.slot({ transition: "fast" }),
-      Style.states({ hover: { backgroundColor: "surface.hover" } })
-    ),
-    cell: padded("md")
-  },
-  variants: {
-    striped: {
-      true: {
-        row: Style.nest({ "&:nth-child(even)": { backgroundColor: "surface.muted" } })
-      }
-    },
-    compact: {
-      true: {
-        cell: padded("sm"),
-        header: padded("xs")
-      }
-    }
-  },
-  defaults: { striped: true, compact: false }
-});
-
-// Usage in a component
-const DataGrid = Component.make(...)(
-  (props) => Effect.gen(function* () {
-    const styles = yield* Component.derived(() => 
-      dataGridRecipe({ striped: props.striped, compact: props.compact })
-    );
-    return { styles };
-  }),
-  (props, { styles }) => view({ ... }, () => (
-    <table slot="root" style={styles().root}>
-      <thead slot="header" style={styles().header}>...</thead>
-      <tbody slot="body">
-        <For each={props.data}>
-          {(item) => (
-            <tr slot="row" style={styles().row}>
-              <td slot="cell" style={styles().cell}>{item().name}</td>
-            </tr>
-          )}
-        </For>
-      </tbody>
-    </table>
-  ))
-);
-```
-
-### 3. Cross-Platform StatusBadge
-
-A single component definition that adapts its rendering to the active platform.
-
-```tsx
-const StatusBadge = Component.make(
-  Component.props<{ status: "online" | "offline" }>(),
-  Component.require()
-)(
-  () => Effect.succeed({}),
-  (props) => view({
-    root: Element.Container,
-    indicator: Element.Base
-  }, () => (
-    <Box slot="root">
-      <Circle slot="indicator" />
-      <Text>{props.status}</Text>
-    </Box>
-  ))
-).pipe(
-  Style.attach(Style.make({
-    root: Style.compose(
-      flexRow({ gap: "xs", align: "center" }),
-      padded(["xs", "sm"]),
-      rounded("full"),
-      Style.slot({ backgroundColor: "surface.muted" })
-    ),
-    indicator: (props) => Style.slot({
-      width: 8,
-      height: 8,
-      backgroundColor: props.status === "online" ? "success" : "neutral"
-    })
-  }))
-);
-
-// RENDERED ON WEB:
-// <div class="badge"><div class="dot online"></div>online</div>
-
-// RENDERED ON TUI:
-// [ (●) online ]  <-- rendered using ANSI colors and characters
-
-### 4. View Composition & Slot Remapping
-
-This example shows how to wrap a component while remapping its internal slots to a new public API.
+### 2. View Composition & Slot Remapping
 
 ```tsx
 const Panel = Component.make(
@@ -644,7 +246,6 @@ const Panel = Component.make(
 )(
   () => Effect.succeed({}),
   (props) => {
-    // We wrap the BaseModal but expose a different slot API
     return view({
       panelRoot: Element.Container,
       panelTitle: Element.Text,
@@ -664,51 +265,34 @@ const Panel = Component.make(
     ));
   }
 );
-
-// Consumers now target 'panelTitle' instead of 'title'
-const StyledPanel = Panel.pipe(
-  Style.attach(Style.make({
-    panelTitle: { color: "accent.primary", fontWeight: "bold" }
-  }))
-);
 ```
 
-## Comparison to Other Systems
+### 3. Cross-Platform Adapters
 
-| Aspect | Tailwind | shadcn/ui | CSS-in-JS | AF-UI |
-|--------|----------|-----------|-----------|-------|
-| **Granularity** | Utility classes | Copy-paste | Template literals | Composable typed utilities |
-| **Type Safety** | None (Magic strings) | Limited (props only) | Limited | Full compile-time validation |
-| **Customization** | Complex overrides | Requires forking | Context providers | Typed Style Handles |
-| **Platform** | Web-only | Web-only | Web-focused | Platform-agnostic |
-| **Encapsulation** | Global namespaces | Tailwind classes | CSS scoping hacks | Slot-scoped, zero collisions |
+```tsx
+const StatusBadge = Component.make(...)(...)(
+  (props) => view({
+    root: Element.Container,
+    indicator: Element.Base
+  }, () => (
+    <Box slot="root">
+      <Circle slot="indicator" />
+      <Text>{props.status}</Text>
+    </Box>
+  ))
+).pipe(
+  Style.attach(Style.make({
+    root: Style.compose(flexRow({ gap: "xs" }), padded(["xs", "sm"]), rounded("full")),
+    indicator: (props) => Style.slot({
+      backgroundColor: props.status === "online" ? "success" : "neutral"
+    })
+  }))
+);
 
-## Addressing Common Critiques
-
-**1. Ergonomics at Scale: Does pipe-based composition become boilerplate with complex components?**
-While the button example is simple, real-world components scale beautifully in this architecture. Because Logic (`setup`) and Structure (`view`) are completely isolated, complex state machines remain purely functional and don't clutter the JSX. Dozens of slots are managed in a flat `SlotMap`, making the structure easy to read. The `.pipe()` composition happens *once* at the export boundary, acting as a clean summary of what is attached, rather than deeply nesting HOCs or scattering hooks throughout the render function.
-
-**2. Learning Curve: Doesn't this require fluency in Effect-TS?**
-Yes. This architecture targets teams already investing in robust, type-safe applications. However, UI engineers only need a small subset of Effect (`Effect.gen`, `yield*`, and basic Layer management). Because the type system is so strict, the compiler acts as an interactive tutor—missing requirements are caught instantly at compile time, eliminating the hours spent debugging "undefined context" runtime errors.
-
-**3. The TUI/Mobile Claim: Is the cross-platform story real or just an aspiration?**
-The platform agnosticism is a structural reality enforced by the compiler. By defining tags via `jsxImportSource` and mapping them to abstract interfaces (e.g., `Element.Interactive`), the framework mathematically prevents DOM-coupling in the Component logic. While writing a production-ready React Native or TUI renderer takes framework-level effort, the *Component code* you write today is guaranteed to compile cleanly against those renderers once they exist.
-
-**4. Runtime Cost: How does runtime styling compare to zero-runtime solutions like Panda CSS or Vanilla Extract?**
-Unlike traditional CSS-in-JS that parses massive template literals at runtime, AF-UI styles are lightweight, pre-structured objects that map closely to platform primitives. More importantly, AF-UI's reactivity is granular—when a reactive style updates, it directly mutates the specific DOM node's style attribute without triggering a full Virtual DOM diff. Additionally, because styles are pure data structures, a future build step could statically extract non-reactive styles exactly like Vanilla Extract.
-
-**5. Ecosystem Interop: Can I use this in an existing React app?**
-Yes, incrementally. Because AF-UI separates its lifecycle and rendering from React's VDOM, an AF-UI component tree can be mounted inside a standard React component using a `useEffect` hook (much like mounting a complex D3 chart or WebGL canvas). You can adopt AF-UI to build your core design system or complex state-heavy forms without rewriting your existing React application.
+// RENDERED ON WEB: <div class="badge"><div class="dot online"></div>online</div>
+// RENDERED ON TUI: [ (●) online ] 
+```
 
 ## Conclusion
 
-AF-UI's Design/Styling/Behavior system represents a paradigm shift in UI architecture by:
-
-1. **Applying Effect's service/layer model** to styling and theming.
-2. **Creating a truly type-safe, composable styling system** that validates at compile time.
-3. **Enabling platform-agnostic UI design** that adapts to Web, TUI, or Native automatically.
-4. **Providing granular, reactive style/behavior updates** with zero virtual-dom overhead.
-5. **Supporting true design system customization** through handles instead of painful forking.
-6. **Separating concerns cleanly** between view (structure), behavior (logic), and style (appearance).
-
-The system achieves what Tailwind, shadcn/ui, and CSS-in-JS attempt, but with stronger type guarantees, better composability, and genuine platform independence. This inside-out approach creates a foundation for building maintainable, customizable, and scalable UI systems.
+AF-UI's Design/Styling/Behavior system represents a paradigm shift in UI architecture. By applying Effect's service/layer model to UI development, it achieves true type safety, effortless composability, and genuine platform independence, finally solving the long-standing problems of Tailwind and `shadcn/ui`.
