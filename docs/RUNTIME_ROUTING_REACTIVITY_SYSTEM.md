@@ -35,7 +35,33 @@ When `addUser` completes, `Reactivity.invalidate(["users"])` fires. Every atom, 
 - **Zero Virtual DOM Overhead**: Reactive style/behavior updates directly mutate platform elements (via `el.setAttr`) without triggering full component re-renders.
 - **Automatic Batching**: Multiple invalidations in a single synchronous block are batched into a single microtask flush.
 
-## 2. The Routing System (Schema-First & Unified)
+## 2. How Auto-Tracking Works
+
+AF-UI bridges the gap between high-level semantic keys and low-level fine-grained signals through an automatic tracking system. You don't have to manually manage subscriptions; the framework "sees" what you read.
+
+### 1. The Tracking Context
+When a reactive computation (like a component render, a `memo`, or an `Effect`) runs, AF-UI pushes a new "Capture Set" onto a global tracking stack.
+
+### 2. Automatic Dependency Collection
+When you read an Atom or call a service method wrapped in `Reactivity.tracked`, it checks the tracking stack. If a Capture Set is active, the reactivity keys are added to it.
+```ts
+// Component render starts -> Tracking Context active
+(props, { userList }) => {
+  // Reading userList() automatically pushes "users" key into the current context
+  const users = userList(); 
+  // ...
+}
+// Render ends -> Framework now knows this component depends on "users"
+```
+
+### 3. The Version Signal Bridge
+Internally, every semantic reactivity key is mapped to a numeric **Version Signal**. 
+- **Read**: Tracking a key actually reads its Version Signal.
+- **Invalidate**: Invalidating a key bumps its Version Signal.
+
+This allows the framework to leverage a high-performance, fine-grained reactive core (similar to Solid.js) while exposing a much more powerful, semantic API to the developer.
+
+## 3. The Routing System (Schema-First & Unified)
 
 AF-UI features a unified, route-first model where components and routing metadata are fused through type-safe pipes.
 
