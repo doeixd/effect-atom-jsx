@@ -128,6 +128,32 @@ const updateTodo = Action.make(function*(todoId: string, text: string) {
 
 This pattern ensures the UI remains responsive and snappy while guaranteeing eventual consistency with the backend, all while utilizing standard Effect types.
 
+## 4. Optimistic Updates
+
+AF-UI enables immediate UI feedback through **Optimistic Atoms**, allowing the UI to reflect state changes before a server-side action completes.
+
+### The Optimistic Workflow
+1. **Wrap**: Wrap an existing `Atom` with `Atom.withOptimistic()`. This creates an `OptimisticAtom` which exposes a `setOptimistic` method.
+2. **Apply**: When an action starts, call `setOptimistic(newValue)`. The UI instantly updates to `newValue`.
+3. **Commit/Rollback**: Use `withEffect` to chain the server action. 
+   - If the action **succeeds**, the atomic value is updated to the server's confirmed value, and `clearOptimistic()` is called.
+   - If the action **fails/defects**, `clearOptimistic()` reverts the UI back to the last known server state.
+
+```tsx
+const countAtom = Atom.make(0).pipe(Atom.withOptimistic());
+
+const increment = Action.make(function*() {
+  // 1. Optimistically set new value
+  // 2. Wrap the effect: automatically clears on success/error/defect
+  yield* countAtom.withEffect(
+    (prev) => prev + 1,
+    api.incrementCount()
+  );
+});
+```
+
+The UI reads from `countAtom` as usual; it doesn't need to know if the value is "optimistic" or "confirmed." The `OptimisticAtom` handles the transparent switch.
+
 ## 5. The Result Type: Bridging Async and UI
 
 AF-UI uses a standardized **Result** type union to handle asynchronous states consistently across the framework:
