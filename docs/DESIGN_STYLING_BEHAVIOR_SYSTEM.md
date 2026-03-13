@@ -4,7 +4,7 @@
 
 If you are frustrated by maintaining forks of `shadcn/ui`, debugging typos in massive `Tailwind` strings, or paying the runtime performance cost of `CSS-in-JS`, AF-UI offers a fundamentally different approach. 
 
-AF-UI is built on an **"Inside-Out" Component Model** powered by Effect-TS. Instead of hardcoding behavior and styles into a single file, AF-UI separates UI into purely structural **Views**, and allows you to attach **Behaviors** and **Styles** from the outside, with 100% compile-time type safety.
+AF-UI is built on an **"Inside-Out" Component Model** powered by Effect-TS. Instead of hardcoding behavior and styles into a single file, AF-UI separates UI into purely structural **Views**, and allows you to attach **Behaviors** and **Styles** from the outside, with 100% compile-time type safety. For more details on the logic layer that powers these components, see the [Runtime, Routing, and Reactivity system](./RUNTIME_ROUTING_REACTIVITY_SYSTEM.md).
 
 This solves three major ecosystem pain points:
 1. **The Tailwind Problem:** Styles in AF-UI are composable data structures backed by a typed Token service. Invalid CSS or invalid theme tokens fail at compile-time. No more typos or runtime layout bugs.
@@ -25,7 +25,11 @@ Tags ➔ Views ➔ Components ➔ Renderer ➔ Platform
 4. **Renderer:** A service (`WebRenderer`, `TuiRenderer`) responsible for translating the abstract tree of styled/behavioral nodes into concrete host nodes.
 5. **Platform:** The overarching layer (`WebPlatformLive`, `TuiPlatformLive`) that bundles the Renderer, the Event System, and the specific Element Vocabulary (the Tags) together into a single, cohesive environment.
 
-## The Inside-Out Design Philosophy
+## Performance: Automatic Islands
+
+AF-UI natively supports "Automatic Islands." Because AF-UI explicitly separates structural `Views` from interaction `Behaviors`, the framework can mathematically guarantee which parts of the UI are static.
+
+If a component (or an entire subtree) is piped with `Style.attach` but has **no `Behavior.attach`**, the compiler and renderer know that this branch is 100% static—it has no event listeners, no reactive subscriptions, and no local state. Consequently, AF-UI completely strips the hydration JavaScript for that entire branch, serving only raw, static HTML/CSS to the client. This results in significantly smaller bundle sizes and faster Time-to-Interactive.
 
 ```text
 Traditional Model:
@@ -50,6 +54,12 @@ In this model:
 3. **Styles attach appearance** to those slots (colors, spacing, layout, typography).
 4. **Both compose from outside** the view through piped transformations.
 5. **Everything is type-safe** - invalid attachments are compile-time errors.
+
+## Performance: Automatic Islands
+
+AF-UI natively supports "Automatic Islands." Because AF-UI explicitly separates structural `Views` from interaction `Behaviors`, the framework can mathematically guarantee which parts of the UI are static.
+
+If a component (or an entire subtree) is piped with `Style.attach` but has **no `Behavior.attach`**, the compiler and renderer know that this branch is 100% static—it has no event listeners, no reactive subscriptions, and no local state. Consequently, AF-UI completely strips the hydration JavaScript for that entire branch, serving only raw, static HTML/CSS to the client. This results in significantly smaller bundle sizes and faster Time-to-Interactive.
 
 ## The Effect Influence
 

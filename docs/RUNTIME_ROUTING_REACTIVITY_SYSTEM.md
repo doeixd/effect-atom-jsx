@@ -85,6 +85,25 @@ Every part of the URL (Path Params, Query, Hash) is validated via **Effect Schem
 ### Requirement Bubbling in Routes
 Because routes are components, their requirements bubble up. If a deeply nested route requires a `BillingService`, the top-level Router automatically inherits that requirement in its `Req` type parameter.
 
+### Beautiful Error Boundaries
+Because loaders and setups return `Effect`, any error (`E`) can be caught ergonomically using `Route.catchAll` and `Match`.
+
+```tsx
+const UserRoute = Component.make(...).pipe(
+  Route.path("/user/:id"),
+  Route.loader((params) => Effect.gen(function*() {
+    const api = yield* Api;
+    return yield* api.getUser(params.id); // Effect<User, UserNotFound | NetworkError>
+  })),
+  // Handle typed errors with exhaustive pattern matching
+  Route.catchAll((error) => Match.value(error).pipe(
+    Match.when({ _tag: "UserNotFound" }, () => <NotFoundView />),
+    Match.when({ _tag: "NetworkError" }, () => <OfflineView />),
+    Match.exhaustive
+  ))
+);
+```
+
 ## 3. SingleFlight & Loader Infrastructure
 
 AF-UI solves the "Waterfall Problem" and SSR/Hydration mismatch through its **SingleFlight** infrastructure.
