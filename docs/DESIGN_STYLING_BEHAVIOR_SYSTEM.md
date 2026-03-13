@@ -57,7 +57,7 @@ AF-UI's design is fundamentally influenced by **Effect-TS**, inheriting its core
 
 1. **Services as Context:** Like Effect uses the environment (`R`) for dependency injection, AF-UI components declare services in their `Req` type parameter. Providing a Theme or a Router is identical to `Effect.provide(layer)`.
 2. **Pipeable Composition:** AF-UI components, behaviors, and styles are transformed and composed using `.pipe()`, matching Effect's standard composition model.
-3. **Typed Errors:** Components track explicit error types (`E`) from their asynchronous behaviors, ensuring unhandled failure cases are caught at compile time.
+3. **Requirement Bubbling:** AF-UI uses Effect Generators (`View.gen`) to render. When a component renders a child that requires a service (like `Auth`), that requirement automatically bubbles up through the `yield*` chain into the parent's `Req` type. This ensures that missing providers are caught at compile-time for the entire tree.
 4. **Data as Values:** Styles and behaviors are plain data structures that are interpreted at runtime, not side-effecting function calls. This makes them easily testable as pure data.
 
 ## Quick Start: The Anatomy of a Component
@@ -195,7 +195,10 @@ Behaviors in AF-UI are **active slot-consumers** that directly attach interactio
    BaseButton.pipe(Behavior.attach(disclosure, { trigger: "root" }))
    ```
 
-2. **Composable Behaviors**: 
+2. **Lifecycle Management**: 
+   Behaviors leverage Effect's `Scope` to manage their lifecycle. When a behavior is attached, any resources it acquires (event listeners, timers, subscriptions) are automatically cleaned up when the element or component is unmounted.
+
+3. **Composable Behaviors**: 
    Combine simple primitives into complex interaction layers using `Behavior.compose`.
    ```ts
    const modalBehavior = Behavior.compose(
@@ -205,7 +208,7 @@ Behaviors in AF-UI are **active slot-consumers** that directly attach interactio
    );
    ```
 
-3. **Capability-Based Matching**: 
+4. **Capability-Based Matching**: 
    Behaviors are matched based on **Element Capability**. Each behavior declares exactly what abstract element interface it requires to function (e.g., `Element.Interactive` for a press behavior, `Element.TextInput` for an autocomplete behavior).
 
    ```ts
@@ -327,6 +330,36 @@ const StatusBadge = Component.make(...)(...)(
 
 // RENDERED ON WEB: <div class="badge"><div class="dot online"></div>online</div>
 // RENDERED ON TUI: [ (●) online ] 
+```
+
+### 4. Collection Slots and Dynamic Control Flow
+
+AF-UI handles loops and conditionals not just as runtime branches, but as structural type-level transformers.
+
+```tsx
+const List = Component.make(...)(
+  (props) => Effect.succeed({}),
+  (props) => view({
+    root: Element.Container,
+    // Slots inside For automatically become Collections
+    items: Element.Collection<Element.Container>
+  }, () => (
+    <div slot="root">
+      <For each={props.items}>
+        {(item) => (
+          <div slot="items" key={item.id}>
+             <Text>{item.name}</Text>
+          </div>
+        )}
+      </For>
+    </div>
+  ))
+);
+
+// Selection behavior can now safely 'forEach' over the collection
+const SelectableList = List.pipe(
+  Behavior.attach(selectionBehavior, { target: "items" })
+);
 ```
 
 ## Comparison to Other Systems
