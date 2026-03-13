@@ -95,7 +95,40 @@ When navigating, AF-UI calculates all matching routes and their loaders. It then
 ### SingleFlight Mutations
 Using `Route.actionSingleFlight` allows a mutation to trigger a server-side action and return the updated data for all affected loaders in a single round-trip.
 
-## 4. The Result Type: Bridging Async and UI
+## 4. Optimistic UI & Atomic Mutations
+
+AF-UI enables **Optimistic UI** updates as a first-class citizen, leveraging the atom-based state system. Mutations perform local state updates immediately to provide instant feedback, while the `Action` API manages the eventual consistency with the server.
+
+### The Optimistic Workflow
+1. **Local Update**: When a user triggers an action (e.g., toggling a todo), you immediately update the local `Atom` state.
+2. **Network Mutation**: Simultaneously, you initiate the network request to the server.
+3. **Reconciliation**:
+   - **On Success**: The server responds, and the `Action` invalidates the associated `Reactivity` keys, ensuring the UI stays consistent with the server source of truth.
+   - **On Failure**: If the network request fails, the `Action` automatically rolls back the local atom update to the previously snapshotted state.
+
+```ts
+const updateTodo = Action.make(function*(todoId: string, text: string) {
+  // 1. Snapshot previous state for rollback
+  const previous = todoAtom.get();
+  
+  // 2. Optimistic Update (Immediate)
+  todoAtom.update(todos => todos.map(t => t.id === todoId ? { ...t, text } : t));
+
+  // 3. Network Mutation
+  return yield* Effect.tryPromise({
+    try: () => api.updateTodo(todoId, text),
+    catch: (err) => {
+      // 4. Rollback on Failure
+      todoAtom.set(previous);
+      return err;
+    }
+  });
+}, { reactivityKeys: ["todos"] });
+```
+
+This pattern ensures the UI remains responsive and snappy while guaranteeing eventual consistency with the backend, all while utilizing standard Effect types.
+
+## 5. The Result Type: Bridging Async and UI
 
 AF-UI uses a standardized **Result** type union to handle asynchronous states consistently across the framework:
 - `Loading`: Initial state before data arrives.
@@ -107,7 +140,7 @@ AF-UI uses a standardized **Result** type union to handle asynchronous states co
 ### Reactive Integration
 Loaders produce `ReadonlyAtom<Result<A, E>>`. Because it is a tagged union, you can use the `<Loading>` and `<Error>` boundary components or simple switch statements to render UI states without "conditional hook" errors.
 
-## 5. Hydration: The Hydration Service & Layer
+## 6. Hydration: The Hydration Service & Layer
 
 AF-UI manages server-to-client state transfer through an explicit `Hydration` service, ensuring a seamless transition from static HTML to an interactive application.
 
@@ -124,7 +157,7 @@ This ensures:
 - **Zero-Flicker Bootstrapping**: Components have their `Success` data available immediately, so the UI doesn't "pop" from loading to success.
 - **State Continuity**: Complex reactive state (like form inputs or scroll positions) is preserved across the boundary.
 
-## 6. Server Routes & Document Rendering
+## 7. Server Routes & Document Rendering
 
 Server Routes extend the routing model to the backend, providing typed request decoding and document rendering.
 
