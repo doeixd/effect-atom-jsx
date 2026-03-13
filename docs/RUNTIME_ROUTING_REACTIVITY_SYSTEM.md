@@ -6,36 +6,42 @@ While the [Design/Styling/Behavior system](./DESIGN_STYLING_BEHAVIOR_SYSTEM.md) 
 
 ## 1. The Reactivity Service (Semantic Invalidation)
 
-Most UI frameworks track reactivity via object identity or dependency graphs. AF-UI leverages `@effect/experimental/Reactivity` to provide **semantic, key-based invalidation**.
+Most UI frameworks track reactivity via object identity or dependency graphs. AF-UI leverages a dedicated `Reactivity` service to provide **semantic, key-based invalidation**.
 
 ### Semantic vs. Identity Reactivity
-Instead of saying "refresh this specific atom," you invalidate a semantic concept:
-```ts
-// 1. Atom subscribes to the "users" key
-const userList = Atom.make(Effect.gen(function*() {
-  const api = yield* Api;
-  return yield* api.listUsers();
-})).pipe(Atom.withReactivity(["users"]));
+Instead of saying "refresh this specific atom," you invalidate a semantic concept. This allows decoupled services to drive UI updates without direct references.
 
-// 2. Action invalidates the "users" key upon success
+```ts
+// 1. A service read method marked as participating in reactivity
+class Api extends Effect.Tag("Api")<Api, {
+  readonly listUsers: () => Effect.Effect<User[]>
+}>() {
+  static live = Layer.succeed(Api, {
+    // track dependency on "users" key
+    listUsers: () => Reactivity.tracked(fetchUsers(), { keys: ["users"] })
+  })
+}
+
+// 2. A mutation marked as invalidating semantic keys
 const addUser = Action.make(function*(name: string) {
-  const api = yield* Api;
-  yield* api.addUser(name);
-}, { reactivityKeys: ["users"] });
+  return yield* Reactivity.invalidating(api.addUser(name), ["users"]);
+});
 ```
-When `addUser` completes, `Reactivity.invalidate(["users"])` fires. Every atom, component, or behavior across the entire application (Web, TUI, or Native) watching the "users" key refreshes automatically.
+
+When `addUser` completes, `Reactivity.invalidate(["users"])` fires. Every atom, component, or behavior across the entire application (Web, TUI, or Native) that has tracked a dependency on the "users" key refreshes automatically.
 
 ### Key Benefits:
-- **Granular Updates**: Mutating a specific user (`{ users: ["alice"] }`) only refreshes observers of that sub-key, not the whole list.
-- **Zero Virtual DOM Overhead**: Reactive style/behavior updates directly mutate platform elements (via `el.setAttr`) without triggering a full component re-render.
-- **Cross-Component Communication**: Use semantic keys as a type-safe pub/sub system for things like toasts or navigation events.
+- **Granular Updates**: Mutating a specific user (`{ users: ["alice"] }`) only refreshes observers of that sub-key or the parent "users" key.
+- **Zero Virtual DOM Overhead**: Reactive style/behavior updates directly mutate platform elements (via `el.setAttr`) without triggering full component re-renders.
+- **Automatic Batching**: Multiple invalidations in a single synchronous block are batched into a single microtask flush.
 
 ## 2. The Routing System (Schema-First & Unified)
 
 AF-UI features a unified, route-first model where components and routing metadata are fused through type-safe pipes.
 
 ### Unified Route Definition
-Routes are first-class values that accumulate metadata (params, loaders, guards) using `.pipe()`:
+Routes are first-class values that accumulate metadata (params, loaders, guards) using `.pipe()`. This metadata flows through the type system, ensuring that loader data and params are always correctly typed in your components.
+
 ```ts
 const UserRoute = Component.make(...)(...).pipe(
   Route.path("/users/:userId"),
@@ -61,37 +67,47 @@ AF-UI solves the "Waterfall Problem" and SSR/Hydration mismatch through its **Si
 ### Bundled Data Fetching
 When navigating, AF-UI calculates all matching routes and their loaders. It then executes them in a single flight (parallelized on the server, or bundled into one request from the client).
 
-### Cache Seeding and Hydration
-On the server, loader results are serialized into the HTML. On the client, the `SingleFlightTransport` seeds the local cache before hydration even begins. This ensures:
-- **Zero-Flicker Hydration**: Components have their data synchronously available during the first mount.
-- **Smart Reruns**: Loaders only rerun if their `reactivityKeys` are invalidated or if their parameters change.
+### SingleFlight Mutations
+Using `Route.actionSingleFlight` allows a mutation to trigger a server-side action and return the updated data for all affected loaders in a single round-trip.
 
-### 4. The Result Type: Bridging Async and UI
+## 4. The Result Type: Bridging Async and UI
 
-AF-UI uses a standardized **Result** type (`loading`, `success`, `failure`) to handle asynchronous states consistently across the framework. 
+AF-UI uses a standardized **Result** type union to handle asynchronous states consistently across the framework:
+- `Loading`: Initial state before data arrives.
+- `Success<A>`: Data successfully fetched.
+- `Failure<E>`: A typed error occurred in the Effect.
+- `Defect`: An unexpected bug or interrupt occurred (Cause).
+- `Refreshing<A, E>`: Stale data is available while a re-validation is in progress (SWR).
 
-- **Atoms & Loaders**: Both produce `ReadonlyAtom<Result<A, E>>`.
-- **Match-Ready**: Because it is a tagged union, you can use `Match` or simple switch statements in your view to render loading spinners, error messages, or data without "conditional hook" errors.
-- **SingleFlight Integration**: The hydration process seeds these `Result` values directly into the client cache, allowing components to transition from `loading` to `success` synchronously upon mount.
+### Reactive Integration
+Loaders produce `ReadonlyAtom<Result<A, E>>`. Because it is a tagged union, you can use the `<Loading>` and `<Error>` boundary components or simple switch statements to render UI states without "conditional hook" errors.
 
-## 5. Server Routes & Document Rendering
+## 5. Hydration: Zero-Flicker Bootstrapping
+
+AF-UI's hydration model is "Data-First." On the server, `SingleFlight` results are serialized into the HTML document. On the client, the `SingleFlightTransport` seeds the local cache **before** the component tree mounts.
+
+This ensures:
+- **Synchronous First Render**: Components have their `Success` data available immediately on the first mount.
+- **No Double-Fetching**: The client knows exactly which loaders were already run on the server and won't re-execute them unless their `reactivityKeys` were invalidated.
+
+## 6. Server Routes & Document Rendering
 
 Server Routes extend the routing model to the backend, providing typed request decoding and document rendering.
 
 ### Typed Handlers
-Server routes use schemas to decode Headers, Cookies, Body, and Query strings before the handler even runs:
+Server routes use schemas to decode Headers, Cookies, Body, and Query strings:
 ```ts
 const MyApi = ServerRoute.make("json").pipe(
   ServerRoute.path("/api/save"),
   ServerRoute.bodySchema(MyDataSchema),
-  ServerRoute.handler(({ body }) => yield* saveToDb(body))
+  ServerRoute.handler(({ body }) => saveToDb(body))
 );
 ```
 
 ### Document Rendering
-The `ServerRoute.document` utility takes your unified route tree and a renderer service to produce full HTML responses, including automatic injection of `SingleFlight` seed data and script tags.
+The `ServerRoute.document` utility takes your unified route tree and produces full HTML responses, including automatic injection of `SingleFlight` seed data and script tags.
 
-## 5. Effect Layers as the Context System
+## 7. Effect Layers as the Context System
 
 AF-UI replaces traditional React-style Context with **Effect Layers**.
 
@@ -110,9 +126,9 @@ Component.mount(App, { layer: AppLive });
 ### Why this is superior to Context:
 - **Compile-Time Enforcement**: Forget a Provider? The app won't compile.
 - **Scoped Cleanup**: Layers use `Effect.addFinalizer`, so services (like WebSockets or DB connections) are automatically closed when a component subtree unmounts.
-- **Trivial Mocking**: Testing a component means providing a `TestLayer` instead of a `LiveLayer`. No wrapper components or mock injection hacks required.
+- **Trivial Mocking**: Testing a component means providing a `TestLayer` instead of a `LiveLayer`.
 
-## 6. Pipeability: The Algebra of UI
+## 8. Pipeability: The Algebra of UI
 
 Every major entity in AF-UI (Component, Route, Style, Behavior, ServerRoute) is **Pipeable**. This allows you to build complex logic by composing small, reusable functions:
 
@@ -125,10 +141,7 @@ const EnhancedComponent = BaseComponent.pipe(
 );
 ```
 
-This functional approach ensures that:
-1. **Inference Flows**: TypeScript correctly carries type information from the start of the pipe to the end.
-2. **Logic is Decoupled**: You can define a style or a behavior once and "pipe" it into fifty different components.
-3. **Feature Discovery**: Typing `.pipe(` allows IDEs to suggest every available transformation (Styles, Behaviors, Routes) in one place.
+This functional approach ensures that **inference flows** correctly and **logic is decoupled** from the component implementation.
 
 ## Conclusion: A Unified Algebraic UI
 
