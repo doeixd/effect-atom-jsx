@@ -4,6 +4,7 @@ import * as Component from "../Component.js";
 import * as Route from "../Route.js";
 import * as ServerRoute from "../ServerRoute.js";
 import * as RouterRuntime from "../RouterRuntime.js";
+import { clearLoaderCache } from "../router-runtime.js";
 
 describe("Server render bridge", () => {
   it("renders a route into a structured request result", () => {
@@ -129,5 +130,38 @@ describe("Server render bridge", () => {
     const afterDispatch = Effect.runSync(runtime.snapshot());
     expect(afterDispatch.location.pathname).toBe("/health");
     expect(afterDispatch.requestState.phase).toBe("idle");
+  });
+
+  it("hydrates route loader data before the first runtime snapshot", () => {
+    clearLoaderCache();
+    const App = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ id: params.userId, name: `User ${params.userId}` }))(
+      Route.id("users.detail")(
+        Route.path("/users/:userId")(Component.from<{}>(() => "Users SSR Hydration")),
+      ),
+    );
+
+    const renderResult = Effect.runSync(Route.renderRequest(App, {
+      request: new Request("http://example.com/users/alice"),
+    }));
+
+    expect(renderResult.loaderPayload.length).toBeGreaterThan(0);
+    Route.hydrateSingleFlightPayload(
+      {
+        mutation: { ok: true as const },
+        url: "http://example.com/users/alice",
+        loaders: renderResult.loaderPayload,
+      },
+      App,
+    );
+
+    const runtime = RouterRuntime.create({
+      app: App,
+      history: RouterRuntime.createMemoryHistory("/users/alice"),
+    });
+
+    Effect.runSync(runtime.initialize());
+    const snapshot = Effect.runSync(runtime.snapshot());
+    expect(snapshot.loaderData.get("users.detail")).toEqual({ id: "alice", name: "User alice" });
   });
 });

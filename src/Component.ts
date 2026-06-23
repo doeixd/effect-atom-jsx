@@ -29,6 +29,23 @@ export interface SlotMap {
 
 type SlotsFromBindings<Bindings> = Bindings extends { readonly slots: infer Slots extends SlotMap } ? Slots : {};
 
+// ─── View slot registry ────────────────────────────────────────────────────────
+// Allows components to expose slot handles through View<Slots> without requiring
+// them to be stored in bindings.slots. Style/Behavior attach can target these
+// view-level slots directly.
+
+type ViewSlotRecord = Record<string, Element.Handle | Element.Collection<Element.Handle>>;
+
+const viewSlotRegistry = new WeakMap<Component<any, any, any, any, any>, ViewSlotRecord>();
+
+export function registerViewSlots(slots: ViewSlotRecord, component: Component<any, any, any, any, any>): void {
+  viewSlotRegistry.set(component, slots);
+}
+
+export function getViewSlots(component: Component<any, any, any, any, any>): ViewSlotRecord {
+  return viewSlotRegistry.get(component) ?? {};
+}
+
 type Pipeable<Self> = {
   pipe(): Self;
   pipe<A>(ab: (self: Self) => A): A;
@@ -159,7 +176,11 @@ function toComponent<Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings
         const renderProp = (props as RenderPropChildren<Bindings>).children;
         return typeof renderProp === "function" ? View.node(renderProp(ready)) : null;
       }
-      return View.node(internal.view(props, ready));
+      const result = internal.view(props, ready);
+      if (View.isView(result)) {
+        registerViewSlots(result.slots as unknown as ViewSlotRecord, out);
+      }
+      return View.node(result);
     };
   }) as Component<Props, Req, E, Bindings, Slots>;
 
@@ -304,7 +325,11 @@ export function renderEffect<Props, Req, E, Bindings>(
         const renderProp = (parsed as RenderPropChildren<Bindings>).children;
         return typeof renderProp === "function" ? View.node(renderProp(bindings)) : null;
       }
-      return View.node(i.view(parsed, bindings));
+      const result = i.view(parsed, bindings);
+      if (View.isView(result)) {
+        registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
+      }
+      return View.node(result);
     }),
   );
 }
@@ -494,6 +519,20 @@ export function tapSetup<Props, Req, E, Bindings, E2, R2>(
       ...i,
       setup: (props) => i.setup(props).pipe(Effect.tap(tap as any)) as any,
     }) as PreserveRouteMetadata<C, Component<Props, Req | R2, E | E2, Bindings, SlotsOf<C>>>;
+  };
+}
+
+export function withViewTransform<Props, Req, E, Bindings, Slots>(
+  transform: (result: unknown, props: Props, bindings: Bindings) => unknown,
+): <C extends Component<Props, Req, E, Bindings, Slots>>(component: C) => PreserveRouteMetadata<C, Component<Props, Req, E, Bindings, Slots>> {
+  return <C extends Component<Props, Req, E, Bindings, Slots>>(component: C) => {
+    const i = internals(component);
+    return toComponentLike(component, {
+      ...i,
+      view: i.view === undefined
+        ? undefined
+        : (props: Props, bindings: Bindings) => transform(i.view!(props, bindings), props, bindings),
+    }) as PreserveRouteMetadata<C, Component<Props, Req, E, Bindings, Slots>>;
   };
 }
 
@@ -881,14 +920,14 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
  */
 export function guard<Req, E>(
   check: Effect.Effect<unknown, E, Req>,
-): <C extends Component<any, any, any, any>>(
+): <C extends Component<any, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | Req, Errors<C> | E, BindingsOf<C>>> {
-  return <C extends Component<any, any, any, any>>(component: C) => {
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | Req, Errors<C> | E, BindingsOf<C>, SlotsOf<C>>> {
+  return <C extends Component<any, any, any, any, any>>(component: C) => {
     const routed = asRoutedComponent(component);
     const current = routed.__routeGuards ?? [];
     routed.__routeGuards = [...current, check];
-    return component as unknown as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | Req, Errors<C> | E, BindingsOf<C>>>;
+    return component as unknown as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | Req, Errors<C> | E, BindingsOf<C>, SlotsOf<C>>>;
   };
 }
 
@@ -974,6 +1013,8 @@ export const Component = {
   query,
   action,
   ref,
+  registerViewSlots,
+  getViewSlots,
   fromDequeue,
   schedule,
   scheduleEffect,
@@ -983,6 +1024,7 @@ export const Component = {
   withSpan,
   memo,
   tapSetup,
+  withViewTransform,
   withPreSetup,
   withSetupRetry,
   withSetupTimeout,

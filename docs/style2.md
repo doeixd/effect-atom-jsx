@@ -1,3 +1,5 @@
+> **Historical note (2026-06-23):** This document describes the advanced style descriptor design that led to the current unified `Style` API. All advanced CSS features described here (nest, vars, media, supports, container, pseudo, grid, layers, animate, enter/exit animations) are now implemented directly in `src/Style.ts` as part of the single Style API. See `docs/style.md` for the main style guide.
+
 Right. The style system already has typed tokens, slot targeting, and platform resolution. Complex CSS features are just more expressive style descriptions that flow through the same pipeline. The key is that our style objects are data — they describe what you want, and the platform renderer decides how to implement it.
 
 **Nested selectors — targeting children and descendants of a slot:**

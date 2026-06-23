@@ -1,6 +1,15 @@
 import { Effect } from "effect";
 import * as Component from "../Component.js";
+import * as Element from "../Element.js";
 import * as Style from "../Style.js";
+import * as View from "../View.js";
+
+type Equal<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends
+  (<T>() => T extends B ? 1 : 2)
+    ? true
+    : false;
+type Expect<T extends true> = T;
 
 const style = Style.make({
   root: Style.slot({ padding: "md" }),
@@ -53,3 +62,52 @@ strictAttach(style, {
   // @ts-expect-error missing component slot name
   title: "header",
 });
+
+// Negative: attach requires all style slot names to exist in component Slots
+Card.pipe(
+  // @ts-expect-error missing slot 'missing' does not exist in component
+  Style.attach(Style.make({ missing: Style.slot({ padding: "md" }) })),
+);
+
+// SlotsOf preserved through style attachment
+const StyledCard = Card.pipe(
+  Style.attachBySlots(style, { root: "root", title: "title" }),
+);
+type _StyledCardSlots = Component.SlotsOf<typeof StyledCard>;
+type _SlotsPreservedCheck = Expect<Equal<_StyledCardSlots, Component.SlotsOf<typeof Card>>>;
+
+// ─── attachByView tests ───────────────────────────────────────────────────────
+// A View-backed component with explicit Slots (5th type param), no bindings.slots
+const ViewCard = Component.make<
+  {},
+  never,
+  never,
+  {},
+  { readonly root: Element.Container; readonly title: Element.Interactive }
+>(
+  Component.props<{}>(),
+  Component.require<never>(),
+  () => Effect.succeed({}),
+  () => View.make(
+    { root: null as unknown as Element.Container, title: null as unknown as Element.Interactive },
+    null,
+  ),
+);
+
+// Positive: attachByView with matching style slots
+ViewCard.pipe(
+  Style.attachByView(style),
+);
+
+// Negative: attachByView with style slot not in component Slots
+ViewCard.pipe(
+  // @ts-expect-error style slot 'missing' not in component Slots
+  Style.attachByView(Style.make({ missing: Style.slot({ padding: "md" }) })),
+);
+
+// SlotsOf preserved through attachByView
+const StyledViewCard = ViewCard.pipe(
+  Style.attachByView(style),
+);
+type _StyledViewCardSlots = Component.SlotsOf<typeof StyledViewCard>;
+type _ViewSlotsPreservedCheck = Expect<Equal<_StyledViewCardSlots, Component.SlotsOf<typeof ViewCard>>>;

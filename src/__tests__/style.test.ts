@@ -4,6 +4,7 @@ import * as Component from "../Component.js";
 import * as Element from "../Element.js";
 import * as Style from "../Style.js";
 import * as StyleUtils from "../style-utils.js";
+import { defaultThemeTokens } from "../style-types.js";
 import * as View from "../View.js";
 
 describe("Style", () => {
@@ -129,5 +130,10 @@ describe("Style", () => {
       surface: "root",
       affordance: "secret",
     }, view).map((d) => d.code)).toEqual(["view:hidden-slot"]);
+  });
+
+  it("exposes theme helpers through the Style namespace", () => {
+    expect(Style.Style.ThemeLight).toBeDefined();
+    expect(Style.Style.lookupToken(defaultThemeTokens, "surface")).toBe("#ffffff");
   });
 });

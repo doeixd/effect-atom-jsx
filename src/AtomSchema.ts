@@ -96,17 +96,17 @@ export interface ValidatedAtom<A, I> {
   /** The raw, unvalidated input state. */
   readonly input: Atom.Writable<I, I>;
   /** The result of parsing the current input against the Schema. */
-  readonly result: Atom.Atom<Exit.Exit<A, SchemaError>>;
+  readonly result: Atom.ReadonlyAtom<Exit.Exit<A, SchemaError>>;
   /** A derived atom containing validation errors, or None if valid. */
-  readonly error: Atom.Atom<Option.Option<SchemaError>>;
+  readonly error: Atom.ReadonlyAtom<Option.Option<SchemaError>>;
   /** A derived atom containing the successfully parsed value, or None if invalid. */
-  readonly value: Atom.Atom<Option.Option<A>>;
+  readonly value: Atom.ReadonlyAtom<Option.Option<A>>;
   /** Whether the field has been modified since creation. */
-  readonly touched: Atom.Atom<boolean>;
+  readonly touched: Atom.ReadonlyAtom<boolean>;
   /** Whether the current input differs from the initial value. */
-  readonly dirty: Atom.Atom<boolean>;
+  readonly dirty: Atom.ReadonlyAtom<boolean>;
   /** Convenience boolean: true when the current input is valid. */
-  readonly isValid: Atom.Atom<boolean>;
+  readonly isValid: Atom.ReadonlyAtom<boolean>;
   /** Reset input to initial value and clear touched state. */
   readonly reset: () => void;
 }
@@ -309,7 +309,7 @@ export function make<A, I>(
     } catch (e: any) {
       return Exit.fail(e as SchemaError);
     }
-  }) as Atom.Atom<Exit.Exit<A, SchemaError>>;
+  });
 
   const error = Atom.map(result, (res) => {
     if (res._tag === "Failure") {
@@ -333,20 +333,20 @@ export function make<A, I>(
   const trackedInput = Atom.writable<I, I>(
     (get) => get(inputAtom),
     (ctx, val) => {
-      ctx.set(touchedAtom as Atom.Writable<boolean>, true);
+      ctx.set(touchedAtom, true);
       ctx.set(inputAtom, val);
     },
   );
 
   const dirty = hasInitial
     ? Atom.map(inputAtom, (v) => v !== initialValue)
-    : (touchedAtom as Atom.Atom<boolean>);
+    : touchedAtom;
 
   const resetFn = () => {
     if (hasInitial) {
       Effect.runSync(Atom.set(inputAtom, initialValue as I));
     }
-    Effect.runSync(Atom.set(touchedAtom as Atom.Writable<boolean>, false));
+    Effect.runSync(Atom.set(touchedAtom, false));
   };
 
   return {

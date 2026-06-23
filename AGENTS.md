@@ -6,11 +6,12 @@ This repository is `effect-atom-jsx`, a runtime JSX and Effect-based reactive UI
 
 Use these documents first:
 
-- `docs/AF_UI_CONTRACT.md` — canonical AF-UI architecture contract.
-- `docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md` — current implementation status and backlog.
-- `docs/GEN2_UI_IMPLEMENTATION_NOTES.md` — notes from `../gen2` UI IR implementation and what can be adapted here.
-- `docs/DESIGN_STYLING_BEHAVIOR_SYSTEM.md` — broader design narrative.
-- `docs/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md` — runtime, routing, reactivity, single-flight, hydration vision.
+- [`docs/AF_UI_CONTRACT.md`](docs/AF_UI_CONTRACT.md) — canonical AF-UI architecture contract.
+- [`docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md`](docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md) — current implementation status and backlog.
+- [`docs/GEN2_UI_IMPLEMENTATION_NOTES.md`](docs/GEN2_UI_IMPLEMENTATION_NOTES.md) — notes from `../gen2` UI IR implementation and what can be adapted here.
+- [`docs/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md`](docs/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md) — route-node, server-route, and runtime architecture notes.
+- [`docs/DESIGN_STYLING_BEHAVIOR_SYSTEM.md`](docs/DESIGN_STYLING_BEHAVIOR_SYSTEM.md) — broader design narrative.
+- [`docs/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md`](docs/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md) — runtime, routing, reactivity, single-flight, hydration vision.
 
 When older exploratory docs conflict with `docs/AF_UI_CONTRACT.md`, the contract wins.
 
@@ -58,7 +59,15 @@ Then allow component view functions to return either current JSX output or `View
 
 ## Gen2 Notes
 
-`../gen2` has useful UI IR implementation in `../gen2/src/ui/ui.ts`, including:
+`../gen2` has useful UI IR implementation in [`../gen2/src/ui/ui.ts`](../gen2/src/ui/ui.ts) and [`../gen2/src/gen/ui-backends.ts`](../gen2/src/gen/ui-backends.ts), plus the related UI docs and tests:
+
+- [`../gen2/gen-ui-implementation-plan.md`](../gen2/gen-ui-implementation-plan.md)
+- [`../gen2/docs/spec.md`](../gen2/docs/spec.md)
+- [`../gen2/tests/ui.test.ts`](../gen2/tests/ui.test.ts)
+- [`../gen2/tests/ui-generic.test.ts`](../gen2/tests/ui-generic.test.ts)
+- [`../gen2/tests/ui-attachment.test.ts`](../gen2/tests/ui-attachment.test.ts)
+
+The useful UI pieces are:
 
 - `ElementCapability`
 - `Slot`
@@ -83,6 +92,8 @@ Portable ideas from gen2:
 - safe HTML branding
 - platform/event/style diagnostics
 - runtime validation for dynamic/generated attachments
+
+For the route side, see the routing references in `../gen2/tests/router.test.ts`, `../gen2/tests/router-pass.test.ts`, `../gen2/atom_plan.md`, and `../gen2/atom_plan_continuation.md`.
 
 Avoid porting directly:
 
@@ -144,4 +155,3 @@ There may be unrelated or pre-existing changes in the worktree. Do not reset or 
 Known recent untracked path observed during AF-UI work:
 
 - `docs/af-ui-json-render/`
-

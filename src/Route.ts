@@ -964,7 +964,7 @@ export function path<Pattern extends string>(
 }
 
 /** Create a first-class page route node. */
-function page<C extends ComponentType<any, any, any, any>>(path: string, component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown> {
+export function page<C extends ComponentType<any, any, any, any>>(path: string, component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown> {
   return makeRouteNode("page", path, component);
 }
 
@@ -1009,18 +1009,18 @@ export function index(component?: ComponentType<any, any, any, any>) {
 }
 
 /** Materialize a route tree and return its root node. */
-function define<T extends AppRouteNode<any, any, any, any, any, any>>(root: T): T {
+export function define<T extends AppRouteNode<any, any, any, any, any, any>>(root: T): T {
   materializeTree(root);
   return root;
 }
 
 /** Reference an existing route node without altering it. */
-function ref<T extends AppRouteNode<any, any, any, any, any, any>>(route: T): T {
+export function ref<T extends AppRouteNode<any, any, any, any, any, any>>(route: T): T {
   return route;
 }
 
 /** Attach child route nodes to an existing route node. */
-function mount<T extends AppRouteNode<any, any, any, any, any, any>>(
+export function mount<T extends AppRouteNode<any, any, any, any, any, any>>(
   route: T,
   children: ReadonlyArray<AppRouteNode<any, any, any, any, any, any>>,
 ): T {
@@ -1113,7 +1113,7 @@ export function hashSchema<H>(schema: Schema.Schema<H>): RouteHashSchemaEnhancer
 }
 
 /** Materialize and extract the routed component behind a route node. */
-function componentOf<T extends AppRouteNode<any, any, any, any, any, any>>(route: T): RoutedComponent<RouteNodeParamsOf<T>, RouteNodeQueryOf<T>, RouteNodeHashOf<T>> & LoaderTaggedComponent<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> & T["component"] {
+export function componentOf<T extends AppRouteNode<any, any, any, any, any, any>>(route: T): RoutedComponent<RouteNodeParamsOf<T>, RouteNodeQueryOf<T>, RouteNodeHashOf<T>> & LoaderTaggedComponent<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> & T["component"] {
   return materializeNode(route);
 }
 
@@ -3008,8 +3008,12 @@ export const Router = {
 
 export const Route = {
   path,
+  page,
   layout,
   index,
+  define,
+  ref,
+  mount,
   children,
   id,
   paramsSchema,
@@ -3055,6 +3059,7 @@ export const Route = {
   transition,
   lazy,
   Switch,
+  componentOf,
   runMatchedLoaders,
   runStreamingNavigation,
   runRouteLoader,

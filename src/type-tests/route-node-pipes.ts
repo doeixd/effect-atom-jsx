@@ -40,3 +40,29 @@ declare const searchRouteLinkOptions: SearchRouteLinkOptions;
 
 void searchRouteLinkParams.teamId;
 void searchRouteLinkOptions;
+
+const Home = Route.index(Component.from<{}>(() => null)).pipe(Route.id("home"));
+const Users = Route.page("/users", Component.from<{}>(() => null)).pipe(Route.id("users.index"));
+const User = Route.page("/users/:userId", Component.from<{}>(() => null)).pipe(
+  Route.id("users.detail"),
+  Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+);
+const Settings = Route.page("settings", Component.from<{}>(() => null)).pipe(Route.id("users.settings"));
+
+const App = Route.define(
+  Route.layout(Component.from<{}>(() => null)).pipe(
+    Route.id("app"),
+    Route.children([
+      Route.ref(Home),
+      Route.ref(Users),
+      Route.mount(User, [Route.ref(Settings)]),
+    ]),
+  ),
+);
+
+type AppChildren = typeof App.children;
+void App;
+void (null as unknown as AppChildren);
+
+const materialized = Route.componentOf(User);
+void materialized;

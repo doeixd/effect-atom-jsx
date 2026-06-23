@@ -349,7 +349,8 @@ Portable diagnostics:
 - slot remapping capability mismatch — available through `View.validateRemaps`
 - unsafe HTML without branded `SafeHtml` once HTML holes exist
 - unsupported style property for active platform once platform metadata exists
-- unsupported behavior event for active platform once platform metadata exists
+- unsupported behavior event for active platform — initial `View.validatePlatform` support exists for slot event metadata
+- unsupported slot capability/attribute/platform requirement — initial `View.validatePlatform` support exists
 - component hides all public handles once hidden slots exist
 
 Acceptance:
@@ -386,7 +387,7 @@ Acceptance:
 
 ### Milestone 6: Typed Holes And Safe HTML
 
-Status: design only.
+Status: initial runtime/type-level boundary complete.
 
 Goal:
 
@@ -394,8 +395,8 @@ Define the typed dynamic surface inside views.
 
 Work:
 
-- Add `SafeHtml` brand.
-- Add `safeHtml(...)` branding helper with clear documentation that it does not sanitize.
+- Add `SafeHtml` brand — done.
+- Add `SafeHtml.make(...)` branding helper with clear documentation that it does not sanitize — done.
 - Consider a future sanitizer helper, but do not imply branding performs sanitization.
 - Define hole taxonomy:
   - text
@@ -410,13 +411,13 @@ Work:
 
 Acceptance:
 
-- Unsafe raw HTML is rejected without a branded safe value.
+- Unsafe raw HTML is rejected without a branded safe value — done for `View.html(...)`.
 - Event/style/class holes can carry typed errors or requirements where appropriate.
 - The design does not force a full compiler rewrite before useful runtime APIs ship.
 
 ### Milestone 7: Style Surface Consolidation
 
-Status: pending.
+Status: partially complete.
 
 Goal:
 
@@ -448,7 +449,7 @@ Promote one routing model.
 
 Work:
 
-- Decide whether route nodes are the canonical path.
+- Route nodes are the canonical path for new examples and tree-based orchestration.
 - Position component-route helpers as transitional/ergonomic wrappers if needed.
 - Update examples around:
   - nested layout
@@ -461,12 +462,12 @@ Work:
 
 Acceptance:
 
-- One nested router example demonstrates the full golden path.
+- One nested router example demonstrates the full golden path, including explicit route-node tree assembly.
 - Docs stop presenting multiple route APIs as equally primary.
 
 ### Milestone 9: SSR, Hydration, And SingleFlight Product Example
 
-Status: pending.
+Status: partially complete.
 
 Goal:
 
@@ -474,7 +475,7 @@ Prove zero-flicker data continuity.
 
 Work:
 
-- Add or update an SSR example where route loader data is available synchronously on first client render.
+- Add or update an SSR example where route loader data is available synchronously on first client render — initial route/runtime test and sketch exist.
 - Connect loader payloads, atom snapshots, hydration service, and single-flight seeds.
 - Document the layer workflow clearly.
 
@@ -596,10 +597,12 @@ Target:
 - promote route nodes as the canonical app model if they are the long-term direction
 - keep older helpers as compatibility/ergonomic wrappers where useful
 - make loader/result/head/error examples consistent
+- route loaders/actions should participate in the same reactivity and graph reasoning as the rest of the app, not live in a separate router-only model
 
 Acceptance:
 
-- one nested-route example covers params, query, loader, typed links, metadata, and loader errors
+- one nested-route example covers params, query, loader, typed links, metadata, loader errors, and explicit route-node tree assembly
+- route-node trees are documented as the primary authoring path for new examples
 
 ### Gap 6: Hydration Layer Needs Product-Level Examples
 
@@ -623,8 +626,8 @@ Acceptance:
 5. Add type tests for valid and invalid slot attachments.
 6. Add runtime diagnostics inspired by `../gen2` for dynamic/generated attachments — initial View/style/behavior validation support done.
 7. Add slot metadata, hidden slot support, and slot remapping — initial View-level support done.
-8. Define typed holes and `SafeHtml`.
-9. Add lightweight platform metadata and renderer-boundary diagnostics.
+8. Define typed holes and `SafeHtml` — initial runtime/type-level support done.
+9. Add lightweight platform metadata and renderer-boundary diagnostics — initial View-level support done.
 10. Consolidate style docs around the single public API.
 11. Promote one route-node golden path and update examples.
 12. Add SSR hydration example with loader seed data.

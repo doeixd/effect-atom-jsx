@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as Style from "../Style.js";
 
-describe("Style2 advanced descriptors", () => {
+describe("Style advanced descriptors", () => {
   it("builds selector helpers and nest nodes", () => {
     const selector = Style.child("a", "hover");
     expect(selector).toBe("> a:hover");

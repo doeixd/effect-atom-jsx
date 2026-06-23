@@ -74,6 +74,22 @@ The safest route is:
 
 This should feel like an architectural migration, not a flag day rewrite.
 
+## 3.1 Lessons From Gen2
+
+The `../gen2` routing work is useful because it makes the route model static and graph-native instead of helper-driven.
+
+The recurring lessons are:
+
+- route identity belongs to explicit route nodes, not dummy components
+- loaders, actions, metadata, and error handling should hang off the route object itself
+- route linking should be typed from the route definition, not reconstructed from strings
+- route validation should catch missing params/schemas, unused schemas, and conflicting siblings early
+- route loaders should participate in freshness/invalidation analysis through the same reactivity model as the rest of the app
+- SSR, hydration, and single-flight should all consume the same route tree
+- examples should show route trees first, component wrappers second
+
+Those lessons match the direction already in this repository: `Route.page`, `Route.layout`, `Route.index`, `Route.define`, `Route.ref`, `Route.mount`, and `Route.componentOf` are the canonical route-node surface now.
+
 ## 4. Target primitive model
 
 The implementation should explicitly follow this split:

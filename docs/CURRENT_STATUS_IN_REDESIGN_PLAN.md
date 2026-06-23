@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-06-23
+Last updated: 2026-06-23 (view-aware slot attachment + ReadonlyAtom restructure)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -62,6 +62,15 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - `Style.validateAttachment(...)`
   - `Style.validateAttachmentBySlots(...)`
   - `Behavior.validateAttachmentBySlots(...)`
+
+- Added the first typed-hole/security boundary:
+  - `SafeHtml` branded values live in `src/SafeHtml.ts`
+  - `View.html(...)` accepts only branded `SafeHtml`, not raw strings
+  - `View.text`, `View.className`, `View.style`, `View.event`, and `View.children` establish the initial runtime hole taxonomy
+
+- Added lightweight platform metadata diagnostics:
+  - `View.PlatformMetadata` describes supported capabilities, events, attributes, and requirements
+  - `View.validatePlatform(...)` reports unsupported slot capabilities, events, attributes, and missing platform requirements
   - runtime coverage for hidden and unknown slot diagnostics before attachment
 - Scope/lifecycle foundation is in place (component scope context + supervision wiring).
 - `useService(...)` diagnostics improved for missing runtime/service cases.
@@ -331,31 +340,47 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - router loader cache now subscribes to reactivity keys via the installed service and marks cache entries stale on invalidation (`src/router-runtime.ts`)
   - added `Atom.reactivityKeys(atom)` introspection helper and tests for service-to-atom invalidation bridge + loader cache stale behavior
 
-## Recently Completed Commits (most recent first)
+## Recently Completed Work
 
-- `063cad2` refactor: remove sync batching mode and make microtask-only
-- `b4f0bf4` refactor: move reactive core exports to internals subpath
-- `dd41a61` refactor: remove signal/computed OO facade
-- `9d82b43` refactor: remove sync scoped wrapper APIs
-- `aa48c37` refactor: remove Atom.fn and runtime.fn mutation wrappers
-- `294a75b` refactor: remove remaining service and mount aliases
-- `ba20529` refactor: remove legacy top-level query/mutation exports
-- `ac003d9` refactor: remove strict query and mutation API variants
-- `ac843e5` feat: default to microtask batching with flush escape hatch
+### View-Aware Slot Attachment & ReadonlyAtom (2026-06-23)
+
+- Added `Component.withViewTransform` — wraps a component's view function to apply transforms after view execution, preserving all 5 type parameters including `Slots`.
+- Added `Component.registerViewSlots` / `Component.getViewSlots` — per-instance slot registry extracted from `View<Slots>` after view runs.
+- Modified component wrapper (`toComponent`, `renderEffect`) to auto-register view slots when view returns a `View<Slots>`.
+- Added `Style.attachByView` — applies styles to `View<Slots>` slots after view execution, supporting `OverrideContext` and `Collection` handles. No `Bindings extends { readonly slots: Slots }` constraint.
+- Added type tests for `Style.attachByView`: positive (matching slots), negative (missing slot), and `Component.SlotsOf<T>` preservation.
+- Made `ReadonlyAtom<A>` a structurally distinct branded interface (not just an alias for `Atom<A>`), with `Atom<A>` extending it.
+- Updated `Atom.map`, `Atom.derived`, `Atom.get`, `Atom.result`, `Atom.withFallback`, `Atom.subscribe`, `Context.get/refresh/result`, and `WriteContext.get/result` to accept `ReadonlyAtom<A>`.
+- Updated `AtomSchema.ValidatedAtom` interface to use `ReadonlyAtom` for derived fields.
+- All quality gates: typecheck clean, 402 tests pass, build clean.
+
+### Audit & Fixes (2026-06-23)
+
+- Audited all component transforms (`withLayer`, `withErrorBoundary`, `withLoading`, `withSpan`, `memo`, `tapSetup`, `withPreSetup`, `withSetupRetry`, `withSetupTimeout`, `withBehavior`, `route`, `guard`) for `SlotsOf<C>` preservation.
+- Fixed `guard` transform to preserve the `Slots` type parameter through its return type.
+- Added negative type tests for `Style.attach` when style slots don't exist in component slots.
+- Added `Component.SlotsOf<T>` preservation type test on a component after `Style.attachBySlots` — verifies slot types are preserved through style attachment.
+
+### Style Surface Consolidation (2026-06-23)
+
+- Renamed `src/type-tests/style2-grid-selectors.ts` → `style-grid-selectors.ts` to remove "Style2" naming.
+- Renamed `style2.test.ts` describe block from `"Style2 advanced descriptors"` to `"Style advanced descriptors"`.
+- Marked `docs/style2.md` and `docs/STYLE2_IMPLEMENTATION_PLAN.md` with historical notes directing readers to the unified `Style` API.
+- Confirmed all advanced CSS descriptors (nest, vars, media, supports, container, pseudo, grid, layers, animate, enter/exit) already live directly in `src/Style.ts` — no separate "Style2" system.
 
 ## TODO Backlog (Redesign)
 
 - [x] Add explicit `Slots` parameter to `Component.Component` metadata and start migrating slot attachment typing away from binding-shape conventions.
 - [x] Introduce a minimal `View<Slots>` type and helpers that preserve current JSX authoring while exposing structural metadata.
 - [x] Make `Component.make` / component helpers view-aware while preserving current `unknown`/JSX return compatibility.
-- [ ] Add type tests for valid/invalid behavior and style attachment through component slots.
+- [x] Add type tests for valid/invalid behavior and style attachment through component slots.
 - [x] Add initial runtime diagnostics inspired by `../gen2` for dynamic/generated slot targets, remaps, and style/behavior attachment validation.
 - [x] Add initial slot metadata support for hidden slots and slot remapping.
-- [ ] Add `SafeHtml` brand and define the first typed-hole/security boundary.
-- [ ] Add lightweight platform metadata and renderer-boundary diagnostics inspired by `../gen2` (`event_model`, `attribute_model`, supported capabilities).
-- [ ] Consolidate `Style`/advanced style docs into one stable public style guide.
-- [ ] Promote one route-node golden path and update router examples around it.
-- [ ] Add SSR hydration example proving seeded loader data is available on first client render.
+- [x] Add `SafeHtml` brand and define the first typed-hole/security boundary.
+- [x] Add lightweight platform metadata and renderer-boundary diagnostics inspired by `../gen2` (`event_model`, `attribute_model`, supported capabilities).
+- [x] Consolidate `Style`/advanced style docs into one stable public style guide.
+- [x] Promote one route-node golden path and update router examples around it.
+- [x] Add SSR hydration example proving seeded loader data is available on first client render.
 - [x] Final export-tier cleanup: verify top-level stays app-first and move any remaining advanced overlap behind `advanced`/subpaths.
 - [x] Deep-import guidance sweep: ensure docs consistently show `effect-atom-jsx/Registry` for manual registry usage.
 - [x] Historical-doc hygiene pass: label remaining pre-redesign analysis blocks as historical where they can be mistaken for current API guidance.
@@ -438,11 +463,23 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 
 ## In Progress / Next
 
-- AF-UI convergence phase: explicit component slots, minimal `View<Slots>`, hidden slot metadata, remap helpers, View-level diagnostics, and style/behavior validation helpers have landed; next is `SafeHtml` and the first typed-hole/security boundary.
-- Component/composables hardening: keep view-aware helpers and slot/capability compile-time guarantees intact while adding `SafeHtml` and richer platform diagnostics.
-- Gen2 adaptation: explicitly incorporate view records, slot metadata, hidden slots, remapping, safe HTML branding, platform metadata, and diagnostics, but do not copy generator IR shapes directly.
-- Docs pass: keep `AF_UI_CONTRACT.md`, `GEN2_UI_IMPLEMENTATION_NOTES.md`, `AGENTS.md`, README, and API docs aligned as the public model changes.
-- Release readiness pass: keep changelog/status aligned and require full typecheck/test/build green before release cut.
+- Style surface consolidation is now complete — all advanced CSS descriptors live in the unified `src/Style.ts` module, and `Style2` naming has been removed from tests and type-tests.
+- Component transform audit complete — `guard` fixed to preserve `SlotsOf<C>`, negative type tests added for style slot attachments.
+- Next focus areas:
+  - Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence):
+    - Add `E` (error type) to base `Atom<A, E = never>` — consistent error-type carrier for all atoms.
+    - Update `Context.result` signature to work with `Atom<A, E>` instead of `Atom<Result<A, E>>`.
+    - Remove `AsyncAtom` alias once `Atom<A, E>` is the unified shape.
+    - Propagate error type `E` through `defineQuery`/`defineMutation` and downstream consumers.
+    - Add schema-based result validation to `Atom.family`.
+    - Add explicit `get` callback in `defineQuery` factory.
+    - Fix `Component.state()` cast via `as unknown as Atom.WritableAtom`.
+    - Add `R` type parameter propagation to `Component` for service requirement tracking.
+  - Route-node golden path: promote one routing model with route-node-first examples.
+  - SSR hydration example polish: prove seeded loader data with zero-flicker first render.
+  - Platform metadata and renderer-boundary: extend platform diagnostics from View level to runtime integration.
+  - Keep `AF_UI_CONTRACT.md`, `GEN2_UI_IMPLEMENTATION_NOTES.md`, `AGENTS.md`, README, and API docs aligned as the public model changes.
+  - Release readiness pass: keep changelog/status aligned and require full typecheck/test/build green before release cut.
 
 ## Update Rule For This File
 

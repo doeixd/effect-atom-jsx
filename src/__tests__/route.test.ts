@@ -224,4 +224,34 @@ describe("Route", () => {
     expect(head.title).toBe("User Detail");
     expect(head.meta?.description).toBe("Detail");
   });
+
+  it("builds and materializes explicit route-node trees", () => {
+    const Home = Route.index(Component.from<{}>(() => "home")).pipe(Route.id("home"));
+    const Users = Route.page("/users", Component.from<{}>(() => "users")).pipe(
+      Route.id("users.index"),
+      Route.title("Users"),
+    );
+    const User = Route.page("/users/:userId", Component.from<{}>(() => "user")).pipe(
+      Route.id("users.detail"),
+      Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+      Route.meta((params: { readonly userId: string }) => ({ description: `User ${params.userId}` })),
+    );
+    const Settings = Route.page("settings", Component.from<{}>(() => "settings")).pipe(Route.id("users.settings"));
+
+    const App = Route.define(
+      Route.layout(Component.from<{}>(() => "shell")).pipe(
+        Route.id("app"),
+        Route.children([
+          Route.ref(Home),
+          Route.ref(Users),
+          Route.mount(User, [Route.ref(Settings)]),
+        ]),
+      ),
+    );
+
+    expect(Route.nodes(App).length).toBeGreaterThanOrEqual(4);
+    expect(Route.componentOf(User)).toBeDefined();
+    expect(Route.collect(App).some((meta) => meta.id === "users.detail")).toBe(true);
+    expect(Route.validateTree(App)).toEqual([]);
+  });
 });

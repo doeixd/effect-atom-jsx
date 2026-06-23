@@ -58,6 +58,10 @@
       "import": "./dist/Hydration.js",
       "types": "./dist/Hydration.d.ts"
     },
+    "./SafeHtml": {
+      "import": "./dist/SafeHtml.js",
+      "types": "./dist/SafeHtml.d.ts"
+    },
     "./View": {
       "import": "./dist/View.js",
       "types": "./dist/View.d.ts"

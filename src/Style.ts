@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect";
 import * as Component from "./Component.js";
 import * as Element from "./Element.js";
+import * as Theme from "./Theme.js";
 import * as View from "./View.js";
 import { createContext, useContext } from "./api.js";
 import { mergeMany, resolveTokenValue } from "./style-runtime.js";
@@ -450,6 +451,37 @@ export function attach<S extends string>(
     })) as any;
 }
 
+export function attachByView<S extends string>(
+  style: ComposedStyle<S>,
+): <
+  Props,
+  Req,
+  E,
+  Bindings,
+  Slots extends { readonly [K in S]: Element.Handle | Element.Collection<Element.Handle> },
+>(
+  component: Component.Component<Props, Req, E, Bindings, Slots>,
+) => Component.Component<Props, Req, E, Bindings, Slots> {
+  return Component.withViewTransform((result, _props, _bindings) => {
+    if (!View.isView(result)) return result;
+    const overrides = useContext(OverrideContext);
+    const slots = result.slots as Record<string, Element.Handle | Element.Collection<Element.Handle>>;
+    for (const [slotName, slotPiece] of Object.entries(style.slots as Record<string, StyleValue>)) {
+      const overridePiece = overrides[slotName];
+      const resolved = resolveSlot(overridePiece ?? slotPiece);
+      const target = slots[slotName];
+      if (!target) continue;
+      if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
+        const collection = target as Element.Collection<Element.Handle>;
+        Effect.runSync(collection.observeEach((item) => applyResolvedStyleToHandle(item, resolved).pipe(Effect.as(() => {}))));
+      } else {
+        Effect.runSync(applyResolvedStyleToHandle(target as Element.Handle, resolved));
+      }
+    }
+    return result;
+  }) as any;
+}
+
 export function attachBySlots<
   S extends string,
   Props,
@@ -641,4 +673,7 @@ export const Style = {
   recipe,
   override,
   Provider,
+  Theme: Theme.Theme,
+  ThemeLight: Theme.ThemeLight,
+  lookupToken: Theme.lookupToken,
 } as const;

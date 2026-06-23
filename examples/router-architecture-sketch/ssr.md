@@ -40,3 +40,17 @@ This keeps:
 - `Route` responsible for structured app rendering
 - `ServerRoute` responsible for request dispatch
 - adapters responsible for turning structured results into host responses
+
+The same payload can seed client runtime state before first render:
+
+```ts
+const renderResult = yield* Route.renderRequest(appRoutes, {
+  request: new Request("http://example.com/users/alice"),
+});
+
+Route.hydrateSingleFlightPayload({
+  mutation: { ok: true },
+  url: "http://example.com/users/alice",
+  loaders: renderResult.loaderPayload,
+}, appRoutes);
+```

@@ -1,4 +1,6 @@
-# Style2 Implementation Plan (Advanced CSS Expressiveness)
+# Style2 Implementation Plan (Advanced CSS Expressiveness) [Historical]
+
+> **Historical note (2026-06-23):** This plan drove the implementation of advanced CSS descriptors (nest, vars, media, supports, container, pseudo, grid, layers, animate, enter/exit) into `src/Style.ts`. All of these features are now part of the unified Style API. There is no separate "Style2" system — the single `Style` module in `src/Style.ts` is the complete public API.
 
 This plan implements the advanced styling surface described in `docs/style2.md` on top of the existing v1 `Style` system.
 
