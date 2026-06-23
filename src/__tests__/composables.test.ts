@@ -5,8 +5,45 @@ import * as Behavior from "../Behavior.js";
 import * as Element from "../Element.js";
 import * as Behaviors from "../behaviors.js";
 import * as Composables from "../composables.js";
+import * as View from "../View.js";
 
 describe("composables behavior system", () => {
+  it("validates behavior slot mappings against View metadata", () => {
+    const NeedsTrigger = Behavior.make<
+      { readonly trigger: Element.Interactive },
+      {},
+      never,
+      never
+    >(() => Effect.succeed({}));
+
+    const view = View.make(
+      {
+        root: Element.container(),
+        secret: Element.interactive(),
+      },
+      null,
+      {
+        name: "Panel",
+        slotMetadata: {
+          root: View.slot("root"),
+          secret: View.hidden("secret"),
+        },
+      },
+    );
+
+    expect(Behavior.validateAttachmentBySlots(
+      NeedsTrigger,
+      { trigger: "secret" },
+      view,
+    ).map((d) => d.code)).toEqual(["view:hidden-slot"]);
+
+    expect(Behavior.validateAttachmentBySlots(
+      NeedsTrigger,
+      { trigger: "missing" as "root" },
+      view,
+    ).map((d) => d.code)).toEqual(["view:unknown-slot"]);
+  });
+
   it("attaches disclosure behavior to element slots", () => {
     const Base = Component.make<{}, never, never, {
       readonly trigger: Element.Interactive;

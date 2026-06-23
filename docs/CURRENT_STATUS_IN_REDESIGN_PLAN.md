@@ -1,16 +1,68 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-03-10
+Last updated: 2026-06-23
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
+
+Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 
 ## Overall
 
 - Redesign is actively in progress.
 - We are taking a breaking-change-first approach to reduce API overlap and legacy aliases.
 - Core direction is now visible in code (not only docs): smaller top-level exports, stronger action/query primitives, and clearer internal boundaries.
+- AF-UI convergence is now the active architecture track. The immediate goal is to move from slot metadata on components to a real runtime-native `View<Slots>` model while preserving the current JSX authoring/runtime path.
+
+## Current Goals
+
+1. Make the inside-out model real in code:
+   - `Component<Props, Req, E, Bindings, Slots> -> View<Slots>`
+   - slots are the public structural API
+   - styles and behaviors attach to slots from outside
+2. Keep the migration incremental:
+   - preserve current JSX returns
+   - preserve `bindings.slots` compatibility
+   - add view metadata before attempting typed JSX/compiler holes
+3. Adapt useful ideas from `../gen2` without transplanting its generator IR:
+   - slot metadata
+   - hidden slots
+   - slot remapping
+   - safe HTML brand
+   - attachment diagnostics
+   - platform/event/attribute metadata
+   - capability compatibility diagnostics
+4. Keep quality gates green:
+   - `npm run typecheck`
+   - `npm test`
+   - `npm run build`
 
 ## Completed So Far
 
+- Added canonical AF-UI contract doc (`docs/AF_UI_CONTRACT.md`) to anchor the inside-out model and implementation gap map.
+- Linked README/API/design/runtime docs to the AF-UI contract as the target architecture source of truth.
+- Added `docs/GEN2_UI_IMPLEMENTATION_NOTES.md` after inspecting `../gen2` UI primitives and documenting what is portable into this runtime library.
+- Added project-level `AGENTS.md` so future agent work starts with the AF-UI contract, current status, gen2 notes, and validation commands.
+- Started AF-UI slot convergence:
+  - `Component.Component` now carries an explicit fifth `Slots` type axis.
+  - Added `Component.SlotsOf<T>` for slot metadata extraction.
+  - Behavior/style slot attachment paths now preserve component slot metadata.
+  - Type coverage now exercises `SlotsOf` for behavior and style attachment.
+- Introduced minimal runtime-native `View<Slots>` foundation:
+  - added `src/View.ts` with `View.make`, `View.isView`, `View.node`, and `View.SlotsOf<T>`
+  - exported `View` from the root API and package subpath
+  - `Component` render paths now unwrap `View.node` while preserving current JSX/unknown return compatibility
+  - component runtime/type tests cover view-backed rendering and slot extraction
+- Added initial `View` metadata and diagnostics inspired by `../gen2`:
+  - slot metadata records with capability, hidden flag, allowed events/attributes, and platform requirements
+  - `View.hidden(...)` for hidden/internal slots
+  - `View.remap(...)` for typed slot remapping
+  - `View.validateSlotTargets(...)` for unknown/hidden slot diagnostics
+  - `View.validateRemaps(...)` for unknown and capability-incompatible remap diagnostics
+  - runtime and type coverage for hidden slots and remap validation
+- Integrated View diagnostics into style/behavior validation APIs:
+  - `Style.validateAttachment(...)`
+  - `Style.validateAttachmentBySlots(...)`
+  - `Behavior.validateAttachmentBySlots(...)`
+  - runtime coverage for hidden and unknown slot diagnostics before attachment
 - Scope/lifecycle foundation is in place (component scope context + supervision wiring).
 - `useService(...)` diagnostics improved for missing runtime/service cases.
 - ADR set created for major design decisions (`docs/adr/ADR-001`..`ADR-005`).
@@ -293,6 +345,17 @@ Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.m
 
 ## TODO Backlog (Redesign)
 
+- [x] Add explicit `Slots` parameter to `Component.Component` metadata and start migrating slot attachment typing away from binding-shape conventions.
+- [x] Introduce a minimal `View<Slots>` type and helpers that preserve current JSX authoring while exposing structural metadata.
+- [x] Make `Component.make` / component helpers view-aware while preserving current `unknown`/JSX return compatibility.
+- [ ] Add type tests for valid/invalid behavior and style attachment through component slots.
+- [x] Add initial runtime diagnostics inspired by `../gen2` for dynamic/generated slot targets, remaps, and style/behavior attachment validation.
+- [x] Add initial slot metadata support for hidden slots and slot remapping.
+- [ ] Add `SafeHtml` brand and define the first typed-hole/security boundary.
+- [ ] Add lightweight platform metadata and renderer-boundary diagnostics inspired by `../gen2` (`event_model`, `attribute_model`, supported capabilities).
+- [ ] Consolidate `Style`/advanced style docs into one stable public style guide.
+- [ ] Promote one route-node golden path and update router examples around it.
+- [ ] Add SSR hydration example proving seeded loader data is available on first client render.
 - [x] Final export-tier cleanup: verify top-level stays app-first and move any remaining advanced overlap behind `advanced`/subpaths.
 - [x] Deep-import guidance sweep: ensure docs consistently show `effect-atom-jsx/Registry` for manual registry usage.
 - [x] Historical-doc hygiene pass: label remaining pre-redesign analysis blocks as historical where they can be mistaken for current API guidance.
@@ -375,9 +438,10 @@ Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.m
 
 ## In Progress / Next
 
-- Component Phase hardening pass: deepen action concurrency/detach semantics and tighten requirement/error narrowing inference in type tests.
-- Composables phase continuation: tighten slot/capability compile-time guarantees and add richer collection-slot lifecycle semantics.
-- Component docs pass: align README/API with shipped `Component` + `Behavior` + `Element` signatures and examples.
+- AF-UI convergence phase: explicit component slots, minimal `View<Slots>`, hidden slot metadata, remap helpers, View-level diagnostics, and style/behavior validation helpers have landed; next is `SafeHtml` and the first typed-hole/security boundary.
+- Component/composables hardening: keep view-aware helpers and slot/capability compile-time guarantees intact while adding `SafeHtml` and richer platform diagnostics.
+- Gen2 adaptation: explicitly incorporate view records, slot metadata, hidden slots, remapping, safe HTML branding, platform metadata, and diagnostics, but do not copy generator IR shapes directly.
+- Docs pass: keep `AF_UI_CONTRACT.md`, `GEN2_UI_IMPLEMENTATION_NOTES.md`, `AGENTS.md`, README, and API docs aligned as the public model changes.
 - Release readiness pass: keep changelog/status aligned and require full typecheck/test/build green before release cut.
 
 ## Update Rule For This File

@@ -52,6 +52,7 @@ Base.pipe(
 );
 
 type BaseBindings = Component.BindingsOf<typeof Base>;
+type BaseSlots = Component.SlotsOf<typeof Base>;
 
 const attachInputStrict = Behavior.attachBySlots<
   { readonly input: Element.TextInput },
@@ -61,7 +62,7 @@ const attachInputStrict = Behavior.attachBySlots<
   {},
   never,
   never,
-  BaseBindings["slots"],
+  BaseSlots,
   BaseBindings
 >(NeedsInput, { input: "input" });
 
@@ -75,7 +76,7 @@ Behavior.attachBySlots<
   {},
   never,
   never,
-  BaseBindings["slots"],
+  BaseSlots,
   BaseBindings
 >(
   NeedsInput,
@@ -91,7 +92,7 @@ Behavior.attachBySlots<
   {},
   never,
   never,
-  BaseBindings["slots"],
+  BaseSlots,
   BaseBindings
 >(
   NeedsItems,

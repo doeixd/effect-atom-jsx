@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { Effect } from "effect";
 import { createRoot } from "../api.js";
 import * as Component from "../Component.js";
+import * as Element from "../Element.js";
+import * as View from "../View.js";
 
 describe("Component", () => {
   it("runs setupEffect with Effect-native setup helpers", () => {
@@ -71,5 +73,48 @@ describe("Component", () => {
     const view = createRoot(() => Broken({})) as () => unknown;
     await Effect.runPromise(Effect.sleep("5 millis"));
     expect(view()).toBe("handled");
+  });
+
+  it("unwraps View nodes from component render functions", () => {
+    const ViewBacked = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const root = yield* Component.slotContainer();
+        return { slots: { root } };
+      }),
+      (_props, bindings) => View.make(bindings.slots, "rendered", { name: "ViewBacked" }),
+    );
+
+    const rendered = Effect.runSync(Component.renderEffect(ViewBacked, {}));
+    expect(rendered).toBe("rendered");
+  });
+
+  it("unwraps View nodes from headless render props", () => {
+    const Headless = Component.headless(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const root = yield* Component.slotContainer();
+        return { slots: { root } };
+      }),
+    );
+
+    const rendered = Effect.runSync(
+      Component.renderEffect(Headless, {
+        children: ({ slots }) => View.make(slots, "headless-view"),
+      }),
+    );
+
+    expect(rendered).toBe("headless-view");
+  });
+
+  it("creates inspectable Views with slots", () => {
+    const root = Element.container();
+    const view = View.make({ root }, "node");
+
+    expect(View.isView(view)).toBe(true);
+    expect(view.slots.root).toBe(root);
+    expect(View.node(view)).toBe("node");
   });
 });

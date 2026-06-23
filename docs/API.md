@@ -2,6 +2,8 @@
 
 `effect-atom-jsx` is a reactive UI library built on two complementary foundations: a signal-based reactive graph (Solid.js-compatible) and Effect's typed async/error model. The central thesis is that reactive state and typed effects are better together — atoms give you fine-grained reactivity with zero boilerplate, and Effect gives you a principled, composable way to handle everything async.
 
+AF-UI convergence work is tracked against the canonical contract in [`AF_UI_CONTRACT.md`](./AF_UI_CONTRACT.md). Use that document for the target architecture when implementation details and older exploratory docs differ.
+
 **Mental model:** atoms are the reactive layer; Effect is the async layer. When they meet — in async atoms, actions, and components — Effect's types flow through unmodified.
 
 ---

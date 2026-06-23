@@ -1,12 +1,15 @@
 import { Effect, Layer } from "effect";
 import * as Component from "./Component.js";
 import * as Element from "./Element.js";
+import * as View from "./View.js";
 import { createContext, useContext } from "./api.js";
 import { mergeMany, resolveTokenValue } from "./style-runtime.js";
 import type { SlotStyle } from "./style-types.js";
 import type { TokenPath } from "./style-types.js";
 
 type AnySlot = Record<string, unknown>;
+type SlotHandleMap = Record<string, Element.Handle | Element.Collection<Element.Handle>>;
+type SlotMapFrom<T> = T extends { readonly slots: infer Slots extends SlotHandleMap } ? Slots : T extends SlotHandleMap ? T : never;
 
 export interface SlotPiece {
   readonly _tag: "SlotPiece";
@@ -419,9 +422,15 @@ export function override<T extends Overrides>(overrides: T): T {
 
 export function attach<S extends string>(
   style: ComposedStyle<S>,
-): <Props, Req, E, Bindings extends { readonly slots: { readonly [K in S]: Element.Handle | Element.Collection<Element.Handle> } }>(
-  component: Component.Component<Props, Req, E, Bindings>,
-) => Component.Component<Props, Req, E, Bindings> {
+): <
+  Props,
+  Req,
+  E,
+  Slots extends { readonly [K in S]: Element.Handle | Element.Collection<Element.Handle> },
+  Bindings extends { readonly slots: Slots },
+>(
+  component: Component.Component<Props, Req, E, Bindings, Slots>,
+) => Component.Component<Props, Req, E, Bindings, Slots> {
   return Component.tapSetup((bindings) =>
     Effect.gen(function* () {
       const overrides = useContext(OverrideContext);
@@ -443,19 +452,18 @@ export function attach<S extends string>(
 
 export function attachBySlots<
   S extends string,
-  M extends { readonly [K in S]: string },
   Props,
   Req,
   E,
-  Bindings extends {
-    readonly slots: Record<M[keyof M] & string, Element.Handle | Element.Collection<Element.Handle>>;
-  },
+  Slots extends Record<string, Element.Handle | Element.Collection<Element.Handle>>,
+  M extends { readonly [K in S]: keyof Slots & string },
+  Bindings extends { readonly slots: Slots },
 >(
   style: ComposedStyle<S>,
   map: M,
 ): (
-  component: Component.Component<Props, Req, E, Bindings>,
-) => Component.Component<Props, Req, E, Bindings> {
+  component: Component.Component<Props, Req, E, Bindings, Slots>,
+) => Component.Component<Props, Req, E, Bindings, Slots> {
   const mappedSlots: Record<string, StyleValue> = {};
   for (const styleSlot of Object.keys(map) as Array<keyof M>) {
     const componentSlot = map[styleSlot];
@@ -464,21 +472,46 @@ export function attachBySlots<
   return attach(make(mappedSlots));
 }
 
-export function attachBySlotsFor<
-  Bindings extends { readonly slots: Record<string, Element.Handle | Element.Collection<Element.Handle>> },
->() {
+export function attachBySlotsFor<SlotsOrBindings extends SlotHandleMap | { readonly slots: SlotHandleMap }>() {
   return <
     S extends string,
-    M extends { readonly [K in S]: keyof Bindings["slots"] },
+    Slots extends SlotMapFrom<SlotsOrBindings>,
+    M extends { readonly [K in S]: keyof Slots & string },
     Props,
     Req,
     E,
+    Bindings extends { readonly slots: Slots },
   >(
     style: ComposedStyle<S>,
     map: M,
-  ): ((component: Component.Component<Props, Req, E, Bindings>) => Component.Component<Props, Req, E, Bindings>) => {
+  ): ((component: Component.Component<Props, Req, E, Bindings, Slots>) => Component.Component<Props, Req, E, Bindings, Slots>) => {
     return attachBySlots(style, map as unknown as { readonly [K in S]: string }) as any;
   };
+}
+
+export function validateAttachment<S extends string, Slots>(
+  style: ComposedStyle<S>,
+  view: View.View<Slots>,
+  options?: {
+    readonly allowHidden?: boolean;
+  },
+): readonly View.ViewDiagnostic[] {
+  return View.validateSlotTargets(view, Object.keys(style.slots), options);
+}
+
+export function validateAttachmentBySlots<
+  S extends string,
+  Slots,
+  M extends { readonly [K in S]: keyof Slots & string },
+>(
+  _style: ComposedStyle<S>,
+  map: M,
+  view: View.View<Slots>,
+  options?: {
+    readonly allowHidden?: boolean;
+  },
+): readonly View.ViewDiagnostic[] {
+  return View.validateSlotTargets(view, Object.values(map) as string[], options);
 }
 
 type VariantDef = {
@@ -602,6 +635,8 @@ export const Style = {
   attach,
   attachBySlots,
   attachBySlotsFor,
+  validateAttachment,
+  validateAttachmentBySlots,
   variants,
   recipe,
   override,

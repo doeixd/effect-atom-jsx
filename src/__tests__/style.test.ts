@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import * as Component from "../Component.js";
+import * as Element from "../Element.js";
 import * as Style from "../Style.js";
 import * as StyleUtils from "../style-utils.js";
+import * as View from "../View.js";
 
 describe("Style", () => {
   it("attaches slot styles to component slots", () => {
@@ -73,5 +75,59 @@ describe("Style", () => {
     const styles = card({ compact: "true" as any });
     expect(styles.root).toBeDefined();
     expect(styles.title).toBeDefined();
+  });
+
+  it("validates style attachments against View slot metadata", () => {
+    const view = View.make(
+      {
+        root: Element.container(),
+        secret: Element.interactive(),
+      },
+      null,
+      {
+        name: "Card",
+        slotMetadata: {
+          root: View.slot("root"),
+          secret: View.hidden("secret"),
+        },
+      },
+    );
+
+    const style = Style.make({
+      root: Style.slot({ padding: "md" }),
+      secret: Style.slot({ opacity: 0 }),
+      missing: Style.slot({ color: "red" }),
+    });
+
+    expect(Style.validateAttachment(style, view).map((d) => d.code)).toEqual([
+      "view:hidden-slot",
+      "view:unknown-slot",
+    ]);
+  });
+
+  it("validates mapped style attachments against View slot metadata", () => {
+    const view = View.make(
+      {
+        root: Element.container(),
+        secret: Element.interactive(),
+      },
+      null,
+      {
+        slotMetadata: {
+          root: View.slot("root"),
+          secret: View.hidden("secret"),
+        },
+      },
+    );
+
+    const style = Style.make({
+      surface: Style.slot({ padding: "md" }),
+      affordance: Style.slot({ opacity: 0 }),
+    });
+
+    expect(Style.validateAttachmentBySlots(style, {
+      surface: "root",
+      affordance: "secret",
+    }, view).map((d) => d.code)).toEqual(["view:hidden-slot"]);
   });
 });

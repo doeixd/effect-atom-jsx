@@ -1,5 +1,7 @@
 import { Effect, Layer, ServiceMap } from "effect";
 import * as Component from "../Component.js";
+import * as Element from "../Element.js";
+import * as View from "../View.js";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends
@@ -57,3 +59,36 @@ const Safe = TypedErrorComponent.pipe(
 
 type _SafeErrors = Component.Errors<typeof Safe>;
 type _SafeErrorsCheck = Expect<Equal<Extract<_SafeErrors, { readonly _tag: "HttpError" }>, never>>;
+
+const ViewBacked = Component.make(
+  Component.props<{}>(),
+  Component.require<never>(),
+  () => Effect.gen(function* () {
+    const root = yield* Component.slotContainer();
+    const input = yield* Component.slotTextInput();
+    return {
+      slots: {
+        root,
+        input,
+      },
+    };
+  }),
+  (_props, bindings) => View.make(bindings.slots, null),
+);
+
+type _ViewBackedSlots = Component.SlotsOf<typeof ViewBacked>;
+type _ViewBackedSlotsCheck = Expect<Equal<_ViewBackedSlots, {
+  root: Element.Container;
+  input: Element.TextInput;
+}>>;
+
+const standaloneView = View.make({
+  root: Element.container(),
+  input: Element.textInput(),
+}, null);
+
+type _StandaloneViewSlots = View.SlotsOf<typeof standaloneView>;
+type _StandaloneViewSlotsCheck = Expect<Equal<_StandaloneViewSlots, {
+  root: Element.Container;
+  input: Element.TextInput;
+}>>;

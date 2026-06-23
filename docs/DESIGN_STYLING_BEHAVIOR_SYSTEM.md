@@ -1,5 +1,7 @@
 # Design/Styling/Behavior System in AF-UI
 
+> Canonical contract: [`AF_UI_CONTRACT.md`](./AF_UI_CONTRACT.md). This document provides the broader design narrative, but the contract doc wins when older examples or terminology disagree.
+
 ## The Main Value Add: Why AF-UI?
 
 If you are frustrated by maintaining forks of `shadcn/ui`, debugging typos in massive `Tailwind` strings, or paying the runtime performance cost of `CSS-in-JS`, AF-UI offers a fundamentally different approach. 

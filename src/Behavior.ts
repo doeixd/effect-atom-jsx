@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import * as Component from "./Component.js";
+import * as View from "./View.js";
 
 const BehaviorTypeId: unique symbol = Symbol.for("effect-atom-jsx/Behavior");
 
@@ -99,8 +100,8 @@ export function attachBySlots<
   elementMap: { readonly [K in keyof Elements]: CompatibleSlotKey<Slots, Elements[K]> },
   merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
 ): (
-  component: Component.Component<Props, Req, E, Bindings>,
-) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings> {
+  component: Component.Component<Props, Req, E, Bindings, Slots>,
+) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, Slots> {
   return Component.withBehavior(
     behavior,
     (bindings) => {
@@ -111,7 +112,24 @@ export function attachBySlots<
       return out as Elements;
     },
     merge,
-  );
+  ) as (
+    component: Component.Component<Props, Req, E, Bindings, Slots>,
+  ) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, Slots>;
+}
+
+export function validateAttachmentBySlots<
+  Elements extends SlotMapLike,
+  Slots,
+  M extends { readonly [K in keyof Elements]: keyof Slots & string },
+>(
+  _behavior: Behavior<Elements, unknown, unknown, unknown>,
+  elementMap: M,
+  view: View.View<Slots>,
+  options?: {
+    readonly allowHidden?: boolean;
+  },
+): readonly View.ViewDiagnostic[] {
+  return View.validateSlotTargets(view, Object.values(elementMap) as string[], options);
 }
 
 export const Behavior = {
@@ -121,4 +139,5 @@ export const Behavior = {
   decorator,
   attach,
   attachBySlots,
+  validateAttachmentBySlots,
 } as const;

@@ -36,8 +36,14 @@ Card.pipe(
 );
 
 const strictAttach = Style.attachBySlotsFor<Component.BindingsOf<typeof Card>>();
+const strictAttachFromSlots = Style.attachBySlotsFor<Component.SlotsOf<typeof Card>>();
 
 strictAttach(style, {
+  root: "root",
+  title: "title",
+});
+
+strictAttachFromSlots(style, {
   root: "root",
   title: "title",
 });

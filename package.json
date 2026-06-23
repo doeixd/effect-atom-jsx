@@ -58,6 +58,10 @@
       "import": "./dist/Hydration.js",
       "types": "./dist/Hydration.d.ts"
     },
+    "./View": {
+      "import": "./dist/View.js",
+      "types": "./dist/View.d.ts"
+    },
     "./Component": {
       "import": "./dist/Component.js",
       "types": "./dist/Component.d.ts"

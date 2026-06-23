@@ -4,6 +4,8 @@
 
 Fine-grained reactive JSX runtime powered by Effect v4. Combines **effect-atom style state management**, a **dom-expressions JSX runtime**, and **Effect v4 service integration** into a single, cohesive framework.
 
+> AF-UI alignment is now tracked against the canonical contract in [`docs/AF_UI_CONTRACT.md`](./docs/AF_UI_CONTRACT.md). That document is the source of truth for the inside-out component, view, slot, style, behavior, routing, reactivity, single-flight, and hydration direction.
+
 ```bash
 npm i effect-atom-jsx effect@^4.0.0-beta.29
 ```

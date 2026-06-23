@@ -1,5 +1,7 @@
 # Runtime, Routing, and Reactivity in AF-UI
 
+> Canonical contract: [`AF_UI_CONTRACT.md`](./AF_UI_CONTRACT.md). This document explains the runtime vision in more detail, but the contract doc is the source of truth for implementation alignment.
+
 ## Introduction: The "Brain" of the Inside-Out Model
 
 While the [Design/Styling/Behavior system](./DESIGN_STYLING_BEHAVIOR_SYSTEM.md) defines how components look and interact, AF-UI's runtime services—Routing, Reactivity, and SingleFlight—provide the logical "brain" that powers them. Built entirely on Effect-TS, these systems move away from traditional identity-based updates toward semantic, key-based logic that works across any platform.
@@ -104,7 +106,7 @@ const UserRoute = Component.make(...).pipe(
 );
 ```
 
-## 3. SingleFlight & Loader Infrastructure
+## 4. SingleFlight & Loader Infrastructure
 
 AF-UI solves the "Waterfall Problem" and SSR/Hydration mismatch through its **SingleFlight** infrastructure.
 
@@ -114,40 +116,8 @@ When navigating, AF-UI calculates all matching routes and their loaders. It then
 ### SingleFlight Mutations
 Using `Route.actionSingleFlight` allows a mutation to trigger a server-side action and return the updated data for all affected loaders in a single round-trip.
 
-## 4. Optimistic UI & Atomic Mutations
 
-AF-UI enables **Optimistic UI** updates as a first-class citizen, leveraging the atom-based state system. Mutations perform local state updates immediately to provide instant feedback, while the `Action` API manages the eventual consistency with the server.
-
-### The Optimistic Workflow
-1. **Local Update**: When a user triggers an action (e.g., toggling a todo), you immediately update the local `Atom` state.
-2. **Network Mutation**: Simultaneously, you initiate the network request to the server.
-3. **Reconciliation**:
-   - **On Success**: The server responds, and the `Action` invalidates the associated `Reactivity` keys, ensuring the UI stays consistent with the server source of truth.
-   - **On Failure**: If the network request fails, the `Action` automatically rolls back the local atom update to the previously snapshotted state.
-
-```ts
-const updateTodo = Action.make(function*(todoId: string, text: string) {
-  // 1. Snapshot previous state for rollback
-  const previous = todoAtom.get();
-  
-  // 2. Optimistic Update (Immediate)
-  todoAtom.update(todos => todos.map(t => t.id === todoId ? { ...t, text } : t));
-
-  // 3. Network Mutation
-  return yield* Effect.tryPromise({
-    try: () => api.updateTodo(todoId, text),
-    catch: (err) => {
-      // 4. Rollback on Failure
-      todoAtom.set(previous);
-      return err;
-    }
-  });
-}, { reactivityKeys: ["todos"] });
-```
-
-This pattern ensures the UI remains responsive and snappy while guaranteeing eventual consistency with the backend, all while utilizing standard Effect types.
-
-## 4. Optimistic Updates
+## 5. Optimistic Updates
 
 AF-UI enables immediate UI feedback through **Optimistic Atoms**, allowing the UI to reflect state changes before a server-side action completes.
 
@@ -173,7 +143,7 @@ const increment = Action.make(function*() {
 
 The UI reads from `countAtom` as usual; it doesn't need to know if the value is "optimistic" or "confirmed." The `OptimisticAtom` handles the transparent switch.
 
-## 5. The Result Type: Bridging Async and UI
+## 6. The Result Type: Bridging Async and UI
 
 AF-UI uses a standardized **Result** type union to handle asynchronous states consistently across the framework:
 - `Loading`: Initial state before data arrives.
@@ -185,7 +155,7 @@ AF-UI uses a standardized **Result** type union to handle asynchronous states co
 ### Reactive Integration
 Loaders produce `ReadonlyAtom<Result<A, E>>`. Because it is a tagged union, you can use the `<Loading>` and `<Error>` boundary components or simple switch statements to render UI states without "conditional hook" errors.
 
-## 6. Hydration: The Hydration Service & Layer
+## 7. Hydration: The Hydration Service & Layer
 
 AF-UI manages server-to-client state transfer through an explicit `Hydration` service, ensuring a seamless transition from static HTML to an interactive application.
 
@@ -202,7 +172,7 @@ This ensures:
 - **Zero-Flicker Bootstrapping**: Components have their `Success` data available immediately, so the UI doesn't "pop" from loading to success.
 - **State Continuity**: Complex reactive state (like form inputs or scroll positions) is preserved across the boundary.
 
-## 7. Server Routes & Document Rendering
+## 8. Server Routes & Document Rendering
 
 Server Routes extend the routing model to the backend, providing typed request decoding and document rendering.
 
@@ -219,7 +189,7 @@ const MyApi = ServerRoute.make("json").pipe(
 ### Document Rendering
 The `ServerRoute.document` utility takes your unified route tree and produces full HTML responses, including automatic injection of `SingleFlight` seed data and script tags.
 
-## 7. Effect Layers as the Context System
+## 9. Effect Layers as the Context System
 
 AF-UI replaces traditional React-style Context with **Effect Layers**.
 
@@ -240,7 +210,7 @@ Component.mount(App, { layer: AppLive });
 - **Scoped Cleanup**: Layers use `Effect.addFinalizer`, so services (like WebSockets or DB connections) are automatically closed when a component subtree unmounts.
 - **Trivial Mocking**: Testing a component means providing a `TestLayer` instead of a `LiveLayer`.
 
-## 8. Pipeability: The Algebra of UI
+## 10. Pipeability: The Algebra of UI
 
 Every major entity in AF-UI (Component, Route, Style, Behavior, ServerRoute) is **Pipeable**. This allows you to build complex logic by composing small, reusable functions:
 

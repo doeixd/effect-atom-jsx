@@ -25,6 +25,7 @@ export * as AtomRpc from "./AtomRpc.js";
 export * as AtomLogger from "./AtomLogger.js";
 export * as AtomSchema from "./AtomSchema.js";
 export * as Hydration from "./Hydration.js";
+export * as View from "./View.js";
 export * as Component from "./Component.js";
 export * as Behavior from "./Behavior.js";
 export * as Element from "./Element.js";
