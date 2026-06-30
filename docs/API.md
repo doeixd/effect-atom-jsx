@@ -481,6 +481,7 @@ Runtime-native view wrapper for exposing structural slot metadata while preservi
 - `View.Event.*`, `View.Attribute.*`, `View.Requirement.*`, `Element.Capability.*` — branded metadata witnesses for type-preserving platform metadata
 - `View.nameOfEvent(...)`, `View.nameOfAttribute(...)`, `View.nameOfRequirement(...)`, `View.nameOfCapability(...)`, `Element.nameOfCapability(...)` — normalize strings and witnesses for diagnostics/adapters
 - extraction helpers: `View.SlotCapabilityOf<T>`, `View.SlotEventsOf<T>`, `View.PlatformCapabilitiesOf<T>`, `View.PlatformEventsOf<T>`
+- compatibility helpers: `View.MissingPlatformSupport<Slot, Platform>`, `View.IsPlatformCompatible<Slot, Platform>`
 
 When a component render function returns a `View`, `Component.renderEffect(...)` registers the view slots and, if `View.platform(...)` is installed in the current Effect environment, reports platform diagnostics for the active renderer boundary.
 
@@ -513,6 +514,11 @@ const rendered = Effect.runSync(
 ```
 
 Plain strings are still accepted for compatibility and dynamic/generated metadata. Witnesses are preferred for new code because their literal names can flow through generic helpers and composed metadata objects.
+
+Compatibility helpers are intentionally conservative: they report missing
+support only when both required metadata and platform support are literal enough
+to compare. If metadata widens to `string`, runtime diagnostics remain the source
+of truth.
 
 <br />
 

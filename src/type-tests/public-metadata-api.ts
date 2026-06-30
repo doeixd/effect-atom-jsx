@@ -65,6 +65,27 @@ Style.validatePlatform(style, {
 const RoutedCard = Route.componentOf(Route.page("/card", Card));
 type _RoutedCardSlots = Expect<Equal<Component.SlotsOf<typeof RoutedCard>, Component.SlotsOf<typeof Card>>>;
 
+const PublicPlatform = View.platform({
+  name: "public-platform",
+  capabilities: [Element.Capability.Container],
+  events: [View.Event.Press],
+  attributes: [View.Attribute.AriaLabel],
+});
+
+const publicSlot = View.slot("root", {
+  capability: Element.Capability.Container,
+  allowedEvents: [View.Event.Press],
+});
+
+type _PublicPlatformSupport = Expect<Equal<
+  View.MissingPlatformSupport<typeof publicSlot, typeof PublicPlatform>,
+  never
+>>;
+type _PublicPlatformIsCompatible = Expect<Equal<
+  View.IsPlatformCompatible<typeof publicSlot, typeof PublicPlatform>,
+  true
+>>;
+
 View.nameOfEvent(View.Event.Press);
 View.nameOfAttribute(View.Attribute.AriaLabel);
 View.nameOfCapability(Element.Capability.Container);

@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-06-30 (metadata witness docs consolidation)
+Last updated: 2026-06-30 (type-level metadata compatibility helpers)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -109,6 +109,10 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - `docs/METADATA_WITNESS_IMPLEMENTATION_PLAN.md` now records implemented APIs, inference behavior, preservation coverage, export audit, remaining work, and a golden-path example
   - `docs/AF_UI_CONTRACT.md` now treats domain-specific witnesses as the canonical authored metadata form while preserving string compatibility
   - the contract explicitly states that `View<Slots>` metadata is runtime-inspectable today and broader static component metadata extraction is future work
+- Added conservative type-level View/platform compatibility helpers:
+  - `View.MissingPlatformSupport<Slot, Platform>` returns a typed diagnostic union for literal witness-backed metadata gaps
+  - `View.IsPlatformCompatible<Slot, Platform>` returns `true` when no literal metadata gap is detectable
+  - widened string metadata remains compatible at the type level and defers to runtime diagnostics
 - Scope/lifecycle foundation is in place (component scope context + supervision wiring).
 - `useService(...)` diagnostics improved for missing runtime/service cases.
 - ADR set created for major design decisions (`docs/adr/ADR-001`..`ADR-005`).
