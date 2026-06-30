@@ -425,8 +425,8 @@ The key insight is that `Component.make` separates *setup* (an Effect that runs 
 - `Component.from(fn)` — create from a plain function component
 - `Component.props<P>()` / `Component.propsSchema(schema)` — declare prop shape
 - `Component.require(...tags)` — declare required Effect services
-- metadata extractors: `Component.Requirements<T>`, `Component.Errors<T>`, `Component.PropsOf<T>`, `Component.BindingsOf<T>`
-- setup/render bridges: `Component.setupEffect(component, props)` and `Component.renderEffect(component, props)`
+- metadata extractors: `Component.Requirements<T>`, `Component.Errors<T>`, `Component.PropsOf<T>`, `Component.BindingsOf<T>`, `Component.SlotsOf<T>`
+- setup/render bridges: `Component.setupEffect(component, props)`, `Component.renderEffect(component, props)`, and `Component.renderViewEffect(component, props)`
 - **setup helpers** (yield inside setup Effect):
   - `Component.state(initial)` — local writable atom
   - `Component.derived(fn)` — local derived atom
@@ -465,6 +465,57 @@ const Counter = Component.make(
 
 <br />
 
+## View (`src/View.ts`)
+
+Runtime-native view wrapper for exposing structural slot metadata while preserving current JSX/unknown render output.
+
+- `View.make(slots, node, options?)` — create an inspectable `View<Slots>`
+- `View.isView(value)` / `View.node(value)` — detect and unwrap view-backed output
+- `View.slot(name, options?)` / `View.hidden(name, options?)` — describe public and internal slots
+- `View.remap(source, target)` — describe wrapper/child slot remapping
+- `View.validateSlotTargets(view, targets, options?)` — diagnose unknown/hidden dynamic attachment targets
+- `View.validateRemaps(view)` — diagnose incompatible slot remaps
+- `View.validatePlatform(view, metadata)` — diagnose unsupported capabilities, events, attributes, and platform requirements
+- `View.platform(metadata, { onDiagnostic? })` — Effect layer for runtime renderer/platform diagnostics
+- `View.PlatformTag` — service tag installed by `View.platform(...)`
+- `View.Event.*`, `View.Attribute.*`, `View.Requirement.*`, `Element.Capability.*` — branded metadata witnesses for type-preserving platform metadata
+- `View.nameOfEvent(...)`, `View.nameOfAttribute(...)`, `View.nameOfRequirement(...)`, `View.nameOfCapability(...)`, `Element.nameOfCapability(...)` — normalize strings and witnesses for diagnostics/adapters
+- extraction helpers: `View.SlotCapabilityOf<T>`, `View.SlotEventsOf<T>`, `View.PlatformCapabilitiesOf<T>`, `View.PlatformEventsOf<T>`
+
+When a component render function returns a `View`, `Component.renderEffect(...)` registers the view slots and, if `View.platform(...)` is installed in the current Effect environment, reports platform diagnostics for the active renderer boundary.
+
+```ts
+const inputSlot = View.slot("input", {
+  capability: Element.Capability.TextInput,
+  allowedEvents: [View.Event.Input, View.Event.Focus],
+  allowedAttributes: [View.Attribute.AriaLabel],
+  platformRequirements: [View.Requirement.Keyboard],
+});
+
+type InputEvents = View.SlotEventsOf<typeof inputSlot>; // "input" | "focus"
+
+const WebLite = View.platform(
+  {
+    name: "web-lite",
+    capabilities: [Element.Capability.Container, Element.Capability.TextInput],
+    events: [View.Event.Input, View.Event.Focus],
+    attributes: [View.Attribute.AriaLabel],
+    requirements: [View.Requirement.Keyboard],
+  },
+  {
+    onDiagnostic: (diagnostic) => console.warn(diagnostic.message),
+  },
+);
+
+const rendered = Effect.runSync(
+  Component.renderEffect(Card, {}).pipe(Effect.provide(WebLite)),
+);
+```
+
+Plain strings are still accepted for compatibility and dynamic/generated metadata. Witnesses are preferred for new code because their literal names can flow through generic helpers and composed metadata objects.
+
+<br />
+
 ## Behavior / Element (`src/Behavior.ts`, `src/Element.ts`)
 
 Composable behavior building blocks for headless UI logic. A `Behavior` is an Effect program that wires event handling, accessibility, and keyboard interaction onto abstract "slots" (Element handles) without knowing anything about rendering. This lets the same behavior — say, `Behaviors.disclosure` — work whether you render a `<button>` or a custom element.
@@ -476,6 +527,38 @@ The `Element.*` constructors define what capability a slot needs (is it interact
 - `Behavior.decorator(behavior)` — behavior that wraps another
 - `Behavior.attach(behavior, { select, merge? })` — attach behavior to elements by slot name
 - `Behavior.attachBySlots(behavior, elementMap, merge?)` — explicit slot → element wiring
+- `Behavior.events(eventMap)` / `Behavior.withMetadata(behavior, metadata)` — declare event requirements for attachment diagnostics
+- `Behavior.validateAttachmentBySlots(behavior, elementMap, view)` — validate slot targets and required behavior events against `View.slot(...)` metadata
+- `Behavior.validateComponentAttachmentBySlots(behavior, elementMap, component, props)` — render a component View and validate mapped behavior attachment metadata
+
+```ts
+const NeedsInput = Behavior.events({
+  input: [View.Event.Input, View.Event.Focus],
+})(
+  Behavior.make<
+    { readonly input: Element.TextInput },
+    {},
+    never,
+    never
+  >(({ input }) => input.on("input", () => undefined).pipe(Effect.as({}))),
+);
+
+Behavior.validateAttachmentBySlots(
+  NeedsInput,
+  { input: "field" },
+  View.make(
+    { field: Element.textInput() },
+    null,
+    {
+      slotMetadata: {
+        field: View.slot("field", {
+          allowedEvents: [View.Event.Input],
+        }),
+      },
+    },
+  ),
+);
+```
 
 **Element capability constructors:**
 - `Element.interactive()` / `Element.container()` / `Element.focusable()` / `Element.textInput()` / `Element.draggable()`
@@ -516,6 +599,32 @@ Typed style composition that treats CSS as data. Styles are assembled as structu
 - `Style.make` — create a style map (slot name → style)
 - `Style.attach`, `Style.attachBySlots` — attach style maps to element slots
 - `Style.attachBySlotsFor<Bindings>()` — type-safe attach that validates slot names against component bindings
+- `Style.validateComponentAttachment(style, component, props)` — render a component View and validate style slot targets against its metadata
+- `Style.validatePlatform(style, metadata)` — runtime diagnostics for renderer-supported style properties
+- `Style.Property.*`, `Style.Property.make(name)` — branded metadata witnesses for type-preserving style property metadata
+- `Style.nameOfProperty(...)` — normalize string or branded property metadata for diagnostics/adapters
+
+```ts
+const BackdropFilter = Style.Property.make("backdropFilter");
+
+const style = Style.make({
+  root: Style.slot({ color: "red", backdropFilter: "blur(4px)" }),
+});
+
+Style.validatePlatform(style, {
+  name: "web",
+  properties: [
+    Style.Property.Color,
+    BackdropFilter,
+  ],
+});
+
+type Supported =
+  Style.Property.NamesOf<[
+    typeof Style.Property.Color,
+    typeof BackdropFilter,
+  ]>; // "color" | "backdropFilter"
+```
 
 **Variants and recipes** — type-safe prop-driven style variation:
 - `Style.variants`, `Style.recipe`
@@ -544,26 +653,55 @@ Example: `examples/styled-combobox/App.tsx`
 
 ## Route / Router (`src/Route.ts`)
 
-Routing uses a unified route-first model built around `Component.pipe(Route.path(...), ...)`. The intended authoring flow is:
+Routing uses route nodes as the app-first golden path. Constructors create route identity, and pipe helpers attach orthogonal metadata, loading, and behavior:
 
 ```ts
-const UserRoute = Component.from<{}>(() => null).pipe(
-  Route.path("/users/:userId"),
+const Home = Route.index(HomePage).pipe(Route.id("home"))
+
+const User = Route.page("/users/:userId", UserPage).pipe(
+  Route.id("users.detail"),
   Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
-  Route.loader((params) => Effect.succeed({ id: params.userId })),
-  Route.title((params, data) => `${params.userId}:${data?.id ?? "none"}`),
+  Route.querySchema(Schema.Struct({ tab: Schema.optional(Schema.Union([Schema.Literal("profile"), Schema.Literal("settings")])) })),
+  Route.loader((params) => Effect.succeed({ id: params.userId, name: "Ada" })),
+  Route.title((params, user) => `${params.userId}:${user?.name ?? "loading"}`),
+  Route.meta((params, user) => ({ description: user?.id ?? params.userId })),
 )
+
+export const AppRoutes = Route.define(
+  Route.layout(AppShell).pipe(
+    Route.id("app"),
+    Route.children([
+      Route.ref(Home),
+      Route.mount(User, [
+        Route.page("settings", SettingsPage).pipe(Route.id("users.settings")),
+      ]),
+    ]),
+  ),
+)
+
+const href = Route.link(User)
+href({ userId: "ada" }, { query: { tab: "profile" }, hash: "activity" })
 ```
 
-The key design goal is that route metadata accumulates on a first-class route value, with strong inference flowing through the pipe chain.
+The key design goal is that route metadata accumulates on a first-class route node, with strong inference flowing through the pipe chain. Use `Route.componentOf(node)` when an API needs the materialized routed component behind a node.
+
+Component-first `Component.pipe(Route.path(...))` routes remain available for compatibility and lower-level composition. New app examples should prefer `Route.page(...)`, `Route.layout(...)`, `Route.index(...)`, and `Route.define(...)`.
 
 Component wrappers like `Component.withLoading(...)`, `Component.withSpan(...)`, and `Component.withLayer(...)` preserve route metadata and extraction behavior, so helpers like `Route.link(...)` and `Route.ParamsOf<T>` survive more safe composition chains.
 
-**Unified route pipe:**
-- `Route.path(pattern)` — attach a URL pattern to a component and return a first-class route value
+**Route-node golden path:**
+- `Route.page(path, component)` — create a page route node
+- `Route.layout(component)` — create a layout route node
+- `Route.index(component)` — create an index route node that matches its parent exactly
+- `Route.define(root)` — materialize a route-node tree and return its root
+- `Route.ref(node)`, `Route.mount(node, children)`, `Route.children([...])` — compose route trees without losing node metadata
+- `Route.componentOf(node)` — extract/materialize the routed component represented by a node
+
+**Shared route pipes:**
 - `Route.paramsSchema`, `Route.querySchema`, `Route.hashSchema` — replace raw URL inference with decoded schema output
-- `Route.id`, `Route.layout()`, `Route.index()`, `Route.children(...)` — refine the unified route value
+- `Route.id` — assign a stable route id for linking, loaders, SSR payloads, and diagnostics
 - `Route.loader`, `Route.title`, `Route.meta`, `Route.guard`, `Route.transition` — accumulate route behavior and metadata on the same route value
+- `Route.path(pattern)` — compatibility component-first route constructor
 
 **Route accessors (inside components):**
 - `Route.params` — typed URL params atom
@@ -577,7 +715,7 @@ Component wrappers like `Component.withLoading(...)`, `Component.withSpan(...)`,
 - `Route.matchPattern`, `Route.extractParams`, `Route.resolvePattern`, `Route.matches(pattern)`
 
 **Links:**
-- `Route.link(routedComponent)` — create a typed link helper for a routed component
+- `Route.link(routeNodeOrRoutedComponent)` — create a typed link helper for a route node, unified route, or routed component
 - `Route.Link` — generic link component
 
 **Query sync:**
@@ -1001,7 +1139,7 @@ The core reactive state primitive. Atoms are plain objects with `read`/`write` m
 - **`Atom.derived((get) => ...)`** — explicit derived constructor (same as `Atom.make(fn)` but unambiguous)
 - **`Atom.readable(read, refresh?)`** — low-level read-only atom constructor
 - **`Atom.writable(read, write, refresh?)`** — low-level writable atom constructor
-- **`Atom.family(fn)`** — memoized atom factory keyed by argument tuple. Same args return the same atom instance. Optional `{ equals }` for custom key equality. Exposes `evict(...args)` and `clear()` for cache cleanup.
+- **`Atom.family(fn)`** — memoized atom factory keyed by argument tuple. Same args return the same atom instance. Optional `{ equals }` for custom key equality and `{ schema }` for schema-validated atom family values. Exposes `evict(...args)` and `clear()` for cache cleanup.
 - **`Atom.runtime(layer)`** — create an atom runtime bound to an Effect `Layer`:
   - `runtime.atom(effect)` — async atom from an Effect
   - `runtime.atom((get) => effect)` — dependency-aware async atom; `get(...)` / `get.result(...)` read other atoms inside the getter
@@ -1040,6 +1178,12 @@ const callback = Atom.value((n: number) => n + 1);
 
 // Family: same "alice" argument always returns the same atom
 const todoById = Atom.family((id: string) => Atom.make({ id, done: false }));
+
+// Schema-validated family values: member reads return Exit<T, SchemaError>
+const ageByUser = Atom.family(
+  (id: string) => Atom.value(id.length),
+  { schema: Schema.Int },
+);
 
 // Runtime: bind Effect layer once, derive many atoms safely
 const runtime = Atom.runtime(MyLayer);

@@ -1,4 +1,4 @@
-import { Effect, Stream as FxStream, Queue, Fiber, Layer, ManagedRuntime, Cause, Option, Schedule } from "effect";
+import { Effect, Stream as FxStream, Queue, Fiber, Layer, ManagedRuntime, Cause, Option, Schedule, Schema, Exit } from "effect";
 import {
   createSignal,
   flush as flushBatch,
@@ -37,6 +37,7 @@ import { SingleFlightTransportTag, type SingleFlightTransportService } from "./S
 const TypeId = "~effect-atom-jsx/Atom" as const;
 const WritableTypeId = "~effect-atom-jsx/Atom/Writable" as const;
 const ReadonlyTypeId = "~effect-atom-jsx/Atom/Readonly" as const;
+const TypeVarianceId: unique symbol = Symbol.for("effect-atom-jsx/Atom/TypeVariance");
 
 type RefreshRef = {
   readonly get: Accessor<number>;
@@ -57,10 +58,10 @@ type DeepWiden<T> =
   T extends object ? { [K in keyof T]: DeepWiden<T[K]> } :
   WidenLiteral<T>;
 
-const refreshMap = new WeakMap<ReadonlyAtom<any>, RefreshRef>();
+const refreshMap = new WeakMap<ReadonlyAtom<any, any, any>, RefreshRef>();
 const selfWriteMap = new WeakMap<Writable<any, any>, (value: any) => void>();
 
-function ensureRefresh<A>(atom: ReadonlyAtom<A>): RefreshRef {
+function ensureRefresh<A>(atom: ReadonlyAtom<A, any, any>): RefreshRef {
   const existing = refreshMap.get(atom);
   if (existing) return existing;
   const [get, set] = createSignal(0);
@@ -84,25 +85,30 @@ function ensureRefresh<A>(atom: ReadonlyAtom<A>): RefreshRef {
  * Pipeable: `myAtom.pipe(Atom.map(n => n * 2))`
  * Effect bridge: `myAtom.effect()`
  */
-export interface ReadonlyAtom<A> {
+export interface ReadonlyAtom<A, E = never, R = never> {
   readonly [ReadonlyTypeId]: typeof ReadonlyTypeId;
+  readonly [TypeVarianceId]?: {
+    readonly A: A;
+    readonly E: E;
+    readonly R: R;
+  };
   (): A;
-  pipe(): ReadonlyAtom<A>;
+  pipe(): ReadonlyAtom<A, E, R>;
   pipe<B>(ab: (self: this) => B): B;
   pipe<B, C>(ab: (self: this) => B, bc: (b: B) => C): C;
   pipe<B, C, D>(ab: (self: this) => B, bc: (b: B) => C, cd: (c: C) => D): D;
   pipe<B, C, D, E>(ab: (self: this) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E): E;
   /** Read this atom as a composable Effect value. */
-  effect(): Effect.Effect<A>;
+  effect(): Effect.Effect<A, E, R>;
 }
 
-export interface Atom<A> extends ReadonlyAtom<A> {
+export interface Atom<A, E = never, R = never> extends ReadonlyAtom<A, E, R> {
   readonly [TypeId]: typeof TypeId;
   readonly read: (get: Context) => A;
-  readonly refresh?: (f: <A>(atom: Atom<A>) => void) => void;
+  readonly refresh?: (f: <A>(atom: Atom<A, any, any>) => void) => void;
 }
 
-export interface Writable<R, W = R> extends Atom<R> {
+export interface Writable<R, W = R, E = never, Req = never> extends Atom<R, E, Req> {
   readonly [WritableTypeId]: typeof WritableTypeId;
   readonly write: (ctx: WriteContext<R>, value: W) => void;
   set(value: W): void;
@@ -117,22 +123,31 @@ export interface Writable<R, W = R> extends Atom<R> {
 }
 
 /** Alias for writable atoms in documentation and type signatures. */
-export type WritableAtom<A, W = A> = Writable<A, W>;
+export type WritableAtom<A, W = A, E = never, R = never> = Writable<A, W, E, R>;
 /** Async atom shape carrying typed `Result<A, E>` states. */
-export type AsyncAtom<A, E> = Atom<Result<A, E>>;
+export type AsyncAtom<A, E, R = never> = Atom<Result<A, E>, E, R>;
+export type ValueOf<T> = T extends ReadonlyAtom<infer A, any, any> ? A : never;
+export type ErrorOf<T> = T extends ReadonlyAtom<any, infer E, any> ? E : never;
+export type RequirementsOf<T> = T extends ReadonlyAtom<any, any, infer R> ? R : never;
+
+export interface ResultBridge {
+  <A, E>(self: AsyncAtom<A, E, any>): Effect.Effect<A, E | BridgeError>;
+  <A, E>(self: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>): Effect.Effect<A, E | BridgeError>;
+}
 
 /** Read context passed to atom `read` functions. Callable as a shorthand for `get`. */
 export interface Context {
   /** Read an atom's current value (shorthand call signature). */
-  <A>(atom: ReadonlyAtom<A>): A;
+  <A>(atom: ReadonlyAtom<A, any, any>): A;
   /** Read an atom's current value, tracking it as a dependency. */
-  get<A>(atom: ReadonlyAtom<A>): A;
+  get<A>(atom: ReadonlyAtom<A, any, any>): A;
   /** Force-refresh an atom and invalidate its dependents. */
-  refresh<A>(atom: ReadonlyAtom<A>): void;
+  refresh<A>(atom: ReadonlyAtom<A, any, any>): void;
   /** Write a value to a writable atom. */
-  set<R, W>(atom: Writable<R, W>, value: W): void;
+  set<R, W>(atom: Writable<R, W, any, any>, value: W): void;
   /** Read an async/result atom as an Effect value. */
-  result<A, E>(atom: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>>): Effect.Effect<A, E | BridgeError>;
+  result<A, E>(atom: AsyncAtom<A, E, any>): Effect.Effect<A, E | BridgeError>;
+  result<A, E>(atom: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>): Effect.Effect<A, E | BridgeError>;
   /** Register cleanup for the current owner scope. */
   addFinalizer(finalizer: () => void): void;
 }
@@ -140,15 +155,16 @@ export interface Context {
 /** Write context passed to atom `write` functions. */
 export interface WriteContext<A> {
   /** Read an atom's current value. */
-  get<T>(atom: ReadonlyAtom<T>): T;
+  get<T>(atom: ReadonlyAtom<T, any, any>): T;
   /** Write a value to another writable atom. */
-  set<R, W>(atom: Writable<R, W>, value: W): void;
+  set<R, W>(atom: Writable<R, W, any, any>, value: W): void;
   /** Force-refresh the current atom, re-running its read function. */
   refreshSelf(): void;
   /** Directly set the current atom's underlying signal value. */
   setSelf(value: A): void;
   /** Read an async/result atom as an Effect value. */
-  result<T, E>(atom: ReadonlyAtom<Result<T, E> | FetchResult.Result<T, E>>): Effect.Effect<T, E | BridgeError>;
+  result<T, E>(atom: AsyncAtom<T, E, any>): Effect.Effect<T, E | BridgeError>;
+  result<T, E>(atom: ReadonlyAtom<Result<T, E> | FetchResult.Result<T, E>, any, any>): Effect.Effect<T, E | BridgeError>;
   /** Register cleanup for the current owner scope. */
   addFinalizer(finalizer: () => void): void;
 }
@@ -278,28 +294,28 @@ function pipeSelf<T>(self: T, fns: ReadonlyArray<(value: unknown) => unknown>): 
   return fns.reduce<unknown>((acc, fn) => fn(acc), self as unknown);
 }
 
-function toCallableAtom<A>(base: {
+function toCallableAtom<A, E = never, R = never>(base: {
   readonly [TypeId]: typeof TypeId;
   readonly read: (get: Context) => A;
-  readonly refresh?: (f: <A>(atom: Atom<A>) => void) => void;
-}): Atom<A> {
-  const self = (() => defaultContext.get(self as Atom<A>)) as Atom<A>;
+  readonly refresh?: (f: <A>(atom: Atom<A, any, any>) => void) => void;
+}): Atom<A, E, R> {
+  const self = (() => defaultContext.get(self as Atom<A, E, R>)) as Atom<A, E, R>;
   const out = Object.assign(self, base);
-  out.pipe = ((...fns: ReadonlyArray<(value: unknown) => unknown>) => pipeSelf(out, fns)) as Atom<A>["pipe"];
+  out.pipe = ((...fns: ReadonlyArray<(value: unknown) => unknown>) => pipeSelf(out, fns)) as Atom<A, E, R>["pipe"];
   out.effect = () => Effect.sync(() => defaultContext.get(out));
   return out;
 }
 
-function toCallableWritable<R, W = R>(base: {
+function toCallableWritable<R, W = R, E = never, Req = never>(base: {
   readonly [TypeId]: typeof TypeId;
   readonly [WritableTypeId]: typeof WritableTypeId;
   readonly read: (get: Context) => R;
   readonly write: (ctx: WriteContext<R>, value: W) => void;
-  readonly refresh?: (f: <A>(atom: Atom<A>) => void) => void;
-}): Writable<R, W> {
-  const self = (() => defaultContext.get(self as Writable<R, W>)) as Writable<R, W>;
+  readonly refresh?: (f: <A>(atom: Atom<A, any, any>) => void) => void;
+}): Writable<R, W, E, Req> {
+  const self = (() => defaultContext.get(self as Writable<R, W, E, Req>)) as Writable<R, W, E, Req>;
   const out = Object.assign(self, base);
-  out.pipe = ((...fns: ReadonlyArray<(value: unknown) => unknown>) => pipeSelf(out, fns)) as Writable<R, W>["pipe"];
+  out.pipe = ((...fns: ReadonlyArray<(value: unknown) => unknown>) => pipeSelf(out, fns)) as Writable<R, W, E, Req>["pipe"];
   out.effect = () => Effect.sync(() => defaultContext.get(out));
   out.set = (value: W) => {
     defaultContext.set(out, value);
@@ -330,10 +346,10 @@ function toCallableWritable<R, W = R>(base: {
  * @param read    - Function that computes the atom's value given a read context.
  * @param refresh - Optional callback invoked when the atom is force-refreshed.
  */
-export const readable = <A>(
+export const readable = <A, E = never, R = never>(
   read: (get: Context) => A,
-  refresh?: (f: <A>(atom: Atom<A>) => void) => void,
-): Atom<A> => toCallableAtom({
+  refresh?: (f: <A>(atom: Atom<A, any, any>) => void) => void,
+): Atom<A, E, R> => toCallableAtom({
     [TypeId]: TypeId,
     read,
     refresh,
@@ -346,11 +362,11 @@ export const readable = <A>(
  * @param write   - Function that handles writes, receiving a write context and the new value.
  * @param refresh - Optional callback invoked when the atom is force-refreshed.
  */
-export const writable = <R, W = R>(
-  read: (get: Context) => R,
-  write: (ctx: WriteContext<R>, value: W) => void,
-  refresh?: (f: <A>(atom: Atom<A>) => void) => void,
-): Writable<R, W> =>
+export const writable = <A, W = A, E = never, R = never>(
+  read: (get: Context) => A,
+  write: (ctx: WriteContext<A>, value: W) => void,
+  refresh?: (f: <A>(atom: Atom<A, any, any>) => void) => void,
+): Writable<A, W, E, R> =>
   toCallableWritable({
     [TypeId]: TypeId,
     [WritableTypeId]: WritableTypeId,
@@ -365,11 +381,11 @@ export const writable = <R, W = R>(
  * Every `ReadonlyAtom<A>` is an `Atom<A>` at runtime — the type separation
  * exists only to prevent accidental writes to derived atoms at the type level.
  */
-function toAtom<A>(atom: ReadonlyAtom<A>): Atom<A> {
-  return atom as unknown as Atom<A>;
+function toAtom<A, E, R>(atom: ReadonlyAtom<A, E, R>): Atom<A, E, R> {
+  return atom as unknown as Atom<A, E, R>;
 }
 
-function evaluate<A>(atom: ReadonlyAtom<A>, ctx: Context): A {
+function evaluate<A>(atom: ReadonlyAtom<A, any, any>, ctx: Context): A {
   const impl = toAtom(atom);
   ensureRefresh(impl).get();
   return impl.read(ctx);
@@ -378,10 +394,10 @@ function evaluate<A>(atom: ReadonlyAtom<A>, ctx: Context): A {
 const defaultContext: Context = Object.assign(
   ((atom: ReadonlyAtom<any>) => evaluate(atom, defaultContext)) as Context,
   {
-    get<A>(atom: ReadonlyAtom<A>): A {
+    get<A>(atom: ReadonlyAtom<A, any, any>): A {
       return evaluate(atom, defaultContext);
     },
-    refresh<A>(atom: ReadonlyAtom<A>): void {
+    refresh<A>(atom: ReadonlyAtom<A, any, any>): void {
       const impl = toAtom(atom);
       const ref = ensureRefresh(impl);
       ref.bump();
@@ -390,7 +406,7 @@ const defaultContext: Context = Object.assign(
     set<R, W>(atom: Writable<R, W>, value: W): void {
       atom.write(makeWriteContext(atom), value);
     },
-    result<A, E>(atom: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>>) {
+    result<A, E>(atom: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>) {
       return toEffectResult(defaultContext.get(atom));
     },
     addFinalizer(finalizer: () => void): void {
@@ -417,7 +433,7 @@ function makeWriteContext<A>(self: Writable<A, any>): WriteContext<A> {
   };
 }
 
-type WritableValue<T> = T extends (...args: Array<any>) => any ? T : DeepWiden<T>;
+export type WritableValue<T> = T extends (...args: Array<any>) => any ? T : DeepWiden<T>;
 
 function makeWritableValue<A>(initial: A): Writable<A> {
   const [getValue, setValue] = createSignal(initial);
@@ -442,7 +458,7 @@ export function value<A>(initial: A): Writable<WritableValue<A>> {
 /**
  * Explicit constructor for derived read-only atoms.
  */
-export function derived<A>(read: (get: Context) => A): ReadonlyAtom<A> {
+export function derived<A, E = never, R = never>(read: (get: Context) => A): ReadonlyAtom<A, E, R> {
   return readable(read);
 }
 
@@ -502,6 +518,18 @@ export interface FamilyOptions<Args extends ReadonlyArray<unknown>, T> {
   readonly equals?: (a: Args, b: Args) => boolean;
 }
 
+export interface FamilySchemaOptions<Args extends ReadonlyArray<unknown>, T, A>
+  extends FamilyOptions<Args, ReadonlyAtom<T, any, any>> {
+  /**
+   * Validate each family atom's read value with an Effect Schema.
+   *
+   * The returned family member is a read-only atom of `Exit<A, SchemaError>`:
+   * successful parses are `Exit.succeed(value)`, invalid values are
+   * `Exit.fail(schemaError)`.
+   */
+  readonly schema: Schema.Schema<A>;
+}
+
 type FamilyNode<T> = {
   readonly children: Map<unknown, FamilyNode<T>>;
   hasValue: boolean;
@@ -530,16 +558,36 @@ const familyPath = <T>(root: FamilyNode<T>, args: ReadonlyArray<unknown>, create
   return node;
 };
 
+export function family<Args extends ReadonlyArray<unknown>, T, A>(
+  f: (...args: Args) => ReadonlyAtom<T, any, any>,
+  options: FamilySchemaOptions<Args, T, A>,
+): Family<Args, ReadonlyAtom<Exit.Exit<A, Schema.SchemaError>, never, never>>;
 export function family<Args extends ReadonlyArray<unknown>, T>(
   f: (...args: Args) => T,
   options?: FamilyOptions<Args, T>,
 ): Family<Args, T> {
+  const create = (...args: Args): T => {
+    const value = f(...args);
+    if (options !== undefined && "schema" in options) {
+      const schema = (options as FamilySchemaOptions<Args, unknown, unknown>).schema;
+      const decode = Schema.decodeUnknownSync(schema as any);
+      return readable((get) => {
+        try {
+          return Exit.succeed(decode(get(value as ReadonlyAtom<unknown, any, any>)));
+        } catch (error) {
+          return Exit.fail(error as Schema.SchemaError);
+        }
+      }) as T;
+    }
+    return value;
+  };
+
   if (options?.equals !== undefined) {
     const entries: Array<{ args: Args; value: T }> = [];
     const getOrCreate = ((...args: Args) => {
       const found = entries.find((entry) => options.equals!(entry.args, args));
       if (found) return found.value;
-      const next = f(...args);
+      const next = create(...args);
       entries.push({ args, value: next });
       return next;
     }) as Family<Args, T>;
@@ -559,7 +607,7 @@ export function family<Args extends ReadonlyArray<unknown>, T>(
   const getOrCreate = ((...args: Args) => {
     const node = familyPath(root, args, true) as FamilyNode<T>;
     if (node.hasValue) return node.value as T;
-    const next = f(...args);
+    const next = create(...args);
     node.hasValue = true;
     node.value = next;
     return next;
@@ -779,6 +827,13 @@ export interface ActionHandle<Input, E, A = void> {
   result: Accessor<Result<void, E>>;
   pending: Accessor<boolean>;
 }
+
+export type ActionInputOf<T> = T extends ActionHandle<infer Input, any, any> ? Input : never;
+export type ActionErrorOf<T> = T extends ActionHandle<any, infer E, any> ? E : never;
+export type ActionSuccessOf<T> = T extends ActionHandle<any, any, infer A> ? A : never;
+export type ActionRunErrorOf<T> = T extends ActionHandle<any, infer E, any>
+  ? E | BridgeError | MutationSupersededError
+  : never;
 
 /**
  * Client transport options for single-flight mutations.
@@ -1679,7 +1734,7 @@ export function projectionAsync<T, E, R = never>(
   derive: (draft: T, get: Context) => Effect.Effect<void | T, E, R>,
   initial: T,
   options?: ProjectionAsyncOptions<T, R>,
-): Atom<Result<T, E>> {
+): AsyncAtom<T, E> {
   let current = initial;
   const key = options?.key ?? "id";
 
@@ -1703,8 +1758,8 @@ export function projectionAsync<T, E, R = never>(
     : query(options.runtime, run);
 }
 
-export function map<A, B>(f: (a: A) => B): (self: ReadonlyAtom<A>) => ReadonlyAtom<B>;
-export function map<A, B>(self: ReadonlyAtom<A>, f: (a: A) => B): ReadonlyAtom<B>;
+export function map<A, B>(f: (a: A) => B): <E = never, R = never>(self: ReadonlyAtom<A, E, R>) => ReadonlyAtom<B, E, R>;
+export function map<A, B, E = never, R = never>(self: ReadonlyAtom<A, E, R>, f: (a: A) => B): ReadonlyAtom<B, E, R>;
 /**
  * Map an atom value into a derived atom.
  *
@@ -1722,10 +1777,10 @@ export function map<A, B>(self: ReadonlyAtom<A>, f: (a: A) => B): ReadonlyAtom<B
 export function map<A, B>(
   arg1: ReadonlyAtom<A> | ((a: A) => B),
   arg2?: (a: A) => B,
-): ReadonlyAtom<B> | ((self: ReadonlyAtom<A>) => ReadonlyAtom<B>) {
+): ReadonlyAtom<B> | ((self: ReadonlyAtom<A, any, any>) => ReadonlyAtom<B, any, any>) {
   if (typeof arg1 === "function" && arg2 === undefined) {
     const f = arg1 as (a: A) => B;
-    return (self: ReadonlyAtom<A>) => readable((get) => f(get(self)));
+    return <E = never, R = never>(self: ReadonlyAtom<A, E, R>) => readable<B, E, R>((get) => f(get(self)));
   }
   const self = arg1 as ReadonlyAtom<A>;
   const f = arg2 as (a: A) => B;
@@ -1775,14 +1830,15 @@ export const flush = (): void => {
  * @example
  * const n = Effect.runSync(Atom.get(count))
  */
-export const get = <A>(self: ReadonlyAtom<A>): Effect.Effect<A> =>
+export const get = <A, E = never, R = never>(self: ReadonlyAtom<A, E, R>): Effect.Effect<A, E, R> =>
   Effect.sync(() => defaultContext.get(self));
 
-export function result<A, E>(): (
-  self: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>>,
-) => Effect.Effect<A, E | BridgeError>;
+export function result(): ResultBridge;
 export function result<A, E>(
-  self: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>>,
+  self: AsyncAtom<A, E, any>,
+): Effect.Effect<A, E | BridgeError>;
+export function result<A, E>(
+  self: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>,
 ): Effect.Effect<A, E | BridgeError>;
 /**
  * Read a result-like atom as an `Effect` value.
@@ -1790,13 +1846,14 @@ export function result<A, E>(
  * Supports both core `Result` and compatibility `FetchResult` atoms.
  */
 export function result<A, E>(
-  self?: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>>,
+  self?: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>,
 ): 
   | Effect.Effect<A, E | BridgeError>
-  | ((self: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>>) => Effect.Effect<A, E | BridgeError>) {
+  | ResultBridge {
   if (self === undefined) {
-    return (nextSelf: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>>) =>
-      Effect.suspend(() => toEffectResult(defaultContext.get(nextSelf)));
+    return ((nextSelf: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>) =>
+      Effect.suspend(() => toEffectResult(defaultContext.get(nextSelf)))
+    ) as ResultBridge;
   }
   return Effect.suspend(() => toEffectResult(defaultContext.get(self)));
 }
@@ -2033,11 +2090,11 @@ export function fromSchedule<A>(
 
 export function query<A, E, R>(
   fn: () => Effect.Effect<A, E, R>,
-): Atom<Result<A, E>>;
+): AsyncAtom<A, E>;
 export function query<A, E, R>(
   runtime: RuntimeLike<R, unknown>,
   fn: () => Effect.Effect<A, E, R>,
-): Atom<Result<A, E>>;
+): AsyncAtom<A, E>;
 /**
  * Create an atom backed by `defineQuery(...).result` semantics.
  *
@@ -2057,7 +2114,7 @@ export function query<A, E, R>(
 export function query<A, E, R>(
   arg1: RuntimeLike<R, unknown> | (() => Effect.Effect<A, E, R>),
   arg2?: () => Effect.Effect<A, E, R>,
-): Atom<Result<A, E>> {
+): AsyncAtom<A, E> {
   let accessor: Accessor<Result<A, E>> | null = null;
 
   const getAccessor = (): Accessor<Result<A, E>> => {
@@ -2070,7 +2127,7 @@ export function query<A, E, R>(
     return accessor as Accessor<Result<A, E>>;
   };
 
-  return readable(() => getAccessor()());
+  return readable<Result<A, E>, E>(() => getAccessor()());
 }
 
 /**
@@ -2081,12 +2138,12 @@ export function query<A, E, R>(
  */
 export const effect = <A, E>(
   fn: () => Effect.Effect<A, E, never>,
-): Atom<Result<A, E>> => {
+): AsyncAtom<A, E> => {
   let accessor: Accessor<Result<A, E>> | null = null;
   const getAccessor = (): Accessor<Result<A, E>> => {
     if (accessor !== null) return accessor;
     accessor = atomEffect(fn);
     return accessor;
   };
-  return readable(() => getAccessor()());
+  return readable<Result<A, E>, E>(() => getAccessor()());
 };

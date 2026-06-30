@@ -257,16 +257,28 @@ export function make<Props, Req, E, Bindings, Slots>(
   setup: (props: Props) => Effect.Effect<Bindings, E, Req>,
   view: (props: Props, bindings: Bindings) => View.View<Slots>,
 ): Component<Props, Req, E, Bindings, Slots>;
-export function make<Props, Req, E, Bindings>(
+export function make<Props, Req, SetupReq, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
-  setup: (props: Props) => Effect.Effect<Bindings, E, Req>,
+  setup: (props: Props) => Effect.Effect<Bindings, E, SetupReq>,
   view: (props: Props, bindings: Bindings) => unknown,
-): Component<Props, Req, E, Bindings> {
+): Component<Props, Req | SetupReq, E, Bindings>;
+export function make<Props, Req, SetupReq, E, Bindings, Slots>(
+  propSpec: PropsSpec<Props>,
+  req: RequirementSpec<Req>,
+  setup: (props: Props) => Effect.Effect<Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => View.View<Slots>,
+): Component<Props, Req | SetupReq, E, Bindings, Slots>;
+export function make<Props, Req, SetupReq, E, Bindings>(
+  propSpec: PropsSpec<Props>,
+  req: RequirementSpec<Req>,
+  setup: (props: Props) => Effect.Effect<Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => unknown,
+): Component<Props, Req | SetupReq, E, Bindings> {
   return toComponent({
     [ComponentImplTypeId]: true,
     props: propSpec,
-    requirements: req,
+    requirements: req as unknown as RequirementSpec<Req | SetupReq>,
     setup,
     view,
   });
@@ -276,13 +288,18 @@ export function headless<Props, Req, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
   setup: (props: Props) => Effect.Effect<Bindings, E, Req>,
-): HeadlessComponent<Props, Req, E, Bindings> {
+): HeadlessComponent<Props, Req, E, Bindings>;
+export function headless<Props, Req, SetupReq, E, Bindings>(
+  propSpec: PropsSpec<Props>,
+  req: RequirementSpec<Req>,
+  setup: (props: Props) => Effect.Effect<Bindings, E, SetupReq>,
+): HeadlessComponent<Props, Req | SetupReq, E, Bindings> {
   return toComponent({
     [ComponentImplTypeId]: true,
     props: propSpec as unknown as PropsSpec<Props & HeadlessChildren<Bindings>>,
-    requirements: req,
-    setup: setup as unknown as (props: Props & HeadlessChildren<Bindings>) => Effect.Effect<Bindings, E, Req>,
-  }) as HeadlessComponent<Props, Req, E, Bindings>;
+    requirements: req as unknown as RequirementSpec<Req | SetupReq>,
+    setup: setup as unknown as (props: Props & HeadlessChildren<Bindings>) => Effect.Effect<Bindings, E, Req | SetupReq>,
+  }) as HeadlessComponent<Props, Req | SetupReq, E, Bindings>;
 }
 
 export function from<Props>(
@@ -304,6 +321,20 @@ export type SlotsOf<T> = T extends Component<any, any, any, any, infer Slots> ? 
 
 type RenderPropChildren<Bindings> = { readonly children?: (bindings: Bindings) => unknown };
 
+function renderViewResult(
+  component: Component<any, any, any, any, any>,
+  result: unknown,
+  platform: View.PlatformService | undefined,
+): unknown {
+  if (View.isView(result)) {
+    registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
+    if (platform) {
+      View.reportPlatformDiagnostics(result, platform);
+    }
+  }
+  return View.node(result);
+}
+
 export function setupEffect<Props, Req, E, Bindings>(
   component: Component<Props, Req, E, Bindings>,
   propsValue: Props,
@@ -320,16 +351,36 @@ export function renderEffect<Props, Req, E, Bindings>(
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
   return i.setup(parsed).pipe(
-    Effect.map((bindings) => {
+    Effect.flatMap((bindings) => Effect.serviceOption(View.PlatformTag).pipe(Effect.map((maybePlatform) => {
+      const platform = maybePlatform._tag === "Some" ? maybePlatform.value : undefined;
       if (i.view === undefined) {
         const renderProp = (parsed as RenderPropChildren<Bindings>).children;
-        return typeof renderProp === "function" ? View.node(renderProp(bindings)) : null;
+        return typeof renderProp === "function"
+          ? renderViewResult(component, renderProp(bindings), platform)
+          : null;
       }
       const result = i.view(parsed, bindings);
-      if (View.isView(result)) {
-        registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
-      }
-      return View.node(result);
+      return renderViewResult(component, result, platform);
+    }))),
+  );
+}
+
+export function renderViewEffect<Props, Req, E, Bindings, Slots>(
+  component: Component<Props, Req, E, Bindings, Slots>,
+  propsValue: Props,
+): Effect.Effect<View.View<Slots> | undefined, E, Req> {
+  const i = internals(component);
+  const parsed = i.props.parse(propsValue);
+  return i.setup(parsed).pipe(
+    Effect.map((bindings) => {
+      const result = i.view === undefined
+        ? typeof (parsed as RenderPropChildren<Bindings>).children === "function"
+          ? (parsed as RenderPropChildren<Bindings>).children?.(bindings)
+          : undefined
+        : i.view(parsed, bindings);
+      if (!View.isView(result)) return undefined;
+      registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
+      return result as View.View<Slots>;
     }),
   );
 }
@@ -351,7 +402,13 @@ export interface ActionOptions {
 }
 
 export function state<A>(initial: A): Effect.Effect<Atom.WritableAtom<A>> {
-  return Effect.sync(() => Atom.value(initial) as unknown as Atom.WritableAtom<A>);
+  return Effect.sync(() => {
+    const [getValue, setValue] = createSignal(initial);
+    return Atom.writable(
+      () => getValue(),
+      (_ctx, value: A) => setValue(() => value),
+    );
+  });
 }
 
 export function derived<A>(fn: () => A): Effect.Effect<Atom.ReadonlyAtom<A>> {
@@ -1007,6 +1064,7 @@ export const Component = {
   require,
   setupEffect,
   renderEffect,
+  renderViewEffect,
   mount,
   state,
   derived,

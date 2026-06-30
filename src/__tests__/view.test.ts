@@ -72,6 +72,29 @@ describe("View", () => {
     });
   });
 
+  it("normalizes string and witness capabilities for remap compatibility", () => {
+    const view = View.make(
+      {
+        source: Element.container(),
+        target: Element.container(),
+      },
+      null,
+      {
+        slotMetadata: {
+          source: View.slot("source", { capability: Element.Capability.Container }),
+          target: View.slot("target", { capability: "Container" }),
+        },
+        slotRemaps: [
+          View.remap<{ readonly source: Element.Container; readonly target: Element.Container }>("source", "target"),
+        ],
+      },
+    );
+
+    expect(View.nameOfCapability(Element.Capability.Container)).toBe("Container");
+    expect(Element.nameOfCapability(Element.Capability.Container)).toBe("Container");
+    expect(View.validateRemaps(view)).toEqual([]);
+  });
+
   it("infers capabilities from handles when metadata is absent", () => {
     const view = View.make(
       {
@@ -151,5 +174,50 @@ describe("View", () => {
     expect(diagnostics[1]).toMatchObject({ slot: "trigger", event: "hover", platform: "minimal" });
     expect(diagnostics[2]).toMatchObject({ slot: "input", capability: "TextInput", platform: "minimal" });
     expect(diagnostics[3]).toMatchObject({ slot: "input", requirement: "keyboard", platform: "minimal" });
+  });
+
+  it("validates witness-based platform metadata", () => {
+    const DatePicker = Element.Capability.make("DatePicker");
+    const Commit = View.Event.make("commit");
+    const DataTestId = View.Attribute.make("data-testid");
+    const Pointer = View.Requirement.make("pointer");
+    const view = View.make(
+      {
+        input: Element.textInput(),
+        picker: Element.interactive(),
+      },
+      null,
+      {
+        slotMetadata: {
+          input: View.slot("input", {
+            capability: Element.Capability.TextInput,
+            allowedEvents: [View.Event.Input, Commit],
+            allowedAttributes: [View.Attribute.AriaLabel, DataTestId],
+            platformRequirements: [View.Requirement.Keyboard, Pointer],
+          }),
+          picker: View.slot("picker", {
+            capability: DatePicker,
+            allowedEvents: ["legacy-change"],
+          }),
+        },
+      },
+    );
+
+    const diagnostics = View.validatePlatform(view, {
+      name: "witness-web",
+      capabilities: [Element.Capability.TextInput, "DatePicker"],
+      events: [View.Event.Input, "legacy-change"],
+      attributes: ["aria-label"],
+      requirements: [View.Requirement.Keyboard],
+    });
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "view:unsupported-slot-event",
+      "view:unsupported-slot-attribute",
+      "view:missing-platform-requirement",
+    ]);
+    expect(diagnostics[0]).toMatchObject({ event: "commit" });
+    expect(diagnostics[1]).toMatchObject({ attribute: "data-testid" });
+    expect(diagnostics[2]).toMatchObject({ requirement: "pointer" });
   });
 });

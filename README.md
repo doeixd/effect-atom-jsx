@@ -21,6 +21,7 @@ effect-atom-jsx = Effect v4 services + Atom/Registry state + dom-expressions JSX
 - **Local state** via `Atom` / `AtomRef` — reactive graph primitives (`Registry` available for advanced/manual control)
 - **Async state** via `defineQuery` / `atomEffect` / `Atom.fromResource` — Effect fibers with automatic cancellation
 - **Mutations** via `defineMutation` / `createOptimistic` — optimistic UI with rollback
+- **Routing** via first-class `Route.page` / `Route.layout` / `Route.index` nodes — typed route trees, loaders, links, and metadata
 - **Testing** via `renderWithLayer` / `withTestLayer` / `mockService` — DOM-free test harness
 - **Form validation** via `AtomSchema` — Schema-driven reactive fields with touched/dirty tracking
 - **SSR** via `renderToString` / `hydrateRoot` — server-side rendering with hydration
@@ -179,6 +180,7 @@ For most apps, start with this stack:
 - Ambient runtime alternative: `createMount(layer)` + `useService(Tag)`
 - Async reads: `defineQuery(...)`
 - Writes: `Atom.runtime(...).action(...)` (primary) or `defineMutation(...)` (callback alternative)
+- Routing: `Route.page(...)`, `Route.layout(...)`, `Route.index(...)`, `Route.define(...)`
 - Optimistic UX: `createOptimistic(...)`
 - Async UI rendering: `Async`, `Loading`, `Errored`
 
@@ -191,6 +193,42 @@ For runtime-bound atom APIs, prefer:
 Batching uses microtask mode by default. Use `flush()` when you need immediate deterministic commit ordering.
 
 Everything else (`scoped*` constructors, explicit registries outside components, deep runtime helpers) is advanced.
+
+### Route Nodes
+
+Route nodes are the current app routing model. Constructors create route identity; pipes attach schemas, loaders, head metadata, guards, and children.
+
+```tsx
+import { Effect, Schema } from "effect";
+import { Route } from "effect-atom-jsx";
+
+const Home = Route.index(HomePage).pipe(Route.id("home"));
+
+const User = Route.page("/users/:userId", UserPage).pipe(
+  Route.id("users.detail"),
+  Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+  Route.querySchema(Schema.Struct({ tab: Schema.optional(Schema.Union([Schema.Literal("profile"), Schema.Literal("settings")])) })),
+  Route.loader((params) => Effect.succeed({ id: params.userId, name: "Ada" })),
+  Route.title((params, user) => `${params.userId}:${user?.name ?? "loading"}`),
+);
+
+export const AppRoutes = Route.define(
+  Route.layout(AppShell).pipe(
+    Route.id("app"),
+    Route.children([
+      Route.ref(Home),
+      Route.mount(User, [
+        Route.page("settings", SettingsPage).pipe(Route.id("users.settings")),
+      ]),
+    ]),
+  ),
+);
+
+const userHref = Route.link(User);
+userHref({ userId: "ada" }, { query: { tab: "profile" } });
+```
+
+Use `Route.componentOf(User)` when an API needs the materialized routed component behind a node. The older `Component.pipe(Route.path(...))` form remains available for compatibility, but new examples should prefer route nodes.
 
 ### Atom & Registry — Local State
 
@@ -346,6 +384,18 @@ function UserCard(props: { id: string }) {
 In long-running SPAs, use `evict`/`clear` to avoid unbounded family cache growth.
 `Atom.family` also supports multiple key parts (`family((a, b) => ...)` with `evict(a, b)`).
 For structural keys, pass custom equality: `Atom.family(factory, { equals: (a, b) => ... })`.
+When family members should validate their atom values, pass an Effect Schema:
+
+```ts
+import { Schema } from "effect";
+
+const ageByUser = Atom.family(
+  (id: string) => Atom.value(id.length),
+  { schema: Schema.Int },
+);
+
+const parsed = ageByUser("user-1")(); // Exit<number, SchemaError>
+```
 
 ### AtomRef — Object State
 
@@ -650,9 +700,10 @@ Render components to HTML strings on the server and hydrate on the client.
 
 ```ts
 import {
-  renderToString, hydrateRoot, isServer,
+  renderToString, hydrateRoot, isServer, Route,
   setRequestEvent, getRequestEvent,
 } from "effect-atom-jsx";
+import { Effect } from "effect";
 import { Hydration, Atom } from "effect-atom-jsx";
 import * as Registry from "effect-atom-jsx/Registry";
 
@@ -685,6 +736,14 @@ Hydration.hydrate(registry, window.__STATE__, { count: countAtom, user: userAtom
   onUnknownKey: (key) => console.warn("Unknown hydration key:", key),
   onMissingKey: (key) => console.warn("Missing hydration key:", key),
 });
+
+// If SSR used Route.renderRequest(...), hydrate route loader payloads too.
+// Do this before hydrateRoot() so first client render reads seeded loader data.
+Effect.runSync(Route.hydrateSingleFlightPayload({
+  mutation: undefined,
+  url: window.location.href,
+  loaders: window.__LOADER_PAYLOAD__,
+}, AppRoutes));
 
 // Attach reactivity to existing DOM
 const dispose = hydrateRoot(() => <App />, document.getElementById("root")!);

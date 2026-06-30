@@ -27,6 +27,17 @@ Elements expose operations such as:
 
 Application components should depend on element capabilities, not browser-only APIs.
 
+Element capability metadata should use branded witnesses for new code:
+
+```ts
+Element.Capability.TextInput
+Element.Capability.make("DatePicker")
+```
+
+String capability names remain supported for compatibility and generated code,
+but witnesses are preferred because their literal names survive generic
+composition.
+
 ### Slot
 
 A slot is a named element capability exposed by a view:
@@ -40,6 +51,23 @@ type ButtonSlots = {
 
 Slots are the public structural interface consumed by styles and behaviors. A component can hide internal children by not exposing them as slots.
 
+Slot metadata is optional and runtime-inspectable. When present, it describes the
+slot's public contract:
+
+```ts
+View.slot("input", {
+  capability: Element.Capability.TextInput,
+  allowedEvents: [View.Event.Input, View.Event.Focus],
+  allowedAttributes: [View.Attribute.AriaLabel],
+  platformRequirements: [View.Requirement.Keyboard],
+})
+```
+
+Capabilities, events, attributes, requirements, and style properties should use
+the domain-specific witness APIs (`Element.Capability.*`, `View.Event.*`,
+`View.Attribute.*`, `View.Requirement.*`, `Style.Property.*`) rather than raw
+magic strings in new authored code.
+
 ### View
 
 A view is the structural skeleton of a component plus its slot map:
@@ -51,6 +79,11 @@ interface View<Slots> {
 ```
 
 The target model is not "component returns opaque JSX". JSX is authoring syntax for a typed view. The implementation may use the current JSX runtime internally while moving toward explicit view metadata, but the public contract is `View<Slots>`.
+
+Today `View<Slots>` is runtime-inspectable through `View.make(...)` and
+`Component.renderViewEffect(...)`. Static component metadata extraction beyond
+the `Slots` type axis is future work; runtime diagnostics are currently the
+source of truth for generated/dynamic attachment checks.
 
 ### Component
 
@@ -92,6 +125,8 @@ Attachment must be slot-safe:
 - unknown slot names fail type-checking
 - incompatible element capabilities fail type-checking
 - collection behaviors manage per-item attach and cleanup
+- behavior event requirements can be declared with `Behavior.events(...)` and
+  validated against `View.slot(...allowedEvents)` metadata
 
 ### Style
 
@@ -110,6 +145,10 @@ Styles are not component internals. They are external attachments interpreted by
 - nested/internal selectors where appropriate
 - responsive, media, and container query descriptors
 - style handles and overrides
+
+Style property metadata should use `Style.Property.*` witnesses where a platform
+or renderer boundary needs to describe supported properties. `Style.validatePlatform(...)`
+is the current runtime diagnostic path for unsupported style properties.
 
 Style merge order is:
 
@@ -162,6 +201,10 @@ The platform layer bundles:
 - server/client document integration where relevant
 
 Web is the first production target. TUI/native support can remain interface-first until the web contract is solid, but framework code should not make DOM coupling part of component, behavior, or style types.
+
+Platform metadata is witness-aware. `View.platform(...)` and
+`View.validatePlatform(...)` normalize strings and witnesses to printable
+diagnostic names while preserving literal witness names for type helpers.
 
 ## Current Project Plan
 

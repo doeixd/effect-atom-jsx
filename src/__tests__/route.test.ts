@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { Effect, Layer, Schema } from "effect";
 import * as Atom from "../Atom.js";
 import * as Component from "../Component.js";
+import * as Element from "../Element.js";
 import * as Route from "../Route.js";
+import * as View from "../View.js";
 
 function memoryRouter(initial: string) {
   const url = Atom.value(new URL(initial, "http://test.local")) as unknown as Atom.WritableAtom<URL>;
@@ -253,5 +255,81 @@ describe("Route", () => {
     expect(Route.componentOf(User)).toBeDefined();
     expect(Route.collect(App).some((meta) => meta.id === "users.detail")).toBe(true);
     expect(Route.validateTree(App)).toEqual([]);
+  });
+
+  it("preserves component View metadata through legacy route wrappers", () => {
+    const Page = Component.make<
+      {},
+      never,
+      never,
+      { readonly slots: { readonly root: Element.Container } }
+    >(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: { root: Element.container() } }),
+      (_props, bindings) => View.make(
+        bindings.slots,
+        "page",
+        {
+          name: "LegacyRoutePage",
+          slotMetadata: {
+            root: View.slot("root", {
+              capability: Element.Capability.Container,
+              allowedAttributes: [View.Attribute.AriaLabel],
+            }),
+          },
+        },
+      ),
+    ).pipe(
+      Component.route("/view-page"),
+    );
+
+    const matched = Effect.runSync(
+      Component.renderViewEffect(Page, {}).pipe(Effect.provide(memoryRouter("/view-page"))),
+    );
+    const unmatched = Effect.runSync(
+      Component.renderViewEffect(Page, {}).pipe(Effect.provide(memoryRouter("/elsewhere"))),
+    );
+
+    expect(matched?.name).toBe("LegacyRoutePage");
+    expect(matched?.slotMetadata?.root?.name).toBe("root");
+    expect(View.nameOfCapability(matched?.slotMetadata?.root?.capability ?? "missing")).toBe("Container");
+    expect(unmatched).toBeUndefined();
+  });
+
+  it("preserves component View metadata through route-node materialization", () => {
+    const Page = Component.make<
+      {},
+      never,
+      never,
+      { readonly slots: { readonly root: Element.Container } }
+    >(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: { root: Element.container() } }),
+      (_props, bindings) => View.make(
+        bindings.slots,
+        "page",
+        {
+          name: "RouteNodePage",
+          slotMetadata: {
+            root: View.slot("root", {
+              capability: Element.Capability.Container,
+            }),
+          },
+        },
+      ),
+    );
+
+    const Node = Route.page("/node-view", Page).pipe(Route.id("node.view"));
+    const Materialized = Route.componentOf(Node);
+
+    const view = Effect.runSync(
+      Component.renderViewEffect(Materialized, {}).pipe(Effect.provide(memoryRouter("/node-view"))),
+    );
+
+    expect(view?.name).toBe("RouteNodePage");
+    expect(view?.slotMetadata?.root?.name).toBe("root");
+    expect(Route.collect(Node)[0]?.id).toBe("node.view");
   });
 });

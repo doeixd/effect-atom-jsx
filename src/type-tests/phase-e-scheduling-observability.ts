@@ -1,6 +1,15 @@
 import { Effect, Layer, Schedule } from "effect";
 import * as Atom from "../Atom.js";
-import { defineMutation, defineQuery, type BridgeError, type MutationSupersededError } from "../effect-ts.js";
+import {
+  defineMutation,
+  defineQuery,
+  type BridgeError,
+  type MutationErrorOf,
+  type MutationEffectErrorOf,
+  type MutationInputOf,
+  type MutationSuccessOf,
+  type MutationSupersededError,
+} from "../effect-ts.js";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends
@@ -51,6 +60,10 @@ const mutation = defineMutation(
 type MutationEffectType = ReturnType<typeof mutation.effect>;
 declare const mutationEffectValue: MutationEffectType;
 const _mutationEffectAssignable: Effect.Effect<void, "bad" | BridgeError | MutationSupersededError, never> = mutationEffectValue;
+type _MutationInput = Expect<Equal<MutationInputOf<typeof mutation>, number>>;
+type _MutationError = Expect<Equal<MutationErrorOf<typeof mutation>, "bad">>;
+type _MutationEffectError = Expect<Equal<MutationEffectErrorOf<typeof mutation>, "bad" | BridgeError | MutationSupersededError>>;
+type _MutationSuccess = Expect<Equal<MutationSuccessOf<typeof mutation>, void>>;
 
 const action = Atom.action(
   (n: number) => Effect.succeed(n),
@@ -66,5 +79,9 @@ const action = Atom.action(
 type ActionRunEffectType = ReturnType<typeof action.runEffect>;
 declare const actionRunEffectValue: ActionRunEffectType;
 const _actionRunEffectAssignable: Effect.Effect<number, BridgeError | MutationSupersededError, never> = actionRunEffectValue;
+type _ActionInput = Expect<Equal<Atom.ActionInputOf<typeof action>, number>>;
+type _ActionError = Expect<Equal<Atom.ActionErrorOf<typeof action>, never>>;
+type _ActionRunError = Expect<Equal<Atom.ActionRunErrorOf<typeof action>, BridgeError | MutationSupersededError>>;
+type _ActionSuccess = Expect<Equal<Atom.ActionSuccessOf<typeof action>, number>>;
 
 type _RuntimeShape = Expect<Equal<typeof runtime extends Atom.AtomRuntime<never, never> ? true : false, true>>;

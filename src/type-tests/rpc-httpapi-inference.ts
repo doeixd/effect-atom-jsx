@@ -1,6 +1,6 @@
 import * as AtomRpc from "../AtomRpc.js";
 import * as AtomHttpApi from "../AtomHttpApi.js";
-import type { ActionHandle } from "../Atom.js";
+import type { ActionErrorOf, ActionInputOf, ActionSuccessOf } from "../Atom.js";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends
@@ -19,8 +19,10 @@ type RpcDefs = {
 
 declare const rpcClient: AtomRpc.AtomRpcClient<RpcDefs, never>;
 const rpcAction = rpcClient.action("getUser");
-type RpcActionSuccess = typeof rpcAction extends ActionHandle<any, any, infer A> ? A : never;
+type RpcActionSuccess = ActionSuccessOf<typeof rpcAction>;
 type _RpcActionSuccess = Expect<Equal<RpcActionSuccess, { readonly id: string; readonly name: string }>>;
+type _RpcActionInput = Expect<Equal<ActionInputOf<typeof rpcAction>, { readonly id: string }>>;
+type _RpcActionError = Expect<Equal<ActionErrorOf<typeof rpcAction>, { readonly _tag: "NotFound" }>>;
 
 type HttpDefs = {
   readonly users: {
@@ -34,5 +36,7 @@ type HttpDefs = {
 
 declare const httpClient: AtomHttpApi.AtomHttpApiClient<HttpDefs, never>;
 const httpAction = httpClient.action("users", "create");
-type HttpActionSuccess = typeof httpAction extends ActionHandle<any, any, infer A> ? A : never;
+type HttpActionSuccess = ActionSuccessOf<typeof httpAction>;
 type _HttpActionSuccess = Expect<Equal<HttpActionSuccess, { readonly id: string }>>;
+type _HttpActionInput = Expect<Equal<ActionInputOf<typeof httpAction>, { readonly name: string }>>;
+type _HttpActionError = Expect<Equal<ActionErrorOf<typeof httpAction>, { readonly _tag: "ValidationError" }>>;

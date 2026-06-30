@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Effect } from "effect";
-import { Exit, Option } from "effect";
+import { Exit, Option, Schema } from "effect";
 import { Layer, ServiceMap } from "effect";
 import { Stream } from "effect";
 import { Schedule } from "effect";
@@ -128,6 +128,28 @@ describe("effect-atom style API", () => {
     byKey.evict({ id: "u1", version: 1 });
     const a3 = byKey({ id: "u1", version: 1 });
     expect(a3).not.toBe(a1);
+  });
+
+  it("supports Atom.family schema validation for atom values", () => {
+    const byId = Atom.family(
+      (id: string) => Atom.value(id.length),
+      { schema: Schema.Int },
+    );
+
+    const value = byId("abc")();
+    expect(value._tag).toBe("Success");
+    if (value._tag === "Success") {
+      expect(value.value).toBe(3);
+    }
+  });
+
+  it("reports Atom.family schema validation failures as Exit failures", () => {
+    const byId = Atom.family(
+      (id: string) => Atom.value(id.length + 0.5),
+      { schema: Schema.Int },
+    );
+
+    expect(byId("abc")()._tag).toBe("Failure");
   });
 
   it("supports Atom.keepAlive compatibility helper", () => {

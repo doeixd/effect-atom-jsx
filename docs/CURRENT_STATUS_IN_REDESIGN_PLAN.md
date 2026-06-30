@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-06-23 (view-aware slot attachment + ReadonlyAtom restructure)
+Last updated: 2026-06-30 (metadata witness docs consolidation)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -71,7 +71,44 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 - Added lightweight platform metadata diagnostics:
   - `View.PlatformMetadata` describes supported capabilities, events, attributes, and requirements
   - `View.validatePlatform(...)` reports unsupported slot capabilities, events, attributes, and missing platform requirements
+  - `View.platform(...)` / `View.PlatformTag` can install runtime platform metadata, and `Component.renderEffect(...)` reports diagnostics when a component or headless render prop returns a `View`
+  - metadata can now use branded witnesses (`Element.Capability.*`, `View.Event.*`, `View.Attribute.*`, `View.Requirement.*`) instead of magic strings, with type helpers for extracting slot/platform capability and event unions
   - runtime coverage for hidden and unknown slot diagnostics before attachment
+- Added style property metadata witnesses and diagnostics:
+  - `Style.Property.*` and `Style.Property.make(...)` provide branded, literal-preserving style property tokens
+  - `Style.validatePlatform(...)` reports unsupported style properties against renderer metadata while preserving string compatibility
+  - `Style.Property.NameOf<T>` / `Style.Property.NamesOf<T>` cover tuple-based property union extraction
+- Added behavior event requirement metadata:
+  - `Behavior.events(...)` and `Behavior.withMetadata(...)` let behaviors declare required events with `View.Event.*` witnesses or strings
+  - `Behavior.validateAttachmentBySlots(...)` now validates required behavior events against mapped `View.slot(...allowedEvents)` metadata
+  - type coverage verifies behavior event witness names stay visible through generic metadata extraction
+- Added public metadata normalization helpers:
+  - `Element.nameOfCapability(...)`
+  - `View.nameOfCapability(...)`, `View.nameOfEvent(...)`, `View.nameOfAttribute(...)`, `View.nameOfRequirement(...)`, `View.nameOfMetadata(...)`
+  - `Style.nameOfProperty(...)`
+  - View remap diagnostics now compare normalized capability names, so strings and branded witnesses compose correctly
+- Added component-rendered View validation helpers:
+  - `Component.renderViewEffect(...)` runs setup/view and returns `View<Slots> | undefined` without unwrapping to node output
+  - `Style.validateComponentAttachment(...)` validates style slot targets against metadata from a rendered component View
+  - `Behavior.validateComponentAttachmentBySlots(...)` validates mapped behavior slot targets and event requirements against metadata from a rendered component View
+- Confirmed runtime/type preservation of `View<Slots>` metadata through common wrappers:
+  - `Behavior.attachBySlots(...)` / `Component.withBehavior(...)`
+  - `Style.attachByView(...)`
+  - `Component.withLayer(...)`
+  - `Component.guard(...)`
+- Confirmed route wrapper preservation of `View<Slots>` metadata:
+  - legacy `Component.route(...)` preserves runtime View metadata on matched routes and returns no View on unmatched routes
+  - route-node materialization through `Route.page(...)` / `Route.componentOf(...)` preserves runtime View metadata
+  - Route component/tag aliases now carry the fifth `Component` slot axis instead of widening `Component.SlotsOf<T>`
+- Audited public metadata API exports and emitted declarations:
+  - root `index.ts` exports the public namespaces that carry the new helpers (`Component`, `View`, `Element`, `Behavior`, `Style`, `Route`)
+  - `MetadataToken` remains an internal implementation module; public callers should use `Element.Capability.*`, `View.Event/Attribute/Requirement.*`, and `Style.Property.*`
+  - added root-import type coverage for the metadata witness and component validation APIs
+  - build output includes `Component.renderViewEffect(...)`, `Style.validateComponentAttachment(...)`, `Behavior.validateComponentAttachmentBySlots(...)`, `View.nameOf*`, `Element.nameOfCapability(...)`, and `Style.nameOfProperty(...)`
+- Consolidated metadata witness docs:
+  - `docs/METADATA_WITNESS_IMPLEMENTATION_PLAN.md` now records implemented APIs, inference behavior, preservation coverage, export audit, remaining work, and a golden-path example
+  - `docs/AF_UI_CONTRACT.md` now treats domain-specific witnesses as the canonical authored metadata form while preserving string compatibility
+  - the contract explicitly states that `View<Slots>` metadata is runtime-inspectable today and broader static component metadata extraction is future work
 - Scope/lifecycle foundation is in place (component scope context + supervision wiring).
 - `useService(...)` diagnostics improved for missing runtime/service cases.
 - ADR set created for major design decisions (`docs/adr/ADR-001`..`ADR-005`).
@@ -302,6 +339,8 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - added a future-facing routing architecture sketch in `examples/router-architecture-sketch/README.md` covering `Route` + `ServerRoute` + `RouterRuntime`
   - started the route-node architecture implementation with first-class app-route constructors/helpers in `Route` (`page`, `layout`, `index`, `define`, `ref`, `mount`, `children`, `id`, `paramsSchema`, `querySchema`, `hashSchema`, `componentOf`)
   - route-node constructor/pipe flow now supports route-node-aware `loader`, `title`, and `meta` enhancers plus route-node extraction helpers for params/query/hash/loader typing
+  - promoted route-node-first routing as the public golden path in README/API docs, refreshed the architecture-sketch wording, and expanded route-node type coverage for schema params/query/hash, loaders, loader errors, head metadata, component materialization, and typed links
+  - tightened route-node pipe inference so long `Route.page(...).pipe(Route.id(...), Route.paramsSchema(...), Route.querySchema(...), Route.hashSchema(...))` chains preserve params/query/hash axes without data-first anchoring
   - added the first `ServerRoute` implementation slice with first-class server route nodes, pipeable method/path/schema/handler helpers, generated path support, and extraction helpers for params/form/body/response typing
   - added the first `ServerRoute.execute(...)` slice with Schema-driven params/form/body decoding and basic response encoding/validation through `ServerRoute.response(...)`
   - added first server control-flow/response shaping primitives: `ServerRoute.redirect(...)`, `ServerRoute.notFound()`, and `Route.ServerResponseTag` integration inside executed server handlers
@@ -315,6 +354,7 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - added the first SSR bridge slice with `Route.renderRequest(...)`, request/response service tags, and `ServerRoute.runDocument(...)` for document-route execution against app route trees
   - added richer document/data dispatch via `ServerRoute.dispatch(...)`, and `Route.renderRequest(...)` now includes concrete loader payload/deferred output in the structured SSR result
   - added runtime-backed request helpers so SSR/document dispatch can route through `RouterRuntime` (`Route.renderRequestWithRuntime(...)`, `ServerRoute.dispatchWithRuntime(...)`)
+  - route loader payload hydration now keeps seeded entries fresh for first client mount, with server-render test coverage proving a route-node component can read `Route.loaderData()` on first render without rerunning the loader
   - `RouterRuntime` now owns more request orchestration for render/dispatch helpers by updating request URL state and refreshing matched loaders before SSR/document execution
   - `RouterRuntime` snapshots now track richer request outcomes (`lastActionOutcome`, `lastFetchOutcome`, `lastDocumentResult`, `lastDispatchResult`) for server-task and document-flow observability
   - `RouterRuntime` is starting to unify task state modeling with shared phase-based task objects (`idle` / `loading` / `submitting` / `rendering` / `dispatching`) across navigation, revalidation, fetchers, and request/document flows
@@ -339,8 +379,33 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - service installation now re-subscribes tracked runtime keys and routes service invalidations back into atom key tracking (`src/reactivity-runtime.ts`)
   - router loader cache now subscribes to reactivity keys via the installed service and marks cache entries stale on invalidation (`src/router-runtime.ts`)
   - added `Atom.reactivityKeys(atom)` introspection helper and tests for service-to-atom invalidation bridge + loader cache stale behavior
+- Atom type-surface convergence continued:
+  - `ReadonlyAtom`, `Atom`, and `WritableAtom` now carry explicit `A`, `E`, and `R` type axes with extraction helpers (`ValueOf`, `ErrorOf`, `RequirementsOf`)
+  - async atoms created through `Atom.query`, `Atom.effect`, `Atom.runtime(...).atom(...)`, and async projections preserve their typed error channel as atom metadata
+  - `Atom.map` preserves atom error/requirement metadata through read-only derived atoms
+  - `Context.result`, `WriteContext.result`, and `Atom.result` now expose async-atom overloads that read the typed `E` axis directly while retaining `FetchResult` compatibility
+  - `defineQuery((get) => Effect...)` now supports dependency-aware query factories; `get(atom)` tracks synchronous atom reads and `get.result(asyncAtom)` contributes typed dependency errors plus `BridgeError`
+  - action/mutation type extraction helpers now expose input, domain error, full Effect error, and success metadata for `defineMutation`, `Atom.action`, RPC actions, and HTTP API actions
+  - `Atom.family(..., { schema })` now supports schema-validated atom family values, returning `Exit<A, SchemaError>` atoms while preserving existing cache/equality behavior
+  - `Component.make` / `Component.headless` now union explicit `Component.require(...)` requirements with setup-inferred requirements from helpers like `Component.query`, `Component.action`, and `Component.scheduleEffect`
+  - `Component.state()` no longer casts through `as unknown as Atom.WritableAtom`; it now constructs exact component-local writable state directly
+  - type coverage added in `src/type-tests/atom-type-axes.ts` and `src/type-tests/component-core.ts`
 
 ## Recently Completed Work
+
+### Atom A/E/R Type Axes & Component State Cleanup (2026-06-29)
+
+- Added backward-compatible `A` / `E` / `R` type axes to `ReadonlyAtom`, `Atom`, and `WritableAtom`.
+- Added `Atom.ValueOf<T>`, `Atom.ErrorOf<T>`, and `Atom.RequirementsOf<T>` extraction helpers.
+- Updated async atom constructors and `Atom.map` so typed error metadata is preserved through runtime-bound atoms and derived atoms.
+- Added async-atom result bridge overloads for `Context.result`, `WriteContext.result`, and `Atom.result`, with type coverage for data-first, data-last, read context, write context, and legacy `FetchResult` atoms.
+- Added `defineQuery((get) => Effect...)` factory overloads, query getter result bridging, runtime dependency tracking coverage, and type tests for dependency error unions.
+- Added `MutationInputOf`, `MutationErrorOf`, `MutationEffectErrorOf`, `MutationSuccessOf`, `ActionInputOf`, `ActionErrorOf`, `ActionRunErrorOf`, and `ActionSuccessOf` helper aliases with type coverage across local actions, runtime actions, RPC actions, and HTTP API actions.
+- Added `Atom.family(..., { schema })` for schema-validated family member atoms, with runtime/type coverage and README/API documentation.
+- Updated `Component.make` and `Component.headless` requirement inference so setup-derived requirements are preserved even when `Component.require<never>()` is used, with type coverage for query/action/schedule helpers and `withLayer` removal.
+- Added regression type coverage proving component transforms preserve or add requirement/error metadata across `guard`, `route`, and `withBehavior`.
+- Reworked `Component.state()` to avoid the previous `as unknown as Atom.WritableAtom` cast while preserving exact local state typing.
+- Validation status: typecheck clean, 405 tests pass, build clean.
 
 ### View-Aware Slot Attachment & ReadonlyAtom (2026-06-23)
 
@@ -378,6 +443,7 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 - [x] Add initial slot metadata support for hidden slots and slot remapping.
 - [x] Add `SafeHtml` brand and define the first typed-hole/security boundary.
 - [x] Add lightweight platform metadata and renderer-boundary diagnostics inspired by `../gen2` (`event_model`, `attribute_model`, supported capabilities).
+- [x] Extend platform metadata diagnostics from View-level helpers to component render-time runtime integration.
 - [x] Consolidate `Style`/advanced style docs into one stable public style guide.
 - [x] Promote one route-node golden path and update router examples around it.
 - [x] Add SSR hydration example proving seeded loader data is available on first client render.
@@ -467,17 +533,11 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 - Component transform audit complete — `guard` fixed to preserve `SlotsOf<C>`, negative type tests added for style slot attachments.
 - Next focus areas:
   - Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence):
-    - Add `E` (error type) to base `Atom<A, E = never>` — consistent error-type carrier for all atoms.
+    - Continue migrating consumers toward the new `Atom<A, E, R>` metadata instead of result-wrapper-only extraction.
     - Update `Context.result` signature to work with `Atom<A, E>` instead of `Atom<Result<A, E>>`.
     - Remove `AsyncAtom` alias once `Atom<A, E>` is the unified shape.
-    - Propagate error type `E` through `defineQuery`/`defineMutation` and downstream consumers.
-    - Add schema-based result validation to `Atom.family`.
-    - Add explicit `get` callback in `defineQuery` factory.
-    - Fix `Component.state()` cast via `as unknown as Atom.WritableAtom`.
-    - Add `R` type parameter propagation to `Component` for service requirement tracking.
-  - Route-node golden path: promote one routing model with route-node-first examples.
-  - SSR hydration example polish: prove seeded loader data with zero-flicker first render.
-  - Platform metadata and renderer-boundary: extend platform diagnostics from View level to runtime integration.
+    - Continue propagating the new type metadata through remaining downstream consumers and docs.
+    - Continue auditing route-node/server-route integration for requirement metadata preservation as new helpers land.
   - Keep `AF_UI_CONTRACT.md`, `GEN2_UI_IMPLEMENTATION_NOTES.md`, `AGENTS.md`, README, and API docs aligned as the public model changes.
   - Release readiness pass: keep changelog/status aligned and require full typecheck/test/build green before release cut.
 

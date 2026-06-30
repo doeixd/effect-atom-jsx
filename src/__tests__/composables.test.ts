@@ -5,6 +5,7 @@ import * as Behavior from "../Behavior.js";
 import * as Element from "../Element.js";
 import * as Behaviors from "../behaviors.js";
 import * as Composables from "../composables.js";
+import * as Style from "../Style.js";
 import * as View from "../View.js";
 
 describe("composables behavior system", () => {
@@ -42,6 +43,161 @@ describe("composables behavior system", () => {
       { trigger: "missing" as "root" },
       view,
     ).map((d) => d.code)).toEqual(["view:unknown-slot"]);
+  });
+
+  it("validates behavior event requirements against View slot metadata", () => {
+    const NeedsPress = Behavior.make<
+      { readonly trigger: Element.Interactive },
+      {},
+      never,
+      never
+    >(
+      () => Effect.succeed({}),
+      {
+        events: {
+          trigger: [View.Event.Press, View.Event.Focus],
+        },
+      },
+    );
+
+    const view = View.make(
+      {
+        trigger: Element.interactive(),
+      },
+      null,
+      {
+        name: "Button",
+        slotMetadata: {
+          trigger: View.slot("trigger", {
+            allowedEvents: [View.Event.Click, "focus"],
+          }),
+        },
+      },
+    );
+
+    const diagnostics = Behavior.validateAttachmentBySlots(
+      NeedsPress,
+      { trigger: "trigger" },
+      view,
+    );
+
+    expect(diagnostics).toEqual([
+      {
+        code: "view:unsupported-slot-event",
+        message: "View Button slot trigger does not allow event press.",
+        slot: "trigger",
+        event: "press",
+      },
+    ]);
+  });
+
+  it("validates behavior attachments against component-rendered View metadata", () => {
+    const NeedsInput = Behavior.events({
+      input: [View.Event.Input, View.Event.Focus],
+    })(
+      Behavior.make<
+        { readonly input: Element.TextInput },
+        {},
+        never,
+        never
+      >(() => Effect.succeed({})),
+    );
+
+    const Field = Component.make<{}, never, never, { readonly input: Element.TextInput }>(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ input: Element.textInput() }),
+      (_props, bindings) => View.make(
+        { input: bindings.input },
+        null,
+        {
+          slotMetadata: {
+            input: View.slot("input", {
+              allowedEvents: [View.Event.Input],
+            }),
+          },
+        },
+      ),
+    );
+
+    const diagnostics = Effect.runSync(Behavior.validateComponentAttachmentBySlots(
+      NeedsInput,
+      { input: "input" },
+      Field,
+      {},
+    ));
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["view:unsupported-slot-event"]);
+  });
+
+  it("reports AF-UI metadata diagnostics across view, behavior, and style", () => {
+    const Submit = View.Event.make("submit");
+    const Shadow = Style.Property.make("boxShadow");
+    const NeedsInput = Behavior.events({
+      input: [View.Event.Input, Submit],
+    })(
+      Behavior.make<
+        { readonly input: Element.TextInput },
+        {},
+        never,
+        never
+      >(() => Effect.succeed({})),
+    );
+
+    const view = View.make(
+      {
+        input: Element.textInput(),
+      },
+      null,
+      {
+        name: "SearchBox",
+        slotMetadata: {
+          input: View.slot("input", {
+            capability: Element.Capability.TextInput,
+            allowedEvents: [View.Event.Input, Submit],
+            allowedAttributes: [View.Attribute.AriaLabel],
+            platformRequirements: [View.Requirement.Keyboard],
+          }),
+        },
+      },
+    );
+
+    const style = Style.make({
+      input: Style.slot({ color: "red", boxShadow: "0 0 0 1px red" }),
+    });
+
+    expect(View.validatePlatform(view, {
+      name: "minimal",
+      capabilities: [Element.Capability.TextInput],
+      events: [View.Event.Input],
+      attributes: [],
+      requirements: [View.Requirement.Keyboard],
+    }).map((diagnostic) => diagnostic.code)).toEqual([
+      "view:unsupported-slot-event",
+      "view:unsupported-slot-attribute",
+    ]);
+
+    expect(Behavior.validateAttachmentBySlots(
+      NeedsInput,
+      { input: "input" },
+      View.make(
+        { input: Element.textInput() },
+        null,
+        {
+          name: "SearchBoxDom",
+          slotMetadata: {
+            input: View.slot("input", {
+              allowedEvents: [View.Event.Input],
+            }),
+          },
+        },
+      ),
+    ).map((diagnostic) => diagnostic.code)).toEqual(["view:unsupported-slot-event"]);
+
+    expect(Style.validatePlatform(style, {
+      name: "minimal-style",
+      properties: [Style.Property.Color],
+    }).map((diagnostic) => diagnostic.property)).toEqual([Style.nameOfProperty(Shadow)]);
   });
 
   it("attaches disclosure behavior to element slots", () => {

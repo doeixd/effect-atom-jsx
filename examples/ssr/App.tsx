@@ -7,6 +7,7 @@
  * 3. `isServer` for environment detection
  * 4. `setRequestEvent()` / `getRequestEvent()` for SSR request context
  * 5. `Hydration.dehydrate()` / `Hydration.hydrate()` for atom state transfer
+ * 6. Route loader payload hydration before first client render
  */
 import {
   Atom,
@@ -134,7 +135,34 @@ const state = Hydration.dehydrate(registry, [
 Hydration.hydrate(registry, window.__STATE__, {
   count: countAtom,
   user: userAtom,
-});`}</pre>
+        });`}</pre>
+      </div>
+
+      <div class="card">
+        <h2>5. Route Loader Hydration</h2>
+        <p>
+          Route SSR returns a loader payload alongside HTML. Run loader hydration
+          before <code>hydrateRoot()</code> so routed components read seeded
+          loader data on their first client render.
+        </p>
+        <pre>{`// Server
+const result = await Effect.runPromise(
+  Route.renderRequest(AppRoutes, { request }),
+);
+
+res.send(\`
+  <div id="root">\${result.html}</div>
+  <script>window.__LOADERS__ = \${JSON.stringify(result.loaderPayload)}</script>
+\`);
+
+// Client, before hydrateRoot()
+Effect.runSync(Route.hydrateSingleFlightPayload({
+  mutation: undefined,
+  url: window.location.href,
+  loaders: window.__LOADERS__,
+}, AppRoutes));
+
+hydrateRoot(() => <App />, document.getElementById("root")!);`}</pre>
       </div>
     </main>
   );

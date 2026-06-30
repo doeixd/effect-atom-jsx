@@ -1,8 +1,8 @@
 # Router Architecture Sketch
 
-This folder is a **future API showcase**, not a buildable app.
+This folder is a **documentation-only architecture sketch**, not a buildable app.
 
-It is meant to pressure-test the proposed routing direction and give a more concrete feel for the design before implementation.
+It pressure-tests the route-node direction and gives a concrete feel for the design as implementation lands. The app-route node primitives shown here are now the current golden path (`Route.page`, `Route.layout`, `Route.index`, `Route.define`); some deeper runtime and host integration details remain sketches.
 
 The intended architecture is:
 
@@ -19,7 +19,7 @@ Primitive rule:
 
 ## Why this sketch exists
 
-We want to validate that the future design can be:
+We want to keep validating that the design can be:
 
 - type-safe
 - inference-friendly
@@ -107,6 +107,6 @@ This is the main composability rule the design is aiming for.
 
 ## Status
 
-This folder is intentionally documentation-only so it does not constrain implementation details too early or break the current codebase.
+This folder is intentionally documentation-only so it can show the full architecture without forcing every host/runtime detail into a buildable example too early.
 
 The concrete implementation sequencing for this sketch lives in `docs/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md`.

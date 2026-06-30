@@ -640,6 +640,33 @@ describe("query keys / defineQuery", () => {
     await runtime.dispose();
   });
 
+  it("defineQuery get callback tracks atom dependencies", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const userId = AtomNs.value("u1");
+    let runs = 0;
+
+    const query = createRoot(() => defineQuery(
+      (get) => {
+        const id = get(userId);
+        return Effect.sync(() => {
+          runs += 1;
+          return `${id}-profile`;
+        });
+      },
+      { name: "profile-by-atom", runtime },
+    ));
+
+    await tick();
+    expect(query.result()).toEqual(AsyncResult.success("u1-profile"));
+
+    userId.set("u2");
+    await tick();
+    expect(query.result()).toEqual(AsyncResult.success("u2-profile"));
+    expect(runs).toBe(2);
+
+    await runtime.dispose();
+  });
+
   it("propagates typed failures through query.effect() composition", async () => {
     const runtime = ManagedRuntime.make(Layer.empty);
     const base = createRoot(() => defineQuery(

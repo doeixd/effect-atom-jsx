@@ -1,5 +1,6 @@
-import type { Effect } from "effect";
+import { Effect, Layer, ServiceMap } from "effect";
 import * as Element from "./Element.js";
+import * as MetadataToken from "./MetadataToken.js";
 import type * as SafeHtml from "./SafeHtml.js";
 
 export const ViewTypeId: unique symbol = Symbol.for("effect-atom-jsx/View");
@@ -7,22 +8,59 @@ export const ViewTypeId: unique symbol = Symbol.for("effect-atom-jsx/View");
 export type SlotValue = Element.Handle | Element.Collection<Element.Handle>;
 
 export type SlotCapability =
-  | "Base"
-  | "Container"
-  | "Interactive"
-  | "Focusable"
-  | "TextInput"
-  | "Draggable"
-  | "Collection"
-  | string;
+  | string
+  | Element.Capability.Any;
+
+export type EventName<Name extends string = string> = MetadataToken.MetadataToken<"view.event", Name>;
+export type AttributeName<Name extends string = string> = MetadataToken.MetadataToken<"view.attribute", Name>;
+export type RequirementName<Name extends string = string> = MetadataToken.MetadataToken<"view.requirement", Name>;
+
+export type MetadataName = string | MetadataToken.Any;
+
+function makeEvent<const Name extends string>(name: Name): EventName<Name> {
+  return MetadataToken.make("view.event", name);
+}
+
+function makeAttribute<const Name extends string>(name: Name): AttributeName<Name> {
+  return MetadataToken.make("view.attribute", name);
+}
+
+function makeRequirement<const Name extends string>(name: Name): RequirementName<Name> {
+  return MetadataToken.make("view.requirement", name);
+}
+
+export const Event = {
+  make: makeEvent,
+  Press: makeEvent("press"),
+  Click: makeEvent("click"),
+  Input: makeEvent("input"),
+  Focus: makeEvent("focus"),
+  Blur: makeEvent("blur"),
+  Hover: makeEvent("hover"),
+} as const;
+
+export const Attribute = {
+  make: makeAttribute,
+  AriaLabel: makeAttribute("aria-label"),
+  Role: makeAttribute("role"),
+  Disabled: makeAttribute("disabled"),
+  Value: makeAttribute("value"),
+} as const;
+
+export const Requirement = {
+  make: makeRequirement,
+  Keyboard: makeRequirement("keyboard"),
+  Pointer: makeRequirement("pointer"),
+  Clipboard: makeRequirement("clipboard"),
+} as const;
 
 export interface SlotMetadata<Name extends string = string> {
   readonly name: Name;
   readonly capability?: SlotCapability;
   readonly hidden?: boolean;
-  readonly allowedEvents?: readonly string[];
-  readonly allowedAttributes?: readonly string[];
-  readonly platformRequirements?: readonly string[];
+  readonly allowedEvents?: readonly (string | EventName)[];
+  readonly allowedAttributes?: readonly (string | AttributeName)[];
+  readonly platformRequirements?: readonly (string | RequirementName)[];
 }
 
 export type SlotMetadataMap<Slots> = {
@@ -77,9 +115,74 @@ export type SlotsOf<T> = T extends View<infer Slots> ? Slots : never;
 export interface PlatformMetadata {
   readonly name: string;
   readonly capabilities?: readonly SlotCapability[];
-  readonly events?: readonly string[];
-  readonly attributes?: readonly string[];
-  readonly requirements?: readonly string[];
+  readonly events?: readonly (string | EventName)[];
+  readonly attributes?: readonly (string | AttributeName)[];
+  readonly requirements?: readonly (string | RequirementName)[];
+}
+
+export type SlotCapabilityOf<T> = T extends { readonly capability?: infer Capability }
+  ? MetadataToken.NameOf<NonNullable<Capability>>
+  : never;
+
+export type SlotEventsOf<T> = T extends { readonly allowedEvents?: readonly unknown[] }
+  ? MetadataToken.NamesOf<NonNullable<T["allowedEvents"]>>
+  : never;
+
+export type SlotAttributesOf<T> = T extends { readonly allowedAttributes?: readonly unknown[] }
+  ? MetadataToken.NamesOf<NonNullable<T["allowedAttributes"]>>
+  : never;
+
+export type SlotRequirementsOf<T> = T extends { readonly platformRequirements?: readonly unknown[] }
+  ? MetadataToken.NamesOf<NonNullable<T["platformRequirements"]>>
+  : never;
+
+export type PlatformCapabilitiesOf<T> = T extends { readonly metadata: infer Metadata }
+  ? PlatformCapabilitiesOf<Metadata>
+  : T extends { readonly capabilities?: readonly unknown[] }
+    ? MetadataToken.NamesOf<NonNullable<T["capabilities"]>>
+    : never;
+
+export type PlatformEventsOf<T> = T extends { readonly metadata: infer Metadata }
+  ? PlatformEventsOf<Metadata>
+  : T extends { readonly events?: readonly unknown[] }
+    ? MetadataToken.NamesOf<NonNullable<T["events"]>>
+    : never;
+
+export type PlatformAttributesOf<T> = T extends { readonly metadata: infer Metadata }
+  ? PlatformAttributesOf<Metadata>
+  : T extends { readonly attributes?: readonly unknown[] }
+    ? MetadataToken.NamesOf<NonNullable<T["attributes"]>>
+    : never;
+
+export type PlatformRequirementsOf<T> = T extends { readonly metadata: infer Metadata }
+  ? PlatformRequirementsOf<Metadata>
+  : T extends { readonly requirements?: readonly unknown[] }
+    ? MetadataToken.NamesOf<NonNullable<T["requirements"]>>
+    : never;
+
+export interface PlatformService {
+  readonly metadata: PlatformMetadata;
+  readonly onDiagnostic?: (diagnostic: ViewDiagnostic) => void;
+}
+
+export const PlatformTag = ServiceMap.Service<PlatformService>("ViewPlatform");
+
+export type PlatformLayer<Metadata extends PlatformMetadata = PlatformMetadata> =
+  & Layer.Layer<PlatformService>
+  & {
+    readonly metadata: Metadata;
+  };
+
+export function platform<const Metadata extends PlatformMetadata>(
+  metadata: Metadata,
+  options?: {
+    readonly onDiagnostic?: (diagnostic: ViewDiagnostic) => void;
+  },
+): PlatformLayer<Metadata> {
+  return Object.assign(Layer.succeed(PlatformTag, {
+    metadata,
+    onDiagnostic: options?.onDiagnostic,
+  }), { metadata }) as PlatformLayer<Metadata>;
 }
 
 export type TextHoleValue = string | number | boolean | null | undefined;
@@ -214,24 +317,30 @@ export function children(value: unknown): ChildrenHole {
   };
 }
 
-export function slot<Name extends string>(
+export function slot<
+  const Name extends string,
+  const Options extends object = {},
+>(
   name: Name,
-  options?: Omit<SlotMetadata<Name>, "name">,
-): SlotMetadata<Name> {
+  options?: Options & Omit<SlotMetadata<Name>, "name">,
+): SlotMetadata<Name> & Options & { readonly name: Name } {
   return {
     name,
     ...options,
-  };
+  } as SlotMetadata<Name> & Options & { readonly name: Name };
 }
 
-export function hidden<Name extends string>(
+export function hidden<
+  const Name extends string,
+  const Options extends object = {},
+>(
   name: Name,
-  options?: Omit<SlotMetadata<Name>, "name" | "hidden">,
-): SlotMetadata<Name> {
+  options?: Options & Omit<SlotMetadata<Name>, "name" | "hidden">,
+): SlotMetadata<Name> & Options & { readonly name: Name; readonly hidden: true } {
   return slot(name, {
     ...options,
     hidden: true,
-  });
+  } as Options & { readonly hidden: true });
 }
 
 export function remap<Slots>(
@@ -248,6 +357,22 @@ export function capabilityOf(value: unknown): SlotCapability | undefined {
   return typeof kind === "string" ? kind : undefined;
 }
 
+export function nameOfCapability(value: SlotCapability): string {
+  return Element.nameOfCapability(value);
+}
+
+export function nameOfEvent(value: string | EventName): string {
+  return MetadataToken.nameOf(value);
+}
+
+export function nameOfAttribute(value: string | AttributeName): string {
+  return MetadataToken.nameOf(value);
+}
+
+export function nameOfRequirement(value: string | RequirementName): string {
+  return MetadataToken.nameOf(value);
+}
+
 function metadataFor<Slots>(view: View<Slots>, slotName: string): SlotMetadata | undefined {
   return (view.slotMetadata as Record<string, SlotMetadata | undefined> | undefined)?.[slotName];
 }
@@ -256,8 +381,14 @@ function slotValueFor<Slots>(view: View<Slots>, slotName: string): unknown {
   return (view.slots as Record<string, unknown>)[slotName];
 }
 
-function includesOptional<T extends string>(values: readonly T[] | undefined, value: T): boolean {
-  return values === undefined || values.includes(value);
+export function nameOfMetadata(value: MetadataName): string {
+  return MetadataToken.nameOf(value);
+}
+
+function includesMetadataOptional(values: readonly MetadataName[] | undefined, value: MetadataName): boolean {
+  if (values === undefined) return true;
+  const expected = nameOfMetadata(value);
+  return values.some((current) => nameOfMetadata(current) === expected);
 }
 
 export function validateSlotTargets<Slots>(
@@ -322,14 +453,16 @@ export function validateRemaps<Slots>(
 
     const sourceCapability = metadataFor(view, current.source)?.capability ?? capabilityOf(sourceValue);
     const targetCapability = metadataFor(view, current.target)?.capability ?? capabilityOf(targetValue);
+    const sourceCapabilityName = sourceCapability === undefined ? undefined : nameOfCapability(sourceCapability);
+    const targetCapabilityName = targetCapability === undefined ? undefined : nameOfCapability(targetCapability);
     if (
-      sourceCapability !== undefined
-      && targetCapability !== undefined
-      && sourceCapability !== targetCapability
+      sourceCapabilityName !== undefined
+      && targetCapabilityName !== undefined
+      && sourceCapabilityName !== targetCapabilityName
     ) {
       diagnostics.push({
         code: "view:remap-capability-mismatch",
-        message: `View ${view.name ?? "<anonymous>"} cannot remap ${current.source} (${sourceCapability}) to ${current.target} (${targetCapability}).`,
+        message: `View ${view.name ?? "<anonymous>"} cannot remap ${current.source} (${sourceCapabilityName}) to ${current.target} (${targetCapabilityName}).`,
         source: current.source,
         target: current.target,
       });
@@ -346,48 +479,52 @@ export function validatePlatform<Slots>(
   for (const slotName of Object.keys(view.slots as Record<string, unknown>)) {
     const metadata = metadataFor(view, slotName);
     const capability = metadata?.capability ?? capabilityOf(slotValueFor(view, slotName));
+    const capabilityName = capability === undefined ? undefined : nameOfCapability(capability);
 
-    if (capability !== undefined && !includesOptional(platform.capabilities, capability)) {
+    if (capability !== undefined && !includesMetadataOptional(platform.capabilities, capability)) {
       diagnostics.push({
         code: "view:unsupported-slot-capability",
-        message: `Platform ${platform.name} does not support ${capability} slot ${slotName}.`,
+        message: `Platform ${platform.name} does not support ${capabilityName} slot ${slotName}.`,
         slot: slotName,
-        capability,
+        capability: capabilityName,
         platform: platform.name,
       });
     }
 
     for (const eventName of metadata?.allowedEvents ?? []) {
-      if (!includesOptional(platform.events, eventName)) {
+      const event = nameOfEvent(eventName);
+      if (!includesMetadataOptional(platform.events, eventName)) {
         diagnostics.push({
           code: "view:unsupported-slot-event",
-          message: `Platform ${platform.name} does not support event ${eventName} on slot ${slotName}.`,
+          message: `Platform ${platform.name} does not support event ${event} on slot ${slotName}.`,
           slot: slotName,
-          event: eventName,
+          event,
           platform: platform.name,
         });
       }
     }
 
     for (const attributeName of metadata?.allowedAttributes ?? []) {
-      if (!includesOptional(platform.attributes, attributeName)) {
+      const attribute = nameOfAttribute(attributeName);
+      if (!includesMetadataOptional(platform.attributes, attributeName)) {
         diagnostics.push({
           code: "view:unsupported-slot-attribute",
-          message: `Platform ${platform.name} does not support attribute ${attributeName} on slot ${slotName}.`,
+          message: `Platform ${platform.name} does not support attribute ${attribute} on slot ${slotName}.`,
           slot: slotName,
-          attribute: attributeName,
+          attribute,
           platform: platform.name,
         });
       }
     }
 
     for (const requirement of metadata?.platformRequirements ?? []) {
-      if (!includesOptional(platform.requirements, requirement)) {
+      const requirementName = nameOfRequirement(requirement);
+      if (!includesMetadataOptional(platform.requirements, requirement)) {
         diagnostics.push({
           code: "view:missing-platform-requirement",
-          message: `Platform ${platform.name} does not satisfy requirement ${requirement} for slot ${slotName}.`,
+          message: `Platform ${platform.name} does not satisfy requirement ${requirementName} for slot ${slotName}.`,
           slot: slotName,
-          requirement,
+          requirement: requirementName,
           platform: platform.name,
         });
       }
@@ -396,9 +533,27 @@ export function validatePlatform<Slots>(
   return diagnostics;
 }
 
+export function reportPlatformDiagnostics<Slots>(
+  view: View<Slots>,
+  service: PlatformService,
+): readonly ViewDiagnostic[] {
+  const diagnostics = validatePlatform(view, service.metadata);
+  if (service.onDiagnostic) {
+    for (const diagnostic of diagnostics) {
+      service.onDiagnostic(diagnostic);
+    }
+  }
+  return diagnostics;
+}
+
 export const View = {
   TypeId: ViewTypeId,
+  PlatformTag,
+  Event,
+  Attribute,
+  Requirement,
   make,
+  platform,
   isView,
   node,
   text,
@@ -411,7 +566,13 @@ export const View = {
   hidden,
   remap,
   capabilityOf,
+  nameOfCapability,
+  nameOfEvent,
+  nameOfAttribute,
+  nameOfRequirement,
+  nameOfMetadata,
   validateSlotTargets,
   validateRemaps,
   validatePlatform,
+  reportPlatformDiagnostics,
 } as const;

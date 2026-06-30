@@ -61,6 +61,7 @@ import { ReactivityTag } from "./Reactivity.js";
 import { installReactivityService } from "./reactivity-runtime.js";
 import { installSingleFlightTransport } from "./single-flight-runtime.js";
 import { SingleFlightTransportTag, type SingleFlightTransportService } from "./SingleFlightTransport.js";
+import type * as AtomTypes from "./Atom.js";
 
 // ─── Result ───────────────────────────────────────────────────────────────────
 
@@ -528,6 +529,13 @@ export interface QueryRef<A, E> {
   refresh(): void;
 }
 
+export interface QueryGet {
+  <A>(atom: AtomTypes.ReadonlyAtom<A, any, any>): A;
+  get<A>(atom: AtomTypes.ReadonlyAtom<A, any, any>): A;
+  result<A, E>(atom: AtomTypes.AsyncAtom<A, E, any>): Effect.Effect<A, E | BridgeError>;
+  result<A, E>(atom: AtomTypes.ReadonlyAtom<Result<A, E>, any, any>): Effect.Effect<A, E | BridgeError>;
+}
+
 function resultAccessorToEffect<A, E>(
   readResult: Accessor<Result<A, E>>,
 ): Effect.Effect<A, E | BridgeError> {
@@ -545,6 +553,24 @@ function resultAccessorToEffect<A, E>(
     if (state._tag === "Failure") return Effect.fail<E | BridgeError>(state.error);
     return Effect.fail<E | BridgeError>({ _tag: "ResultDefectError", defect: state.cause });
 }
+
+function resultValueToEffect<A, E>(
+  state: Result<A, E>,
+): Effect.Effect<A, E | BridgeError> {
+  return resultAccessorToEffect(() => state);
+}
+
+const queryGet: QueryGet = Object.assign(
+  (<A>(atom: AtomTypes.ReadonlyAtom<A, any, any>): A => atom()),
+  {
+    get<A>(atom: AtomTypes.ReadonlyAtom<A, any, any>): A {
+      return atom();
+    },
+    result<A, E>(atom: AtomTypes.ReadonlyAtom<Result<A, E>, any, any>): Effect.Effect<A, E | BridgeError> {
+      return resultValueToEffect(atom());
+    },
+  },
+);
 
 /**
  * Primary Effect-native query API with optional typed invalidation keys.
@@ -622,23 +648,41 @@ function queryEffect<A, E, R>(
   );
 }
 
+export type DefineQueryOptions<A, R> = Omit<QueryEffectOptions<R>, "key"> & {
+  key?: QueryKey<A>;
+  name?: string;
+  onTransition?: QueryEffectOptions<R>["onTransition"];
+};
+
+export function defineQuery<A, E, R>(
+  fn: (get: QueryGet) => Effect.Effect<A, E, R>,
+  options?: DefineQueryOptions<A, R>,
+): QueryRef<A, E>;
+export function defineQuery<A, E, R>(
+  fn: () => Effect.Effect<A, E, R>,
+  options?: DefineQueryOptions<A, R>,
+): QueryRef<A, E>;
 /**
  * Create a keyed query bundle for ergonomic query + invalidation wiring.
  *
  * @example
  * const todos = defineQuery(() => useService(TodoApi).list(), { name: "todos" })
  * mutationEffect(saveTodo, { invalidates: todos.key })
+ *
+ * @example
+ * const profile = defineQuery((get) => {
+ *   const userId = get(userIdAtom)
+ *   return api.profile(userId)
+ * })
  */
 export function defineQuery<A, E, R>(
-  fn: () => Effect.Effect<A, E, R>,
-  options?: Omit<QueryEffectOptions<R>, "key"> & {
-    key?: QueryKey<A>;
-    name?: string;
-    onTransition?: QueryEffectOptions<R>["onTransition"];
-  },
+  fn: (() => Effect.Effect<A, E, R>) | ((get: QueryGet) => Effect.Effect<A, E, R>),
+  options?: DefineQueryOptions<A, R>,
 ): QueryRef<A, E> {
   const key = options?.key ?? createQueryKey<A>(options?.name);
-  const result = queryEffect(fn, {
+  const run = (): Effect.Effect<A, E, R> =>
+    (fn as (get: QueryGet) => Effect.Effect<A, E, R>)(queryGet);
+  const result = queryEffect(run, {
     runtime: options?.runtime,
     key,
     name: options?.name,
@@ -762,6 +806,13 @@ export interface MutationEffectHandle<A, E> {
   result: Accessor<Result<void, E>>;
   pending: Accessor<boolean>;
 }
+
+export type MutationInputOf<T> = T extends MutationEffectHandle<infer A, any> ? A : never;
+export type MutationErrorOf<T> = T extends MutationEffectHandle<any, infer E> ? E : never;
+export type MutationEffectErrorOf<T> = T extends MutationEffectHandle<any, infer E>
+  ? E | BridgeError | MutationSupersededError
+  : never;
+export type MutationSuccessOf<T> = T extends MutationEffectHandle<any, any> ? void : never;
 
 export interface MutationEffectOptions<A, E, R> {
   runtime?: RuntimeLike<R, unknown>;

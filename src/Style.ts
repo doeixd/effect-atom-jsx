@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect";
 import * as Component from "./Component.js";
 import * as Element from "./Element.js";
+import * as MetadataToken from "./MetadataToken.js";
 import * as Theme from "./Theme.js";
 import * as View from "./View.js";
 import { createContext, useContext } from "./api.js";
@@ -11,6 +12,47 @@ import type { TokenPath } from "./style-types.js";
 type AnySlot = Record<string, unknown>;
 type SlotHandleMap = Record<string, Element.Handle | Element.Collection<Element.Handle>>;
 type SlotMapFrom<T> = T extends { readonly slots: infer Slots extends SlotHandleMap } ? Slots : T extends SlotHandleMap ? T : never;
+
+export interface Property<Name extends string = string> extends MetadataToken.MetadataToken<"style.property", Name> {}
+
+export namespace Property {
+  export type Any = Property<string>;
+  export type NameOf<T> = MetadataToken.NameOf<T>;
+  export type NamesOf<T extends readonly unknown[]> = MetadataToken.NamesOf<T>;
+
+  export function make<const Name extends string>(name: Name): Property<Name> {
+    return MetadataToken.make("style.property", name);
+  }
+
+  export const Color = make("color");
+  export const BackgroundColor = make("backgroundColor");
+  export const Opacity = make("opacity");
+  export const Display = make("display");
+  export const Gap = make("gap");
+  export const Padding = make("padding");
+  export const Margin = make("margin");
+  export const FontSize = make("fontSize");
+  export const BorderRadius = make("borderRadius");
+}
+
+export type PropertyName = string | Property.Any;
+export type PropertyNameOf<T> = MetadataToken.NameOf<T>;
+export type PropertyNamesOf<T extends readonly unknown[]> = MetadataToken.NamesOf<T>;
+
+export interface StylePlatformMetadata {
+  readonly name: string;
+  readonly properties?: readonly PropertyName[];
+}
+
+export type StyleDiagnosticCode = "style:unsupported-property";
+
+export interface StyleDiagnostic {
+  readonly code: StyleDiagnosticCode;
+  readonly message: string;
+  readonly platform: string;
+  readonly slot: string;
+  readonly property: string;
+}
 
 export interface SlotPiece {
   readonly _tag: "SlotPiece";
@@ -400,6 +442,36 @@ function resolveSlot(piece: StyleValue): SlotStyle {
   return mergeMany(flattenPiece(piece));
 }
 
+export interface StylePropertyUsage<S extends string = string> {
+  readonly slot: S;
+  readonly property: string;
+}
+
+export function nameOfProperty(value: PropertyName): string {
+  return MetadataToken.nameOf(value);
+}
+
+function isStylePropertyKey(property: string): boolean {
+  return !property.startsWith("__") && !property.startsWith("_");
+}
+
+export function propertiesOf<S extends string>(style: ComposedStyle<S>): readonly StylePropertyUsage<S>[] {
+  const usages: Array<StylePropertyUsage<S>> = [];
+  const seen = new Set<string>();
+  for (const [slotName, piece] of Object.entries(style.slots) as Array<[S, StyleValue]>) {
+    for (const slotStyle of flattenPiece(piece)) {
+      for (const property of Object.keys(slotStyle)) {
+        if (!isStylePropertyKey(property)) continue;
+        const key = `${slotName}\u0000${property}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        usages.push({ slot: slotName, property });
+      }
+    }
+  }
+  return usages;
+}
+
 function applyResolvedStyleToHandle(handle: Element.Handle, styleDef: SlotStyle): Effect.Effect<void> {
   return Effect.forEach(Object.entries(styleDef), ([prop, value]) => {
     if (prop === "_states") return Effect.void;
@@ -546,6 +618,46 @@ export function validateAttachmentBySlots<
   return View.validateSlotTargets(view, Object.values(map) as string[], options);
 }
 
+export function validateComponentAttachment<
+  S extends string,
+  Props,
+  Req,
+  E,
+  Bindings,
+  Slots,
+>(
+  style: ComposedStyle<S>,
+  component: Component.Component<Props, Req, E, Bindings, Slots>,
+  props: Props,
+  options?: {
+    readonly allowHidden?: boolean;
+  },
+): Effect.Effect<readonly View.ViewDiagnostic[], E, Req> {
+  return Component.renderViewEffect(component, props).pipe(
+    Effect.map((view) => view === undefined ? [] : validateAttachment(style, view, options)),
+  );
+}
+
+export function validatePlatform<S extends string>(
+  style: ComposedStyle<S>,
+  platform: StylePlatformMetadata,
+): readonly StyleDiagnostic[] {
+  if (platform.properties === undefined) return [];
+  const supportedProperties = new Set(platform.properties.map(nameOfProperty));
+  const diagnostics: Array<StyleDiagnostic> = [];
+  for (const usage of propertiesOf(style)) {
+    if (supportedProperties.has(usage.property)) continue;
+    diagnostics.push({
+      code: "style:unsupported-property",
+      message: `Style slot '${usage.slot}' uses property '${usage.property}', but platform '${platform.name}' does not list that property as supported.`,
+      platform: platform.name,
+      slot: usage.slot,
+      property: usage.property,
+    });
+  }
+  return diagnostics;
+}
+
 type VariantDef = {
   readonly base?: StyleValue;
   readonly variants: Record<string, Record<string, StyleValue>>;
@@ -667,8 +779,14 @@ export const Style = {
   attach,
   attachBySlots,
   attachBySlotsFor,
+  attachByView,
+  Property,
+  nameOfProperty,
+  propertiesOf,
   validateAttachment,
   validateAttachmentBySlots,
+  validateComponentAttachment,
+  validatePlatform,
   variants,
   recipe,
   override,

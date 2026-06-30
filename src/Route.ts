@@ -91,6 +91,8 @@ type UnifiedRouteKind = "path" | "layout" | "index";
 type UnknownRouteResult = Result.Result<unknown, unknown>;
 type RouteTitleValue<P, LD, LE> = string | ((params: P, loaderData: LD | undefined, loaderResult: Result.Result<LD, LE> | undefined) => string);
 type RouteMetaExtraValue<P, LD, LE> = RouteMetaRecord | ((params: P, loaderData: LD | undefined, loaderResult: Result.Result<LD, LE> | undefined) => RouteMetaRecord);
+type NonNodeRouteTitleValue<P, LD, LE> = P extends AnyAppRouteNode ? never : RouteTitleValue<P, LD, LE>;
+type NonNodeRouteMetaExtraValue<P, LD, LE> = P extends AnyAppRouteNode ? never : RouteMetaExtraValue<P, LD, LE>;
 type StoredRouteTitle = string | ((params: unknown, loaderData: unknown, loaderResult: UnknownRouteResult | undefined) => string);
 type StoredRouteMetaExtra = RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: UnknownRouteResult | undefined) => RouteMetaRecord);
 
@@ -169,32 +171,60 @@ type AnyAppRouteNode = AppRouteNode<any, any, any, any, any, any>;
 
 type RouteNodeEnhancer<I extends AnyAppRouteNode = AnyAppRouteNode, O extends AnyAppRouteNode = AnyAppRouteNode> = (node: I) => O;
 type UnifiedRouteEnhancer<I extends AnyRoute = AnyRoute, O extends AnyRoute = AnyRoute> = (route: I) => O;
+declare const RouteNodePipeSymbol: unique symbol;
+type RouteNodePipeOp<Kind extends string, Value = never> = {
+  readonly [RouteNodePipeSymbol]: {
+    readonly kind: Kind;
+    readonly value: Value;
+  };
+};
 
 type RouteNodeComponentOf<T extends AnyAppRouteNode> = T extends AppRouteNode<any, any, any, infer C, any, any> ? C : never;
 type WithNodeParams<T extends AnyAppRouteNode, P> = AppRouteNode<P, RouteNodeQueryOf<T>, RouteNodeHashOf<T>, RouteNodeComponentOf<T>, RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>>;
 type WithNodeQuery<T extends AnyAppRouteNode, Q> = AppRouteNode<RouteNodeParamsOf<T>, Q, RouteNodeHashOf<T>, RouteNodeComponentOf<T>, RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>>;
 type WithNodeHash<T extends AnyAppRouteNode, H> = AppRouteNode<RouteNodeParamsOf<T>, RouteNodeQueryOf<T>, H, RouteNodeComponentOf<T>, RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>>;
 type WithNodeLoader<T extends AnyAppRouteNode, A, E> = AppRouteNode<RouteNodeParamsOf<T>, RouteNodeQueryOf<T>, RouteNodeHashOf<T>, RouteNodeComponentOf<T>, A, E>;
-type AnyRouteAttachTarget = AnyAppRouteNode | ComponentType<any, any, any, any>;
+type ApplyRouteNodePipeOp<T extends AnyAppRouteNode, Op> =
+  Op extends RouteNodePipeOp<"params", infer P> ? WithNodeParams<T, P>
+  : Op extends RouteNodePipeOp<"query", infer Q> ? WithNodeQuery<T, Q>
+  : Op extends RouteNodePipeOp<"hash", infer H> ? WithNodeHash<T, H>
+  : Op extends RouteNodePipeOp<"loader", infer Loader>
+    ? Loader extends { readonly data: infer A; readonly error: infer E }
+      ? WithNodeLoader<T, A, E>
+      : T
+  : Op extends RouteNodePipeOp<"identity", any> ? T
+  : Op extends (route: T) => infer Out
+    ? Out extends AnyAppRouteNode ? Out : T
+  : T;
+type PipeRouteNode<T extends AnyAppRouteNode, Ops extends readonly unknown[]> =
+  Ops extends readonly [infer Head, ...infer Tail]
+    ? PipeRouteNode<ApplyRouteNodePipeOp<T, Head>, Tail>
+    : T;
+type AnyRouteAttachTarget = AnyAppRouteNode | ComponentType<any, any, any, any, any>;
 type RouteIdEnhancer =
-  & (<T extends AnyAppRouteNode>(route: T) => T)
-  & (<C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>);
+  & (<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, Q, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
+  & (<C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
+  & RouteNodePipeOp<"identity">;
 type RouteParamsSchemaEnhancer<P> =
-  & (<T extends AnyAppRouteNode>(route: T) => WithNodeParams<T, P>)
-  & (<C, Q, H, LD, LE>(route: Route<C, any, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>);
+  & (<Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<any, Q, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
+  & (<C, Q, H, LD, LE>(route: Route<C, any, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
+  & RouteNodePipeOp<"params", P>;
 type RouteQuerySchemaEnhancer<Q> =
-  & (<T extends AnyAppRouteNode>(route: T) => WithNodeQuery<T, Q>)
-  & (<C, P, H, LD, LE>(route: Route<C, P, any, H, LD, LE>) => Route<C, P, Q, H, LD, LE>);
+  & (<P, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, any, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
+  & (<C, P, H, LD, LE>(route: Route<C, P, any, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
+  & RouteNodePipeOp<"query", Q>;
 type RouteHashSchemaEnhancer<H> =
-  & (<T extends AnyAppRouteNode>(route: T) => WithNodeHash<T, H>)
-  & (<C, P, Q, LD, LE>(route: Route<C, P, Q, any, LD, LE>) => Route<C, P, Q, H, LD, LE>);
+  & (<P, Q, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, Q, any, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
+  & (<C, P, Q, LD, LE>(route: Route<C, P, Q, any, LD, LE>) => Route<C, P, Q, H, LD, LE>)
+  & RouteNodePipeOp<"hash", H>;
 type RouteChildrenEnhancer =
-  & (<T extends AnyAppRouteNode>(route: T) => T)
-  & (<C, P, Q, H, LD, LE>(route: LayoutRoute<C, P, Q, H, LD, LE>) => LayoutRoute<C, P, Q, H, LD, LE>);
+  & (<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, Q, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
+  & (<C, P, Q, H, LD, LE>(route: LayoutRoute<C, P, Q, H, LD, LE>) => LayoutRoute<C, P, Q, H, LD, LE>)
+  & RouteNodePipeOp<"identity">;
 type RouteTarget = AnyAppRouteNode | AnyRoute;
-type RouteTargetComponent = ComponentType<any, any, any, any> | AnyRoute;
+type RouteTargetComponent = ComponentType<any, any, any, any, any> | AnyRoute;
 type GuardEnhancer<Req, E> = UnifiedGuardEnhancer<Req, E>
-  & (<Props, R0, E0, B>(component: ComponentType<Props, R0, E0, B>) => ComponentType<Props, R0 | Req, E0 | E, B>);
+  & (<Props, R0, E0, B, Slots>(component: ComponentType<Props, R0, E0, B, Slots>) => ComponentType<Props, R0 | Req, E0 | E, B, Slots>);
 type TitleRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(route: T) => T)
   & NodeTitleEnhancer<AnyAppRouteNode>
   & TitleEnhancer<P, A, E>;
@@ -203,11 +233,12 @@ type MetaRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(rou
   & MetaEnhancer<P, A, E>;
 type LoaderRouteEnhancer<P, A, E, R> = LoaderEnhancer<P, A, E, R>
   & NodeLoaderEnhancer<AnyAppRouteNode, A, E, R>
-  & (<C, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<C, P, Q, H, A, E>);
+  & (<C, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<C, P, Q, H, A, E>)
+  & RouteNodePipeOp<"loader", { readonly data: A; readonly error: E }>;
 
-export type MaterializedAppRoute<P, Q, H, C extends ComponentType<any, any, any, any>, A, LE> = RoutedComponent<P, Q, H> & LoaderTaggedComponent<A, LE> & C;
+export type MaterializedAppRoute<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE> = RoutedComponent<P, Q, H> & LoaderTaggedComponent<A, LE> & C;
 
-export interface AppRouteNodeDef<P = unknown, Q = unknown, H = unknown, C extends ComponentType<any, any, any, any> = ComponentType<any, any, any, any>, A = unknown, LE = unknown> {
+export interface AppRouteNodeDef<P = unknown, Q = unknown, H = unknown, C extends ComponentType<any, any, any, any, any> = ComponentType<any, any, any, any, any>, A = unknown, LE = unknown> {
   readonly kind: "page" | "layout" | "index";
   readonly path: string;
   readonly component: C;
@@ -219,14 +250,14 @@ export interface AppRouteNodeDef<P = unknown, Q = unknown, H = unknown, C extend
     readonly id?: string;
   };
   readonly children: ReadonlyArray<AppRouteNode<any, any, any, any, any, any>>;
-  readonly enhancers: ReadonlyArray<(component: ComponentType<any, any, any, any>) => ComponentType<any, any, any, any>>;
+  readonly enhancers: ReadonlyArray<(component: ComponentType<any, any, any, any, any>) => ComponentType<any, any, any, any, any>>;
 }
 
-export interface AppRouteNodeState<P = unknown, Q = unknown, H = unknown, C extends ComponentType<any, any, any, any> = ComponentType<any, any, any, any>, A = unknown, LE = unknown> {
+export interface AppRouteNodeState<P = unknown, Q = unknown, H = unknown, C extends ComponentType<any, any, any, any, any> = ComponentType<any, any, any, any, any>, A = unknown, LE = unknown> {
   readonly materialized?: MaterializedAppRoute<P, Q, H, C, A, LE>;
 }
 
-export interface AppRouteNode<P = unknown, Q = unknown, H = unknown, C extends ComponentType<any, any, any, any> = ComponentType<any, any, any, any>, A = unknown, LE = unknown> {
+export interface AppRouteNode<P = unknown, Q = unknown, H = unknown, C extends ComponentType<any, any, any, any, any> = ComponentType<any, any, any, any, any>, A = unknown, LE = unknown> {
   readonly [RouteNodeSymbol]: true;
   readonly definition: AppRouteNodeDef<P, Q, H, C, A, LE>;
   readonly state: AppRouteNodeState<P, Q, H, C, A, LE>;
@@ -241,7 +272,8 @@ export interface AppRouteNode<P = unknown, Q = unknown, H = unknown, C extends C
     readonly id?: string;
   };
   readonly children: ReadonlyArray<AppRouteNode<any, any, any, any, any, any>>;
-  readonly enhancers: ReadonlyArray<(component: ComponentType<any, any, any, any>) => ComponentType<any, any, any, any>>;
+  readonly enhancers: ReadonlyArray<(component: ComponentType<any, any, any, any, any>) => ComponentType<any, any, any, any, any>>;
+  pipe<Ops extends readonly RouteNodePipeOp<string, any>[]>(...enhancers: Ops): PipeRouteNode<this, Ops>;
   pipe<R1 extends AppRouteNode<any, any, any, any, any, any>>(op1: RouteNodeEnhancer<this, R1>): R1;
   pipe<R1 extends AppRouteNode<any, any, any, any, any, any>, R2 extends AppRouteNode<any, any, any, any, any, any>>(op1: RouteNodeEnhancer<this, R1>, op2: RouteNodeEnhancer<R1, R2>): R2;
   pipe<R1 extends AppRouteNode<any, any, any, any, any, any>, R2 extends AppRouteNode<any, any, any, any, any, any>, R3 extends AppRouteNode<any, any, any, any, any, any>>(op1: RouteNodeEnhancer<this, R1>, op2: RouteNodeEnhancer<R1, R2>, op3: RouteNodeEnhancer<R2, R3>): R3;
@@ -351,7 +383,7 @@ export type LoaderErrorCases<P = unknown, E = unknown> = {
 };
 
 type RegisteredRoute = {
-  readonly component: ComponentType<any, any, any, any>;
+  readonly component: ComponentType<any, any, any, any, any>;
   readonly meta: RouteMeta<any, any, any>;
 };
 
@@ -365,7 +397,7 @@ type RoutedMetadataCarrier<P = unknown, Q = unknown, H = unknown, A = unknown, E
   readonly [RouteLoaderMetaSymbol]?: RouteLoaderMeta<A, E>;
 };
 
-type RouteDecoratedComponent<P = unknown, Q = unknown, H = unknown, A = unknown, E = unknown> = ComponentType<any, any, any, any> & RoutedMetadataCarrier<P, Q, H, A, E> & {
+type RouteDecoratedComponent<P = unknown, Q = unknown, H = unknown, A = unknown, E = unknown> = ComponentType<any, any, any, any, any> & RoutedMetadataCarrier<P, Q, H, A, E> & {
   __routeLoader?: LoaderFn;
   __routeLoaderOptions?: LoaderOptions;
   __routeLoaderError?: LoaderErrorCases<any, any>;
@@ -384,7 +416,7 @@ function isUnifiedRoute(value: unknown): value is AnyRoute {
   return (typeof value === "object" || typeof value === "function") && value !== null && UnifiedRouteSymbol in value;
 }
 
-function isRegistrableComponent(value: unknown): value is ComponentType<any, any, any, any> {
+function isRegistrableComponent(value: unknown): value is ComponentType<any, any, any, any, any> {
   return typeof value === "function" && ComponentRuntime.Component.TypeId in value;
 }
 
@@ -431,7 +463,7 @@ function isRouteNode(value: unknown): value is AppRouteNode<any, any, any, any, 
 }
 
 function asRouteComponent<P = unknown, Q = unknown, H = unknown, A = unknown, E = unknown>(
-  component: ComponentType<any, any, any, any>,
+  component: ComponentType<any, any, any, any, any>,
 ): RouteDecoratedComponent<P, Q, H, A, E> {
   return component as RouteDecoratedComponent<P, Q, H, A, E>;
 }
@@ -471,7 +503,7 @@ function toComponentRouteOptions<P, Q, H>(node: AppRouteNode<P, Q, H, any, any, 
 }
 
 function setLoaderInternals<P, A, E>(
-  component: ComponentType<any, any, any, any>,
+  component: ComponentType<any, any, any, any, any>,
   fn: (params: P, deps?: { readonly parent: <X>() => X }) => Effect.Effect<A, E, any>,
   options?: LoaderOptions,
 ): void {
@@ -481,15 +513,15 @@ function setLoaderInternals<P, A, E>(
   setRouteLoaderMeta<A, E>(routed);
 }
 
-function setTitleInternal(component: ComponentType<any, any, any, any>, value: string | ((params: unknown, loaderData: unknown, loaderResult: Result.Result<unknown, unknown> | undefined) => string)): void {
+function setTitleInternal(component: ComponentType<any, any, any, any, any>, value: string | ((params: unknown, loaderData: unknown, loaderResult: Result.Result<unknown, unknown> | undefined) => string)): void {
   asRouteComponent(component).__routeTitle = value;
 }
 
-function setMetaInternal(component: ComponentType<any, any, any, any>, value: RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: Result.Result<unknown, unknown> | undefined) => RouteMetaRecord)): void {
+function setMetaInternal(component: ComponentType<any, any, any, any, any>, value: RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: Result.Result<unknown, unknown> | undefined) => RouteMetaRecord)): void {
   asRouteComponent(component).__routeMetaExtra = value;
 }
 
-function appendNodeEnhancer<P, Q, H, C extends ComponentType<any, any, any, any>, A, LE>(
+function appendNodeEnhancer<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(
   node: AppRouteNode<P, Q, H, C, A, LE>,
   enhancer: (component: C) => C,
 ): AppRouteNode<P, Q, H, C, A, LE> {
@@ -500,7 +532,7 @@ function getRouteMeta<P, Q, H>(component: RoutedMetadataCarrier<P, Q, H>): Route
   return component[RouteMetaSymbol];
 }
 
-export function routeMetaOf<C extends ComponentType<any, any, any, any>>(
+export function routeMetaOf<C extends ComponentType<any, any, any, any, any>>(
   component: C,
 ): RouteMeta<RouteParamsOf<C>, RouteQueryOf<C>, RouteHashOf<C>> | undefined {
   return getRouteMeta(asRouteComponent(component));
@@ -514,13 +546,13 @@ function setRouteLoaderMeta<A, E>(component: RoutedMetadataCarrier<any, any, any
   (component as RoutedMetadataCarrier<any, any, any, A, E> & { [RouteLoaderMetaSymbol]: RouteLoaderMeta<A, E> })[RouteLoaderMetaSymbol] = {} as RouteLoaderMeta<A, E>;
 }
 
-function makeRouteNode<P, Q, H, C extends ComponentType<any, any, any, any>, A = unknown, LE = unknown>(
+function makeRouteNode<P, Q, H, C extends ComponentType<any, any, any, any, any>, A = unknown, LE = unknown>(
   kind: AppRouteNode["kind"],
   path: string,
   component: C,
   options?: AppRouteNode<P, Q, H, C, A, LE>["options"],
   children?: ReadonlyArray<AppRouteNode<any, any, any, any, any, any>>,
-  enhancers?: ReadonlyArray<(component: ComponentType<any, any, any, any>) => ComponentType<any, any, any, any>>,
+  enhancers?: ReadonlyArray<(component: ComponentType<any, any, any, any, any>) => ComponentType<any, any, any, any, any>>,
 ): AppRouteNode<P, Q, H, C, A, LE> {
   const definition: AppRouteNodeDef<P, Q, H, C, A, LE> = {
     kind,
@@ -546,7 +578,7 @@ function makeRouteNode<P, Q, H, C extends ComponentType<any, any, any, any>, A =
   return node;
 }
 
-function withComponentEnhancer<P, Q, H, C extends ComponentType<any, any, any, any>, A, LE>(
+function withComponentEnhancer<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(
   node: AppRouteNode<P, Q, H, C, A, LE>,
   enhancer: (component: C) => C,
 ): AppRouteNode<P, Q, H, C, A, LE> {
@@ -562,7 +594,7 @@ function withComponentEnhancer<P, Q, H, C extends ComponentType<any, any, any, a
   };
 }
 
-function withNodeOptions<P, Q, H, C extends ComponentType<any, any, any, any>, A, LE>(
+function withNodeOptions<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(
   node: AppRouteNode<P, Q, H, C, A, LE>,
   options: Partial<AppRouteNode<P, Q, H, C, A, LE>["options"]>,
 ): AppRouteNode<P, Q, H, C, A, LE> {
@@ -578,7 +610,7 @@ function withNodeOptions<P, Q, H, C extends ComponentType<any, any, any, any>, A
   };
 }
 
-function withNodeChildren<P, Q, H, C extends ComponentType<any, any, any, any>, A, LE>(
+function withNodeChildren<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(
   node: AppRouteNode<P, Q, H, C, A, LE>,
   children: ReadonlyArray<AppRouteNode<any, any, any, any, any, any>>,
 ): AppRouteNode<P, Q, H, C, A, LE> {
@@ -593,7 +625,7 @@ function withNodeChildren<P, Q, H, C extends ComponentType<any, any, any, any>, 
   };
 }
 
-function materializeNode<P, Q, H, C extends ComponentType<any, any, any, any>, A, LE>(
+function materializeNode<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(
   node: AppRouteNode<P, Q, H, C, A, LE>,
 ): (RoutedComponent<P, Q, H> & LoaderTaggedComponent<A, LE> & C) {
   if (node.state.materialized) {
@@ -617,39 +649,39 @@ function materializeNode<P, Q, H, C extends ComponentType<any, any, any, any>, A
   return materialized;
 }
 
-type WithLoaderComponent<C, RAdd, EAdd, A, E> = C extends ComponentType<infer Props, infer Req, infer Err, infer B>
-  ? (ComponentType<Props, Req | RAdd, Err | EAdd, B>
-    & Omit<C, keyof ComponentType<any, any, any, any>>
+type WithLoaderComponent<C, RAdd, EAdd, A, E> = C extends ComponentType<infer Props, infer Req, infer Err, infer B, infer Slots>
+  ? (ComponentType<Props, Req | RAdd, Err | EAdd, B, Slots>
+    & Omit<C, keyof ComponentType<any, any, any, any, any>>
     & RoutedComponent<RouteParamsOf<C>, RouteQueryOf<C>, RouteHashOf<C>>
     & LoaderTaggedComponent<A, E>)
   : (C & LoaderTaggedComponent<A, E>);
 
-type RouteComponentEnhancer<I extends ComponentType<any, any, any, any>, O extends ComponentType<any, any, any, any>> = (component: I) => O;
+type RouteComponentEnhancer<I extends ComponentType<any, any, any, any, any>, O extends ComponentType<any, any, any, any, any>> = (component: I) => O;
 
 type LoaderEnhancer<P, A, E, R> =
-  & (<T extends AppRouteNode<P, any, any, any, any, any>>(route: T) => WithNodeLoader<T, A, E>)
-  & (<C extends RoutedComponent<P, any, any> & ComponentType<any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>)
-  & (<C extends ComponentType<any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>);
+  & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, any, any>) => AppRouteNode<P, Q, H, C, A, E>)
+  & (<C extends RoutedComponent<P, any, any> & ComponentType<any, any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>)
+  & (<C extends ComponentType<any, any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>);
 
 type NodeLoaderEnhancer<T extends AnyAppRouteNode, A, E, R> = LoaderEnhancer<RouteNodeParamsOf<T>, A, E, R> & ((route: T) => WithNodeLoader<T, A, E>);
 
 type TitleEnhancer<P, A, E> =
-  & (<T extends AppRouteNode<P, any, any, any, A, E>>(route: T) => T)
-  & (<C extends RoutedComponent<P, any, any> & LoaderTaggedComponent<A, E> & ComponentType<any, any, any, any>>(component: C) => C)
-  & (<C extends ComponentType<any, any, any, any>>(component: C) => C);
+  & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, A, E>) => AppRouteNode<P, Q, H, C, A, E>)
+  & (<C extends RoutedComponent<P, any, any> & LoaderTaggedComponent<A, E> & ComponentType<any, any, any, any, any>>(component: C) => C)
+  & (<C extends ComponentType<any, any, any, any, any>>(component: C) => C);
 
 type NodeTitleEnhancer<T extends AnyAppRouteNode> = TitleEnhancer<RouteNodeParamsOf<T>, RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> & ((route: T) => T);
 
 type MetaEnhancer<P, A, E> =
-  & (<T extends AppRouteNode<P, any, any, any, A, E>>(route: T) => T)
-  & (<C extends RoutedComponent<P, any, any> & LoaderTaggedComponent<A, E> & ComponentType<any, any, any, any>>(component: C) => C)
-  & (<C extends ComponentType<any, any, any, any>>(component: C) => C);
+  & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, A, E>) => AppRouteNode<P, Q, H, C, A, E>)
+  & (<C extends RoutedComponent<P, any, any> & LoaderTaggedComponent<A, E> & ComponentType<any, any, any, any, any>>(component: C) => C)
+  & (<C extends ComponentType<any, any, any, any, any>>(component: C) => C);
 
 type NodeMetaEnhancer<T extends AnyAppRouteNode> = MetaEnhancer<RouteNodeParamsOf<T>, RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> & ((route: T) => T);
 
 type LoaderAttachResult<T, P, A, E, R> =
   T extends AppRouteNode<P, any, any, any, any, any> ? WithNodeLoader<T, A, E>
-  : T extends ComponentType<any, any, any, any> ? WithLoaderComponent<T, R, E, A, E>
+  : T extends ComponentType<any, any, any, any, any> ? WithLoaderComponent<T, R, E, A, E>
   : never;
 
 type UnifiedRouteWithLoader<T extends AnyRoute, A, E> = T extends Route<infer C, infer P, infer Q, infer H, any, any>
@@ -690,7 +722,7 @@ export function createRouteId(): string {
  * Unified-route execution should prefer explicit route trees over this global
  * registry path.
  */
-export function registerRoute(component: ComponentType<any, any, any, any>, meta: RouteMeta<any, any, any>): void {
+export function registerRoute(component: ComponentType<any, any, any, any, any>, meta: RouteMeta<any, any, any>): void {
   const entry = { component, meta };
   routeRegistry.set(meta.fullPattern, entry);
   if (meta.id) routeRegistryById.set(meta.id, entry);
@@ -888,11 +920,11 @@ export function removeRouteHead(id: string): void {
   flushRouteHead();
 }
 
-export type RoutedComponent<P, Q, H> = ComponentType<any, any, any, any> & {
+export type RoutedComponent<P, Q, H> = {
   readonly [RouteMetaSymbol]: RouteMeta<P, Q, H>;
 };
 
-export type LoaderTaggedComponent<A, E> = ComponentType<any, any, any, any> & {
+export type LoaderTaggedComponent<A, E> = {
   readonly [RouteLoaderMetaSymbol]: {
     readonly data: A;
     readonly error: E;
@@ -937,7 +969,7 @@ export type HashOf<T> = RouteNodeHashOf<T>;
 export type LoaderDataOf<T> = RouteNodeLoaderDataOf<T>;
 export type LoaderErrorOf<T> = RouteNodeLoaderErrorOf<T>;
 
-type LoaderTarget = string | LoaderTaggedComponent<any, any> | AnyRoute;
+type LoaderTarget = string | (ComponentType<any, any, any, any, any> & LoaderTaggedComponent<any, any>) | AnyRoute;
 
 /**
  * Create a first-class unified route by attaching a path pattern to a component.
@@ -947,10 +979,10 @@ type LoaderTarget = string | LoaderTaggedComponent<any, any> | AnyRoute;
  */
 export function path<Pattern extends string>(
   pattern: Pattern,
-): <C extends ComponentType<any, any, any, any>>(
+): <C extends ComponentType<any, any, any, any, any>>(
   component: C,
 ) => Route<C, ExtractParams<Pattern>, {}, undefined, void, never> {
-  return <C extends ComponentType<any, any, any, any>>(component: C) =>
+  return <C extends ComponentType<any, any, any, any, any>>(component: C) =>
     makeUnifiedRoute(component, {
       kind: "path",
       meta: {
@@ -964,7 +996,7 @@ export function path<Pattern extends string>(
 }
 
 /** Create a first-class page route node. */
-export function page<C extends ComponentType<any, any, any, any>>(path: string, component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown> {
+export function page<C extends ComponentType<any, any, any, any, any>>(path: string, component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown> {
   return makeRouteNode("page", path, component);
 }
 
@@ -976,8 +1008,8 @@ export function page<C extends ComponentType<any, any, any, any>>(path: string, 
  * progress.
  */
 export function layout(): <C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => LayoutRoute<C, P, Q, H, LD, LE>;
-export function layout<C extends ComponentType<any, any, any, any>>(component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown>;
-export function layout(component?: ComponentType<any, any, any, any>) {
+export function layout<C extends ComponentType<any, any, any, any, any>>(component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown>;
+export function layout(component?: ComponentType<any, any, any, any, any>) {
   if (arguments.length === 0) {
     return (<C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) =>
       copyUnifiedRoute(route, {
@@ -993,8 +1025,8 @@ export function layout(component?: ComponentType<any, any, any, any>) {
  * Index routes resolve to their parent path and are matched exactly.
  */
 export function index(): <C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>;
-export function index<C extends ComponentType<any, any, any, any>>(component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown>;
-export function index(component?: ComponentType<any, any, any, any>) {
+export function index<C extends ComponentType<any, any, any, any, any>>(component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown>;
+export function index(component?: ComponentType<any, any, any, any, any>) {
   if (arguments.length === 0) {
     return (<C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) =>
       copyUnifiedRoute(route, {
@@ -1244,17 +1276,17 @@ function routeSitemapParamsOfTarget(target: AnyAppRouteNode | AnyRoute): (() => 
   if (isUnifiedRoute(target)) {
     const component = target.component;
     return typeof component === "function"
-      ? asRouteComponent(component as ComponentType<any, any, any, any>).__routeSitemapParams as (() => Effect.Effect<ReadonlyArray<unknown>>) | undefined
+      ? asRouteComponent(component as ComponentType<any, any, any, any, any>).__routeSitemapParams as (() => Effect.Effect<ReadonlyArray<unknown>>) | undefined
       : undefined;
   }
   const component = routeComponentOfTarget(target);
   return component ? asRouteComponent(component).__routeSitemapParams as (() => Effect.Effect<ReadonlyArray<unknown>>) | undefined : undefined;
 }
 
-function routeComponentOfTarget(target: AnyAppRouteNode | AnyRoute): ComponentType<any, any, any, any> | undefined {
+function routeComponentOfTarget(target: AnyAppRouteNode | AnyRoute): ComponentType<any, any, any, any, any> | undefined {
   if (isUnifiedRoute(target)) {
     return typeof target.component === "function"
-      ? target.component as ComponentType<any, any, any, any>
+      ? target.component as ComponentType<any, any, any, any, any>
       : undefined;
   }
   return componentOf(target);
@@ -1916,7 +1948,7 @@ export function matches(pattern: string): Effect.Effect<Atom.ReadonlyAtom<boolea
   });
 }
 
-export function link<T extends ComponentType<any, any, any, any> | AppRouteNode<any, any, any, any, any, any> | AnyRoute>(
+export function link<T extends ComponentType<any, any, any, any, any> | AppRouteNode<any, any, any, any, any, any> | AnyRoute>(
   routed: T,
 ): T extends AppRouteNode<infer P, infer Q, any, any, any, any>
   ? RouteLink<P, Q>
@@ -2078,8 +2110,8 @@ export function loader<P, A, E, R>(
 
 export function loaderError(
   cases: LoaderErrorCases<any, any>,
-): <C extends ComponentType<any, any, any, any> | AnyRoute>(component: C) => C {
-  return <C extends ComponentType<any, any, any, any> | AnyRoute>(component: C): C => {
+): <C extends ComponentType<any, any, any, any, any> | AnyRoute>(component: C) => C {
+  return <C extends ComponentType<any, any, any, any, any> | AnyRoute>(component: C): C => {
     if (isUnifiedRoute(component)) {
       return copyUnifiedRoute(component, {
         loaderErrorCases: cases,
@@ -2155,7 +2187,7 @@ function resolveSingleFlightRouteId(target: LoaderTarget): string {
  *
  * Useful when the mutation result already contains the exact next loader value.
  */
-export function setLoaderData<C extends LoaderTaggedComponent<any, any>>(
+export function setLoaderData<C extends ComponentType<any, any, any, any, any> & LoaderTaggedComponent<any, any>>(
   route: C,
   data: RouteLoaderDataOf<C>,
 ): SingleFlightLoaderEntry;
@@ -2182,7 +2214,7 @@ export function setLoaderData(
  *
  * Use this when you want to seed loading/failure/success explicitly.
  */
-export function setLoaderResult<C extends LoaderTaggedComponent<any, any>>(
+export function setLoaderResult<C extends ComponentType<any, any, any, any, any> & LoaderTaggedComponent<any, any>>(
   route: C,
   result: Result.Result<RouteLoaderDataOf<C>, RouteLoaderErrorOf<C>>,
 ): SingleFlightLoaderEntry;
@@ -2208,7 +2240,7 @@ export function setLoaderResult(
  * Convenience helper for the common case where a mutation result can be mapped
  * directly into a loader success payload.
  */
-export function seedLoader<A, C extends LoaderTaggedComponent<any, any>>(
+export function seedLoader<A, C extends ComponentType<any, any, any, any, any> & LoaderTaggedComponent<any, any>>(
   route: C,
   select?: (result: A) => RouteLoaderDataOf<C>,
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry>;
@@ -2217,7 +2249,7 @@ export function seedLoader<A, C extends AnyRoute>(
   select?: (result: A) => LoaderDataOf<C>,
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry>;
 export function seedLoader<A>(
-  route: LoaderTaggedComponent<any, any> | AnyRoute,
+  route: LoaderTarget,
   select?: (result: A) => unknown,
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry> {
   return (result) => [{
@@ -2230,7 +2262,7 @@ export function seedLoader<A>(
  * Convenience helper for projecting a mutation result into an arbitrary loader
  * `Result` payload.
  */
-export function seedLoaderResult<A, C extends LoaderTaggedComponent<any, any>>(
+export function seedLoaderResult<A, C extends ComponentType<any, any, any, any, any> & LoaderTaggedComponent<any, any>>(
   route: C,
   select: (result: A) => Result.Result<RouteLoaderDataOf<C>, RouteLoaderErrorOf<C>>,
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry>;
@@ -2239,7 +2271,7 @@ export function seedLoaderResult<A, C extends AnyRoute>(
   select: (result: A) => Result.Result<LoaderDataOf<C>, LoaderErrorOf<C>>,
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry>;
 export function seedLoaderResult<A>(
-  route: LoaderTaggedComponent<any, any> | AnyRoute,
+  route: LoaderTarget,
   select: (result: A) => Result.Result<unknown, unknown>,
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry> {
   return (result) => [{
@@ -2417,7 +2449,10 @@ export function hydrateSingleFlightPayload(
     if (!byPattern) continue;
     const params = extractParams(byPattern.meta.fullPattern, url.pathname) ?? {};
     const loaderOptions = asRouteComponent(byPattern.component).__routeLoaderOptions;
-    setLoaderCacheEntry(item.routeId, params, item.result, loaderOptions);
+    setLoaderCacheEntry(item.routeId, params, item.result, {
+      ...loaderOptions,
+      staleTime: loaderOptions?.staleTime ?? 30_000,
+    });
   }
   });
 }
@@ -2573,18 +2608,18 @@ export function guard<Req, E>(
 }
 
 export function title<P, A = unknown, E = unknown>(
-  value: string | ((params: P, loaderData: A | undefined, loaderResult: Result.Result<A, E> | undefined) => string),
+  value: NonNodeRouteTitleValue<P, A, E>,
 ): <T extends Route<any, P, any, any, A, E>>(route: T) => T;
 export function title<T extends AnyAppRouteNode>(
   value: string | ((params: RouteNodeParamsOf<T>, loaderData: RouteNodeLoaderDataOf<T> | undefined, loaderResult: Result.Result<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> | undefined) => string),
 ): NodeTitleEnhancer<T>;
 export function title<P, A = unknown, E = unknown>(
-  value: string | ((params: P, loaderData: A | undefined, loaderResult: Result.Result<A, E> | undefined) => string),
+  value: NonNodeRouteTitleValue<P, A, E>,
 ): TitleEnhancer<P, A, E>;
 export function title(
   value: string | ((params: unknown, loaderData: unknown, loaderResult: Result.Result<unknown, unknown> | undefined) => string),
 ): TitleRouteEnhancer<unknown, unknown, unknown> {
-  const attach = <C extends ComponentType<any, any, any, any> | AnyAppRouteNode | AnyRoute>(component: C): C => {
+  const attach = <C extends ComponentType<any, any, any, any, any> | AnyAppRouteNode | AnyRoute>(component: C): C => {
     if (isUnifiedRoute(component)) {
       return copyUnifiedRoute(component, {
         title: value,
@@ -2603,18 +2638,18 @@ export function title(
 }
 
 export function meta<P, A = unknown, E = unknown>(
-  value: RouteMetaRecord | ((params: P, loaderData: A | undefined, loaderResult: Result.Result<A, E> | undefined) => RouteMetaRecord),
+  value: NonNodeRouteMetaExtraValue<P, A, E>,
 ): <T extends Route<any, P, any, any, A, E>>(route: T) => T;
 export function meta<T extends AnyAppRouteNode>(
   value: RouteMetaRecord | ((params: RouteNodeParamsOf<T>, loaderData: RouteNodeLoaderDataOf<T> | undefined, loaderResult: Result.Result<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> | undefined) => RouteMetaRecord),
 ): NodeMetaEnhancer<T>;
 export function meta<P, A = unknown, E = unknown>(
-  value: RouteMetaRecord | ((params: P, loaderData: A | undefined, loaderResult: Result.Result<A, E> | undefined) => RouteMetaRecord),
+  value: NonNodeRouteMetaExtraValue<P, A, E>,
 ): MetaEnhancer<P, A, E>;
 export function meta(
   value: RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: Result.Result<unknown, unknown> | undefined) => RouteMetaRecord),
 ): MetaRouteEnhancer<unknown, unknown, unknown> {
-  const attach = <C extends ComponentType<any, any, any, any> | AnyAppRouteNode | AnyRoute>(component: C): C => {
+  const attach = <C extends ComponentType<any, any, any, any, any> | AnyAppRouteNode | AnyRoute>(component: C): C => {
     if (isUnifiedRoute(component)) {
       return copyUnifiedRoute(component, {
         metaExtra: value,
@@ -2634,8 +2669,8 @@ export function meta(
 
 export function transition(
   value: { readonly enter?: Effect.Effect<unknown>; readonly exit?: Effect.Effect<unknown> },
-): <C extends ComponentType<any, any, any, any> | AnyRoute>(component: C) => C {
-  return <C extends ComponentType<any, any, any, any> | AnyRoute>(component: C): C => {
+): <C extends ComponentType<any, any, any, any, any> | AnyRoute>(component: C) => C {
+  return <C extends ComponentType<any, any, any, any, any> | AnyRoute>(component: C): C => {
     if (isUnifiedRoute(component)) {
       return copyUnifiedRoute(component, {
         transition: value,
@@ -2648,8 +2683,8 @@ export function transition(
 
 export function sitemapParams<P, E = never, R = never>(
   enumerate: () => Effect.Effect<ReadonlyArray<P>, E, R>,
-): <C extends ComponentType<any, any, any, any>>(component: C) => C {
-  return <C extends ComponentType<any, any, any, any>>(component: C): C => {
+): <C extends ComponentType<any, any, any, any, any>>(component: C) => C {
+  return <C extends ComponentType<any, any, any, any, any>>(component: C): C => {
     asRouteComponent<any, any, any, any, any>(component).__routeSitemapParams = enumerate as () => Effect.Effect<ReadonlyArray<any>>;
     return component;
   };
@@ -2677,7 +2712,7 @@ export function collect(component: unknown): ReadonlyArray<RouteMeta<any, any, a
       }
       return;
     }
-    const meta = getRouteMeta(asRouteComponent(value as ComponentType<any, any, any, any>));
+    const meta = getRouteMeta(asRouteComponent(value as ComponentType<any, any, any, any, any>));
     if (meta) out.push(meta);
     if (Array.isArray(value)) {
       for (const child of value) walk(child);
@@ -2761,13 +2796,13 @@ export function runRouteLoader(
   parentData?: unknown,
 ): Effect.Effect<UnknownRouteResult, never>;
 export function runRouteLoader(
-  component: ComponentType<any, any, any, any>,
+  component: ComponentType<any, any, any, any, any>,
   meta: RouteMeta<any, any, any>,
   url: URL,
   parentData?: unknown,
 ): Effect.Effect<UnknownRouteResult, never>;
 export function runRouteLoader(
-  component: AnyRoute | ComponentType<any, any, any, any>,
+  component: AnyRoute | ComponentType<any, any, any, any, any>,
   metaOrUrl: RouteMeta<any, any, any> | URL,
   urlOrParent?: URL | unknown,
   parentDataArg?: unknown,

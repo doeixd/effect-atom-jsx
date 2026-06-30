@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, ServiceMap } from "effect";
 import * as Behavior from "../Behavior.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
@@ -9,6 +9,10 @@ type Equal<A, B> =
     ? true
     : false;
 type Expect<T extends true> = T;
+
+type Analytics = { readonly track: (name: string) => Effect.Effect<void> };
+const Analytics = ServiceMap.Service<Analytics>("Analytics");
+type BehaviorError = { readonly _tag: "BehaviorError" };
 
 const addOpenState = Behavior.make<{
   readonly trigger: Element.Interactive;
@@ -40,6 +44,31 @@ const Enhanced = Base.pipe(
 type _ReqCheck = Expect<Component.Requirements<typeof Enhanced> extends never | unknown ? true : false>;
 type _HasIsOpen = Component.BindingsOf<typeof Enhanced> extends { readonly isOpen: any } ? true : false;
 type _HasIsOpenCheck = Expect<Equal<_HasIsOpen, true>>;
+
+const trackingBehavior = Behavior.make<
+  { readonly trigger: Element.Interactive },
+  { readonly tracked: true },
+  Analytics,
+  BehaviorError
+>(() =>
+  Effect.gen(function* () {
+    const analytics = yield* Analytics;
+    yield* analytics.track("trigger").pipe(Effect.mapError(() => ({ _tag: "BehaviorError" } as BehaviorError)));
+    return { tracked: true as const };
+  }));
+
+const WithTracking = Base.pipe(
+  Component.withBehavior(trackingBehavior, (bindings: { readonly trigger: Element.Interactive }) => ({
+    trigger: bindings.trigger,
+  })),
+);
+
+type _BehaviorReq = Expect<Equal<Component.Requirements<typeof WithTracking>, Analytics>>;
+type _BehaviorError = Expect<Equal<Component.Errors<typeof WithTracking>, BehaviorError>>;
+type _BehaviorBindings = Expect<Equal<
+  Component.BindingsOf<typeof WithTracking> extends { readonly tracked: true } ? true : false,
+  true
+>>;
 
 const SlotBase = Component.make<
   {},

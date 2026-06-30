@@ -12,6 +12,7 @@ export interface Behavior<Elements, Bindings, Req, E> {
     readonly E: E;
   };
   readonly run: (elements: Elements) => Effect.Effect<Bindings, E, Req>;
+  readonly metadata?: BehaviorMetadata<Elements>;
 }
 
 export type ElementsOf<T> = T extends Behavior<infer E, any, any, any> ? E : never;
@@ -20,6 +21,21 @@ export type RequirementsOf<T> = T extends Behavior<any, any, infer R, any> ? R :
 export type ErrorsOf<T> = T extends Behavior<any, any, any, infer E> ? E : never;
 
 type SlotMapLike = Record<string, unknown>;
+
+export type BehaviorEventName = string | View.EventName;
+
+export type BehaviorEventMap<Elements> = {
+  readonly [K in keyof Elements & string]?: readonly BehaviorEventName[];
+};
+
+export interface BehaviorMetadata<Elements = Record<string, unknown>> {
+  readonly events?: BehaviorEventMap<Elements>;
+}
+
+export type MetadataOf<T> = T extends Behavior<infer Elements, any, any, any> ? BehaviorMetadata<Elements> : never;
+export type EventRequirementsOf<T> = T extends { readonly metadata?: { readonly events?: infer Events } }
+  ? NonNullable<Events>
+  : never;
 
 type CompatibleSlotKey<Slots extends SlotMapLike, Needed> = {
   readonly [K in keyof Slots]: unknown extends Slots[K]
@@ -31,6 +47,7 @@ type CompatibleSlotKey<Slots extends SlotMapLike, Needed> = {
 
 export function make<Elements, Bindings, Req, E>(
   run: (elements: Elements) => Effect.Effect<Bindings, E, Req>,
+  metadata?: BehaviorMetadata<Elements>,
 ): Behavior<Elements, Bindings, Req, E> {
   return {
     [BehaviorTypeId]: {
@@ -40,6 +57,40 @@ export function make<Elements, Bindings, Req, E>(
       E: undefined as unknown as E,
     },
     run,
+    metadata,
+  };
+}
+
+export function withMetadata<Elements, Bindings, Req, E>(
+  behavior: Behavior<Elements, Bindings, Req, E>,
+  metadata: BehaviorMetadata<Elements>,
+): Behavior<Elements, Bindings, Req, E> {
+  return {
+    ...behavior,
+    metadata: {
+      ...behavior.metadata,
+      ...metadata,
+      events: {
+        ...behavior.metadata?.events,
+        ...metadata.events,
+      },
+    },
+  };
+}
+
+export function events<
+  const EventMap extends Record<string, readonly BehaviorEventName[]>,
+>(
+  eventMap: EventMap,
+): (
+  <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E>(
+    behavior: Behavior<Elements, Bindings, Req, E>,
+  ) => Behavior<Elements, Bindings, Req, E> & { readonly metadata: BehaviorMetadata<Elements> & { readonly events: EventMap } }
+) {
+  return <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E>(
+    behavior: Behavior<Elements, Bindings, Req, E>,
+  ) => withMetadata(behavior, { events: eventMap }) as Behavior<Elements, Bindings, Req, E> & {
+    readonly metadata: BehaviorMetadata<Elements> & { readonly events: EventMap };
   };
 }
 
@@ -122,14 +173,61 @@ export function validateAttachmentBySlots<
   Slots,
   M extends { readonly [K in keyof Elements]: keyof Slots & string },
 >(
-  _behavior: Behavior<Elements, unknown, unknown, unknown>,
+  behavior: Behavior<Elements, unknown, unknown, unknown>,
   elementMap: M,
   view: View.View<Slots>,
   options?: {
     readonly allowHidden?: boolean;
   },
 ): readonly View.ViewDiagnostic[] {
-  return View.validateSlotTargets(view, Object.values(elementMap) as string[], options);
+  const diagnostics = [
+    ...View.validateSlotTargets(view, Object.values(elementMap) as string[], options),
+  ];
+  const eventRequirements = behavior.metadata?.events;
+  if (eventRequirements === undefined) return diagnostics;
+
+  const slotMetadata = view.slotMetadata as Record<string, View.SlotMetadata | undefined> | undefined;
+  for (const [behaviorKey, requiredEvents] of Object.entries(eventRequirements) as Array<[keyof Elements & string, readonly BehaviorEventName[] | undefined]>) {
+    if (requiredEvents === undefined) continue;
+    const slotName = elementMap[behaviorKey];
+    if (slotName === undefined) continue;
+    const metadata = slotMetadata?.[String(slotName)];
+    const allowedEvents = metadata?.allowedEvents;
+    if (allowedEvents === undefined) continue;
+    for (const event of requiredEvents) {
+      const eventName = View.nameOfEvent(event);
+      if (allowedEvents.some((allowed) => View.nameOfEvent(allowed) === eventName)) continue;
+      diagnostics.push({
+        code: "view:unsupported-slot-event",
+        message: `View ${view.name ?? "<anonymous>"} slot ${String(slotName)} does not allow event ${eventName}.`,
+        slot: String(slotName),
+        event: eventName,
+      });
+    }
+  }
+  return diagnostics;
+}
+
+export function validateComponentAttachmentBySlots<
+  Elements extends SlotMapLike,
+  Props,
+  Req,
+  E,
+  Bindings,
+  Slots,
+  M extends { readonly [K in keyof Elements]: keyof Slots & string },
+>(
+  behavior: Behavior<Elements, unknown, unknown, unknown>,
+  elementMap: M,
+  component: Component.Component<Props, Req, E, Bindings, Slots>,
+  props: Props,
+  options?: {
+    readonly allowHidden?: boolean;
+  },
+): Effect.Effect<readonly View.ViewDiagnostic[], E, Req> {
+  return Component.renderViewEffect(component, props).pipe(
+    Effect.map((view) => view === undefined ? [] : validateAttachmentBySlots(behavior, elementMap, view, options)),
+  );
 }
 
 export const Behavior = {
@@ -139,5 +237,8 @@ export const Behavior = {
   decorator,
   attach,
   attachBySlots,
+  withMetadata,
+  events,
   validateAttachmentBySlots,
+  validateComponentAttachmentBySlots,
 } as const;

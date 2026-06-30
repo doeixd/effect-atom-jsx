@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { createEffect, onCleanup } from "./api.js";
+import * as MetadataToken from "./MetadataToken.js";
 
 type EventHandler = (event: unknown) => void;
 
@@ -45,6 +46,30 @@ export interface Collection<E extends Handle> {
   set(items: ReadonlyArray<E>): void;
   forEach(f: (item: E, index: number) => Effect.Effect<void>): Effect.Effect<void>;
   observeEach(f: (item: E, index: number) => Effect.Effect<Cleanup | void>): Effect.Effect<void>;
+}
+
+export interface Capability<Name extends string = string> extends MetadataToken.MetadataToken<"element.capability", Name> {}
+
+export namespace Capability {
+  export type Any = Capability<string>;
+  export type NameOf<T> = MetadataToken.NameOf<T>;
+  export type NamesOf<T extends readonly unknown[]> = MetadataToken.NamesOf<T>;
+
+  export function make<const Name extends string>(name: Name): Capability<Name> {
+    return MetadataToken.make("element.capability", name);
+  }
+
+  export const Base = make("Base");
+  export const Interactive = make("Interactive");
+  export const Container = make("Container");
+  export const Focusable = make("Focusable");
+  export const TextInput = make("TextInput");
+  export const Draggable = make("Draggable");
+  export const Collection = make("Collection");
+}
+
+export function nameOfCapability(value: string | Capability.Any): string {
+  return MetadataToken.nameOf(value);
 }
 
 type ListenerMap = Map<string, Set<EventHandler>>;
@@ -202,6 +227,8 @@ export function collection<E extends Handle>(initial: ReadonlyArray<E> = []): Co
 }
 
 export const Element = {
+  Capability,
+  nameOfCapability,
   interactive,
   container,
   focusable,

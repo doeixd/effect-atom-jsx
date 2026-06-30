@@ -132,6 +132,60 @@ describe("Style", () => {
     }, view).map((d) => d.code)).toEqual(["view:hidden-slot"]);
   });
 
+  it("validates style attachments against component-rendered View metadata", () => {
+    const Card = Component.make<{}, never, never, { readonly root: Element.Container }>(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ root: Element.container() }),
+      (_props, bindings) => View.make(
+        { root: bindings.root },
+        null,
+        {
+          slotMetadata: {
+            root: View.hidden("root"),
+          },
+        },
+      ),
+    );
+
+    const diagnostics = Effect.runSync(Style.validateComponentAttachment(
+      Style.make({ root: Style.slot({ padding: "md" }) }),
+      Card,
+      {},
+    ));
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["view:hidden-slot"]);
+  });
+
+  it("validates style properties against platform metadata", () => {
+    const style = Style.make({
+      root: Style.compose(
+        Style.slot({ color: "red", opacity: 1 }),
+        Style.slot({ backdropFilter: "blur(4px)" }),
+      ),
+      title: Style.slot({ fontSize: "heading.sm" }),
+    });
+
+    const diagnostics = Style.validatePlatform(style, {
+      name: "minimal-style",
+      properties: [
+        Style.Property.Color,
+        Style.Property.Opacity,
+        Style.Property.FontSize,
+      ],
+    });
+
+    expect(diagnostics).toEqual([
+      {
+        code: "style:unsupported-property",
+        message: "Style slot 'root' uses property 'backdropFilter', but platform 'minimal-style' does not list that property as supported.",
+        platform: "minimal-style",
+        slot: "root",
+        property: "backdropFilter",
+      },
+    ]);
+  });
+
   it("exposes theme helpers through the Style namespace", () => {
     expect(Style.Style.ThemeLight).toBeDefined();
     expect(Style.Style.lookupToken(defaultThemeTokens, "surface")).toBe("#ffffff");

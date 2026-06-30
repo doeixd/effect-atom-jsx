@@ -146,14 +146,14 @@ describe("Server render bridge", () => {
     }));
 
     expect(renderResult.loaderPayload.length).toBeGreaterThan(0);
-    Route.hydrateSingleFlightPayload(
+    Effect.runSync(Route.hydrateSingleFlightPayload(
       {
         mutation: { ok: true as const },
         url: "http://example.com/users/alice",
         loaders: renderResult.loaderPayload,
       },
       App,
-    );
+    ));
 
     const runtime = RouterRuntime.create({
       app: App,
@@ -163,5 +163,53 @@ describe("Server render bridge", () => {
     Effect.runSync(runtime.initialize());
     const snapshot = Effect.runSync(runtime.snapshot());
     expect(snapshot.loaderData.get("users.detail")).toEqual({ id: "alice", name: "User alice" });
+  });
+
+  it("hydrates route loader data before the first client render", () => {
+    clearLoaderCache();
+    let loaderRuns = 0;
+    const UserView = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const user = yield* Route.loaderData<{ readonly id: string; readonly name: string }>();
+        return { user };
+      }),
+      (_props, bindings) => `Client user: ${bindings.user().name}`,
+    );
+    const UserRouteBase = Route.page("/hydration/users/:userId", UserView).pipe(
+      Route.id("users.zero-flicker"),
+      Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+    );
+    const App = Route.loader<typeof UserRouteBase, { readonly id: string; readonly name: string }, never, never>((params) =>
+      Effect.sync(() => {
+        loaderRuns += 1;
+        return { id: params.userId, name: `User ${params.userId}` };
+      }))(UserRouteBase);
+
+    const renderResult = Effect.runSync(Route.renderRequest(App, {
+      request: new Request("http://example.com/hydration/users/alice"),
+    }));
+
+    expect(renderResult.html).toBe("Client user: User alice");
+    const serverLoaderRuns = loaderRuns;
+    expect(serverLoaderRuns).toBeGreaterThan(0);
+    Effect.runSync(Route.hydrateSingleFlightPayload(
+      {
+        mutation: { ok: true as const },
+        url: "http://example.com/hydration/users/alice",
+        loaders: renderResult.loaderPayload,
+      },
+      App,
+    ));
+
+    const clientRender = Effect.runSync(
+      Component.renderEffect(Route.componentOf(App), {}).pipe(
+        Effect.provide(Route.Router.Server({ url: "http://example.com/hydration/users/alice" })),
+      ),
+    );
+
+    expect(clientRender).toBe("Client user: User alice");
+    expect(loaderRuns).toBe(serverLoaderRuns);
   });
 });
