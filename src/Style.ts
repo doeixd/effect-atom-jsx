@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect";
+import { Effect, Layer, ServiceMap } from "effect";
 import * as Component from "./Component.js";
 import * as Element from "./Element.js";
 import * as MetadataToken from "./MetadataToken.js";
@@ -42,6 +42,31 @@ export type PropertyNamesOf<T extends readonly unknown[]> = MetadataToken.NamesO
 export interface StylePlatformMetadata {
   readonly name: string;
   readonly properties?: readonly PropertyName[];
+}
+
+export interface PlatformService {
+  readonly metadata: StylePlatformMetadata;
+  readonly onDiagnostic?: (diagnostic: StyleDiagnostic) => void;
+}
+
+export const PlatformTag = ServiceMap.Service<PlatformService>("StylePlatform");
+
+export type PlatformLayer<Metadata extends StylePlatformMetadata = StylePlatformMetadata> =
+  & Layer.Layer<PlatformService>
+  & {
+    readonly metadata: Metadata;
+  };
+
+export function platform<const Metadata extends StylePlatformMetadata>(
+  metadata: Metadata,
+  options?: {
+    readonly onDiagnostic?: (diagnostic: StyleDiagnostic) => void;
+  },
+): PlatformLayer<Metadata> {
+  return Object.assign(Layer.succeed(PlatformTag, {
+    metadata,
+    onDiagnostic: options?.onDiagnostic,
+  }), { metadata }) as PlatformLayer<Metadata>;
 }
 
 export type StyleDiagnosticCode = "style:unsupported-property";
@@ -506,6 +531,10 @@ export function attach<S extends string>(
 ) => Component.Component<Props, Req, E, Bindings, Slots> {
   return Component.tapSetup((bindings) =>
     Effect.gen(function* () {
+      const maybePlatform = yield* Effect.serviceOption(PlatformTag);
+      if (maybePlatform._tag === "Some") {
+        reportPlatformDiagnostics(style, maybePlatform.value);
+      }
       const overrides = useContext(OverrideContext);
       for (const [slotName, slotPiece] of Object.entries(style.slots as Record<string, StyleValue>)) {
         const overridePiece = overrides[slotName];
@@ -658,6 +687,19 @@ export function validatePlatform<S extends string>(
   return diagnostics;
 }
 
+export function reportPlatformDiagnostics<S extends string>(
+  style: ComposedStyle<S>,
+  service: PlatformService,
+): readonly StyleDiagnostic[] {
+  const diagnostics = validatePlatform(style, service.metadata);
+  if (service.onDiagnostic) {
+    for (const diagnostic of diagnostics) {
+      service.onDiagnostic(diagnostic);
+    }
+  }
+  return diagnostics;
+}
+
 type VariantDef = {
   readonly base?: StyleValue;
   readonly variants: Record<string, Record<string, StyleValue>>;
@@ -739,6 +781,7 @@ export type RecipeProps<T> = T extends { __recipeDef: infer D }
   : never;
 
 export const Style = {
+  PlatformTag,
   slot,
   compose,
   when,
@@ -780,6 +823,7 @@ export const Style = {
   attachBySlots,
   attachBySlotsFor,
   attachByView,
+  platform,
   Property,
   nameOfProperty,
   propertiesOf,
@@ -787,6 +831,7 @@ export const Style = {
   validateAttachmentBySlots,
   validateComponentAttachment,
   validatePlatform,
+  reportPlatformDiagnostics,
   variants,
   recipe,
   override,

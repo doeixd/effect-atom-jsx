@@ -186,6 +186,49 @@ describe("Style", () => {
     ]);
   });
 
+  it("reports style platform diagnostics during setup attachment", () => {
+    const diagnostics: Array<Style.StyleDiagnostic> = [];
+    const Card = Component.make<{}, never, never, {
+      readonly slots: {
+        readonly root: Element.Container;
+      };
+    }>(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: { root: Element.container() } }),
+      () => null,
+    ).pipe(
+      Style.attach(
+        Style.make({
+          root: Style.slot({
+            color: "red",
+            backdropFilter: "blur(4px)",
+          }),
+        }),
+      ),
+    );
+
+    const bindings = Effect.runSync(
+      Component.setupEffect(Card, {}).pipe(
+        Effect.provide(Style.platform(
+          {
+            name: "minimal-style",
+            properties: [Style.Property.Color],
+          },
+          { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) },
+        )),
+      ) as Effect.Effect<any, never, never>,
+    );
+
+    expect(bindings.slots.root.getStyle("color")).toBe("red");
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["style:unsupported-property"]);
+    expect(diagnostics[0]).toMatchObject({
+      platform: "minimal-style",
+      slot: "root",
+      property: "backdropFilter",
+    });
+  });
+
   it("exposes theme helpers through the Style namespace", () => {
     expect(Style.Style.ThemeLight).toBeDefined();
     expect(Style.Style.lookupToken(defaultThemeTokens, "surface")).toBe("#ffffff");

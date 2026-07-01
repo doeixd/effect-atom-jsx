@@ -617,6 +617,9 @@ Typed style composition that treats CSS as data. Styles are assembled as structu
 - `Style.attachBySlotsFor<Bindings>()` — type-safe attach that validates slot names against component bindings
 - `Style.validateComponentAttachment(style, component, props)` — render a component View and validate style slot targets against its metadata
 - `Style.validatePlatform(style, metadata)` — runtime diagnostics for renderer-supported style properties
+- `Style.platform(metadata, { onDiagnostic? })` — Effect layer for runtime style platform diagnostics during `Style.attach(...)`
+- `Style.PlatformTag` — service tag installed by `Style.platform(...)`
+- `Style.reportPlatformDiagnostics(style, service)` — explicit reporting helper for adapters or non-setup attachment paths
 - `Style.Property.*`, `Style.Property.make(name)` — branded metadata witnesses for type-preserving style property metadata
 - `Style.nameOfProperty(...)` — normalize string or branded property metadata for diagnostics/adapters
 
@@ -635,12 +638,25 @@ Style.validatePlatform(style, {
   ],
 });
 
+const WebStylePlatform = Style.platform(
+  {
+    name: "web",
+    properties: [Style.Property.Color, BackdropFilter],
+  },
+  {
+    onDiagnostic: (diagnostic) => console.warn(diagnostic.message),
+  },
+);
+
 type Supported =
   Style.Property.NamesOf<[
     typeof Style.Property.Color,
     typeof BackdropFilter,
   ]>; // "color" | "backdropFilter"
 ```
+
+When `WebStylePlatform` is provided to a component using `Style.attach(...)`,
+unsupported properties are reported through `onDiagnostic` during setup.
 
 **Variants and recipes** — type-safe prop-driven style variation:
 - `Style.variants`, `Style.recipe`

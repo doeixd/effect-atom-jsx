@@ -155,7 +155,11 @@ Styles are not component internals. They are external attachments interpreted by
 
 Style property metadata should use `Style.Property.*` witnesses where a platform
 or renderer boundary needs to describe supported properties. `Style.validatePlatform(...)`
-is the current runtime diagnostic path for unsupported style properties.
+is the explicit runtime diagnostic path for unsupported style properties.
+`Style.platform(...)` installs style platform metadata as an Effect layer, and
+setup-time style attachment reports unsupported properties through that layer.
+Synchronous renderer/adaptor paths can call `Style.reportPlatformDiagnostics(...)`
+when they have platform metadata available.
 
 Style merge order is:
 
@@ -212,6 +216,8 @@ Web is the first production target. TUI/native support can remain interface-firs
 Platform metadata is witness-aware. `View.platform(...)` and
 `View.validatePlatform(...)` normalize strings and witnesses to printable
 diagnostic names while preserving literal witness names for type helpers.
+Style platform metadata follows the same witness-compatible model through
+`Style.platform(...)` and `Style.validatePlatform(...)`.
 
 ## Current Project Plan
 

@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-01 (element capability hierarchy)
+Last updated: 2026-07-01 (style platform diagnostics layer)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -78,6 +78,8 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - `Style.Property.*` and `Style.Property.make(...)` provide branded, literal-preserving style property tokens
   - `Style.validatePlatform(...)` reports unsupported style properties against renderer metadata while preserving string compatibility
   - `Style.Property.NameOf<T>` / `Style.Property.NamesOf<T>` cover tuple-based property union extraction
+  - `Style.platform(...)` / `Style.PlatformTag` can install style platform metadata, and `Style.attach(...)` reports diagnostics during setup when that layer is provided
+  - `Style.reportPlatformDiagnostics(...)` exposes the same reporting path for renderer/adaptor integration points
 - Added behavior event requirement metadata:
   - `Behavior.events(...)` and `Behavior.withMetadata(...)` let behaviors declare required events with `View.Event.*` witnesses or strings
   - `Behavior.validateAttachmentBySlots(...)` now validates required behavior events against mapped `View.slot(...allowedEvents)` metadata

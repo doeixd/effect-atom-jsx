@@ -30,6 +30,8 @@ Implemented:
     platformRequirements })`
   - `View.platform(..., { capabilities, events, attributes, requirements })`
   - `Style.validatePlatform(..., { properties })`
+  - `Style.platform(..., { onDiagnostic })`
+  - `Style.reportPlatformDiagnostics(...)`
   - `Behavior.events(...)`
 - Public normalization helpers:
   - `Element.nameOfCapability(...)`
@@ -248,6 +250,8 @@ The emitted declarations include:
 - `Style.Property.*`
 - `Style.validateComponentAttachment(...)`
 - `Style.validatePlatform(...)`
+- `Style.platform(...)`
+- `Style.reportPlatformDiagnostics(...)`
 - `View.Event/Attribute/Requirement.*`
 - `View.nameOf*`
 - `Element.Capability.*`
@@ -262,8 +266,6 @@ The emitted declarations include:
   to `View.MissingPlatformSupport<Slot, Platform>`.
 - Continue auditing new wrappers as they are added so `View<Slots>` metadata is
   preserved across composition.
-- Add renderer/platform integration that consumes `Style.validatePlatform(...)`
-  automatically, similar to current `View.platform(...)` diagnostics.
 - Keep docs aligned as `View<Slots>` evolves from a runtime wrapper toward a
   richer typed view tree.
 

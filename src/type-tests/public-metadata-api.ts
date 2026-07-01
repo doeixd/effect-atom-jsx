@@ -61,6 +61,11 @@ Style.validatePlatform(style, {
   name: "public-test",
   properties: [Style.Property.Color],
 });
+const StylePlatform = Style.platform({
+  name: "public-style-platform",
+  properties: [Style.Property.Color],
+});
+Style.reportPlatformDiagnostics(style, { metadata: StylePlatform.metadata });
 
 const RoutedCard = Route.componentOf(Route.page("/card", Card));
 type _RoutedCardSlots = Expect<Equal<Component.SlotsOf<typeof RoutedCard>, Component.SlotsOf<typeof Card>>>;

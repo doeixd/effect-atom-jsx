@@ -40,3 +40,16 @@ Style.validatePlatform(style, {
     Style.Property.make("backdropFilter"),
   ],
 });
+
+const StylePlatform = Style.platform({
+  name: "web",
+  properties: [
+    Style.Property.Color,
+    BackdropFilter,
+  ],
+});
+
+type _StylePlatformMetadata = Expect<Equal<
+  typeof StylePlatform.metadata.properties[number],
+  typeof Style.Property.Color | typeof BackdropFilter
+>>;
