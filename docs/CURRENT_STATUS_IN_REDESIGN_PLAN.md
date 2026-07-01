@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-01 (style platform View preservation audit)
+Last updated: 2026-07-01 (typed View tree plan)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -113,6 +113,10 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - `docs/METADATA_WITNESS_IMPLEMENTATION_PLAN.md` now records implemented APIs, inference behavior, preservation coverage, export audit, remaining work, and a golden-path example
   - `docs/AF_UI_CONTRACT.md` now treats domain-specific witnesses as the canonical authored metadata form while preserving string compatibility
   - the contract explicitly states that `View<Slots>` metadata is runtime-inspectable today and broader static component metadata extraction is future work
+- Added typed View tree implementation plan:
+  - `docs/TYPED_VIEW_TREE_PLAN.md` defines the migration from `node: unknown` to optional renderer-neutral `ViewNode<Slots>` metadata
+  - the plan preserves current JSX/unknown output and keeps `Component.renderViewEffect(...)` as the inspection boundary
+  - the first implementation slice is limited to typed tree data/helpers plus runtime/type coverage, without requiring JSX compiler changes
 - Added conservative type-level View/platform compatibility helpers:
   - `View.MissingPlatformSupport<Slot, Platform>` returns a typed diagnostic union for literal witness-backed metadata gaps
   - `View.IsPlatformCompatible<Slot, Platform>` returns `true` when no literal metadata gap is detectable

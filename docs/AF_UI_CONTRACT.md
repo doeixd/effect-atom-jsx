@@ -92,6 +92,12 @@ Today `View<Slots>` is runtime-inspectable through `View.make(...)` and
 the `Slots` type axis is future work; runtime diagnostics are currently the
 source of truth for generated/dynamic attachment checks.
 
+The next typed-view step is tracked in
+[`TYPED_VIEW_TREE_PLAN.md`](TYPED_VIEW_TREE_PLAN.md). That plan keeps
+`node: unknown` compatibility while adding an optional renderer-neutral typed
+tree for holes, diagnostics, SSR/hydration planning, and future renderer
+adapters.
+
 ### Component
 
 A component separates setup from structure:
