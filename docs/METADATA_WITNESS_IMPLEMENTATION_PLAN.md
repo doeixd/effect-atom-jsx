@@ -40,6 +40,9 @@ Implemented:
   - `Component.renderViewEffect(...)`
   - `Style.validateComponentAttachment(...)`
   - `Behavior.validateComponentAttachmentBySlots(...)`
+- Conservative View/platform type compatibility helpers:
+  - `View.MissingPlatformSupport<Slot, Platform>`
+  - `View.IsPlatformCompatible<Slot, Platform>`
 
 Compatibility:
 
@@ -79,6 +82,17 @@ type WebCapabilities = View.PlatformCapabilitiesOf<typeof Web>;
 
 Plain strings remain valid, but mixed or non-literal string metadata may widen
 to `string`. That is intentional for compatibility.
+
+Type-level compatibility helpers are available for the View/platform path:
+
+```ts
+type Missing = View.MissingPlatformSupport<typeof slot, typeof Web>;
+type Compatible = View.IsPlatformCompatible<typeof slot, typeof Web>;
+```
+
+They are conservative by design. Literal witness metadata can produce precise
+missing diagnostic unions; widened strings return compatible and defer to
+runtime diagnostics.
 
 ## Golden Path
 
@@ -210,8 +224,8 @@ The emitted declarations include:
 
 ## Remaining Work
 
-- Add type-level compatibility helpers only if they remain small and do not slow
-  inference. Runtime diagnostics are currently the source of truth.
+- Consider whether style-property compatibility needs type-level helpers similar
+  to `View.MissingPlatformSupport<Slot, Platform>`.
 - Decide whether capability hierarchy is worth adding, for example
   `TextInput extends Focusable`.
 - Continue auditing new wrappers as they are added so `View<Slots>` metadata is

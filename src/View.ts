@@ -160,6 +160,85 @@ export type PlatformRequirementsOf<T> = T extends { readonly metadata: infer Met
     ? MetadataToken.NamesOf<NonNullable<T["requirements"]>>
     : never;
 
+type LiteralMissing<Required, Supported> =
+  [Required] extends [never] ? never
+    : string extends Required ? never
+      : string extends Supported ? never
+        : Exclude<Required, Supported>;
+
+type PlatformCapabilitySupport<T> = T extends { readonly metadata: infer Metadata }
+  ? PlatformCapabilitySupport<Metadata>
+  : "capabilities" extends keyof T
+    ? PlatformCapabilitiesOf<T>
+    : string;
+
+type PlatformEventSupport<T> = T extends { readonly metadata: infer Metadata }
+  ? PlatformEventSupport<Metadata>
+  : "events" extends keyof T
+    ? PlatformEventsOf<T>
+    : string;
+
+type PlatformAttributeSupport<T> = T extends { readonly metadata: infer Metadata }
+  ? PlatformAttributeSupport<Metadata>
+  : "attributes" extends keyof T
+    ? PlatformAttributesOf<T>
+    : string;
+
+type PlatformRequirementSupport<T> = T extends { readonly metadata: infer Metadata }
+  ? PlatformRequirementSupport<Metadata>
+  : "requirements" extends keyof T
+    ? PlatformRequirementsOf<T>
+    : string;
+
+export type MissingPlatformCapability<Slot, Platform> =
+  LiteralMissing<SlotCapabilityOf<Slot>, PlatformCapabilitySupport<Platform>> extends infer Capability
+    ? [Capability] extends [never]
+      ? never
+      : {
+        readonly code: "view:unsupported-slot-capability";
+        readonly capability: Capability;
+      }
+    : never;
+
+export type MissingPlatformEvents<Slot, Platform> =
+  LiteralMissing<SlotEventsOf<Slot>, PlatformEventSupport<Platform>> extends infer Event
+    ? [Event] extends [never]
+      ? never
+      : {
+        readonly code: "view:unsupported-slot-event";
+        readonly event: Event;
+      }
+    : never;
+
+export type MissingPlatformAttributes<Slot, Platform> =
+  LiteralMissing<SlotAttributesOf<Slot>, PlatformAttributeSupport<Platform>> extends infer Attribute
+    ? [Attribute] extends [never]
+      ? never
+      : {
+        readonly code: "view:unsupported-slot-attribute";
+        readonly attribute: Attribute;
+      }
+    : never;
+
+export type MissingPlatformRequirements<Slot, Platform> =
+  LiteralMissing<SlotRequirementsOf<Slot>, PlatformRequirementSupport<Platform>> extends infer Requirement
+    ? [Requirement] extends [never]
+      ? never
+      : {
+        readonly code: "view:missing-platform-requirement";
+        readonly requirement: Requirement;
+      }
+    : never;
+
+export type MissingPlatformSupport<Slot, Platform> =
+  | MissingPlatformCapability<Slot, Platform>
+  | MissingPlatformEvents<Slot, Platform>
+  | MissingPlatformAttributes<Slot, Platform>
+  | MissingPlatformRequirements<Slot, Platform>;
+
+export type IsPlatformCompatible<Slot, Platform> =
+  [MissingPlatformSupport<Slot, Platform>] extends [never] ? true : false;
+
 export interface PlatformService {
   readonly metadata: PlatformMetadata;
   readonly onDiagnostic?: (diagnostic: ViewDiagnostic) => void;
