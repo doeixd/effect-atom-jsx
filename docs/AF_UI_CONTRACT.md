@@ -75,6 +75,12 @@ the domain-specific witness APIs (`Element.Capability.*`, `View.Event.*`,
 `View.Attribute.*`, `View.Requirement.*`, `Style.Property.*`) rather than raw
 magic strings in new authored code.
 
+Slot identity should also move toward first-class witnesses rather than
+duplicated string keys and separate metadata records. The migration plan is
+tracked in [`SLOT_WITNESS_PLAN.md`](SLOT_WITNESS_PLAN.md): new APIs should let
+callers define a slot once, bind it to a handle, and derive both the `slots` map
+and `slotMetadata` from that value.
+
 ### View
 
 A view is the structural skeleton of a component plus its slot map:
