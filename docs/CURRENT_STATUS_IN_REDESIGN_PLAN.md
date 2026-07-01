@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-01 (typed View tree first slice)
+Last updated: 2026-07-01 (typed View tree diagnostics)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -121,6 +121,10 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - `View<Slots>` can now carry optional `tree?: View.ViewNode<Slots>` metadata without changing `node` unwrapping
   - `View.element(...)`, `View.fragment(...)`, `View.textNode(...)`, `View.hole(...)`, and `View.tree(...)` provide the initial renderer-neutral tree authoring helpers
   - runtime and type coverage verify `Component.renderEffect(...)` still returns the provided runtime node, while `Component.renderViewEffect(...)` exposes typed tree metadata
+- Added typed View tree diagnostics:
+  - `View.validateTree(...)` reports unknown slot references, hidden slot references, and tree element capability mismatches
+  - tree capability checks reuse the existing hierarchy-aware `View.extendsCapability(...)` semantics
+  - runtime coverage verifies dynamic/generated unknown-slot diagnostics and typed authoring compatibility cases
 - Added conservative type-level View/platform compatibility helpers:
   - `View.MissingPlatformSupport<Slot, Platform>` returns a typed diagnostic union for literal witness-backed metadata gaps
   - `View.IsPlatformCompatible<Slot, Platform>` returns `true` when no literal metadata gap is detectable

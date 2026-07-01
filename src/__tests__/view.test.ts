@@ -243,6 +243,71 @@ describe("View", () => {
     expect(inspected?.tree?.slot).toBe("root");
   });
 
+  it("validates typed tree slot references and capabilities", () => {
+    type Slots = {
+      readonly root: Element.Container;
+      readonly secret: Element.Interactive;
+      readonly input: Element.TextInput;
+      readonly focusable: Element.Focusable;
+    };
+
+    const view = View.tree(
+      {
+        root: Element.container(),
+        secret: Element.interactive(),
+        input: Element.textInput(),
+        focusable: Element.focusable(),
+      },
+      View.fragment<Slots>([
+        View.element<Slots>(Element.Capability.Container, { slot: "root" }),
+        View.element<Slots>(Element.Capability.Interactive, { slot: "secret" }),
+        View.element<Slots>(Element.Capability.TextInput, { slot: "focusable" }),
+        View.element<Slots>(Element.Capability.Container, { slot: "input" }),
+        View.element<any>(Element.Capability.Container, { slot: "missing" }),
+      ]),
+      "node",
+      {
+        name: "TreeDiagnostics",
+        slotMetadata: {
+          root: View.slot("root", { capability: Element.Capability.Container }),
+          secret: View.hidden("secret", { capability: Element.Capability.Interactive }),
+          input: View.slot("input", { capability: Element.Capability.TextInput }),
+          focusable: View.slot("focusable", { capability: Element.Capability.Focusable }),
+        },
+      },
+    );
+
+    const diagnostics = View.validateTree(view);
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "view:hidden-slot",
+      "view:remap-capability-mismatch",
+      "view:unknown-slot",
+    ]);
+    expect(diagnostics[0]).toMatchObject({ slot: "secret" });
+    expect(diagnostics[1]).toMatchObject({ slot: "input", capability: "Container" });
+    expect(diagnostics[2]).toMatchObject({ slot: "missing" });
+  });
+
+  it("allows hidden typed tree slots when requested", () => {
+    type Slots = {
+      readonly secret: Element.Interactive;
+    };
+
+    const view = View.tree(
+      { secret: Element.interactive() },
+      View.element<Slots>(Element.Capability.Interactive, { slot: "secret" }),
+      "node",
+      {
+        slotMetadata: {
+          secret: View.hidden("secret", { capability: Element.Capability.Interactive }),
+        },
+      },
+    );
+
+    expect(View.validateTree(view, { allowHidden: true })).toEqual([]);
+  });
+
   it("validates slot metadata against platform metadata", () => {
     const view = View.make(
       {

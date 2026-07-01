@@ -662,6 +662,77 @@ export function validateRemaps<Slots>(
   return diagnostics;
 }
 
+function validateTreeNode<Slots>(
+  view: View<Slots>,
+  node: ViewNode<Slots>,
+  diagnostics: ViewDiagnostic[],
+  options: {
+    readonly allowHidden?: boolean;
+  },
+): void {
+  switch (node.kind) {
+    case "view.node.element": {
+      if (node.slot !== undefined) {
+        const slotValue = slotValueFor(view, node.slot);
+        if (slotValue === undefined) {
+          diagnostics.push({
+            code: "view:unknown-slot",
+            message: `View ${view.name ?? "<anonymous>"} tree references unknown slot ${node.slot}.`,
+            slot: node.slot,
+          });
+        } else {
+          const meta = metadataFor(view, node.slot);
+          if (meta?.hidden === true && options.allowHidden !== true) {
+            diagnostics.push({
+              code: "view:hidden-slot",
+              message: `View ${view.name ?? "<anonymous>"} tree references hidden slot ${node.slot}.`,
+              slot: node.slot,
+            });
+          }
+
+          const slotCapability = meta?.capability ?? capabilityOf(slotValue);
+          const treeCapability = node.element;
+          if (slotCapability !== undefined && !extendsCapability(treeCapability, slotCapability)) {
+            diagnostics.push({
+              code: "view:remap-capability-mismatch",
+              message: `View ${view.name ?? "<anonymous>"} tree element ${nameOfCapability(treeCapability)} is incompatible with slot ${node.slot} (${nameOfCapability(slotCapability)}).`,
+              slot: node.slot,
+              source: "tree",
+              target: node.slot,
+              capability: nameOfCapability(treeCapability),
+            });
+          }
+        }
+      }
+
+      for (const child of node.children ?? []) {
+        validateTreeNode(view, child, diagnostics, options);
+      }
+      return;
+    }
+    case "view.node.fragment":
+      for (const child of node.children) {
+        validateTreeNode(view, child, diagnostics, options);
+      }
+      return;
+    case "view.node.text":
+    case "view.node.hole":
+      return;
+  }
+}
+
+export function validateTree<Slots>(
+  view: View<Slots>,
+  options?: {
+    readonly allowHidden?: boolean;
+  },
+): readonly ViewDiagnostic[] {
+  if (view.tree === undefined) return [];
+  const diagnostics: ViewDiagnostic[] = [];
+  validateTreeNode(view, view.tree, diagnostics, options ?? {});
+  return diagnostics;
+}
+
 export function validatePlatform<Slots>(
   view: View<Slots>,
   platform: PlatformMetadata,
@@ -770,6 +841,7 @@ export const View = {
   nameOfMetadata,
   validateSlotTargets,
   validateRemaps,
+  validateTree,
   validatePlatform,
   reportPlatformDiagnostics,
 } as const;

@@ -477,6 +477,7 @@ Runtime-native view wrapper for exposing structural slot metadata while preservi
 - `View.remap(source, target)` — describe wrapper/child slot remapping
 - `View.validateSlotTargets(view, targets, options?)` — diagnose unknown/hidden dynamic attachment targets
 - `View.validateRemaps(view)` — diagnose incompatible slot remaps
+- `View.validateTree(view, options?)` — diagnose typed tree slot references and tree/slot capability mismatches
 - `View.validatePlatform(view, metadata)` — diagnose unsupported capabilities, events, attributes, and platform requirements
 - `View.platform(metadata, { onDiagnostic? })` — Effect layer for runtime renderer/platform diagnostics
 - `View.PlatformTag` — service tag installed by `View.platform(...)`
@@ -543,6 +544,11 @@ const view = View.tree(
 ```
 
 `Component.renderEffect(...)` still unwraps to `jsxNode`; `Component.renderViewEffect(...)` exposes the `tree` metadata for diagnostics, SSR/hydration planning, and future renderer adapters.
+
+`View.validateTree(view)` checks typed tree metadata when present. It reports
+unknown slot references, hidden slot references, and tree element capabilities
+that do not satisfy the referenced slot capability. As with remaps and platform
+checks, capability comparison is hierarchy-aware.
 
 Plain strings are still accepted for compatibility and dynamic/generated metadata. Witnesses are preferred for new code because their literal names can flow through generic helpers and composed metadata objects.
 

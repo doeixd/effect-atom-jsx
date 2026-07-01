@@ -254,7 +254,7 @@ Migration constraints:
 
 ## Follow-Up Slices
 
-1. Add tree diagnostics:
+1. Add tree diagnostics. Status: complete.
    - unknown slot reference inside tree
    - hidden slot reference inside public tree
    - tree slot capability mismatch with `slotMetadata`
