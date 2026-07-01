@@ -217,7 +217,7 @@ describe("Style", () => {
           },
           { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) },
         )),
-      ) as Effect.Effect<any, never, never>,
+      ),
     );
 
     expect(bindings.slots.root.getStyle("color")).toBe("red");
