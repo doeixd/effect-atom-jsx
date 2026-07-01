@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-01 (typed View tree plan)
+Last updated: 2026-07-01 (typed View tree first slice)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -117,6 +117,10 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - `docs/TYPED_VIEW_TREE_PLAN.md` defines the migration from `node: unknown` to optional renderer-neutral `ViewNode<Slots>` metadata
   - the plan preserves current JSX/unknown output and keeps `Component.renderViewEffect(...)` as the inspection boundary
   - the first implementation slice is limited to typed tree data/helpers plus runtime/type coverage, without requiring JSX compiler changes
+- Implemented the first typed View tree slice:
+  - `View<Slots>` can now carry optional `tree?: View.ViewNode<Slots>` metadata without changing `node` unwrapping
+  - `View.element(...)`, `View.fragment(...)`, `View.textNode(...)`, `View.hole(...)`, and `View.tree(...)` provide the initial renderer-neutral tree authoring helpers
+  - runtime and type coverage verify `Component.renderEffect(...)` still returns the provided runtime node, while `Component.renderViewEffect(...)` exposes typed tree metadata
 - Added conservative type-level View/platform compatibility helpers:
   - `View.MissingPlatformSupport<Slot, Platform>` returns a typed diagnostic union for literal witness-backed metadata gaps
   - `View.IsPlatformCompatible<Slot, Platform>` returns `true` when no literal metadata gap is detectable

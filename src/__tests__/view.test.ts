@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { Effect } from "effect";
+import * as Component from "../Component.js";
 import * as Element from "../Element.js";
 import * as SafeHtml from "../SafeHtml.js";
 import * as View from "../View.js";
@@ -169,6 +171,76 @@ describe("View", () => {
     expect(View.style({ opacity: 1, color: "red" }).kind).toBe("view.hole.style");
     expect(View.event<MouseEvent>(() => undefined).kind).toBe("view.hole.event");
     expect(View.children(["child"]).kind).toBe("view.hole.children");
+  });
+
+  it("creates typed tree metadata without changing node unwrapping", () => {
+    type Slots = {
+      readonly root: Element.Container;
+      readonly input: Element.TextInput;
+    };
+
+    const root = Element.container();
+    const input = Element.textInput();
+    const tree = View.element<Slots>(Element.Capability.Container, {
+      slot: "root",
+      children: [
+        View.element<Slots>(Element.Capability.TextInput, {
+          slot: "input",
+          props: {
+            className: View.className(["field", { invalid: false }]),
+            onInput: View.event<InputEvent>(() => undefined),
+          },
+        }),
+      ],
+    });
+    const view = View.tree(
+      { root, input },
+      tree,
+      "runtime-node",
+      {
+        name: "TypedTree",
+        slotMetadata: {
+          root: View.slot("root", { capability: Element.Capability.Container }),
+          input: View.slot("input", { capability: Element.Capability.TextInput }),
+        },
+      },
+    );
+
+    expect(View.node(view)).toBe("runtime-node");
+    expect(view.tree).toBe(tree);
+    expect(view.tree?.kind).toBe("view.node.element");
+    expect(view.tree?.children?.[0]?.kind).toBe("view.node.element");
+  });
+
+  it("exposes typed tree metadata through component render inspection", () => {
+    type Slots = {
+      readonly root: Element.Container;
+    };
+
+    const Card = Component.make<{}, never, never, { readonly slots: Slots }>(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: { root: Element.container() } }),
+      (_props, bindings) => View.tree(
+        bindings.slots,
+        View.element<Slots>(Element.Capability.Container, { slot: "root" }),
+        "card-node",
+        {
+          name: "Card",
+          slotMetadata: {
+            root: View.slot("root", { capability: Element.Capability.Container }),
+          },
+        },
+      ),
+    );
+
+    const rendered = Effect.runSync(Component.renderEffect(Card, {}));
+    const inspected = Effect.runSync(Component.renderViewEffect(Card, {}));
+
+    expect(rendered).toBe("card-node");
+    expect(inspected?.name).toBe("Card");
+    expect(inspected?.tree?.kind).toBe("view.node.element");
+    expect(inspected?.tree?.slot).toBe("root");
   });
 
   it("validates slot metadata against platform metadata", () => {

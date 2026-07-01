@@ -100,6 +100,7 @@ export interface View<Slots> {
   };
   readonly slots: Slots;
   readonly node: unknown;
+  readonly tree?: ViewNode<Slots>;
   readonly name?: string;
   readonly metadata?: ViewMetadata;
   readonly slotMetadata?: SlotMetadataMap<Slots>;
@@ -111,6 +112,43 @@ export interface ViewMetadata {
 }
 
 export type SlotsOf<T> = T extends View<infer Slots> ? Slots : never;
+
+export type ViewPropValue =
+  | TextHoleValue
+  | Hole
+  | readonly ViewPropValue[]
+  | { readonly [key: string]: ViewPropValue };
+
+export type ViewProps = Readonly<Record<string, ViewPropValue>>;
+
+export type ViewNode<Slots> =
+  | ViewElement<Slots>
+  | ViewTextNode
+  | ViewFragment<Slots>
+  | ViewHoleNode;
+
+export interface ViewElement<Slots> {
+  readonly kind: "view.node.element";
+  readonly element: SlotCapability;
+  readonly slot?: keyof Slots & string;
+  readonly props?: ViewProps;
+  readonly children?: readonly ViewNode<Slots>[];
+}
+
+export interface ViewTextNode {
+  readonly kind: "view.node.text";
+  readonly value: TextHoleValue;
+}
+
+export interface ViewFragment<Slots> {
+  readonly kind: "view.node.fragment";
+  readonly children: readonly ViewNode<Slots>[];
+}
+
+export interface ViewHoleNode {
+  readonly kind: "view.node.hole";
+  readonly hole: Hole;
+}
 
 export interface PlatformMetadata {
   readonly name: string;
@@ -278,7 +316,9 @@ export type ClassHoleValue =
 
 export type StyleHoleValue = Readonly<Record<string, string | number | null | undefined>>;
 
-export type EventHoleHandler<Event, Req, E> = (event: Event) => void | Effect.Effect<void, E, Req>;
+export type EventHoleHandler<Event, Req, E> = {
+  bivarianceHack(event: Event): void | Effect.Effect<void, E, Req>;
+}["bivarianceHack"];
 
 export type Hole =
   | TextHole
@@ -311,9 +351,9 @@ export interface HtmlHole {
 export interface EventHole<Event = unknown, Req = never, E = never> {
   readonly kind: "view.hole.event";
   readonly handler: EventHoleHandler<Event, Req, E>;
-  readonly _event?: (_: Event) => Event;
-  readonly _Req?: (_: Req) => Req;
-  readonly _E?: (_: E) => E;
+  readonly _event?: Event;
+  readonly _Req?: Req;
+  readonly _E?: E;
 }
 
 export interface ChildrenHole {
@@ -325,6 +365,7 @@ export function make<Slots>(
   slots: Slots,
   node: unknown,
   options?: {
+    readonly tree?: ViewNode<Slots>;
     readonly name?: string;
     readonly metadata?: ViewMetadata;
     readonly slotMetadata?: SlotMetadataMap<Slots>;
@@ -337,6 +378,7 @@ export function make<Slots>(
     },
     slots,
     node,
+    tree: options?.tree,
     name: options?.name,
     metadata: options?.metadata,
     slotMetadata: options?.slotMetadata,
@@ -396,6 +438,63 @@ export function children(value: unknown): ChildrenHole {
     kind: "view.hole.children",
     value,
   };
+}
+
+export function element<Slots>(
+  element: SlotCapability,
+  options?: {
+    readonly slot?: keyof Slots & string;
+    readonly props?: ViewProps;
+    readonly children?: readonly ViewNode<Slots>[];
+  },
+): ViewElement<Slots> {
+  return {
+    kind: "view.node.element",
+    element,
+    slot: options?.slot,
+    props: options?.props,
+    children: options?.children,
+  };
+}
+
+export function textNode(value: TextHoleValue): ViewTextNode {
+  return {
+    kind: "view.node.text",
+    value,
+  };
+}
+
+export function fragment<Slots>(
+  children: readonly ViewNode<Slots>[],
+): ViewFragment<Slots> {
+  return {
+    kind: "view.node.fragment",
+    children,
+  };
+}
+
+export function hole(hole: Hole): ViewHoleNode {
+  return {
+    kind: "view.node.hole",
+    hole,
+  };
+}
+
+export function tree<Slots>(
+  slots: Slots,
+  tree: ViewNode<Slots>,
+  node: unknown = tree,
+  options?: {
+    readonly name?: string;
+    readonly metadata?: ViewMetadata;
+    readonly slotMetadata?: SlotMetadataMap<Slots>;
+    readonly slotRemaps?: readonly SlotRemap<Slots>[];
+  },
+): View<Slots> {
+  return make(slots, node, {
+    ...options,
+    tree,
+  });
 }
 
 export function slot<
@@ -654,6 +753,11 @@ export const View = {
   html,
   event,
   children,
+  element,
+  textNode,
+  fragment,
+  hole,
+  tree,
   slot,
   hidden,
   remap,

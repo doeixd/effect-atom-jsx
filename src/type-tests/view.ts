@@ -1,3 +1,5 @@
+import { Effect } from "effect";
+import * as Component from "../Component.js";
 import * as Element from "../Element.js";
 import * as SafeHtml from "../SafeHtml.js";
 import * as View from "../View.js";
@@ -116,3 +118,59 @@ View.html({ html: "<strong>unsafe</strong>" });
 
 // @ts-expect-error style hole values must be primitive CSS values
 View.style({ color: { nested: true } });
+
+const typedTree = View.element<Slots>(Element.Capability.Container, {
+  slot: "root",
+  props: {
+    className: View.className(["root", { active: true }]),
+    onClick: View.event<MouseEvent>((event) => {
+      event.preventDefault();
+    }),
+  },
+  children: [
+    View.element<Slots>(Element.Capability.Interactive, { slot: "trigger" }),
+    View.hole(View.text("label")),
+    View.textNode("plain text"),
+  ],
+});
+
+View.fragment<Slots>([typedTree]);
+
+// @ts-expect-error typed tree slot must be a known slot key
+View.element<Slots>(Element.Capability.Container, { slot: "missing" });
+
+const treeSlots: Slots = { root, trigger };
+
+const treeView = View.tree(
+  treeSlots,
+  typedTree,
+  "runtime-node",
+  {
+    slotMetadata: {
+      root: View.slot("root", { capability: Element.Capability.Container }),
+      trigger: View.slot("trigger", { capability: Element.Capability.Interactive }),
+    },
+  },
+);
+
+type TreeViewSlots = View.SlotsOf<typeof treeView>;
+type _TreeViewSlots = Expect<Equal<TreeViewSlots, { readonly root: Element.Container; readonly trigger: Element.Interactive }>>;
+
+const TreeComponent = Component.make<{}, never, never, { readonly slots: Slots }>(
+  Component.props<{}>(),
+  Component.require<never>(),
+  () => Effect.succeed({ slots: { root, trigger } }),
+  (_props, bindings) => View.tree(
+    bindings.slots,
+    View.element<Slots>(Element.Capability.Container, { slot: "root" }),
+    "runtime-node",
+  ),
+);
+
+const treeComponentViewEffect = Component.renderViewEffect(TreeComponent, {});
+type TreeComponentViewEffectValue =
+  typeof treeComponentViewEffect extends Effect.Effect<infer A, any, any> ? A : never;
+type _TreeComponentRenderView = Expect<Equal<
+  TreeComponentViewEffectValue,
+  View.View<Component.SlotsOf<typeof TreeComponent>> | undefined
+>>;

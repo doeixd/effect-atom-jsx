@@ -216,6 +216,8 @@ At every step, existing components should still render through
 
 ## First Implementation Slice
 
+Status: complete.
+
 Implement a minimal typed tree layer in `src/View.ts`:
 
 - `ViewNode<Slots>`
@@ -225,6 +227,7 @@ Implement a minimal typed tree layer in `src/View.ts`:
 - `ViewHoleNode`
 - `View.element(...)`
 - `View.fragment(...)`
+- `View.textNode(...)`
 - `View.hole(...)`
 - `View.tree(...)`
 - optional `tree?: ViewNode<Slots>` on `View<Slots>`

@@ -470,6 +470,8 @@ const Counter = Component.make(
 Runtime-native view wrapper for exposing structural slot metadata while preserving current JSX/unknown render output.
 
 - `View.make(slots, node, options?)` — create an inspectable `View<Slots>`
+- `View.tree(slots, tree, node?, options?)` — create a `View<Slots>` with optional renderer-neutral typed tree metadata while preserving the runtime node
+- `View.element(...)`, `View.fragment(...)`, `View.textNode(...)`, `View.hole(...)` — build typed tree metadata nodes
 - `View.isView(value)` / `View.node(value)` — detect and unwrap view-backed output
 - `View.slot(name, options?)` / `View.hidden(name, options?)` — describe public and internal slots
 - `View.remap(source, target)` — describe wrapper/child slot remapping
@@ -513,6 +515,34 @@ const rendered = Effect.runSync(
   Component.renderEffect(Card, {}).pipe(Effect.provide(WebLite)),
 );
 ```
+
+Typed tree metadata is opt-in and does not change render output:
+
+```ts
+type Slots = {
+  readonly root: Element.Container;
+  readonly input: Element.TextInput;
+};
+
+const view = View.tree(
+  bindings.slots,
+  View.element<Slots>(Element.Capability.Container, {
+    slot: "root",
+    children: [
+      View.element<Slots>(Element.Capability.TextInput, {
+        slot: "input",
+        props: {
+          className: View.className(["field", { invalid }]),
+          onInput: View.event<InputEvent>(() => undefined),
+        },
+      }),
+    ],
+  }),
+  jsxNode,
+);
+```
+
+`Component.renderEffect(...)` still unwraps to `jsxNode`; `Component.renderViewEffect(...)` exposes the `tree` metadata for diagnostics, SSR/hydration planning, and future renderer adapters.
 
 Plain strings are still accepted for compatibility and dynamic/generated metadata. Witnesses are preferred for new code because their literal names can flow through generic helpers and composed metadata objects.
 
