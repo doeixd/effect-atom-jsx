@@ -10,9 +10,12 @@ Implemented:
 
 - Shared internal witness primitive in `src/MetadataToken.ts`.
 - Element capability witnesses:
-  - `Element.Capability.make(name)`
+  - `Element.Capability.make(name, { extends })`
   - built-ins: `Base`, `Interactive`, `Container`, `Focusable`, `TextInput`,
     `Draggable`, `Collection`
+  - hierarchy helpers: `Element.extendsCapability(...)`,
+    `Element.Capability.ExtendsOf<T>`, and
+    `Element.Capability.AssignableNamesOf<T>`
 - View metadata witnesses:
   - `View.Event.make(name)` plus `Press`, `Click`, `Input`, `Focus`, `Blur`,
     `Hover`
@@ -30,7 +33,9 @@ Implemented:
   - `Behavior.events(...)`
 - Public normalization helpers:
   - `Element.nameOfCapability(...)`
+  - `Element.extendsCapability(...)`
   - `View.nameOfCapability(...)`
+  - `View.extendsCapability(...)`
   - `View.nameOfEvent(...)`
   - `View.nameOfAttribute(...)`
   - `View.nameOfRequirement(...)`
@@ -93,6 +98,34 @@ type Compatible = View.IsPlatformCompatible<typeof slot, typeof Web>;
 They are conservative by design. Literal witness metadata can produce precise
 missing diagnostic unions; widened strings return compatible and defer to
 runtime diagnostics.
+
+Capability witnesses can also carry parent metadata:
+
+```ts
+const DatePicker = Element.Capability.make("DatePicker", {
+  extends: [Element.Capability.TextInput],
+});
+
+Element.extendsCapability(DatePicker, Element.Capability.Focusable);
+// true
+```
+
+The built-in hierarchy is:
+
+```text
+Base
+├─ Interactive
+│  ├─ Container
+│  ├─ Focusable
+│  │  └─ TextInput
+│  └─ Draggable
+└─ Collection
+```
+
+`View.validateRemaps(...)` and `View.validatePlatform(...)` use this hierarchy:
+a child capability can satisfy a parent slot requirement, but a parent does not
+satisfy a more specific child requirement. The same rule is reflected in
+`View.MissingPlatformSupport<Slot, Platform>` when literal witnesses are used.
 
 ## Golden Path
 
@@ -219,6 +252,7 @@ The emitted declarations include:
 - `View.nameOf*`
 - `Element.Capability.*`
 - `Element.nameOfCapability(...)`
+- `Element.extendsCapability(...)`
 
 `src/type-tests/public-metadata-api.ts` covers the root-import path.
 
@@ -226,8 +260,6 @@ The emitted declarations include:
 
 - Consider whether style-property compatibility needs type-level helpers similar
   to `View.MissingPlatformSupport<Slot, Platform>`.
-- Decide whether capability hierarchy is worth adding, for example
-  `TextInput extends Focusable`.
 - Continue auditing new wrappers as they are added so `View<Slots>` metadata is
   preserved across composition.
 - Add renderer/platform integration that consumes `Style.validatePlatform(...)`

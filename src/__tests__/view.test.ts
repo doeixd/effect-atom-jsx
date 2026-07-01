@@ -46,18 +46,18 @@ describe("View", () => {
   it("validates remap capability compatibility", () => {
     const view = View.make(
       {
-        trigger: Element.interactive(),
+        trigger: Element.draggable(),
         content: Element.container(),
       },
       null,
       {
         name: "Modal",
         slotMetadata: {
-          trigger: View.slot("trigger", { capability: "Interactive" }),
+          trigger: View.slot("trigger", { capability: "Draggable" }),
           content: View.slot("content", { capability: "Container" }),
         },
         slotRemaps: [
-          View.remap<{ readonly trigger: Element.Interactive; readonly content: Element.Container }>("trigger", "content"),
+          View.remap<{ readonly trigger: Element.Draggable; readonly content: Element.Container }>("trigger", "content"),
         ],
       },
     );
@@ -93,6 +93,47 @@ describe("View", () => {
     expect(View.nameOfCapability(Element.Capability.Container)).toBe("Container");
     expect(Element.nameOfCapability(Element.Capability.Container)).toBe("Container");
     expect(View.validateRemaps(view)).toEqual([]);
+  });
+
+  it("uses capability hierarchy for remap compatibility", () => {
+    const ok = View.make(
+      {
+        focusable: Element.focusable(),
+        input: Element.textInput(),
+      },
+      null,
+      {
+        slotMetadata: {
+          focusable: View.slot("focusable", { capability: Element.Capability.Focusable }),
+          input: View.slot("input", { capability: Element.Capability.TextInput }),
+        },
+        slotRemaps: [
+          View.remap<{ readonly focusable: Element.Focusable; readonly input: Element.TextInput }>("focusable", "input"),
+        ],
+      },
+    );
+
+    const bad = View.make(
+      {
+        input: Element.textInput(),
+        focusable: Element.focusable(),
+      },
+      null,
+      {
+        slotMetadata: {
+          input: View.slot("input", { capability: Element.Capability.TextInput }),
+          focusable: View.slot("focusable", { capability: Element.Capability.Focusable }),
+        },
+        slotRemaps: [
+          View.remap<{ readonly input: Element.TextInput; readonly focusable: Element.Focusable }>("input", "focusable"),
+        ],
+      },
+    );
+
+    expect(Element.extendsCapability(Element.Capability.TextInput, Element.Capability.Focusable)).toBe(true);
+    expect(Element.extendsCapability(Element.Capability.Focusable, Element.Capability.TextInput)).toBe(false);
+    expect(View.validateRemaps(ok)).toEqual([]);
+    expect(View.validateRemaps(bad).map((diagnostic) => diagnostic.code)).toEqual(["view:remap-capability-mismatch"]);
   });
 
   it("infers capabilities from handles when metadata is absent", () => {
@@ -219,5 +260,28 @@ describe("View", () => {
     expect(diagnostics[0]).toMatchObject({ event: "commit" });
     expect(diagnostics[1]).toMatchObject({ attribute: "data-testid" });
     expect(diagnostics[2]).toMatchObject({ requirement: "pointer" });
+  });
+
+  it("uses capability hierarchy for platform support", () => {
+    const view = View.make(
+      {
+        focusable: Element.focusable(),
+        input: Element.textInput(),
+      },
+      null,
+      {
+        slotMetadata: {
+          focusable: View.slot("focusable", { capability: Element.Capability.Focusable }),
+          input: View.slot("input", { capability: Element.Capability.TextInput }),
+        },
+      },
+    );
+
+    const diagnostics = View.validatePlatform(view, {
+      name: "text-only",
+      capabilities: [Element.Capability.TextInput],
+    });
+
+    expect(diagnostics).toEqual([]);
   });
 });

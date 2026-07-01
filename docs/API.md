@@ -480,6 +480,7 @@ Runtime-native view wrapper for exposing structural slot metadata while preservi
 - `View.PlatformTag` — service tag installed by `View.platform(...)`
 - `View.Event.*`, `View.Attribute.*`, `View.Requirement.*`, `Element.Capability.*` — branded metadata witnesses for type-preserving platform metadata
 - `View.nameOfEvent(...)`, `View.nameOfAttribute(...)`, `View.nameOfRequirement(...)`, `View.nameOfCapability(...)`, `Element.nameOfCapability(...)` — normalize strings and witnesses for diagnostics/adapters
+- `Element.extendsCapability(...)` / `View.extendsCapability(...)` — test capability hierarchy compatibility
 - extraction helpers: `View.SlotCapabilityOf<T>`, `View.SlotEventsOf<T>`, `View.PlatformCapabilitiesOf<T>`, `View.PlatformEventsOf<T>`
 - compatibility helpers: `View.MissingPlatformSupport<Slot, Platform>`, `View.IsPlatformCompatible<Slot, Platform>`
 
@@ -514,6 +515,14 @@ const rendered = Effect.runSync(
 ```
 
 Plain strings are still accepted for compatibility and dynamic/generated metadata. Witnesses are preferred for new code because their literal names can flow through generic helpers and composed metadata objects.
+
+Element capabilities can be hierarchical. Built-ins currently model
+`TextInput -> Focusable -> Interactive -> Base`, with `Container` and
+`Draggable` also extending `Interactive`, and `Collection` extending `Base`.
+Custom capabilities can declare parents with
+`Element.Capability.make("DatePicker", { extends: [Element.Capability.TextInput] })`.
+Remap and platform diagnostics treat a child capability as satisfying a parent
+requirement.
 
 Compatibility helpers are intentionally conservative: they report missing
 support only when both required metadata and platform support are literal enough
@@ -569,6 +578,7 @@ Behavior.validateAttachmentBySlots(
 **Element capability constructors:**
 - `Element.interactive()` / `Element.container()` / `Element.focusable()` / `Element.textInput()` / `Element.draggable()`
 - `Element.collection(items)` — `forEach` and `observeEach` for dynamic collection lifecycle
+- `Element.Capability.make(name, { extends })` — define a branded capability witness with optional parent capabilities
 
 **`Component` slot integration:**
 - `Component.withBehavior(behavior, selectElements, merge?)`

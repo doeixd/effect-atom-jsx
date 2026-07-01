@@ -31,6 +31,14 @@ type _CompatibleMissing = Expect<Equal<
   never
 >>;
 type _Compatible = Expect<Equal<View.IsPlatformCompatible<typeof InputSlot, typeof CompatiblePlatform>, true>>;
+type _TextInputParents = Expect<Equal<
+  Element.Capability.ExtendsOf<typeof Element.Capability.TextInput>,
+  "Focusable"
+>>;
+type _TextInputAssignable = Expect<Equal<
+  Element.Capability.AssignableNamesOf<typeof Element.Capability.TextInput>,
+  "TextInput" | "Focusable" | "Interactive" | "Base"
+>>;
 
 const MinimalPlatform = View.platform({
   name: "minimal",
@@ -86,4 +94,35 @@ const NoMetadataPlatform = View.platform({
 type _NoMetadataMeansDynamic = Expect<Equal<
   View.MissingPlatformSupport<typeof InputSlot, typeof NoMetadataPlatform>,
   never
+>>;
+
+const FocusableSlot = View.slot("focusable", {
+  capability: Element.Capability.Focusable,
+});
+
+const TextInputOnlyPlatform = View.platform({
+  name: "text-input-only",
+  capabilities: [Element.Capability.TextInput],
+});
+
+type _ChildCapabilitySatisfiesParentSlot = Expect<Equal<
+  View.MissingPlatformSupport<typeof FocusableSlot, typeof TextInputOnlyPlatform>,
+  never
+>>;
+type _ChildCapabilityIsCompatible = Expect<Equal<
+  View.IsPlatformCompatible<typeof FocusableSlot, typeof TextInputOnlyPlatform>,
+  true
+>>;
+
+const FocusableOnlyPlatform = View.platform({
+  name: "focusable-only",
+  capabilities: [Element.Capability.Focusable],
+});
+
+type _ParentCapabilityDoesNotSatisfyChildSlot = Expect<Equal<
+  View.MissingPlatformSupport<typeof InputSlot, typeof FocusableOnlyPlatform>,
+  {
+    readonly code: "view:unsupported-slot-capability";
+    readonly capability: "TextInput";
+  }
 >>;

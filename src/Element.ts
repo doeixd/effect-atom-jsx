@@ -48,28 +48,73 @@ export interface Collection<E extends Handle> {
   observeEach(f: (item: E, index: number) => Effect.Effect<Cleanup | void>): Effect.Effect<void>;
 }
 
-export interface Capability<Name extends string = string> extends MetadataToken.MetadataToken<"element.capability", Name> {}
+export type CapabilityParent = string | MetadataToken.MetadataToken<"element.capability", string>;
+
+export interface Capability<
+  Name extends string = string,
+  Extends extends readonly CapabilityParent[] = readonly [],
+> extends MetadataToken.MetadataToken<"element.capability", Name> {
+  readonly extends: Extends;
+}
 
 export namespace Capability {
-  export type Any = Capability<string>;
+  export type Any = Capability<string, readonly CapabilityParent[]>;
   export type NameOf<T> = MetadataToken.NameOf<T>;
   export type NamesOf<T extends readonly unknown[]> = MetadataToken.NamesOf<T>;
+  export type ExtendsOf<T> = T extends Capability<any, infer Extends> ? MetadataToken.NameOf<Extends[number]> : never;
+  export type AssignableNamesOf<T> =
+    T extends string ? T
+      : T extends Capability<any, infer Extends>
+        ? MetadataToken.NameOf<T> | AssignableNamesOf<Extends[number]>
+        : MetadataToken.NameOf<T>;
 
-  export function make<const Name extends string>(name: Name): Capability<Name> {
-    return MetadataToken.make("element.capability", name);
+  const parentsByName = new Map<string, ReadonlyArray<string>>();
+
+  export function make<const Name extends string, const Extends extends readonly CapabilityParent[] = readonly []>(
+    name: Name,
+    options?: {
+      readonly extends?: Extends;
+    },
+  ): Capability<Name, Extends> {
+    const parents = options?.extends ?? [] as unknown as Extends;
+    parentsByName.set(name, parents.map((parent) => MetadataToken.nameOf(parent)));
+    return {
+      ...MetadataToken.make("element.capability", name),
+      extends: parents,
+    };
   }
 
   export const Base = make("Base");
-  export const Interactive = make("Interactive");
-  export const Container = make("Container");
-  export const Focusable = make("Focusable");
-  export const TextInput = make("TextInput");
-  export const Draggable = make("Draggable");
-  export const Collection = make("Collection");
+  export const Interactive = make("Interactive", { extends: [Base] });
+  export const Container = make("Container", { extends: [Interactive] });
+  export const Focusable = make("Focusable", { extends: [Interactive] });
+  export const TextInput = make("TextInput", { extends: [Focusable] });
+  export const Draggable = make("Draggable", { extends: [Interactive] });
+  export const Collection = make("Collection", { extends: [Base] });
+
+  export function extendsCapability(value: string | Any, base: string | Any): boolean {
+    const valueName = MetadataToken.nameOf(value);
+    const baseName = MetadataToken.nameOf(base);
+    if (valueName === baseName) return true;
+    const visited = new Set<string>();
+    const stack = [...(parentsByName.get(valueName) ?? [])];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current === baseName) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      stack.push(...(parentsByName.get(current) ?? []));
+    }
+    return false;
+  }
 }
 
 export function nameOfCapability(value: string | Capability.Any): string {
   return MetadataToken.nameOf(value);
+}
+
+export function extendsCapability(value: string | Capability.Any, base: string | Capability.Any): boolean {
+  return Capability.extendsCapability(value, base);
 }
 
 type ListenerMap = Map<string, Set<EventHandler>>;
@@ -229,6 +274,7 @@ export function collection<E extends Handle>(initial: ReadonlyArray<E> = []): Co
 export const Element = {
   Capability,
   nameOfCapability,
+  extendsCapability,
   interactive,
   container,
   focusable,

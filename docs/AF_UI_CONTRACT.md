@@ -31,12 +31,19 @@ Element capability metadata should use branded witnesses for new code:
 
 ```ts
 Element.Capability.TextInput
-Element.Capability.make("DatePicker")
+Element.Capability.make("DatePicker", {
+  extends: [Element.Capability.TextInput],
+})
 ```
 
 String capability names remain supported for compatibility and generated code,
 but witnesses are preferred because their literal names survive generic
 composition.
+
+Capabilities may form a lightweight hierarchy. A more specific capability can
+satisfy a parent requirement: `TextInput` satisfies `Focusable`, `Interactive`,
+and `Base`. Remap and platform diagnostics should use hierarchy-aware
+compatibility instead of raw name equality.
 
 ### Slot
 

@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-06-30 (type-level metadata compatibility helpers)
+Last updated: 2026-07-01 (element capability hierarchy)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -113,6 +113,11 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - `View.MissingPlatformSupport<Slot, Platform>` returns a typed diagnostic union for literal witness-backed metadata gaps
   - `View.IsPlatformCompatible<Slot, Platform>` returns `true` when no literal metadata gap is detectable
   - widened string metadata remains compatible at the type level and defers to runtime diagnostics
+- Added lightweight element capability hierarchy:
+  - `Element.Capability.make(name, { extends })` records parent capability witnesses while keeping string compatibility
+  - built-ins now model `TextInput -> Focusable -> Interactive -> Base`, with `Container` and `Draggable` under `Interactive`, and `Collection` under `Base`
+  - `Element.extendsCapability(...)` / `View.extendsCapability(...)` expose runtime hierarchy checks
+  - `View.validateRemaps(...)`, `View.validatePlatform(...)`, and literal `View.MissingPlatformSupport<Slot, Platform>` checks now let child capabilities satisfy parent requirements
 - Scope/lifecycle foundation is in place (component scope context + supervision wiring).
 - `useService(...)` diagnostics improved for missing runtime/service cases.
 - ADR set created for major design decisions (`docs/adr/ADR-001`..`ADR-005`).

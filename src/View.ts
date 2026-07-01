@@ -166,10 +166,12 @@ type LiteralMissing<Required, Supported> =
       : string extends Supported ? never
         : Exclude<Required, Supported>;
 
-type PlatformCapabilitySupport<T> = T extends { readonly metadata: infer Metadata }
-  ? PlatformCapabilitySupport<Metadata>
+type PlatformCapabilityValuesOf<T> = T extends { readonly metadata: infer Metadata }
+  ? PlatformCapabilityValuesOf<Metadata>
   : "capabilities" extends keyof T
-    ? PlatformCapabilitiesOf<T>
+    ? T extends { readonly capabilities?: readonly unknown[] }
+      ? NonNullable<T["capabilities"]>[number]
+      : never
     : string;
 
 type PlatformEventSupport<T> = T extends { readonly metadata: infer Metadata }
@@ -191,7 +193,7 @@ type PlatformRequirementSupport<T> = T extends { readonly metadata: infer Metada
     : string;
 
 export type MissingPlatformCapability<Slot, Platform> =
-  LiteralMissing<SlotCapabilityOf<Slot>, PlatformCapabilitySupport<Platform>> extends infer Capability
+  LiteralMissing<SlotCapabilityOf<Slot>, Element.Capability.AssignableNamesOf<PlatformCapabilityValuesOf<Platform>>> extends infer Capability
     ? [Capability] extends [never]
       ? never
       : {
@@ -440,6 +442,10 @@ export function nameOfCapability(value: SlotCapability): string {
   return Element.nameOfCapability(value);
 }
 
+export function extendsCapability(value: SlotCapability, base: SlotCapability): boolean {
+  return Element.extendsCapability(value, base);
+}
+
 export function nameOfEvent(value: string | EventName): string {
   return MetadataToken.nameOf(value);
 }
@@ -468,6 +474,11 @@ function includesMetadataOptional(values: readonly MetadataName[] | undefined, v
   if (values === undefined) return true;
   const expected = nameOfMetadata(value);
   return values.some((current) => nameOfMetadata(current) === expected);
+}
+
+function includesCapabilityOptional(values: readonly SlotCapability[] | undefined, value: SlotCapability): boolean {
+  if (values === undefined) return true;
+  return values.some((current) => extendsCapability(current, value));
 }
 
 export function validateSlotTargets<Slots>(
@@ -537,7 +548,9 @@ export function validateRemaps<Slots>(
     if (
       sourceCapabilityName !== undefined
       && targetCapabilityName !== undefined
-      && sourceCapabilityName !== targetCapabilityName
+      && targetCapability !== undefined
+      && sourceCapability !== undefined
+      && !extendsCapability(targetCapability, sourceCapability)
     ) {
       diagnostics.push({
         code: "view:remap-capability-mismatch",
@@ -560,7 +573,7 @@ export function validatePlatform<Slots>(
     const capability = metadata?.capability ?? capabilityOf(slotValueFor(view, slotName));
     const capabilityName = capability === undefined ? undefined : nameOfCapability(capability);
 
-    if (capability !== undefined && !includesMetadataOptional(platform.capabilities, capability)) {
+    if (capability !== undefined && !includesCapabilityOptional(platform.capabilities, capability)) {
       diagnostics.push({
         code: "view:unsupported-slot-capability",
         message: `Platform ${platform.name} does not support ${capabilityName} slot ${slotName}.`,
@@ -646,6 +659,7 @@ export const View = {
   remap,
   capabilityOf,
   nameOfCapability,
+  extendsCapability,
   nameOfEvent,
   nameOfAttribute,
   nameOfRequirement,
