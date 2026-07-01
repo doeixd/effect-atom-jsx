@@ -221,6 +221,8 @@ same diagnostic names while preserving literal witness names for type helpers.
 - `Style.validateComponentAttachment(...)`
 - `Behavior.validateComponentAttachmentBySlots(...)`
 - `Behavior.attachBySlots(...)` / `Component.withBehavior(...)`
+- `Style.attach(...)` with `Style.platform(...)` provided through
+  `Component.withLayer(...)`
 - `Style.attachByView(...)`
 - `Component.withLayer(...)`
 - `Component.guard(...)`

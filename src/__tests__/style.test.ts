@@ -25,14 +25,14 @@ describe("Style", () => {
       Style.attach(
         Style.make({
           root: Style.compose(
-            StyleUtils.padded("md" as any),
+            StyleUtils.padded("md"),
             Style.slot({ backgroundColor: "surface" }),
           ),
         }),
       ),
     );
 
-    const bindings = Effect.runSync(Component.setupEffect(Card, {}) as Effect.Effect<any, never, never>);
+    const bindings = Effect.runSync(Component.setupEffect(Card, {}));
     expect(bindings.slots.root.getStyle("padding")).toBe(16);
     expect(bindings.slots.root.getStyle("backgroundColor")).toBe("#ffffff");
   });
@@ -73,7 +73,7 @@ describe("Style", () => {
       defaults: { compact: "false" },
     });
 
-    const styles = card({ compact: "true" as any });
+    const styles = card({ compact: "true" });
     expect(styles.root).toBeDefined();
     expect(styles.title).toBeDefined();
   });
@@ -227,6 +227,56 @@ describe("Style", () => {
       slot: "root",
       property: "backdropFilter",
     });
+  });
+
+  it("preserves View metadata through setup style attachment with a platform layer", () => {
+    const diagnostics: Array<Style.StyleDiagnostic> = [];
+    const Card = Component.make<{}, never, never, {
+      readonly slots: {
+        readonly root: Element.Container;
+      };
+    }>(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: { root: Element.container() } }),
+      (_props, bindings) => View.make(
+        bindings.slots,
+        "card",
+        {
+          name: "StyledCard",
+          slotMetadata: {
+            root: View.slot("root", {
+              capability: Element.Capability.Container,
+              allowedAttributes: [View.Attribute.AriaLabel],
+            }),
+          },
+        },
+      ),
+    ).pipe(
+      Style.attach(
+        Style.make({
+          root: Style.slot({
+            color: "red",
+            backdropFilter: "blur(4px)",
+          }),
+        }),
+      ),
+      Component.withLayer(Style.platform(
+        {
+          name: "minimal-style",
+          properties: [Style.Property.Color],
+        },
+        { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) },
+      )),
+    );
+
+    const view = Effect.runSync(Component.renderViewEffect(Card, {}));
+
+    expect(view?.name).toBe("StyledCard");
+    expect(view?.slotMetadata?.root?.name).toBe("root");
+    expect(View.nameOfCapability(view?.slotMetadata?.root?.capability ?? "missing")).toBe("Container");
+    expect(view?.slots.root.getStyle("color")).toBe("red");
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["style:unsupported-property"]);
   });
 
   it("exposes theme helpers through the Style namespace", () => {

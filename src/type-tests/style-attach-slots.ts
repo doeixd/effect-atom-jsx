@@ -76,6 +76,29 @@ const StyledCard = Card.pipe(
 type _StyledCardSlots = Component.SlotsOf<typeof StyledCard>;
 type _SlotsPreservedCheck = Expect<Equal<_StyledCardSlots, Component.SlotsOf<typeof Card>>>;
 
+const StylePlatform = Style.platform({
+  name: "type-test-style-platform",
+  properties: [Style.Property.Padding, Style.Property.FontSize],
+});
+
+const StyledCardWithPlatform = Card.pipe(
+  Style.attach(style),
+  Component.withLayer(StylePlatform),
+);
+type _StyledCardWithPlatformSlots = Component.SlotsOf<typeof StyledCardWithPlatform>;
+type _StyledCardWithPlatformSlotsPreserved = Expect<Equal<
+  _StyledCardWithPlatformSlots,
+  Component.SlotsOf<typeof Card>
+>>;
+
+const styledCardWithPlatformViewEffect = Component.renderViewEffect(StyledCardWithPlatform, {});
+type StyledCardWithPlatformViewEffectValue =
+  typeof styledCardWithPlatformViewEffect extends Effect.Effect<infer A, any, any> ? A : never;
+type _StyledCardWithPlatformRenderView = Expect<Equal<
+  StyledCardWithPlatformViewEffectValue,
+  View.View<Component.SlotsOf<typeof StyledCardWithPlatform>> | undefined
+>>;
+
 // ─── attachByView tests ───────────────────────────────────────────────────────
 // A View-backed component with explicit Slots (5th type param), no bindings.slots
 const ViewCard = Component.make<

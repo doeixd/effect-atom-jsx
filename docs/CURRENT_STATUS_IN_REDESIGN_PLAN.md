@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-01 (style platform diagnostics layer)
+Last updated: 2026-07-01 (style platform View preservation audit)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -96,8 +96,10 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 - Confirmed runtime/type preservation of `View<Slots>` metadata through common wrappers:
   - `Behavior.attachBySlots(...)` / `Component.withBehavior(...)`
   - `Style.attachByView(...)`
+  - `Style.attach(...)` with `Style.platform(...)` provided through `Component.withLayer(...)`
   - `Component.withLayer(...)`
   - `Component.guard(...)`
+  - `Component.renderViewEffect(...)` keeps its exact `View.View<Component.SlotsOf<typeof Wrapped>> | undefined` shape across the audited wrapper chains
 - Confirmed route wrapper preservation of `View<Slots>` metadata:
   - legacy `Component.route(...)` preserves runtime View metadata on matched routes and returns no View on unmatched routes
   - route-node materialization through `Route.page(...)` / `Route.componentOf(...)` preserves runtime View metadata
