@@ -470,6 +470,7 @@ const Counter = Component.make(
 Runtime-native view wrapper for exposing structural slot metadata while preserving current JSX/unknown render output.
 
 - `View.make(slots, node, options?)` — create an inspectable `View<Slots>`
+- `View.Slot.make(name, options?)`, `View.Slot.bind(slot, handle)`, `View.Slots.make(...)`, `View.fromSlots(...)` — preferred slot witness path for authored views
 - `View.tree(slots, tree, node?, options?)` — create a `View<Slots>` with optional renderer-neutral typed tree metadata while preserving the runtime node
 - `View.element(...)`, `View.fragment(...)`, `View.textNode(...)`, `View.hole(...)` — build typed tree metadata nodes
 - `View.isView(value)` / `View.node(value)` — detect and unwrap view-backed output
@@ -490,14 +491,20 @@ Runtime-native view wrapper for exposing structural slot metadata while preservi
 When a component render function returns a `View`, `Component.renderEffect(...)` registers the view slots and, if `View.platform(...)` is installed in the current Effect environment, reports platform diagnostics for the active renderer boundary.
 
 ```ts
-const inputSlot = View.slot("input", {
+const Input = View.Slot.make("input", {
   capability: Element.Capability.TextInput,
   allowedEvents: [View.Event.Input, View.Event.Focus],
   allowedAttributes: [View.Attribute.AriaLabel],
   platformRequirements: [View.Requirement.Keyboard],
 });
 
-type InputEvents = View.SlotEventsOf<typeof inputSlot>; // "input" | "focus"
+type InputEvents = View.Slot.EventsOf<typeof Input>; // "input" | "focus"
+
+const slots = View.Slots.make({
+  input: View.Slot.bind(Input, Element.textInput()),
+});
+
+const view = View.fromSlots(slots, "input-node");
 
 const WebLite = View.platform(
   {

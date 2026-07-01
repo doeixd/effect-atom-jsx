@@ -113,6 +113,216 @@ export interface ViewMetadata {
 
 export type SlotsOf<T> = T extends View<infer Slots> ? Slots : never;
 
+export const SlotTypeId: unique symbol = Symbol.for("effect-atom-jsx/View/Slot");
+export const SlotsTypeId: unique symbol = Symbol.for("effect-atom-jsx/View/Slots");
+
+type SlotHandle = Element.Handle | Element.Collection<Element.Handle>;
+
+type HandleCapabilityAssignableNames<T> =
+  T extends Element.Collection<Element.Handle> ? Element.Capability.AssignableNamesOf<typeof Element.Capability.Collection>
+    : T extends Element.TextInput ? Element.Capability.AssignableNamesOf<typeof Element.Capability.TextInput>
+      : T extends Element.Draggable ? Element.Capability.AssignableNamesOf<typeof Element.Capability.Draggable>
+        : T extends Element.Container ? Element.Capability.AssignableNamesOf<typeof Element.Capability.Container>
+          : T extends Element.Focusable ? Element.Capability.AssignableNamesOf<typeof Element.Capability.Focusable>
+            : T extends Element.Interactive ? Element.Capability.AssignableNamesOf<typeof Element.Capability.Interactive>
+              : string;
+
+type SlotCapabilityName<T> = T extends Slot.Slot<any, infer Capability, any, any, any, any>
+  ? MetadataToken.NameOf<Capability>
+  : never;
+
+type BindableHandle<S extends Slot.Any, H extends SlotHandle> =
+  SlotCapabilityName<S> extends HandleCapabilityAssignableNames<H> ? H : never;
+
+type Pipeable<Self> = {
+  pipe(): Self;
+  pipe<A>(ab: (self: Self) => A): A;
+  pipe<A, B>(ab: (self: Self) => A, bc: (a: A) => B): B;
+  pipe<A, B, C>(ab: (self: Self) => A, bc: (a: A) => B, cd: (b: B) => C): C;
+};
+
+function pipeSelf(self: unknown, fns: ReadonlyArray<(value: any) => any>): unknown {
+  return fns.reduce((acc, fn) => fn(acc), self);
+}
+
+export namespace Slot {
+  export interface Slot<
+    Name extends string = string,
+    Capability extends SlotCapability = typeof Element.Capability.Base,
+    Events extends readonly (string | EventName)[] = readonly [],
+    Attributes extends readonly (string | AttributeName)[] = readonly [],
+    Requirements extends readonly (string | RequirementName)[] = readonly [],
+    Hidden extends boolean = false,
+  > extends Pipeable<Slot<Name, Capability, Events, Attributes, Requirements, Hidden>> {
+    readonly [SlotTypeId]: {
+      readonly Name: Name;
+      readonly Capability: Capability;
+      readonly Events: Events;
+      readonly Attributes: Attributes;
+      readonly Requirements: Requirements;
+      readonly Hidden: Hidden;
+    };
+    readonly name: Name;
+    readonly metadata: SlotMetadata<Name> & {
+      readonly capability: Capability;
+      readonly allowedEvents: Events;
+      readonly allowedAttributes: Attributes;
+      readonly platformRequirements: Requirements;
+      readonly hidden: Hidden;
+    };
+  }
+
+  export type Any = Slot<string, SlotCapability, readonly (string | EventName)[], readonly (string | AttributeName)[], readonly (string | RequirementName)[], boolean>;
+
+  export interface Bound<
+    S extends Any = Any,
+    H extends SlotHandle = SlotHandle,
+  > {
+    readonly slot: S;
+    readonly handle: H;
+  }
+
+  export type BoundAny = Bound<Any, SlotHandle>;
+  export type NameOf<T> = T extends Bound<infer S, any> ? NameOf<S> : T extends Slot<infer Name, any, any, any, any, any> ? Name : never;
+  export type CapabilityOf<T> = T extends Bound<infer S, any> ? CapabilityOf<S> : T extends Slot<any, infer Capability, any, any, any, any> ? MetadataToken.NameOf<Capability> : never;
+  export type CapabilityValueOf<T> = T extends Bound<infer S, any> ? CapabilityValueOf<S> : T extends Slot<any, infer Capability, any, any, any, any> ? Capability : never;
+  export type EventsOf<T> = T extends Bound<infer S, any> ? EventsOf<S> : T extends Slot<any, any, infer Events, any, any, any> ? MetadataToken.NamesOf<Events> : never;
+  export type AttributesOf<T> = T extends Bound<infer S, any> ? AttributesOf<S> : T extends Slot<any, any, any, infer Attributes, any, any> ? MetadataToken.NamesOf<Attributes> : never;
+  export type RequirementsOf<T> = T extends Bound<infer S, any> ? RequirementsOf<S> : T extends Slot<any, any, any, any, infer Requirements, any> ? MetadataToken.NamesOf<Requirements> : never;
+  export type HiddenOf<T> = T extends Bound<infer S, any> ? HiddenOf<S> : T extends Slot<any, any, any, any, any, infer Hidden> ? Hidden : never;
+  export type HandleOf<T> = T extends Bound<any, infer H> ? H : never;
+  export type MetadataOf<T> = T extends Bound<infer S, any> ? MetadataOf<S> : T extends Slot<any, any, any, any, any, any> ? T["metadata"] : never;
+  export type AssignableCapabilityNamesOf<T> = Element.Capability.AssignableNamesOf<CapabilityValueOf<T>>;
+  export type IsAssignableTo<T, Capability extends SlotCapability> =
+    MetadataToken.NameOf<Capability> extends AssignableCapabilityNamesOf<T> ? true : false;
+  export type RequiresCapability<Capability extends SlotCapability> = Any & {
+    readonly [SlotTypeId]: {
+      readonly Capability: Capability;
+    };
+  };
+  export type Public<T> = HiddenOf<T> extends true ? never : T;
+  export type Hidden<T> = HiddenOf<T> extends true ? T : never;
+
+  export function make<
+    const Name extends string,
+    const Capability extends SlotCapability = typeof Element.Capability.Base,
+    const Events extends readonly (string | EventName)[] = readonly [],
+    const Attributes extends readonly (string | AttributeName)[] = readonly [],
+    const Requirements extends readonly (string | RequirementName)[] = readonly [],
+    const Hidden extends boolean = false,
+  >(
+    name: Name,
+    options?: {
+      readonly capability?: Capability;
+      readonly allowedEvents?: Events;
+      readonly allowedAttributes?: Attributes;
+      readonly platformRequirements?: Requirements;
+      readonly hidden?: Hidden;
+    },
+  ): Slot<Name, Capability, Events, Attributes, Requirements, Hidden> {
+    const capability = options?.capability ?? Element.Capability.Base as unknown as Capability;
+    const allowedEvents = options?.allowedEvents ?? [] as unknown as Events;
+    const allowedAttributes = options?.allowedAttributes ?? [] as unknown as Attributes;
+    const platformRequirements = options?.platformRequirements ?? [] as unknown as Requirements;
+    const hidden = options?.hidden ?? false as Hidden;
+    const out = {
+      [SlotTypeId]: {
+        Name: undefined as unknown as Name,
+        Capability: undefined as unknown as Capability,
+        Events: undefined as unknown as Events,
+        Attributes: undefined as unknown as Attributes,
+        Requirements: undefined as unknown as Requirements,
+        Hidden: undefined as unknown as Hidden,
+      },
+      name,
+      metadata: {
+        name,
+        capability,
+        allowedEvents,
+        allowedAttributes,
+        platformRequirements,
+        hidden,
+      },
+    } as Slot<Name, Capability, Events, Attributes, Requirements, Hidden>;
+    return Object.assign(out, {
+      pipe: (...fns: ReadonlyArray<(value: any) => any>) => pipeSelf(out, fns),
+    }) as Slot<Name, Capability, Events, Attributes, Requirements, Hidden>;
+  }
+
+  export function bind<S extends Any, H extends SlotHandle>(
+    slot: S,
+    handle: H & BindableHandle<S, H>,
+  ): Bound<S, H> {
+    return { slot, handle };
+  }
+}
+
+type BoundSlotRecord = Record<string, Slot.BoundAny>;
+type SlotRecordKeyMatches<T extends BoundSlotRecord> = {
+  readonly [K in keyof T]: K extends Slot.NameOf<T[K]> ? T[K] : never;
+};
+type PickRecord<T, K extends keyof T> = {
+  readonly [P in K]: T[P];
+};
+type OmitRecord<T, K extends keyof T> = PickRecord<T, Exclude<keyof T, K>>;
+
+export namespace Slots {
+  export interface Slots<T extends BoundSlotRecord = BoundSlotRecord> {
+    readonly [SlotsTypeId]: {
+      readonly Bound: T;
+    };
+    readonly bound: T;
+  }
+
+  export type Any = Slots<BoundSlotRecord>;
+  export type BoundOf<T> = T extends Slots<infer Bound> ? Bound : never;
+  export type HandlesOf<T> = {
+    readonly [K in keyof BoundOf<T>]: Slot.HandleOf<BoundOf<T>[K]>;
+  };
+  export type MetadataOf<T> = {
+    readonly [K in keyof BoundOf<T> & string]: Slot.MetadataOf<BoundOf<T>[K]>;
+  };
+  export type NamesOf<T> = keyof BoundOf<T> & string;
+  export type PublicNamesOf<T> = {
+    readonly [K in keyof BoundOf<T> & string]: Slot.HiddenOf<BoundOf<T>[K]> extends true ? never : K;
+  }[keyof BoundOf<T> & string];
+  export type HiddenNamesOf<T> = {
+    readonly [K in keyof BoundOf<T> & string]: Slot.HiddenOf<BoundOf<T>[K]> extends true ? K : never;
+  }[keyof BoundOf<T> & string];
+  export type WithCapability<T, Capability extends SlotCapability> = {
+    readonly [K in keyof BoundOf<T> & string as MetadataToken.NameOf<Capability> extends Slot.AssignableCapabilityNamesOf<BoundOf<T>[K]> ? K : never]: BoundOf<T>[K];
+  };
+  export type Pick<T, Names extends keyof BoundOf<T> & string> = Slots<PickRecord<BoundOf<T>, Names>>;
+  export type Omit<T, Names extends keyof BoundOf<T> & string> = Slots<OmitRecord<BoundOf<T>, Names>>;
+
+  export function make<const T extends BoundSlotRecord>(
+    bound: T & SlotRecordKeyMatches<T>,
+  ): Slots<T> {
+    return {
+      [SlotsTypeId]: {
+        Bound: undefined as unknown as T,
+      },
+      bound,
+    };
+  }
+
+  export function handles<T extends Any>(slots: T): HandlesOf<T> {
+    const out: Record<string, SlotHandle> = {};
+    for (const [name, bound] of Object.entries(slots.bound)) {
+      out[name] = bound.handle;
+    }
+    return out as HandlesOf<T>;
+  }
+
+  export function metadata<T extends Any>(slots: T): MetadataOf<T> {
+    const out: Record<string, SlotMetadata> = {};
+    for (const [name, bound] of Object.entries(slots.bound)) {
+      out[name] = bound.slot.metadata;
+    }
+    return out as MetadataOf<T>;
+  }
+}
+
 export type ViewPropValue =
   | TextHoleValue
   | Hole
@@ -497,6 +707,26 @@ export function tree<Slots>(
   });
 }
 
+export function fromSlots<S extends Slots.Any>(
+  slots: S,
+  node: unknown,
+  options?: {
+    readonly tree?: ViewNode<Slots.HandlesOf<S>>;
+    readonly name?: string;
+    readonly metadata?: ViewMetadata;
+    readonly slotMetadata?: SlotMetadataMap<Slots.HandlesOf<S>>;
+    readonly slotRemaps?: readonly SlotRemap<Slots.HandlesOf<S>>[];
+  },
+): View<Slots.HandlesOf<S>> {
+  return make(Slots.handles(slots), node, {
+    ...options,
+    slotMetadata: {
+      ...Slots.metadata(slots),
+      ...options?.slotMetadata,
+    } as SlotMetadataMap<Slots.HandlesOf<S>>,
+  });
+}
+
 export function slot<
   const Name extends string,
   const Options extends object = {},
@@ -814,7 +1044,10 @@ export const View = {
   Event,
   Attribute,
   Requirement,
+  Slot,
+  Slots,
   make,
+  fromSlots,
   platform,
   isView,
   node,

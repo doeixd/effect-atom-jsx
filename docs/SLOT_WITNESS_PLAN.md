@@ -627,6 +627,8 @@ Migration guidance:
 
 ## First Implementation Slice
 
+Status: complete.
+
 Implement the core witness path, accepting breaking changes where they improve
 the canonical model:
 

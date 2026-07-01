@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
 import * as SafeHtml from "../SafeHtml.js";
+import * as Style from "../Style.js";
 import * as View from "../View.js";
 
 type Equal<A, B> =
@@ -173,4 +174,117 @@ type TreeComponentViewEffectValue =
 type _TreeComponentRenderView = Expect<Equal<
   TreeComponentViewEffectValue,
   View.View<Component.SlotsOf<typeof TreeComponent>> | undefined
+>>;
+
+const RootSlot = View.Slot.make("root", {
+  capability: Element.Capability.Container,
+  allowedAttributes: [View.Attribute.AriaLabel],
+});
+const InputSlot = View.Slot.make("input", {
+  capability: Element.Capability.TextInput,
+  allowedEvents: [View.Event.Input, Commit],
+  allowedAttributes: [View.Attribute.AriaLabel],
+  platformRequirements: [View.Requirement.Keyboard],
+});
+const HiddenTriggerSlot = View.Slot.make("trigger", {
+  capability: Element.Capability.Interactive,
+  hidden: true,
+});
+
+type _SlotName = Expect<Equal<View.Slot.NameOf<typeof InputSlot>, "input">>;
+type _SlotCapability = Expect<Equal<View.Slot.CapabilityOf<typeof InputSlot>, "TextInput">>;
+type _SlotCapabilityValue = Expect<Equal<View.Slot.CapabilityValueOf<typeof InputSlot>, typeof Element.Capability.TextInput>>;
+type _SlotEvents = Expect<Equal<View.Slot.EventsOf<typeof InputSlot>, "input" | "commit">>;
+type _SlotAttributes = Expect<Equal<View.Slot.AttributesOf<typeof InputSlot>, "aria-label">>;
+type _SlotRequirements = Expect<Equal<View.Slot.RequirementsOf<typeof InputSlot>, "keyboard">>;
+type _SlotHidden = Expect<Equal<View.Slot.HiddenOf<typeof HiddenTriggerSlot>, true>>;
+type _SlotAssignableCapabilities = Expect<Equal<
+  View.Slot.AssignableCapabilityNamesOf<typeof InputSlot>,
+  "TextInput" | "Focusable" | "Interactive" | "Base"
+>>;
+type _SlotIsAssignableToFocusable = Expect<Equal<
+  View.Slot.IsAssignableTo<typeof InputSlot, typeof Element.Capability.Focusable>,
+  true
+>>;
+
+function identitySlot<S extends View.Slot.Any>(slot: S): S {
+  return slot;
+}
+const forwardedInputSlot = identitySlot(InputSlot);
+type _ForwardedSlotName = Expect<Equal<View.Slot.NameOf<typeof forwardedInputSlot>, "input">>;
+type _ForwardedSlotEvents = Expect<Equal<View.Slot.EventsOf<typeof forwardedInputSlot>, "input" | "commit">>;
+
+const boundRoot = View.Slot.bind(RootSlot, Element.container());
+const boundInput = View.Slot.bind(InputSlot, Element.textInput());
+const boundTrigger = View.Slot.bind(HiddenTriggerSlot, Element.interactive());
+
+// @ts-expect-error Container does not satisfy TextInput slot capability
+View.Slot.bind(InputSlot, Element.container());
+
+type _BoundName = Expect<Equal<View.Slot.NameOf<typeof boundInput>, "input">>;
+type _BoundHandle = Expect<Equal<View.Slot.HandleOf<typeof boundInput>, Element.TextInput>>;
+type _BoundMetadata = Expect<Equal<View.Slot.MetadataOf<typeof boundInput>, typeof InputSlot.metadata>>;
+
+const witnessSlots = View.Slots.make({
+  root: boundRoot,
+  input: boundInput,
+  trigger: boundTrigger,
+});
+
+View.Slots.make({
+  root: boundRoot,
+  // @ts-expect-error object key must match bound slot witness name
+  field: boundInput,
+});
+
+type _WitnessSlotNames = Expect<Equal<View.Slots.NamesOf<typeof witnessSlots>, "root" | "input" | "trigger">>;
+type _WitnessPublicNames = Expect<Equal<View.Slots.PublicNamesOf<typeof witnessSlots>, "root" | "input">>;
+type _WitnessHiddenNames = Expect<Equal<View.Slots.HiddenNamesOf<typeof witnessSlots>, "trigger">>;
+type _WitnessHandles = Expect<Equal<View.Slots.HandlesOf<typeof witnessSlots>, {
+  readonly root: Element.Container;
+  readonly input: Element.TextInput;
+  readonly trigger: Element.Interactive;
+}>>;
+type _WitnessMetadata = Expect<Equal<View.Slots.MetadataOf<typeof witnessSlots>, {
+  readonly root: typeof RootSlot.metadata;
+  readonly input: typeof InputSlot.metadata;
+  readonly trigger: typeof HiddenTriggerSlot.metadata;
+}>>;
+type _WitnessTextInputSlots = Expect<Equal<keyof View.Slots.WithCapability<typeof witnessSlots, typeof Element.Capability.TextInput>, "input">>;
+type _WitnessFocusableSlots = Expect<Equal<keyof View.Slots.WithCapability<typeof witnessSlots, typeof Element.Capability.Focusable>, "input">>;
+
+function identitySlots<S extends View.Slots.Any>(slots: S): S {
+  return slots;
+}
+const forwardedSlots = identitySlots(witnessSlots);
+type _ForwardedSlotNames = Expect<Equal<View.Slots.NamesOf<typeof forwardedSlots>, "root" | "input" | "trigger">>;
+
+const witnessView = View.fromSlots(witnessSlots, "node", {
+  tree: View.fragment<View.Slots.HandlesOf<typeof witnessSlots>>([
+    View.element<View.Slots.HandlesOf<typeof witnessSlots>>(Element.Capability.Container, { slot: "root" }),
+    View.element<View.Slots.HandlesOf<typeof witnessSlots>>(Element.Capability.TextInput, { slot: "input" }),
+  ]),
+});
+
+type WitnessViewSlots = View.SlotsOf<typeof witnessView>;
+type _WitnessViewSlots = Expect<Equal<WitnessViewSlots, View.Slots.HandlesOf<typeof witnessSlots>>>;
+
+const WitnessComponent = Component.make<{}, never, never, { readonly slots: View.Slots.HandlesOf<typeof witnessSlots> }>(
+  Component.props<{}>(),
+  Component.require<never>(),
+  () => Effect.succeed({ slots: View.Slots.handles(witnessSlots) }),
+  () => View.fromSlots(witnessSlots, "node"),
+);
+
+const WrappedWitnessComponent = WitnessComponent.pipe(
+  Style.attachByView(Style.make({
+    root: Style.slot({ color: "red" }),
+    input: Style.slot({ opacity: 1 }),
+  })),
+  Component.guard(Effect.void),
+);
+
+type _WrappedWitnessComponentSlots = Expect<Equal<
+  Component.SlotsOf<typeof WrappedWitnessComponent>,
+  View.Slots.HandlesOf<typeof witnessSlots>
 >>;

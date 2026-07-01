@@ -308,6 +308,92 @@ describe("View", () => {
     expect(View.validateTree(view, { allowHidden: true })).toEqual([]);
   });
 
+  it("derives slots and metadata from slot witnesses", () => {
+    const Root = View.Slot.make("root", {
+      capability: Element.Capability.Container,
+      allowedAttributes: [View.Attribute.AriaLabel],
+    });
+    const Secret = View.Slot.make("secret", {
+      capability: Element.Capability.Interactive,
+      hidden: true,
+    });
+    const Input = View.Slot.make("input", {
+      capability: Element.Capability.TextInput,
+      allowedEvents: [View.Event.Input],
+      platformRequirements: [View.Requirement.Keyboard],
+    });
+
+    const root = Element.container();
+    const secret = Element.interactive();
+    const input = Element.textInput();
+    const slots = View.Slots.make({
+      root: View.Slot.bind(Root, root),
+      secret: View.Slot.bind(Secret, secret),
+      input: View.Slot.bind(Input, input),
+    });
+
+    const view = View.fromSlots(slots, "node", {
+      name: "WitnessView",
+      tree: View.fragment<View.Slots.HandlesOf<typeof slots>>([
+        View.element<View.Slots.HandlesOf<typeof slots>>(Element.Capability.Container, { slot: "root" }),
+        View.element<View.Slots.HandlesOf<typeof slots>>(Element.Capability.TextInput, { slot: "input" }),
+      ]),
+    });
+
+    expect(View.node(view)).toBe("node");
+    expect(view.slots.root).toBe(root);
+    expect(view.slots.input).toBe(input);
+    expect(view.slotMetadata?.root?.name).toBe("root");
+    expect(view.slotMetadata?.secret?.hidden).toBe(true);
+    expect(View.nameOfCapability(view.slotMetadata?.input?.capability ?? "missing")).toBe("TextInput");
+    expect(view.slotMetadata?.input?.allowedEvents?.map(View.nameOfEvent)).toEqual(["input"]);
+  });
+
+  it("uses slot witness metadata for hidden, platform, and tree diagnostics", () => {
+    const Root = View.Slot.make("root", {
+      capability: Element.Capability.Container,
+      allowedAttributes: [View.Attribute.AriaLabel],
+    });
+    const Secret = View.Slot.make("secret", {
+      capability: Element.Capability.Interactive,
+      hidden: true,
+    });
+    const Input = View.Slot.make("input", {
+      capability: Element.Capability.TextInput,
+      platformRequirements: [View.Requirement.Keyboard],
+    });
+
+    const slots = View.Slots.make({
+      root: View.Slot.bind(Root, Element.container()),
+      secret: View.Slot.bind(Secret, Element.interactive()),
+      input: View.Slot.bind(Input, Element.textInput()),
+    });
+    const view = View.fromSlots(slots, "node", {
+      tree: View.fragment<View.Slots.HandlesOf<typeof slots>>([
+        View.element<View.Slots.HandlesOf<typeof slots>>(Element.Capability.Interactive, { slot: "secret" }),
+        View.element<View.Slots.HandlesOf<typeof slots>>(Element.Capability.Container, { slot: "input" }),
+      ]),
+    });
+
+    expect(View.validateSlotTargets(view, ["secret"]).map((diagnostic) => diagnostic.code)).toEqual([
+      "view:hidden-slot",
+    ]);
+    expect(View.validatePlatform(view, {
+      name: "minimal",
+      capabilities: [Element.Capability.Container],
+      attributes: [],
+      requirements: [],
+    }).map((diagnostic) => diagnostic.code)).toEqual([
+      "view:unsupported-slot-attribute",
+      "view:unsupported-slot-capability",
+      "view:missing-platform-requirement",
+    ]);
+    expect(View.validateTree(view).map((diagnostic) => diagnostic.code)).toEqual([
+      "view:hidden-slot",
+      "view:remap-capability-mismatch",
+    ]);
+  });
+
   it("validates slot metadata against platform metadata", () => {
     const view = View.make(
       {
