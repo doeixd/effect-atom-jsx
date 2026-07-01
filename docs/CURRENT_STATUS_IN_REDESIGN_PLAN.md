@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-01 (slot witness plan)
+Last updated: 2026-07-01 (slot witness redesign plan)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -127,8 +127,8 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - runtime coverage verifies dynamic/generated unknown-slot diagnostics and typed authoring compatibility cases
 - Added first-class slot witness plan:
   - `docs/SLOT_WITNESS_PLAN.md` defines the migration from separate `{ slots }` / `{ slotMetadata }` records to composable `View.Slot` and `View.Slots` witnesses
-  - the plan keeps `View.slot(...)`, `View.hidden(...)`, and explicit `slotMetadata` for compatibility while adding `View.fromSlots(...)` as the derived path
-  - implementation slices focus on no-cast public authoring, generic inference, derived metadata, and eventual typed tree integration
+  - the plan now treats slot witnesses as the canonical authored model for the breaking redesign track, with plain `slotMetadata` retained as a migration/dynamic escape hatch
+  - implementation slices focus on no-cast public authoring, generic inference, derived metadata, component/style/behavior/route integration, typed tree integration, and capability-safe handle binding
 - Added conservative type-level View/platform compatibility helpers:
   - `View.MissingPlatformSupport<Slot, Platform>` returns a typed diagnostic union for literal witness-backed metadata gaps
   - `View.IsPlatformCompatible<Slot, Platform>` returns `true` when no literal metadata gap is detectable
