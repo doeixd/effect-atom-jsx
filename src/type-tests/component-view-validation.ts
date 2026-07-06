@@ -12,21 +12,20 @@ type Equal<A, B> =
     : false;
 type Expect<T extends true> = T;
 
+const FieldInput = View.Slot.make("input", {
+  capability: Element.Capability.TextInput,
+  allowedEvents: [View.Event.Input],
+});
+const makeFieldSlots = () =>
+  View.Slots.make({
+    input: View.Slot.bind(FieldInput, Element.textInput()),
+  });
+
 const Field = Component.make<{}, never, never, { readonly slots: { readonly input: Element.TextInput } }>(
   Component.props<{}>(),
   Component.require<never>(),
-  () => Effect.succeed({ slots: { input: Element.textInput() } }),
-  (_props, bindings) => View.make(
-    bindings.slots,
-    null,
-    {
-      slotMetadata: {
-        input: View.slot("input", {
-          allowedEvents: [View.Event.Input],
-        }),
-      },
-    },
-  ),
+  () => Effect.succeed({ slots: View.Slots.handles(makeFieldSlots()) }),
+  () => View.fromSlots(makeFieldSlots(), null),
 );
 
 type FieldSlots = Component.SlotsOf<typeof Field>;

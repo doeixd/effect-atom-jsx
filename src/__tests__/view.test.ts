@@ -212,6 +212,67 @@ describe("View", () => {
     expect(view.tree?.children?.[0]?.kind).toBe("view.node.element");
   });
 
+  it("supports pipeable view tree and metadata transforms without changing node unwrapping", () => {
+    type Slots = {
+      readonly root: Element.Container;
+      readonly input: Element.TextInput;
+    };
+
+    const root = Element.container();
+    const input = Element.textInput();
+    const view = View.make<Slots>(
+      { root, input },
+      "runtime-node",
+    ).pipe(
+      View.withTree(View.element<Slots>(Element.Capability.Container, { slot: "root" })),
+      View.withChildren(View.element<Slots>(Element.Capability.TextInput, { slot: "input" })),
+      View.appendChildren(View.textNode("tail")),
+      View.withName("PipeableView"),
+      View.withMetadata({ role: "demo" }),
+      View.withSlotMetadata({
+        root: View.slot("root", { capability: Element.Capability.Container }),
+        input: View.slot("input", { capability: Element.Capability.TextInput }),
+      }),
+      View.withRemaps(View.remap<Slots>("root", "root")),
+    );
+
+    expect(View.node(view)).toBe("runtime-node");
+    expect(view.name).toBe("PipeableView");
+    expect(view.metadata).toEqual({ role: "demo" });
+    expect(view.slotMetadata?.input?.name).toBe("input");
+    expect(view.slotRemaps).toEqual([View.remap<Slots>("root", "root")]);
+    expect(view.tree?.kind).toBe("view.node.element");
+    expect(view.tree?.children?.map((child) => child.kind)).toEqual([
+      "view.node.element",
+      "view.node.text",
+    ]);
+  });
+
+  it("pipeable children transforms create or wrap tree nodes predictably", () => {
+    type Slots = {
+      readonly root: Element.Container;
+    };
+
+    const root = Element.container();
+    const child = View.element<Slots>(Element.Capability.Container, { slot: "root" });
+    const fromEmpty = View.make<Slots>({ root }, "node").pipe(
+      View.withChildren(child),
+    );
+    const fromText = View.make<Slots>({ root }, "node", {
+      tree: View.textNode("prefix"),
+    }).pipe(
+      View.appendChildren(child),
+    );
+
+    expect(fromEmpty.tree?.kind).toBe("view.node.fragment");
+    expect((fromEmpty.tree as View.ViewFragment<Slots>).children).toEqual([child]);
+    expect(fromText.tree?.kind).toBe("view.node.fragment");
+    expect((fromText.tree as View.ViewFragment<Slots>).children.map((node) => node.kind)).toEqual([
+      "view.node.text",
+      "view.node.element",
+    ]);
+  });
+
   it("exposes typed tree metadata through component render inspection", () => {
     type Slots = {
       readonly root: Element.Container;
@@ -506,5 +567,119 @@ describe("View", () => {
     });
 
     expect(diagnostics).toEqual([]);
+  });
+
+  describe("Slot pipeable composition", () => {
+    it("preserves name through pipe chain", () => {
+      const Input = View.Slot.make("input").pipe(
+        View.Slot.capability(Element.Capability.TextInput),
+        View.Slot.events(View.Event.Input, View.Event.Focus),
+      );
+
+      expect(Input.name).toBe("input");
+      expect(Input.metadata.name).toBe("input");
+    });
+
+    it("updates capability through pipe", () => {
+      const Input = View.Slot.make("input").pipe(
+        View.Slot.capability(Element.Capability.TextInput),
+      );
+
+      expect(Input.metadata.capability).toBe(Element.Capability.TextInput);
+    });
+
+    it("updates events through pipe", () => {
+      const Input = View.Slot.make("input").pipe(
+        View.Slot.events(View.Event.Input, View.Event.Focus),
+      );
+
+      expect(Input.metadata.allowedEvents).toEqual([View.Event.Input, View.Event.Focus]);
+    });
+
+    it("updates attributes through pipe", () => {
+      const Input = View.Slot.make("input").pipe(
+        View.Slot.attributes(View.Attribute.AriaLabel, View.Attribute.AriaDescribedby),
+      );
+
+      expect(Input.metadata.allowedAttributes).toEqual([
+        View.Attribute.AriaLabel,
+        View.Attribute.AriaDescribedby,
+      ]);
+    });
+
+    it("updates requirements through pipe", () => {
+      const Input = View.Slot.make("input").pipe(
+        View.Slot.requires(View.Requirement.Keyboard, View.Requirement.Pointer),
+      );
+
+      expect(Input.metadata.platformRequirements).toEqual([
+        View.Requirement.Keyboard,
+        View.Requirement.Pointer,
+      ]);
+    });
+
+    it("marks slot as hidden through pipe", () => {
+      const Secret = View.Slot.make("secret").pipe(
+        View.Slot.capability(Element.Capability.Interactive),
+        View.Slot.hidden,
+      );
+
+      expect(Secret.metadata.hidden).toBe(true);
+    });
+
+    it("composes multiple pipe operations", () => {
+      const Input = View.Slot.make("input").pipe(
+        View.Slot.capability(Element.Capability.TextInput),
+        View.Slot.events(View.Event.Input),
+        View.Slot.attributes(View.Attribute.AriaLabel),
+        View.Slot.requires(View.Requirement.Keyboard),
+      );
+
+      expect(Input.name).toBe("input");
+      expect(Input.metadata.capability).toBe(Element.Capability.TextInput);
+      expect(Input.metadata.allowedEvents).toEqual([View.Event.Input]);
+      expect(Input.metadata.allowedAttributes).toEqual([View.Attribute.AriaLabel]);
+      expect(Input.metadata.platformRequirements).toEqual([View.Requirement.Keyboard]);
+      expect(Input.metadata.hidden).toBe(false);
+    });
+
+    it("preserves earlier metadata when later pipes only update one field", () => {
+      const Input = View.Slot.make("input", {
+        capability: Element.Capability.TextInput,
+        allowedEvents: [View.Event.Input],
+      }).pipe(
+        View.Slot.attributes(View.Attribute.AriaLabel),
+      );
+
+      expect(Input.metadata.capability).toBe(Element.Capability.TextInput);
+      expect(Input.metadata.allowedEvents).toEqual([View.Event.Input]);
+      expect(Input.metadata.allowedAttributes).toEqual([View.Attribute.AriaLabel]);
+    });
+
+    it("works with View.fromSlots", () => {
+      const Root = View.Slot.make("root").pipe(
+        View.Slot.capability(Element.Capability.Container),
+      );
+      const Input = View.Slot.make("input").pipe(
+        View.Slot.capability(Element.Capability.TextInput),
+        View.Slot.events(View.Event.Input),
+      );
+
+      const rootHandle = Element.container();
+      const inputHandle = Element.textInput();
+
+      const slots = View.Slots.make({
+        root: View.Slot.bind(Root, rootHandle),
+        input: View.Slot.bind(Input, inputHandle),
+      });
+
+      const view = View.fromSlots(slots, null);
+
+      expect(view.slots.root).toBe(rootHandle);
+      expect(view.slots.input).toBe(inputHandle);
+      expect(view.slotMetadata?.root?.capability).toBe(Element.Capability.Container);
+      expect(view.slotMetadata?.input?.capability).toBe(Element.Capability.TextInput);
+      expect(view.slotMetadata?.input?.allowedEvents).toEqual([View.Event.Input]);
+    });
   });
 });

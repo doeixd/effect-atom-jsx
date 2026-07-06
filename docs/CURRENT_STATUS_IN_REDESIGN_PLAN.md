@@ -1,26 +1,44 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-01 (slot witness first slice)
+Last updated: 2026-07-06 (component setup builder implementation)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
+
+Current slot-design plan: `docs/SLOT_CONTRACT_UNIFICATION_PLAN.md`
+
+Slot contract golden path: `docs/SLOT_CONTRACT_GOLDEN_PATH.md`
+
+Current optimistic/action design plan: `docs/OPTIMISTIC_ACTION_DESIGN_PLAN.md`
+
+Component ownership model: `docs/PROPS_BINDINGS_SLOTS.md`
+
+Async binding boundary: `docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md`
+
+Setup/view comparison: `docs/SETUP_VIEW_COMPARISON.md`
+
+Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
 
 ## Overall
 
 - Redesign is actively in progress.
 - We are taking a breaking-change-first approach to reduce API overlap and legacy aliases.
 - Core direction is now visible in code (not only docs): smaller top-level exports, stronger action/query primitives, and clearer internal boundaries.
-- AF-UI convergence is now the active architecture track. The immediate goal is to move from slot metadata on components to a real runtime-native `View<Slots>` model while preserving the current JSX authoring/runtime path.
+- AF-UI convergence is now the active architecture track. Slot contract
+  unification is closed for now; the active follow-up is the
+  typesafety/composability track from `docs/new_ideas.md`.
 
 ## Current Goals
 
 1. Make the inside-out model real in code:
-   - `Component<Props, Req, E, Bindings, Slots> -> View<Slots>`
-   - slots are the public structural API
-   - styles and behaviors attach to slots from outside
-2. Keep the migration incremental:
-   - preserve current JSX returns
-   - preserve `bindings.slots` compatibility
+   - `Component<Props, Req, E, Bindings, SlotContract> -> View<Slots>`
+   - `View.Slots` is the authored structural contract
+   - `Component.SlotsOf<T>` is the runtime handle-map projection
+   - styles and behaviors attach to slots from outside through slot-contract-first APIs
+2. Keep the implementation incremental while still aiming at the right design:
+   - keep current JSX returns working while the typed view path becomes primary
+   - move authored code away from `bindings.slots`
+   - keep string slot maps only as dynamic/generated APIs
    - add view metadata before attempting typed JSX/compiler holes
 3. Adapt useful ideas from `../gen2` without transplanting its generator IR:
    - slot metadata
@@ -46,6 +64,30 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - Added `Component.SlotsOf<T>` for slot metadata extraction.
   - Behavior/style slot attachment paths now preserve component slot metadata.
   - Type coverage now exercises `SlotsOf` for behavior and style attachment.
+- Added static component slot contract metadata:
+  - `Component.Component` now carries the authored slot contract metadata.
+  - `Component.SlotContractOf<T>` extracts the authored slot contract when available.
+  - `Component.withSlots(...)` / `Component.withSlotContract(...)` publish slot
+    contract metadata on a component while preserving route metadata.
+  - Component wrappers and route metadata plumbing preserve the contract axis.
+- Added the slot contract unification plan:
+  - `docs/SLOT_CONTRACT_UNIFICATION_PLAN.md` defines `View.Slots` as the single long-term authored slot contract.
+  - It introduces `Component.withSlots(...)` and `Component.SlotContractOf<T>` as the correct public API names.
+  - Component-level witness-named aliases have been removed from the public API.
+- Added `docs/PROPS_BINDINGS_SLOTS.md` to define the ownership split:
+  - `Props` are caller-owned configuration.
+  - `Bindings` are setup-created implementation state.
+  - `Slots` / `SlotContract` are the public structural attachment surface.
+- Added `docs/SETUP_VIEW_COMPARISON.md` to explain why separate setup, live
+  accessors, typed holes, and slot contracts avoid React stale-closure pitfalls,
+  share Solid's fine-grained live-accessor advantage without claiming better
+  local signal ergonomics, and require less ceremony than a Foldkit-style
+  message/subscription loop for local component state.
+- Added `docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md` to define bindings as the
+  component-level async commit boundary:
+  - setup collects dependencies and produces a coherent binding snapshot.
+  - the normal view renders from committed bindings, not half-real async values.
+  - style/behavior effects attach after the view/slot snapshot exists.
 - Introduced minimal runtime-native `View<Slots>` foundation:
   - added `src/View.ts` with `View.make`, `View.isView`, `View.node`, and `View.SlotsOf<T>`
   - exported `View` from the root API and package subpath
@@ -134,6 +176,12 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - `View.Slot.bind(...)`, `View.Slots.make(...)`, `View.Slots.handles(...)`, and `View.Slots.metadata(...)` derive handle and metadata maps without duplicate authored slot strings
   - `View.fromSlots(...)` constructs `View<Slots>` from bound witnesses while preserving typed tree, platform, hidden-slot, and wrapper diagnostics
   - type coverage verifies generic forwarding, key/name matching, capability-safe handle binding, derived view slot types, and wrapper preservation without public casts
+- Unified the Style/Behavior slot-contract API shape:
+  - `Style.forSlots(slots)(...)` and `Style.attachToSlots(style, slots)` are now the canonical authored style path.
+  - `Behavior.forSlots(slots)(...)` and `Behavior.attachToSlots(behavior, slots)` are now the canonical authored behavior path.
+  - `Style.attachBySlotContract(...)` / `Behavior.attachBySlotContract(...)` are the typed remapping helpers.
+  - `attachBySlots(...)` remains the dynamic/generated string-map helper.
+  - type and runtime coverage verifies slot-contract-first style/behavior attachment and component contract preservation.
 - Added conservative type-level View/platform compatibility helpers:
   - `View.MissingPlatformSupport<Slot, Platform>` returns a typed diagnostic union for literal witness-backed metadata gaps
   - `View.IsPlatformCompatible<Slot, Platform>` returns `true` when no literal metadata gap is detectable
@@ -276,7 +324,7 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
   - added pipeable schema wrappers: `AtomSchema.validated` / `AtomSchema.parsed`
 - Phase E scope-hardening test added: component scope closure now explicitly verified to cancel pending `layerContext` startup work.
 - Component system implementation landed (`src/Component.ts`) with Effect-native setup contracts (`Component.make`, `Component.headless`, `Component.setupEffect`, `Component.renderEffect`).
-- Component setup helpers landed (`Component.state`, `Component.derived`, `Component.query`, `Component.action`, `Component.ref`, `Component.fromDequeue`, `Component.schedule`, `Component.scheduleEffect`).
+- Component setup helpers landed (`Component.signal`, `Component.effect`, `Component.state`, `Component.derived`, `Component.query`, `Component.action`, `Component.ref`, `Component.fromDequeue`, `Component.schedule`, `Component.scheduleEffect`).
 - Initial component transform/mount surface landed (`withLayer`, `withErrorBoundary`, `withLoading`, `withSpan`, `memo`, `tapSetup`, `withPreSetup`, `withSetupRetry`, `withSetupTimeout`, `Component.mount`).
 - Added component runtime tests (`src/__tests__/component.test.ts`) and initial component type tests (`src/type-tests/component-core.ts`).
 - Composables foundation implemented:
@@ -427,6 +475,307 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 
 ## Recently Completed Work
 
+### Component Setup Builder Dogfood Pass (2026-07-06)
+
+- Migrated `examples/auto-counter/App.tsx` to `Component.setup(...)` with named
+  builder bindings for state, commands, and setup-scoped interval behavior.
+- Updated `docs/ASYNC_COUNTER_OPTIMISTIC_EXAMPLE.md` so the golden async /
+  optimistic counter uses the setup builder while preserving typed service
+  requirements and runtime-bound query/action handles.
+- Updated `docs/SLOT_CONTRACT_GOLDEN_PATH.md` so the authored slot-contract
+  example uses `Component.setup(...).value("slots", ...)` instead of a one-off
+  setup Effect.
+- Validation status: typecheck clean, 471 tests pass, build clean.
+
+### Component Setup Builder Implementation (2026-07-06)
+
+- Added `docs/COMPONENT_SETUP_BUILDER_PLAN.md`.
+- Implemented a small pipeable setup authoring layer over the existing
+  setup-as-Effect model:
+  - `Component.setup<Props>()`
+  - `Component.bind("name", ...)`
+  - `Component.use(fragment)`
+  - `Component.value("name", ...)`
+  - `Component.doEffect(...)`
+- Added builder methods for the same operations, so callback inputs can infer
+  typed `props` and prior `bindings` directly from the current setup builder.
+- Key design decision: setup builder output compiles down to the same
+  `(props) => Effect<Bindings, E, R>` contract used by `Component.make(...)`
+  today. It should not revive the older imperative `ctx` setup API or introduce
+  a second runtime path.
+- `Component.make(...)` and `Component.headless(...)` now accept either a raw
+  setup function or a `Component.Setup` builder.
+- The builder accumulates named bindings, rejects duplicate binding names by
+  default, preserves props and earlier-binding access, and keeps requirement /
+  error accumulation aligned with existing setup helper semantics.
+- Added compile-time coverage in `src/type-tests/component-core.ts` and runtime
+  coverage in `src/__tests__/component.test.ts`.
+- Updated `docs/API.md` and `docs/COMPONENT_SETUP_BUILDER_PLAN.md`.
+- Validation status: typecheck clean, 471 tests pass, build clean.
+
+### Component Action Alignment Follow-Up (2026-07-03)
+
+- Aligned `Component.action(...)` with the current atom action handle shape:
+  - callable handle and `run(...)` remain fire-and-forget.
+  - `runEffect(...)` remains the typed success-returning Effect path.
+  - added `effect(...)` as the typed fire-and-forget Effect path.
+  - `result` and `pending` are unchanged.
+- Added component action extraction helpers:
+  - `Component.ActionArgsOf<T>`
+  - `Component.ActionInputOf<T>`
+  - `Component.ActionErrorOf<T>`
+  - `Component.ActionSuccessOf<T>`
+  - `Component.ActionRunErrorOf<T>`
+  - `Component.ActionEffectErrorOf<T>`
+  - `Component.ActionRunEffectOf<T>`
+  - `Component.ActionEffectOf<T>`
+- Fixed `ComponentAction.runEffect(...)` so it no longer executes the action
+  twice. It now matches the atom action model: one typed execution path.
+- `Component.action(...)` now captures the setup `ServiceMap` when the handle is
+  created and uses it for later `run(...)`, `effect(...)`, and
+  `runEffect(...)` execution.
+- `Component.query(...)` now captures the setup `ServiceMap` and passes it to
+  `defineQuery(...)`, so async query work can use services supplied by
+  `Component.withLayer(...)`.
+- `Component.optimistic(...).action(...)` now captures the setup `ServiceMap`
+  and uses a runtime-bound optimistic action path, so optimistic action effects
+  can also use services supplied by component layers.
+- Added runtime coverage proving a component action can use a service supplied by
+  `Component.withLayer(...)` after setup has already returned.
+- Added runtime coverage proving component queries and component optimistic
+  actions use the setup runtime context.
+- Added type coverage proving setup helper service requirements bubble to the
+  component boundary while returned query/action/optimistic bindings do not
+  expose unresolved service requirements after setup-time capture.
+- Updated `docs/component.md` setup helper signatures to match the current API:
+  service-capturing helpers use their input `R`; only scoped fiber helpers such
+  as `fromDequeue`, `schedule`, and `scheduleEffect` require `Scope.Scope`.
+- Marked the older `ctx.*` component setup narrative in `docs/component.md` as
+  historical design material and added a current setup-as-Effect entry point so
+  the implemented API is not confused with pre-implementation sketches.
+- Added compile-time coverage in `src/type-tests/component-core.ts` and runtime
+  coverage for `ComponentAction.effect(...)`.
+- Validation status: focused typecheck clean.
+
+### Action Type Helper Follow-Up (2026-07-03)
+
+- Added canonical extraction helpers for the current action handle contract:
+  - `Atom.ActionEffectErrorOf<T>`
+  - `Atom.ActionRunEffectOf<T>`
+  - `Atom.ActionEffectOf<T>`
+- Aligned optimistic action helper aliases with the shared `ActionHandle`
+  contract:
+  - `Atom.OptimisticActionEffectErrorOf<T>`
+  - `Atom.OptimisticActionRunEffectOf<T>`
+  - `Atom.OptimisticActionEffectOf<T>`
+- Added compile-time coverage showing:
+  - callable action handles and `run(...)` remain fire-and-forget (`void`).
+  - `runEffect(...)` is the typed success-returning Effect path.
+  - `effect(...)` is the typed fire-and-forget Effect path.
+  - optimistic action helpers expose the same run/effect surfaces as regular
+    actions.
+- Validation status: typecheck clean.
+
+### Atom Metadata Preservation Follow-Up (2026-07-03)
+
+- Tightened the `Atom<A, E, R>` type surface through smaller composition helpers:
+  - `Atom.query(() => Effect<...>)` now preserves unresolved service
+    requirements on the returned async atom.
+  - `Atom.projectionAsync(...)` preserves `R` when unbound and eliminates `R`
+    when a runtime is supplied.
+  - `Atom.withReactivity(...)` preserves `A` / `E` / `R` metadata instead of
+    collapsing to a plain atom value axis.
+  - `Atom.withFallback(...)` preserves `E` / `R` metadata while narrowing
+    `null` / `undefined` out of the value axis.
+- Added compile-time coverage in `src/type-tests/atom-type-axes.ts` for unbound
+  query requirements, runtime-bound projection requirements, reactivity wrapping,
+  fallback wrapping, and `Atom.get(...)` requirement propagation.
+- Validation status: typecheck clean.
+
+### Optimistic Action Design Plan (2026-07-01)
+
+- Added `docs/OPTIMISTIC_ACTION_DESIGN_PLAN.md`.
+- Added `docs/ASYNC_COUNTER_OPTIMISTIC_EXAMPLE.md` as the target user-facing
+  example for optimistic actions, `Async`, `Loading`, rollback, pending, typed
+  errors, service requirements, and slot-based styling.
+- The plan reframes optimistic UI around an authored atom/action lifecycle:
+  - `Atom.optimistic(source).action(...)`
+  - `Atom.runtime(layer).optimistic(source).action(...)`
+  - `Component.optimistic(source).action(...)`
+- It keeps current primitives as lower-level implementation paths:
+  - `createOptimistic(source)` remains the overlay primitive.
+  - `defineMutation(...)` remains the callback-style mutation API.
+  - `Atom.runtime(...).action(...)` remains the primary non-optimistic
+    service-backed write API.
+- The target handle unifies:
+  - visible optimistic value
+  - committed value
+  - async `Result`
+  - pending projection
+  - rollback/clear
+  - typed `Effect` composition
+  - optional reconciliation and reactivity invalidation
+- Key design rule: `pending()` remains a projection from `Result`, while
+  `hasOptimistic()` answers the separate question of whether the visible value
+  is temporary.
+- First implementation slice landed:
+  - `Atom.optimistic(source).action(...)`
+  - `Atom.runtime(layer).optimistic(source).action(...)`
+  - `Component.optimistic(source).action(...)`
+  - optimistic action handles expose `value`, `committed`, `optimistic`,
+    `hasOptimistic`, `rollback`, and `clear`
+  - action specs support `update`, `effect`, optional `reconcile`, optional
+    `commit`, reactivity keys, single-flight options, and lifecycle hooks
+  - focused runtime tests cover success commit, typed failure rollback, and
+    component-scoped usage
+  - additional lifecycle tests cover defect rollback, server reconciliation,
+    custom commit, latest-run-wins behavior, and reactivity key invalidation
+  - type tests cover input/value/success/error inference, run-effect error
+    shape, runtime-bound actions, and component requirement bubbling
+
+### Slot Witness Metadata And Contract Unification Plan (2026-07-01)
+
+- Added `docs/PROPS_BINDINGS_SLOTS.md`, a focused architecture note explaining
+  why props, bindings, and slots are separate ownership surfaces and how their
+  type safety differs.
+- Added `docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md`, explaining how bindings
+  isolate async work from committed views and effect attachment.
+- Added static slot contract metadata to components:
+  - `Component.Component<Props, Req, E, Bindings, SlotContract>`
+  - `Component.SlotContractOf<T>`
+  - `Component.withSlots(...)`
+  - `Component.withSlotContract(...)`
+- Added the canonical slot contract component API:
+  - `Component.withSlots(...)`
+  - `Component.withSlotContract(...)`
+  - `Component.SlotContractOf<T>`
+  - `Component.PublicSlotsOf<T>`
+  - `Component.HiddenSlotsOf<T>`
+  - focused type/runtime tests now exercise `withSlots(...)`
+  - component metadata now exposes `SlotContract` as the primary branded field
+  - `withSlots(View.Slots)` now derives `Component.SlotsOf<T>` from
+    `View.Slots.HandlesOf<typeof slots>` so authored contracts cannot drift from
+    stale binding-slot types.
+  - `withSlots(View.Slots)` now injects projected slot handles into setup
+    bindings when author setup does not expose `bindings.slots`, so view-backed
+    components can use behavior attachment without duplicating the slot map.
+- Added `docs/SLOT_CONTRACT_GOLDEN_PATH.md` and linked it from README/API as the
+  authored slot-based component starting point.
+- Added runtime slot contract inspection and drift diagnostics:
+  - `Component.withSlots(slots)` now stores the authored contract in a runtime
+    registry.
+  - `Component.getSlotContract(component)` exposes the authored contract for
+    inspection.
+  - `Component.validateSlotContract(component, view, bindings?)` compares a
+    rendered `View` with the declared contract.
+  - `Component.validateRenderedSlotContract(component, props)` runs setup/view
+    and returns diagnostics explicitly.
+  - tests cover matching contracts, missing declared slots, undeclared rendered
+    slots, capability mismatches, and wrapper preservation.
+  - decision: declared-vs-rendered component diagnostics stay explicit-only for
+    now; normal render paths do not auto-report them.
+- Preserved the slot contract axis through component wrappers and route metadata
+  helpers.
+- Extended the preservation audit so `Component.SlotsOf<T>` and
+  `Component.SlotContractOf<T>` remain precise through mixed style/behavior
+  chains, route-node materialization, and loader-decorated route-node pipes.
+- Standardized the authored Style/Behavior slot-contract API shape:
+  - `Style.forSlots(slots)(...)`
+  - `Style.attachToSlots(style, slots)`
+  - `Behavior.forSlots(slots)(...)`
+  - `Behavior.attachToSlots(behavior, slots)`
+- Renamed the typed remapping helper to `attachBySlotContract(...)` and
+  documented `attachBySlots(...)` as the dynamic/generated string-map path.
+- Added `docs/SLOT_CONTRACT_UNIFICATION_PLAN.md` as the next design plan:
+  - `View.Slots` becomes the single canonical authored slot contract.
+  - `Component.withSlots(...)` becomes the component contract helper.
+  - `Component.SlotContractOf<T>` becomes the canonical extraction name.
+  - The component type surface now uses the single `SlotContract` axis.
+- Slot contract unification is closed for now:
+  - implementation slices are complete or explicitly decided.
+  - declared-vs-rendered component diagnostics are explicit-only.
+  - authored view-backed components can use behavior attachment without
+    duplicating slot maps in setup.
+- Validation status: typecheck clean, 466 tests pass, build clean.
+
+### Slot Witness Typed Tree And Attachment Follow-Up (2026-07-01)
+
+- Made capability-based behavior/style attachment hierarchy-aware:
+  - `Behavior.attachToAllWithCapability(...)` now uses `View.extendsCapability(...)`
+  - `Style.attachToAllWithCapability(...)` now uses `View.extendsCapability(...)`
+  - tests verify parent capability selection such as `Focusable` matching `TextInput`
+- Added slot witness typed-tree authoring:
+  - `View.element(InputSlot, ...)` derives the element capability and slot name from the witness
+  - type coverage verifies witness-authored trees compose with `View.fromSlots(...)`
+- Added first slot-contract-targeted style/behavior attachment APIs:
+  - `Style.forSlots(...)`
+  - `Style.attachToSlots(...)`
+  - `Style.attachBySlotContract(...)`
+  - `Behavior.attachBySlotContract(...)`
+- Runtime coverage verifies slot-contract-targeted style construction/attachment and behavior attachment without duplicated string slot maps.
+- Planned the next typed-view ergonomics slice:
+  - constructed `View<Slots>` records are now pipeable
+  - added pipeable helpers such as `View.withTree(...)`, `View.withChildren(...)`, `View.appendChildren(...)`, and metadata/remap transforms
+  - keep `View.children(...)` as the existing dynamic children hole helper
+  - multi-step `View.pipe(...)` now accepts only transforms compatible with the view's slot map instead of an arbitrary `any` chain
+- Validation status: typecheck clean, 449 tests pass, build clean.
+
+### Capability Filtering Helpers for Behavior/Style (2026-07-01)
+
+- Added capability filtering helpers to support behavior/style selection by capability:
+  - `View.Slots.withCapability(slots, capability)` — runtime filtering of slot collections by capability
+  - `Behavior.attachToAllWithCapability(behavior, capability)` — attaches behavior to all slots matching a capability
+  - `Style.attachToAllWithCapability(style, capability)` — attaches style to all slots matching a capability
+- All helpers support both string and witness-based capabilities
+- Added runtime tests (`src/__tests__/capability-filtering.test.ts`) verifying:
+  - `View.Slots.withCapability` filters slots correctly
+  - `Behavior.attachToAllWithCapability` attaches to matching slots and runs with empty elements when no match
+  - `Style.attachToAllWithCapability` applies styles to matching slots
+- Validation status: typecheck clean, 444 tests pass, build clean.
+
+### Slot Witness Pipeable Composition (2026-07-01)
+
+- Added pipeable metadata composition helpers to `View.Slot` namespace:
+  - `View.Slot.capability(cap)` — updates slot capability
+  - `View.Slot.events(...events)` — updates slot allowed events
+  - `View.Slot.attributes(...attrs)` — updates slot allowed attributes
+  - `View.Slot.requires(...reqs)` — updates slot platform requirements
+  - `View.Slot.hidden` — marks slot as hidden
+- Extended `Pipeable<Self>` interface to support 4-6 argument pipe chains
+- All helpers preserve type information through composition
+- Added type tests (`src/type-tests/slot-contract-composition.ts`) verifying:
+  - name/capability/events/attributes/requirements/hidden metadata extraction
+  - hidden slot filtering with `View.Slot.Public<T>` and `View.Slot.Hidden<T>`
+  - `View.Slots.make(...)` key matching validation
+  - `View.Slots.WithCapability<T, C>` capability filtering
+  - `View.Slots.Pick<T, K>` and `View.Slots.Omit<T, K>` slot selection
+  - `View.fromSlots(...)` derives correct slots and slotMetadata
+- Added runtime tests verifying pipe composition preserves and updates metadata correctly
+- Validation status: typecheck clean, 428 tests pass, build clean.
+
+### Typesafety Cleanup & Route Req/E Propagation (2026-07-01)
+
+- Simplified `Context.result` overloads in `Atom.ts` — removed redundant `AsyncAtom` variants, unified on `ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>`.
+- Fixed `Component.query` to preserve `E` metadata: return type changed from `Atom.ReadonlyAtom<Result<A, E>>` to `Atom.ReadonlyAtom<Result<A, E>, E>`.
+- Simplified `ResultBridge`, `WriteContext.result`, and `QueryGet.result` overloads to remove redundant `AsyncAtom` variants.
+- Audited route-node/server-route for requirement metadata preservation.
+- Fixed `Route.guard()` unified overload to propagate `Req`/`E` into the component's type axes using `ComponentWithAddedReqE<C, Req, E>` helper.
+- Fixed `Route.loader()` unified overload to propagate `R`/`E` into the component's type axes.
+- Added type tests (`src/type-tests/route-req-propagation.ts`) verifying guard and loader Req/E propagation.
+- Validation status: typecheck clean, 428 tests pass, build clean.
+
+### Route-Node Golden Path Example (2026-07-01)
+
+- Created `examples/router-golden-path/` — a complete end-to-end demonstration of the route-node API.
+- Demonstrates: `Route.page`, `Route.layout`, `Route.index`, `Route.define`, `Route.children`, `Route.mount`, `Route.ref`.
+- Shows typed params/query/hash with Effect Schema (`Route.paramsSchema`, `Route.querySchema`).
+- Shows loaders that use domain services with `Reactivity.tracked(...)` and `Reactivity.invalidating(...)`.
+- Shows typed links with `Route.link(...)`.
+- Shows error handling with `Async`, `Loading`, `Errored` components.
+- Shows head metadata with `Route.title(...)` and `Route.meta(...)`.
+- Added example reference to README examples table and Route Nodes section.
+- Validation status: typecheck clean, 428 tests pass, build clean.
+
 ### Atom A/E/R Type Axes & Component State Cleanup (2026-06-29)
 
 - Added backward-compatible `A` / `E` / `R` type axes to `ReadonlyAtom`, `Atom`, and `WritableAtom`.
@@ -475,6 +824,9 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 - [x] Add type tests for valid/invalid behavior and style attachment through component slots.
 - [x] Add initial runtime diagnostics inspired by `../gen2` for dynamic/generated slot targets, remaps, and style/behavior attachment validation.
 - [x] Add initial slot metadata support for hidden slots and slot remapping.
+- [x] Add static slot contract metadata to components.
+- [x] Standardize Style/Behavior authored APIs around `forSlots(...)` and `attachToSlots(...)`.
+- [x] Add a slot contract unification plan that makes `View.Slots` the single canonical authored contract.
 - [x] Add `SafeHtml` brand and define the first typed-hole/security boundary.
 - [x] Add lightweight platform metadata and renderer-boundary diagnostics inspired by `../gen2` (`event_model`, `attribute_model`, supported capabilities).
 - [x] Extend platform metadata diagnostics from View-level helpers to component render-time runtime integration.
@@ -488,6 +840,17 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 - [x] Finish API examples pass: ensure callable `Atom`/`AtomRef` style is used consistently in docs/snippets.
 - [x] Family lifecycle follow-up: add at least one end-to-end example showing `Atom.family(...).evict/clear` in component lifetime cleanup.
 - [ ] Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence).
+- [x] Add `Component.withSlots(...)` as the canonical component slot contract helper.
+- [x] Add `Component.withSlotContract(...)` and primary `SlotContract` metadata.
+- [x] Add `Component.SlotContractOf<T>` as the canonical slot contract extraction helper.
+- [x] Add `Component.PublicSlotsOf<T>` / `Component.HiddenSlotsOf<T>` projections.
+- [x] Verify slot contract preservation through mixed style/behavior wrappers and route-node materialization.
+- [x] Add declared-vs-rendered slot diagnostics comparing component contract, rendered `View`, and setup/runtime slots.
+- [x] Collapse the component slot type surface toward one `SlotContract` axis before release.
+- [x] Remove component-level witness-named aliases from the public API.
+- [x] Add a slot-contract golden-path doc and link it from README/API.
+- [x] Migrate active direct `slotMetadata` examples toward `View.Slots` + `Component.withSlots(...)`.
+- [x] Allow view-backed components to use behavior attachment without authored `bindings.slots` duplication.
 - [ ] Keep status tracker updated after each landed redesign change.
 
 ## Detailed Remaining Plan (from `docs/new_ideas.md`)
@@ -563,10 +926,13 @@ Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 
 ## In Progress / Next
 
-- Style surface consolidation is now complete — all advanced CSS descriptors live in the unified `src/Style.ts` module, and `Style2` naming has been removed from tests and type-tests.
-- Component transform audit complete — `guard` fixed to preserve `SlotsOf<C>`, negative type tests added for style slot attachments.
+- Slot contract unification is closed for now — `View.Slots` is the authored
+  contract path, component slot axes are collapsed to `SlotContract`, typed
+  style/behavior attachment is standardized, and declared-vs-rendered
+  diagnostics are explicit-only.
 - Next focus areas:
   - Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence):
+    - Continue migrating selected examples/guides to the setup builder where it improves readability.
     - Continue migrating consumers toward the new `Atom<A, E, R>` metadata instead of result-wrapper-only extraction.
     - Update `Context.result` signature to work with `Atom<A, E>` instead of `Atom<Result<A, E>>`.
     - Remove `AsyncAtom` alias once `Atom<A, E>` is the unified shape.

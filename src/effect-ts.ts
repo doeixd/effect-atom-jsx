@@ -532,7 +532,6 @@ export interface QueryRef<A, E> {
 export interface QueryGet {
   <A>(atom: AtomTypes.ReadonlyAtom<A, any, any>): A;
   get<A>(atom: AtomTypes.ReadonlyAtom<A, any, any>): A;
-  result<A, E>(atom: AtomTypes.AsyncAtom<A, E, any>): Effect.Effect<A, E | BridgeError>;
   result<A, E>(atom: AtomTypes.ReadonlyAtom<Result<A, E>, any, any>): Effect.Effect<A, E | BridgeError>;
 }
 

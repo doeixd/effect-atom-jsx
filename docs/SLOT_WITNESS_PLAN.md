@@ -4,11 +4,20 @@ This plan defines a first-class slot witness API for AF-UI. The goal is to
 replace duplicated slot identity and slot metadata with composable values that
 carry runtime metadata and type information together.
 
-This is a redesign path, not merely a compatibility patch. The current
-`{ slots }` plus `{ slotMetadata }` shape should remain available during
-migration and for generated/dynamic code, but the canonical authored model
-should become slot witnesses. Breaking changes are acceptable when they remove
-string drift, improve inference, or make the public API more coherent.
+This plan is historical and is now paired with
+[`SLOT_CONTRACT_UNIFICATION_PLAN.md`](SLOT_CONTRACT_UNIFICATION_PLAN.md), which
+defines the next step: `View.Slots` becomes the single canonical authored slot
+contract object for components, styles, behaviors, diagnostics, and future
+renderer integration.
+
+This is a prerelease redesign path, not a compatibility patch. The canonical
+authored component model is now the `View.Slots` slot contract. Breaking changes
+are acceptable when they remove string drift, improve inference, or make the
+public API more coherent. Historical references below to
+`Component.withSlotWitnesses(...)`, `Component.SlotWitnessesOf<T>`, or a
+separate `SlotWitnesses` component axis are not current API guidance.
+Raw `{ slots }` plus `{ slotMetadata }` records are low-level generated/dynamic
+inputs, not the primary authored design.
 
 ## Problem
 
@@ -54,11 +63,11 @@ derive both the `slots` map and `slotMetadata` map from one source.
   and platform requirements.
 - Derive `View<Slots>` `slots` and `slotMetadata` from bound slot witnesses.
 - Treat slot witnesses as the canonical authored slot model.
-- Preserve the existing `View.make({ slots }, node, { slotMetadata })` path only
-  as a migration/dynamic-data path until the witness model covers normal usage.
+- Keep `View.make({ slots }, node, { slotMetadata })` as a low-level
+  generated/dynamic-data path.
 - Avoid end-user casts in normal slot authoring and composition.
 - Let generic helpers filter, compose, and infer slot names/capabilities/events.
-- Keep runtime diagnostics compatible with current `View.slot(...)` metadata.
+- Keep runtime diagnostics able to consume current `View.slot(...)` metadata.
 - Integrate slot witnesses with components, behaviors, styles, typed trees,
   platform diagnostics, and route wrappers.
 - Make slot metadata extraction precise enough that wrapper utilities can carry
@@ -71,9 +80,9 @@ derive both the `slots` map and `slotMetadata` map from one source.
 - Do not require JSX transform changes.
 - Do not force a class-based fluent API if a pipeable value API fits better.
 - Do not hide raw `Element.Handle` values from advanced/runtime code.
-- Do not preserve old APIs indefinitely if they keep the design split. Once the
-  witness path is proven, docs and examples should move to witnesses and direct
-  `slotMetadata` should become an advanced escape hatch.
+- Do not keep APIs that preserve a split mental model before release. Docs and
+  examples should move to witnesses, and direct `slotMetadata` should become a
+  low-level generated/dynamic escape hatch.
 
 ## Proposed API Shape
 
@@ -325,9 +334,9 @@ View.fromSlots(slots, node, {
 });
 ```
 
-Longer term, `View.fromSlots(...)` should become the canonical constructor for
-authored views. `View.make(...)` remains useful for dynamic/generated views and
-low-level compatibility, but examples should migrate toward:
+`View.fromSlots(...)` should be the canonical constructor for authored views.
+`View.make(...)` remains useful for dynamic/generated views and low-level
+runtime construction, but examples should use:
 
 ```ts
 return View.fromSlots(
@@ -467,8 +476,32 @@ available and structured.
 
 ### Component
 
-`Component<Props, Req, E, Bindings, Slots>` should eventually treat `Slots` as
-the handle map derived from slot witnesses:
+`Component<Props, Req, E, Bindings, Slots, SlotWitnesses>` currently treats
+`Slots` as the runtime handle map and `SlotWitnesses` as the authored metadata
+implementation axis.
+
+The long-term target is a single slot contract axis, where `View.Slots` is the
+component contract and handle maps are derived:
+
+```ts
+Component<Props, Req, E, Bindings, SlotContract>
+```
+
+Near-term canonical helper:
+
+```ts
+const Field = Component.make(...).pipe(
+  Component.withSlots(FieldSlots),
+);
+```
+
+`Component.withSlotWitnesses(...)` should be renamed or hidden before release;
+`Component.withSlots(...)` is the right public API.
+
+`Component.SlotsOf<T>` should continue returning the handle map projection,
+while `Component.SlotContractOf<T>` should expose the canonical authored slot
+contract. `Component.SlotWitnessesOf<T>` is the current implementation
+extraction helper and should not be the primary documented concept.
 
 ```ts
 const FieldSlots = View.Slots.define({
@@ -486,11 +519,11 @@ Potential component helpers:
 - `Component.slots(FieldSlots)` to allocate/bind handles during setup
 - `Component.viewFromSlots(...)` to reduce boilerplate around
   `View.fromSlots(...)`
-- `Component.SlotsOf<T>` should continue returning the handle map, while a new
-  `Component.SlotWitnessesOf<T>` can expose witness metadata when available
+- `Component.withSlots(FieldSlots)` to publish the authored slot contract
+- `Component.SlotContractOf<T>` as the canonical extraction helper
 
 Wrapper transforms (`withLayer`, `guard`, `withBehavior`, style attachments,
-routes) must preserve both handle slots and witness metadata.
+behavior attachments, routes) must preserve the authored slot contract.
 
 ### Behavior
 
@@ -568,13 +601,22 @@ authoring should be the primary path.
 `View.validatePlatform(...)`, and `View.validateTree(...)` should all consume
 metadata derived from witnesses without callers passing duplicate metadata.
 
+Component-level diagnostics should compare:
+
+- declared component slot contract (`Component.SlotContractOf<T>`)
+- rendered `View.slots` / `View.slotMetadata`
+- setup/runtime `bindings.slots` when present
+
+This declared-vs-rendered comparison is tracked in
+[`SLOT_CONTRACT_UNIFICATION_PLAN.md`](SLOT_CONTRACT_UNIFICATION_PLAN.md).
+
 Diagnostics should still normalize to printable strings, but the source data
 should keep witness values so type-level helpers remain precise.
 
 ### Routes And Router Runtime
 
-Route-node materialization and legacy route wrappers must preserve slot witness
-metadata through `Component.SlotWitnessesOf<T>` or an equivalent metadata axis.
+Route-node materialization and route wrappers must preserve slot contract
+metadata through `Component.SlotContractOf<T>`.
 This matters for nested layouts where styles/behaviors attach above route
 children.
 
@@ -602,7 +644,7 @@ should avoid choices that prevent these uses.
 
 ## Relationship To Existing APIs
 
-During migration, keep these APIs:
+Low-level generated/dynamic APIs:
 
 - `View.slot(name, options?)`
 - `View.hidden(name, options?)`
@@ -615,15 +657,15 @@ New canonical APIs:
 - `View.Slot.*`
 - `View.Slots.*`
 - `View.fromSlots(...)`
+- future pipeable `View` transforms for authored tree composition
 
-Migration guidance:
+Authoring guidance:
 
 - New authored components should prefer slot witnesses.
-- Generated/dynamic code may continue using strings and `slotMetadata`.
+- Generated/dynamic code may use strings and `slotMetadata`.
 - Existing tests/docs should migrate aggressively where witness APIs improve
   clarity or prevent duplication.
-- Once witness APIs cover the common path, direct `slotMetadata` should be
-  documented as low-level/dynamic.
+- Direct `slotMetadata` should be documented as low-level/dynamic.
 
 ## First Implementation Slice
 
@@ -660,22 +702,67 @@ the canonical model:
 
 ## Follow-Up Slices
 
-1. Add pipeable metadata composition helpers:
-   - `View.Slot.capability(...)`
-   - `View.Slot.events(...)`
-   - `View.Slot.attributes(...)`
-   - `View.Slot.requires(...)`
-   - `View.Slot.hidden`
-2. Add capability filtering helpers for behavior/style selection.
+1. Add pipeable metadata composition helpers: **Complete**
+   - `View.Slot.capability(...)` — updates slot capability while preserving all other metadata
+   - `View.Slot.events(...)` — updates slot allowed events
+   - `View.Slot.attributes(...)` — updates slot allowed attributes
+   - `View.Slot.requires(...)` — updates slot platform requirements
+   - `View.Slot.hidden` — marks slot as hidden
+   - All helpers preserve type information through pipe chains
+   - Runtime and type tests verify composition works correctly
+2. Add capability filtering helpers for behavior/style selection: **Complete**
+   - `View.Slots.withCapability(slots, capability)` — runtime filtering of slots by capability
+   - `Behavior.attachToAllWithCapability(behavior, capability)` — attaches behavior to all slots matching capability
+   - `Style.attachToAllWithCapability(style, capability)` — attaches style to all slots matching capability
+   - All helpers support both string and witness-based capabilities
+   - Runtime tests verify filtering and attachment work correctly
+   - Behavior/style capability attachment now uses the same hierarchy-aware matching as View diagnostics and filtering
 3. Migrate API examples from manual `slotMetadata` to slot witnesses.
-4. Integrate slot witnesses into typed tree helpers so `View.element(Input, ...)`
-   can infer `slot: "input"` directly.
+4. Integrate slot witnesses into typed tree helpers: **Initial slice complete**
+   - `View.element(Input, ...)` now infers the element capability and `slot: "input"` directly from the slot witness
+   - Type coverage verifies witness-authored trees can be passed to `View.fromSlots(...)`
 5. Consider de-emphasizing direct `slotMetadata` in docs once witnesses cover
    the common path.
-6. Add `Component.SlotWitnessesOf<T>` or equivalent if component transforms need
-   to preserve witness metadata separately from handle maps.
-7. Add behavior/style witness-targeted APIs and migrate examples away from
-   string slot maps.
+6. Add component slot witness metadata: **Initial slice complete**
+   - `Component.Component` now carries a sixth `SlotWitnesses` implementation axis.
+   - `Component.SlotWitnessesOf<T>` extracts the authored witness metadata.
+   - `Component.withSlotWitnesses(...)` publishes witness metadata on a component.
+   - Component wrappers and route metadata helpers preserve the witness axis.
+   - Next design slice: replace the public naming with `Component.withSlots(...)` and `Component.SlotContractOf<T>`.
+7. Add behavior/style witness-targeted APIs: **Historical slice complete, naming superseded**
+   - `Style.forSlots(...)` builds composed styles from a slot witness record
+   - `Style.attachToSlots(...)` attaches a style to a `View.Slots` collection by witness-derived names
+   - Historical name: `Style.attachBySlotWitnesses(...)` and
+     `Behavior.attachBySlotWitnesses(...)` mapped style/behavior element keys
+     through slot witnesses instead of duplicated string slot maps.
+   - Current release-facing name:
+     `Style.attachBySlotContract(...)` and
+     `Behavior.attachBySlotContract(...)`.
+   - Runtime coverage verifies witness-targeted style and behavior attachment
+   - Example/docs update is still pending
+8. Make `View<Slots>` pipeable and add pipeable View transform helpers: **Complete**
+   - `View.make(...)`, `View.tree(...)`, and `View.fromSlots(...)` return records with `.pipe(...)`, matching the slot witness authoring style.
+   - `View.make(slots, node, options?)` remains the low-level constructor; no zero-argument builder was added.
+   - Added transform helpers:
+     - `View.withTree(tree)`
+     - `View.withChildren(...children)`
+     - `View.appendChildren(...children)`
+     - `View.withName(name)`
+     - `View.withMetadata(metadata)`
+     - `View.withSlotMetadata(metadata)`
+     - `View.withRemaps(...remaps)`
+   - `View.withChildren(...)` / `View.appendChildren(...)` operate on `view.tree`: append to existing fragments/elements where possible, create a fragment when no tree exists, and wrap text/hole roots in a fragment.
+   - `View.children(...)` remains the dynamic children hole helper.
+   - Type coverage proves transforms preserve `View.SlotsOf<T>`.
+   - Runtime coverage proves transforms do not change `View.node(...)` unwrapping.
+9. Execute slot contract unification: **Planned**
+   - `View.Slots` becomes the single canonical authored slot contract object.
+   - `Component.withSlots(...)` becomes the component helper.
+   - `Component.SlotContractOf<T>` becomes the extraction helper.
+   - Add diagnostics for drift between declared contract, rendered view slots,
+     and setup/runtime `bindings.slots`.
+   - Collapse the two-axis `Slots` / `SlotWitnesses` implementation into one
+     `SlotContract` axis before release.
 
 ## Open Questions
 

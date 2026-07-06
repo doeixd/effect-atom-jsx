@@ -12,6 +12,13 @@ type Equal<A, B> =
 type Expect<T extends true> = T;
 
 const Commit = View.Event.make("commit");
+const InputSlot = View.Slot.make("input", {
+  capability: Element.Capability.TextInput,
+  allowedEvents: [View.Event.Input, Commit],
+});
+const InputSlots = View.Slots.make({
+  input: View.Slot.bind(InputSlot, Element.textInput()),
+});
 
 const NeedsInput = Behavior.events({
   input: [View.Event.Input, Commit],
@@ -33,15 +40,5 @@ type _InputLiteralNames = Expect<Equal<
 Behavior.validateAttachmentBySlots(
   NeedsInput,
   { input: "input" },
-  View.make(
-    { input: Element.textInput() },
-    null,
-    {
-      slotMetadata: {
-        input: View.slot("input", {
-          allowedEvents: [View.Event.Input, Commit],
-        }),
-      },
-    },
-  ),
+  View.fromSlots(InputSlots, null),
 );

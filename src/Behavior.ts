@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import * as Component from "./Component.js";
+import * as Element from "./Element.js";
 import * as View from "./View.js";
 
 const BehaviorTypeId: unique symbol = Symbol.for("effect-atom-jsx/Behavior");
@@ -21,6 +22,30 @@ export type RequirementsOf<T> = T extends Behavior<any, any, infer R, any> ? R :
 export type ErrorsOf<T> = T extends Behavior<any, any, any, infer E> ? E : never;
 
 type SlotMapLike = Record<string, unknown>;
+type SlotContractRecord = Record<string, View.Slot.Any>;
+type SlotContractInput = SlotContractRecord | View.Slots.Any;
+type SlotContractNames<T> =
+  T extends View.Slots.Any ? keyof View.Slots.BoundOf<T> & string
+    : T extends SlotContractRecord ? keyof T & string
+      : never;
+type SlotContractTargetNames<T> =
+  T extends View.Slots.Any ? keyof View.Slots.BoundOf<T> & string
+    : T extends SlotContractRecord ? View.Slot.NameOf<T[keyof T & string]> & string
+      : never;
+type HandleForCapability<Name> =
+  Name extends "TextInput" ? Element.TextInput
+    : Name extends "Container" ? Element.Container
+      : Name extends "Focusable" ? Element.Focusable
+        : Name extends "Draggable" ? Element.Draggable
+          : Name extends "Interactive" ? Element.Interactive
+            : Element.Handle;
+type ElementsForSlotContract<T extends SlotContractInput> = {
+  readonly [K in SlotContractNames<T>]: T extends View.Slots.Any
+    ? View.Slot.HandleOf<View.Slots.BoundOf<T>[K]>
+    : T extends SlotContractRecord
+      ? HandleForCapability<View.Slot.CapabilityOf<T[K]>>
+      : never;
+};
 
 export type BehaviorEventName = string | View.EventName;
 
@@ -59,6 +84,26 @@ export function make<Elements, Bindings, Req, E>(
     run,
     metadata,
   };
+}
+
+function slotContractRecordFrom(input: SlotContractInput): SlotContractRecord {
+  if (typeof input === "object" && input !== null && "bound" in input) {
+    const out: Record<string, View.Slot.Any> = {};
+    for (const [name, bound] of Object.entries(input.bound)) {
+      out[name] = bound.slot;
+    }
+    return out;
+  }
+  return input as SlotContractRecord;
+}
+
+export function forSlots<const S extends SlotContractInput>(
+  slots: S,
+): <Bindings, Req, E>(
+  run: (elements: ElementsForSlotContract<S>) => Effect.Effect<Bindings, E, Req>,
+  metadata?: BehaviorMetadata<ElementsForSlotContract<S>>,
+) => Behavior<ElementsForSlotContract<S>, Bindings, Req, E> {
+  return (run, metadata) => make(run, metadata);
 }
 
 export function withMetadata<Elements, Bindings, Req, E>(
@@ -146,13 +191,14 @@ export function attachBySlots<
   E,
   Slots extends SlotMapLike,
   Bindings extends { readonly slots: Slots },
+  SlotContract = Slots,
 >(
   behavior: Behavior<Elements, AddedBindings, BR, BE>,
   elementMap: { readonly [K in keyof Elements]: CompatibleSlotKey<Slots, Elements[K]> },
   merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
 ): (
-  component: Component.Component<Props, Req, E, Bindings, Slots>,
-) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, Slots> {
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract> {
   return Component.withBehavior(
     behavior,
     (bindings) => {
@@ -164,8 +210,109 @@ export function attachBySlots<
     },
     merge,
   ) as (
-    component: Component.Component<Props, Req, E, Bindings, Slots>,
-  ) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, Slots>;
+    component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+  ) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract>;
+}
+
+export function attachBySlotContract<
+  Elements extends SlotMapLike,
+  AddedBindings,
+  BR,
+  BE,
+  Props,
+  Req,
+  E,
+  Slots extends SlotMapLike,
+  Bindings extends { readonly slots: Slots },
+  M extends { readonly [K in keyof Elements]: View.Slot.Any },
+  SlotContract = Slots,
+>(
+  behavior: Behavior<Elements, AddedBindings, BR, BE>,
+  elementMap: M,
+  merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
+): (
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract> {
+  const mappedSlots: Record<string, string> = {};
+  for (const [behaviorKey, slot] of Object.entries(elementMap)) {
+    mappedSlots[behaviorKey] = slot.name;
+  }
+  return attachBySlots(behavior, mappedSlots as any, merge);
+}
+
+export function attachToSlots<
+  S extends SlotContractInput,
+  AddedBindings,
+  BR,
+  BE,
+>(
+  behavior: Behavior<ElementsForSlotContract<S>, AddedBindings, BR, BE>,
+  slots: S,
+  merge?: (bindings: any, added: AddedBindings) => any,
+): <
+  C extends Component.Component<any, any, any, { readonly slots: SlotMapLike }, any>,
+>(
+  component: Component.SlotsOf<C> extends Record<SlotContractTargetNames<S>, Element.Handle | Element.Collection<Element.Handle>>
+    ? C
+    : never,
+) => Component.Component<
+  Component.PropsOf<C>,
+  Component.Requirements<C> | BR,
+  Component.Errors<C> | BE,
+  Component.BindingsOf<C> & AddedBindings,
+  Component.SlotContractOf<C>
+> & Omit<C, keyof Component.Component<any, any, any, any, any>> {
+  const witnesses = slotContractRecordFrom(slots);
+  const map: Record<string, View.Slot.Any> = {};
+  for (const key of Object.keys(witnesses)) {
+    map[key] = witnesses[key]!;
+  }
+  return attachBySlotContract(behavior as any, map as any, merge) as any;
+}
+
+export function attachToAllWithCapability<
+  Elements extends SlotMapLike,
+  AddedBindings,
+  BR,
+  BE,
+  Props,
+  Req,
+  E,
+  Slots extends SlotMapLike,
+  Bindings extends { readonly slots: Slots },
+  C extends View.SlotCapability,
+  SlotContract = Slots,
+>(
+  behavior: Behavior<Elements, AddedBindings, BR, BE>,
+  capability: C,
+  merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
+): (
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract> {
+  return Component.withBehavior(
+    behavior,
+    (bindings) => {
+      const out: Record<string, unknown> = {};
+
+      const slotMetadata = (bindings as { readonly slotMetadata?: Record<string, View.SlotMetadata> }).slotMetadata;
+      const slots = bindings.slots ?? {};
+
+      for (const [slotKey, slotValue] of Object.entries(slots)) {
+        const metadata = slotMetadata?.[slotKey];
+        const slotCapability = metadata?.capability ?? View.capabilityOf(slotValue);
+        if (slotCapability === undefined) continue;
+
+        if (View.extendsCapability(slotCapability, capability)) {
+          out[slotKey] = slotValue;
+        }
+      }
+
+      return out as Elements;
+    },
+    merge,
+  ) as (
+    component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+  ) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract>;
 }
 
 export function validateAttachmentBySlots<
@@ -233,12 +380,18 @@ export function validateComponentAttachmentBySlots<
 export const Behavior = {
   TypeId: BehaviorTypeId,
   make,
+  forSlots,
   compose,
   decorator,
   attach,
   attachBySlots,
+  attachBySlotContract,
+  attachToSlots,
+  attachToAllWithCapability,
   withMetadata,
   events,
   validateAttachmentBySlots,
   validateComponentAttachmentBySlots,
 } as const;
+
+

@@ -10,18 +10,28 @@ import {
   Stream as FxStream,
   type ServiceMap,
 } from "effect";
-import { createSignal, onCleanup, useContext, type Accessor } from "./api.js";
+import { createEffect, createSignal, onCleanup, useContext, type Accessor, type Setter } from "./api.js";
 import * as Atom from "./Atom.js";
 import type * as Behavior from "./Behavior.js";
 import * as Element from "./Element.js";
 import * as Route from "./Route.js";
 import * as View from "./View.js";
-import { defineMutation, defineQuery, ManagedRuntimeContext, mount as mountRuntime, type Result } from "./effect-ts.js";
+import {
+  defineMutation,
+  defineQuery,
+  ManagedRuntimeContext,
+  mount as mountRuntime,
+  type BridgeError,
+  type MutationSupersededError,
+  type Result,
+  type RuntimeLike,
+} from "./effect-ts.js";
 import { currentComponentScope } from "./component-scope.js";
 
 export const ComponentTypeId: unique symbol = Symbol.for("effect-atom-jsx/Component");
 
 const ComponentImplTypeId: unique symbol = Symbol.for("effect-atom-jsx/ComponentImpl");
+const ComponentSetupTypeId: unique symbol = Symbol.for("effect-atom-jsx/ComponentSetup");
 
 export interface SlotMap {
   readonly [name: string]: Element.Handle | Element.Collection<Element.Handle>;
@@ -37,6 +47,7 @@ type SlotsFromBindings<Bindings> = Bindings extends { readonly slots: infer Slot
 type ViewSlotRecord = Record<string, Element.Handle | Element.Collection<Element.Handle>>;
 
 const viewSlotRegistry = new WeakMap<Component<any, any, any, any, any>, ViewSlotRecord>();
+const slotContractRegistry = new WeakMap<Component<any, any, any, any, any>, AnySlotContract>();
 
 export function registerViewSlots(slots: ViewSlotRecord, component: Component<any, any, any, any, any>): void {
   viewSlotRegistry.set(component, slots);
@@ -44,6 +55,10 @@ export function registerViewSlots(slots: ViewSlotRecord, component: Component<an
 
 export function getViewSlots(component: Component<any, any, any, any, any>): ViewSlotRecord {
   return viewSlotRegistry.get(component) ?? {};
+}
+
+export function getSlotContract(component: Component<any, any, any, any, any>): AnySlotContract | undefined {
+  return slotContractRegistry.get(component);
 }
 
 type Pipeable<Self> = {
@@ -54,14 +69,64 @@ type Pipeable<Self> = {
   pipe<A, B, C, D>(ab: (self: Self) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D): D;
 };
 
-export interface Component<Props, Req, E, Bindings = unknown, Slots = SlotsFromBindings<Bindings>> {
+type Simplify<T> = { readonly [K in keyof T]: T[K] };
+type NoDuplicateName<Bindings, Name extends string> = Name extends keyof Bindings ? never : Name;
+type NoDuplicateFragment<Bindings, Added> = Extract<keyof Bindings, keyof Added> extends never ? unknown : never;
+type SetupStep<Props> = (
+  input: { readonly props: Props; readonly bindings: Readonly<Record<string, unknown>> },
+) => Effect.Effect<Readonly<Record<string, unknown>>, unknown, unknown>;
+
+export interface SetupInput<Props, Bindings> {
+  readonly props: Props;
+  readonly bindings: Bindings;
+}
+
+export interface Setup<Props, Bindings, E = never, R = never> extends Pipeable<Setup<Props, Bindings, E, R>> {
+  readonly [ComponentSetupTypeId]: {
+    readonly Props: Props;
+    readonly Bindings: Bindings;
+    readonly E: E;
+    readonly R: R;
+  };
+  readonly effect: (props: Props) => Effect.Effect<Bindings, E, R>;
+  bind<const Name extends string, A, E2, R2>(
+    name: NoDuplicateName<Bindings, Name>,
+    f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E2, R2>,
+  ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E | E2, R | R2>;
+  value<const Name extends string, A>(
+    name: NoDuplicateName<Bindings, Name>,
+    f: (input: SetupInput<Props, Bindings>) => A,
+  ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E, R>;
+  doEffect<E2, R2>(
+    f: (input: SetupInput<Props, Bindings>) => Effect.Effect<void, E2, R2>,
+  ): Setup<Props, Bindings, E | E2, R | R2>;
+  use<Added, E2, R2>(
+    fragment: Setup<Props, Added, E2, R2> & NoDuplicateFragment<Bindings, Added>,
+  ): Setup<Props, Simplify<Bindings & Added>, E | E2, R | R2>;
+}
+
+export type SetupPropsOf<T> = T extends Setup<infer Props, any, any, any> ? Props : never;
+export type SetupBindingsOf<T> = T extends Setup<any, infer Bindings, any, any> ? Bindings : never;
+export type SetupErrorsOf<T> = T extends Setup<any, any, infer E, any> ? E : never;
+export type SetupRequirementsOf<T> = T extends Setup<any, any, any, infer R> ? R : never;
+type SetupSource<Props, Bindings, E, R> =
+  | ((props: Props) => Effect.Effect<Bindings, E, R>)
+  | Setup<Props, Bindings, E, R>;
+
+export type AnySlotContract = View.Slots.Any | Record<string, View.Slot.Any>;
+export type SlotsFromSlotContract<SlotContract, Fallback> = SlotContract extends View.Slots.Any
+  ? View.Slots.HandlesOf<SlotContract>
+  : Fallback;
+
+export interface Component<Props, Req, E, Bindings = unknown, SlotContract = SlotsFromBindings<Bindings>> {
   (props: Props): unknown;
   readonly [ComponentTypeId]: {
     readonly Props: Props;
     readonly Req: Req;
     readonly E: E;
     readonly Bindings: Bindings;
-    readonly Slots: Slots;
+    readonly Slots: SlotsFromSlotContract<SlotContract, SlotContract>;
+    readonly SlotContract: SlotContract;
   };
   pipe(): this;
   pipe<A>(ab: (self: this) => A): A;
@@ -107,6 +172,69 @@ function pipeSelf(self: unknown, fns: ReadonlyArray<(value: any) => any>): unkno
   return fns.reduce((acc, fn) => fn(acc), self);
 }
 
+function isSetup<Props, Bindings, E, R>(value: unknown): value is Setup<Props, Bindings, E, R> {
+  return typeof value === "object" && value !== null && ComponentSetupTypeId in value;
+}
+
+function setupSourceEffect<Props, Bindings, E, R>(
+  source: SetupSource<Props, Bindings, E, R>,
+): (props: Props) => Effect.Effect<Bindings, E, R> {
+  return isSetup<Props, Bindings, E, R>(source) ? source.effect : source;
+}
+
+function makeSetup<Props, Bindings, E, R>(
+  steps: ReadonlyArray<SetupStep<Props>>,
+): Setup<Props, Bindings, E, R> {
+  const effect = ((props: Props) =>
+    Effect.gen(function* () {
+      let bindings: Record<string, unknown> = {};
+      for (const step of steps) {
+        const added = yield* step({ props, bindings });
+        bindings = { ...bindings, ...added };
+      }
+      return bindings as Bindings;
+    })) as (props: Props) => Effect.Effect<Bindings, E, R>;
+
+  const out = {
+    [ComponentSetupTypeId]: {
+      Props: undefined as unknown as Props,
+      Bindings: undefined as unknown as Bindings,
+      E: undefined as unknown as E,
+      R: undefined as unknown as R,
+    },
+    effect,
+    bind: (name: string, f: (input: SetupInput<Props, Bindings>) => Effect.Effect<unknown, unknown, unknown>) =>
+      makeSetup<Props, any, any, any>([
+        ...steps,
+        (input) =>
+          f(input as unknown as SetupInput<Props, Bindings>).pipe(
+            Effect.map((value) => ({ [name]: value })),
+          ),
+      ]),
+    value: (name: string, f: (input: SetupInput<Props, Bindings>) => unknown) =>
+      makeSetup<Props, any, any, any>([
+        ...steps,
+        (input) => Effect.succeed({ [name]: f(input as unknown as SetupInput<Props, Bindings>) }),
+      ]),
+    doEffect: (f: (input: SetupInput<Props, Bindings>) => Effect.Effect<void, unknown, unknown>) =>
+      makeSetup<Props, Bindings, any, any>([
+        ...steps,
+        (input) =>
+          f(input as unknown as SetupInput<Props, Bindings>).pipe(
+            Effect.as({}),
+          ),
+      ]),
+    use: (fragment: Setup<Props, unknown, unknown, unknown>) =>
+      makeSetup<Props, any, any, any>([
+        ...steps,
+        (input) => fragment.effect(input.props).pipe(Effect.map((added) => added as Readonly<Record<string, unknown>>)),
+      ]),
+  } as unknown as Setup<Props, Bindings, E, R>;
+
+  out.pipe = ((...fns: ReadonlyArray<(value: any) => any>) => pipeSelf(out, fns)) as typeof out["pipe"];
+  return out;
+}
+
 function runForkWithAmbient<R, A, E>(effect: Effect.Effect<A, E, R>): Fiber.Fiber<A, E> {
   const ambient = useContext(ManagedRuntimeContext);
   const scope = currentComponentScope();
@@ -130,9 +258,9 @@ function matchBoundary(boundary: ErrorHandlers | undefined, error: unknown): unk
   return null;
 }
 
-function toComponent<Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings>>(
+function toComponent<Props, Req, E, Bindings, SlotContract = SlotsFromBindings<Bindings>>(
   internal: InternalComponent<Props, Req, E, Bindings>,
-): Component<Props, Req, E, Bindings, Slots> {
+): Component<Props, Req, E, Bindings, SlotContract> {
   const component = ((unsafeProps: Props) => {
     const props = internal.props.parse(unsafeProps);
     const [bindings, setBindings] = createSignal<Bindings | null>(null);
@@ -182,7 +310,7 @@ function toComponent<Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings
       }
       return View.node(result);
     };
-  }) as Component<Props, Req, E, Bindings, Slots>;
+  }) as Component<Props, Req, E, Bindings, SlotContract>;
 
   const out = Object.assign(component, {
     [ComponentTypeId]: {
@@ -190,7 +318,8 @@ function toComponent<Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings
       Req: undefined as unknown as Req,
       E: undefined as unknown as E,
       Bindings: undefined as unknown as Bindings,
-      Slots: undefined as unknown as Slots,
+      Slots: undefined as unknown as SlotsFromSlotContract<SlotContract, SlotContract>,
+      SlotContract: undefined as unknown as SlotContract,
     },
     [ComponentImplTypeId]: true as const,
     props: internal.props,
@@ -206,8 +335,8 @@ function toComponent<Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings
   return out;
 }
 
-function internals<Props, Req, E, Bindings, Slots>(
-  component: Component<Props, Req, E, Bindings, Slots>,
+function internals<Props, Req, E, Bindings, SlotContract>(
+  component: Component<Props, Req, E, Bindings, SlotContract>,
 ): InternalComponent<Props, Req, E, Bindings> {
   if (!isInternalComponent<Props, Req, E, Bindings>(component)) {
     throw new Error("[effect-atom-jsx/Component] expected a Component value.");
@@ -215,15 +344,15 @@ function internals<Props, Req, E, Bindings, Slots>(
   return component;
 }
 
-function provideLayerToSetup<Props, Req, E, Bindings, Slots, ROut, E2, RIn>(
-  component: Component<Props, Req, E, Bindings, Slots>,
+function provideLayerToSetup<Props, Req, E, Bindings, SlotContract, ROut, E2, RIn>(
+  component: Component<Props, Req, E, Bindings, SlotContract>,
   layer: Layer.Layer<ROut, E2, RIn>,
-): Component<Props, Exclude<Req, ROut> | RIn, E | E2, Bindings, Slots> {
+): Component<Props, Exclude<Req, ROut> | RIn, E | E2, Bindings, SlotContract> {
   const i = internals(component);
   return toComponentLike(component, {
     ...i,
     setup: (props) => i.setup(props).pipe(Effect.provide(layer as any)) as any,
-  }) as Component<Props, Exclude<Req, ROut> | RIn, E | E2, Bindings, Slots>;
+  }) as Component<Props, Exclude<Req, ROut> | RIn, E | E2, Bindings, SlotContract>;
 }
 
 type HeadlessChildren<Bindings> = { readonly children?: (bindings: Bindings) => unknown };
@@ -245,41 +374,77 @@ export function require<Req = never>(...tags: ReadonlyArray<ServiceMap.Key<any, 
   return { tags };
 }
 
+export function setup<Props = {}>(): Setup<Props, {}, never, never> {
+  return makeSetup<Props, {}, never, never>([]);
+}
+
+export function bind<const Name extends string, Props = any, Bindings = any, A = unknown, E = never, R = never>(
+  name: Name,
+  f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E, R>,
+): <E0, R0>(
+  source: Setup<Props, Bindings, E0, R0> & (Name extends keyof Bindings ? never : unknown),
+) => Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E0 | E, R0 | R> {
+  return (source) => source.bind(name as any, f as any) as any;
+}
+
+export function value<const Name extends string, Props = any, Bindings = any, A = unknown>(
+  name: Name,
+  f: (input: SetupInput<Props, Bindings>) => A,
+): <E0, R0>(
+  source: Setup<Props, Bindings, E0, R0> & (Name extends keyof Bindings ? never : unknown),
+) => Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E0, R0> {
+  return (source) => source.value(name as any, f as any) as any;
+}
+
+export function doEffect<Props = any, Bindings = any, E = never, R = never>(
+  f: (input: SetupInput<Props, Bindings>) => Effect.Effect<void, E, R>,
+): <E0, R0>(source: Setup<Props, Bindings, E0, R0>) => Setup<Props, Bindings, E0 | E, R0 | R> {
+  return (source) => source.doEffect(f as any) as any;
+}
+
+export function use<Props = any, Added = any, E = never, R = never>(
+  fragment: Setup<Props, Added, E, R>,
+): <Bindings, E0, R0>(
+  source: Setup<Props, Bindings, E0, R0> & NoDuplicateFragment<Bindings, Added>,
+) => Setup<Props, Simplify<Bindings & Added>, E0 | E, R0 | R> {
+  return (source) => source.use(fragment as any) as any;
+}
+
 export function make<Props, Req, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
-  setup: (props: Props) => Effect.Effect<Bindings, E, Req>,
+  setup: SetupSource<Props, Bindings, E, Req>,
   view: (props: Props, bindings: Bindings) => unknown,
 ): Component<Props, Req, E, Bindings>;
 export function make<Props, Req, E, Bindings, Slots>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
-  setup: (props: Props) => Effect.Effect<Bindings, E, Req>,
+  setup: SetupSource<Props, Bindings, E, Req>,
   view: (props: Props, bindings: Bindings) => View.View<Slots>,
 ): Component<Props, Req, E, Bindings, Slots>;
 export function make<Props, Req, SetupReq, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
-  setup: (props: Props) => Effect.Effect<Bindings, E, SetupReq>,
+  setup: SetupSource<Props, Bindings, E, SetupReq>,
   view: (props: Props, bindings: Bindings) => unknown,
 ): Component<Props, Req | SetupReq, E, Bindings>;
 export function make<Props, Req, SetupReq, E, Bindings, Slots>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
-  setup: (props: Props) => Effect.Effect<Bindings, E, SetupReq>,
+  setup: SetupSource<Props, Bindings, E, SetupReq>,
   view: (props: Props, bindings: Bindings) => View.View<Slots>,
 ): Component<Props, Req | SetupReq, E, Bindings, Slots>;
 export function make<Props, Req, SetupReq, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
-  setup: (props: Props) => Effect.Effect<Bindings, E, SetupReq>,
+  setup: SetupSource<Props, Bindings, E, SetupReq>,
   view: (props: Props, bindings: Bindings) => unknown,
 ): Component<Props, Req | SetupReq, E, Bindings> {
   return toComponent({
     [ComponentImplTypeId]: true,
     props: propSpec,
     requirements: req as unknown as RequirementSpec<Req | SetupReq>,
-    setup,
+    setup: setupSourceEffect(setup),
     view,
   });
 }
@@ -287,18 +452,19 @@ export function make<Props, Req, SetupReq, E, Bindings>(
 export function headless<Props, Req, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
-  setup: (props: Props) => Effect.Effect<Bindings, E, Req>,
+  setup: SetupSource<Props, Bindings, E, Req>,
 ): HeadlessComponent<Props, Req, E, Bindings>;
 export function headless<Props, Req, SetupReq, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
-  setup: (props: Props) => Effect.Effect<Bindings, E, SetupReq>,
+  setup: SetupSource<Props, Bindings, E, SetupReq>,
 ): HeadlessComponent<Props, Req | SetupReq, E, Bindings> {
+  const setupEffect = setupSourceEffect(setup);
   return toComponent({
     [ComponentImplTypeId]: true,
     props: propSpec as unknown as PropsSpec<Props & HeadlessChildren<Bindings>>,
     requirements: req as unknown as RequirementSpec<Req | SetupReq>,
-    setup: setup as unknown as (props: Props & HeadlessChildren<Bindings>) => Effect.Effect<Bindings, E, Req | SetupReq>,
+    setup: setupEffect as unknown as (props: Props & HeadlessChildren<Bindings>) => Effect.Effect<Bindings, E, Req | SetupReq>,
   }) as HeadlessComponent<Props, Req | SetupReq, E, Bindings>;
 }
 
@@ -317,9 +483,163 @@ export type Requirements<T> = T extends Component<any, infer Req, any, any, any>
 export type Errors<T> = T extends Component<any, any, infer E, any, any> ? E : never;
 export type PropsOf<T> = T extends Component<infer Props, any, any, any, any> ? Props : never;
 export type BindingsOf<T> = T extends Component<any, any, any, infer Bindings, any> ? Bindings : never;
-export type SlotsOf<T> = T extends Component<any, any, any, any, infer Slots> ? Slots : never;
+export type SlotContractOf<T> = T extends { readonly [ComponentTypeId]: { readonly SlotContract: infer SlotContract } } ? SlotContract : never;
+export type SlotsOf<T> = SlotContractOf<T> extends never ? never : SlotsFromSlotContract<SlotContractOf<T>, SlotContractOf<T>>;
+export type PublicSlotsOf<T> = SlotContractOf<T> extends View.Slots.Any
+  ? Pick<SlotsOf<T>, View.Slots.PublicNamesOf<SlotContractOf<T>> & keyof SlotsOf<T>>
+  : SlotsOf<T>;
+export type HiddenSlotsOf<T> = SlotContractOf<T> extends View.Slots.Any
+  ? Pick<SlotsOf<T>, View.Slots.HiddenNamesOf<SlotContractOf<T>> & keyof SlotsOf<T>>
+  : {};
+
+export type ComponentDiagnosticCode =
+  | "component:missing-declared-slot"
+  | "component:undeclared-view-slot"
+  | "component:slot-capability-mismatch"
+  | "component:missing-bindings-slot"
+  | "component:undeclared-bindings-slot";
+
+export interface ComponentDiagnostic {
+  readonly code: ComponentDiagnosticCode;
+  readonly message: string;
+  readonly component?: string;
+  readonly slot?: string;
+  readonly declaredCapability?: string;
+  readonly renderedCapability?: string;
+}
 
 type RenderPropChildren<Bindings> = { readonly children?: (bindings: Bindings) => unknown };
+
+function isSlotContract(value: AnySlotContract): value is View.Slots.Any {
+  return typeof value === "object" && value !== null && View.SlotsTypeId in value;
+}
+
+function slotContractMetadata(contract: AnySlotContract): Record<string, View.SlotMetadata> {
+  if (isSlotContract(contract)) {
+    return View.Slots.metadata(contract) as Record<string, View.SlotMetadata>;
+  }
+  const out: Record<string, View.SlotMetadata> = {};
+  for (const [name, witness] of Object.entries(contract)) {
+    out[name] = witness.metadata;
+  }
+  return out;
+}
+
+function slotsRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+}
+
+function bindingsSlotsRecord(bindings: unknown): Record<string, unknown> | undefined {
+  if (typeof bindings !== "object" || bindings === null || !("slots" in bindings)) return undefined;
+  return slotsRecord((bindings as { readonly slots?: unknown }).slots);
+}
+
+function capabilityName(value: View.SlotCapability | undefined): string | undefined {
+  return value === undefined ? undefined : View.nameOfCapability(value);
+}
+
+export function validateSlotContract<Props, Req, E, Bindings, Slots>(
+  component: Component<Props, Req, E, Bindings, any>,
+  view: View.View<Slots>,
+  bindings?: Bindings,
+): readonly ComponentDiagnostic[] {
+  const contract = getSlotContract(component);
+  if (contract === undefined) return [];
+
+  const diagnostics: ComponentDiagnostic[] = [];
+  const componentName = view.name;
+  const declaredMetadata = slotContractMetadata(contract);
+  const renderedSlots = slotsRecord(view.slots);
+  const renderedMetadata = view.slotMetadata as Record<string, View.SlotMetadata | undefined> | undefined;
+  const bindingSlots = bindingsSlotsRecord(bindings);
+
+  for (const [slot, declared] of Object.entries(declaredMetadata)) {
+    if (!(slot in renderedSlots)) {
+      diagnostics.push({
+        code: "component:missing-declared-slot",
+        message: `Component ${componentName ?? "<anonymous>"} declares slot ${slot} but its View does not expose it.`,
+        component: componentName,
+        slot,
+        declaredCapability: capabilityName(declared.capability),
+      });
+      continue;
+    }
+
+    const renderedCapability = renderedMetadata?.[slot]?.capability ?? View.capabilityOf(renderedSlots[slot]);
+    if (
+      declared.capability !== undefined
+      && renderedCapability !== undefined
+      && !View.extendsCapability(renderedCapability, declared.capability)
+    ) {
+      diagnostics.push({
+        code: "component:slot-capability-mismatch",
+        message: `Component ${componentName ?? "<anonymous>"} renders slot ${slot} as ${View.nameOfCapability(renderedCapability)}, which does not satisfy declared capability ${View.nameOfCapability(declared.capability)}.`,
+        component: componentName,
+        slot,
+        declaredCapability: capabilityName(declared.capability),
+        renderedCapability: capabilityName(renderedCapability),
+      });
+    }
+
+    if (bindingSlots !== undefined && !(slot in bindingSlots)) {
+      diagnostics.push({
+        code: "component:missing-bindings-slot",
+        message: `Component ${componentName ?? "<anonymous>"} declares slot ${slot} but bindings.slots does not expose it.`,
+        component: componentName,
+        slot,
+        declaredCapability: capabilityName(declared.capability),
+      });
+    }
+  }
+
+  for (const slot of Object.keys(renderedSlots)) {
+    if (!(slot in declaredMetadata)) {
+      diagnostics.push({
+        code: "component:undeclared-view-slot",
+        message: `Component ${componentName ?? "<anonymous>"} View exposes undeclared slot ${slot}.`,
+        component: componentName,
+        slot,
+        renderedCapability: capabilityName(renderedMetadata?.[slot]?.capability ?? View.capabilityOf(renderedSlots[slot])),
+      });
+    }
+  }
+
+  if (bindingSlots !== undefined) {
+    for (const slot of Object.keys(bindingSlots)) {
+      if (!(slot in declaredMetadata)) {
+        diagnostics.push({
+          code: "component:undeclared-bindings-slot",
+          message: `Component ${componentName ?? "<anonymous>"} bindings.slots exposes undeclared slot ${slot}.`,
+          component: componentName,
+          slot,
+          renderedCapability: capabilityName(View.capabilityOf(bindingSlots[slot])),
+        });
+      }
+    }
+  }
+
+  return diagnostics;
+}
+
+export function validateRenderedSlotContract<Props, Req, E, Bindings, Slots>(
+  component: Component<Props, Req, E, Bindings, any>,
+  propsValue: Props,
+): Effect.Effect<readonly ComponentDiagnostic[], E, Req> {
+  const i = internals(component);
+  const parsed = i.props.parse(propsValue);
+  return i.setup(parsed).pipe(
+    Effect.map((bindings) => {
+      const result = i.view === undefined
+        ? typeof (parsed as RenderPropChildren<Bindings>).children === "function"
+          ? (parsed as RenderPropChildren<Bindings>).children?.(bindings)
+          : undefined
+        : i.view(parsed, bindings);
+      if (!View.isView(result)) return [];
+      registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
+      return validateSlotContract(component, result as View.View<Slots>, bindings);
+    }),
+  );
+}
 
 function renderViewResult(
   component: Component<any, any, any, any, any>,
@@ -389,9 +709,27 @@ export interface ComponentAction<Args extends ReadonlyArray<unknown>, A, E> {
   (...args: Args): void;
   run(...args: Args): void;
   runEffect(...args: Args): Effect.Effect<A, E>;
+  effect(...args: Args): Effect.Effect<void, E | BridgeError | MutationSupersededError>;
   result: Accessor<Result<void, E>>;
   pending: Accessor<boolean>;
 }
+
+export type ActionArgsOf<T> = T extends ComponentAction<infer Args, any, any> ? Args : never;
+export type ActionInputOf<T> = T extends ComponentAction<infer Args, any, any>
+  ? Args extends readonly [infer Input] ? Input : Args
+  : never;
+export type ActionErrorOf<T> = T extends ComponentAction<any, any, infer E> ? E : never;
+export type ActionSuccessOf<T> = T extends ComponentAction<any, infer A, any> ? A : never;
+export type ActionRunErrorOf<T> = T extends ComponentAction<any, any, infer E> ? E : never;
+export type ActionEffectErrorOf<T> = T extends ComponentAction<any, any, infer E>
+  ? E | BridgeError | MutationSupersededError
+  : never;
+export type ActionRunEffectOf<T> = T extends ComponentAction<infer Args, infer A, infer E>
+  ? (...args: Args) => Effect.Effect<A, E>
+  : never;
+export type ActionEffectOf<T> = T extends ComponentAction<infer Args, any, infer E>
+  ? (...args: Args) => Effect.Effect<void, E | BridgeError | MutationSupersededError>
+  : never;
 
 export interface ActionOptions {
   readonly name?: string;
@@ -399,6 +737,26 @@ export interface ActionOptions {
   readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
   readonly concurrency?: "switch" | "queue" | "drop" | { readonly max: number };
   readonly detached?: boolean;
+}
+
+export function signal<A>(initial: A): Effect.Effect<readonly [Accessor<A>, Setter<A>]> {
+  return Effect.sync(() => createSignal(initial));
+}
+
+export function effect<T>(
+  fn: (prev: T | undefined) => T | void | (() => void),
+  initialValue?: T,
+): Effect.Effect<void> {
+  return Effect.sync(() => {
+    createEffect<T | void>((prev) => {
+      const result = fn(prev as T | undefined);
+      if (typeof result === "function") {
+        onCleanup(result as () => void);
+        return undefined;
+      }
+      return result;
+    }, initialValue);
+  });
 }
 
 export function state<A>(initial: A): Effect.Effect<Atom.WritableAtom<A>> {
@@ -422,18 +780,29 @@ export function query<A, E, R>(
     readonly retrySchedule?: Schedule.Schedule<unknown, any, any>;
     readonly pollSchedule?: Schedule.Schedule<unknown, any, any>;
   },
-): Effect.Effect<Atom.ReadonlyAtom<Result<A, E>>, never, R> {
-  return Effect.sync(() => defineQuery(effect, options).result as Atom.ReadonlyAtom<Result<A, E>>);
+): Effect.Effect<Atom.ReadonlyAtom<Result<A, E>, E>, never, R> {
+  return Effect.gen(function* () {
+    const runtimeContext = yield* Effect.services<R>();
+    return yield* Effect.sync(() =>
+      defineQuery(effect, {
+        ...options,
+        runtime: runtimeContext as RuntimeLike<R, unknown>,
+      }).result as Atom.ReadonlyAtom<Result<A, E>, E>
+    );
+  });
 }
 
 export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
   fn: (...args: Args) => Effect.Effect<A, E, R>,
   options?: ActionOptions,
 ): Effect.Effect<ComponentAction<Args, A, E>, never, R> {
-  return Effect.sync(() => {
+  return Effect.gen(function* () {
+    const runtimeContext = yield* Effect.services<R>();
+    return yield* Effect.sync(() => {
     const handle = defineMutation<Args, E, R>(
       (args) => fn(...args),
       {
+        runtime: runtimeContext as RuntimeLike<R, unknown>,
         name: options?.name,
         onTransition: options?.onTransition,
         onSuccess: () => {
@@ -458,15 +827,35 @@ export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
           if (options?.concurrency === "drop" && handle.pending()) {
             return undefined as unknown as A;
           }
-          handle.run(args);
-          return await Effect.runPromise(fn(...args) as Effect.Effect<A, E, never>);
+          return await Effect.runPromiseWith(runtimeContext as any)(fn(...args));
         },
         catch: (error) => error as E,
       });
+    out.effect = (...args: Args) => handle.effect(args) as Effect.Effect<void, E | BridgeError | MutationSupersededError>;
     out.result = handle.result;
     out.pending = handle.pending;
     return out;
+    });
   });
+}
+
+export interface OptimisticBuilder<A> {
+  action<Success = A, E = never, R = never, Input = void>(
+    spec: Atom.OptimisticActionSpec<A, Input, Success, E, R>,
+  ): Effect.Effect<Atom.OptimisticActionHandle<Input, A, Success, E>, never, R>;
+}
+
+export function optimistic<A>(source: Atom.WritableAtom<A>): OptimisticBuilder<A> {
+  return {
+    action: <Success = A, E = never, R = never, Input = void>(
+      spec: Atom.OptimisticActionSpec<A, Input, Success, E, R>,
+    ) => Effect.gen(function* () {
+      const runtimeContext = yield* Effect.services<R>();
+      return yield* Effect.sync(() =>
+        Atom.optimistic(source, runtimeContext as RuntimeLike<R, unknown>).action(spec)
+      );
+    }) as Effect.Effect<Atom.OptimisticActionHandle<Input, A, Success, E>, never, R>,
+  };
 }
 
 export type ComponentRef<T> = { current: T | null };
@@ -508,16 +897,71 @@ export function withLayer<ROut, E2, RIn>(
   layer: Layer.Layer<ROut, E2, RIn>,
 ): <C extends Component<any, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<PropsOf<C>, Exclude<Requirements<C>, ROut> | RIn, Errors<C> | E2, BindingsOf<C>, SlotsOf<C>>> {
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Exclude<Requirements<C>, ROut> | RIn, Errors<C> | E2, BindingsOf<C>, SlotContractOf<C>>> {
   return <C extends Component<any, any, any, any, any>>(component: C) =>
-    provideLayerToSetup(component, layer) as PreserveRouteMetadata<C, Component<PropsOf<C>, Exclude<Requirements<C>, ROut> | RIn, Errors<C> | E2, BindingsOf<C>, SlotsOf<C>>>;
+    provideLayerToSetup(component, layer) as PreserveRouteMetadata<C, Component<PropsOf<C>, Exclude<Requirements<C>, ROut> | RIn, Errors<C> | E2, BindingsOf<C>, SlotContractOf<C>>>;
+}
+
+export function withSlotContract<const SlotContract extends AnySlotContract>(
+  slotContract: SlotContract,
+): <C extends Component<any, any, any, any, any>>(
+  component: C,
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotContract>> {
+  return <C extends Component<any, any, any, any, any>>(component: C) => {
+    slotContractRegistry.set(component, slotContract);
+    return component as unknown as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotContract>>;
+  };
+}
+
+export function withSlots<const SlotContract extends View.Slots.Any>(
+  slots: SlotContract,
+): <C extends Component<any, any, any, any, any>>(
+  component: C,
+) => PreserveRouteMetadata<C, Component<
+  PropsOf<C>,
+  Requirements<C>,
+  Errors<C>,
+  BindingsOf<C> & { readonly slots: View.Slots.HandlesOf<SlotContract> },
+  SlotContract
+>>;
+export function withSlots<const SlotContract extends AnySlotContract>(
+  slots: SlotContract,
+): <C extends Component<any, any, any, any, any>>(
+  component: C,
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotContract>>;
+export function withSlots<const SlotContract extends AnySlotContract>(
+  slots: SlotContract,
+): <C extends Component<any, any, any, any, any>>(component: C) => PreserveRouteMetadata<C, Component<any, any, any, any, SlotContract>> {
+  return <C extends Component<any, any, any, any, any>>(component: C) => {
+    if (!isSlotContract(slots)) {
+      return withSlotContract(slots)(component) as any;
+    }
+
+    const i = internals(component);
+    const handles = View.Slots.handles(slots);
+    const wrapped = toComponentLike(component, {
+      ...i,
+      setup: (props) => i.setup(props).pipe(Effect.map((bindings) => {
+        if (typeof bindings === "object" && bindings !== null) {
+          const existingSlots = (bindings as { readonly slots?: unknown }).slots;
+          return {
+            ...(bindings as Record<string, unknown>),
+            slots: existingSlots === undefined ? handles : existingSlots,
+          };
+        }
+        return { value: bindings, slots: handles };
+      })) as any,
+    });
+    slotContractRegistry.set(wrapped, slots);
+    return wrapped as any;
+  };
 }
 
 export function withErrorBoundary<Handled extends string>(
   handlers: Record<Handled, (error: any) => unknown>,
 ): <C extends Component<any, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Exclude<Errors<C>, { readonly _tag: Handled }>, BindingsOf<C>, SlotsOf<C>>> {
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Exclude<Errors<C>, { readonly _tag: Handled }>, BindingsOf<C>, SlotContractOf<C>>> {
   return <C extends Component<any, any, any, any, any>>(component: C) => {
     const i = internals(component);
     return toComponentLike(component, {
@@ -526,7 +970,7 @@ export function withErrorBoundary<Handled extends string>(
         ...(i.boundary ?? {}),
         ...handlers,
       },
-    }) as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Exclude<Errors<C>, { readonly _tag: Handled }>, BindingsOf<C>, SlotsOf<C>>>;
+    }) as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Exclude<Errors<C>, { readonly _tag: Handled }>, BindingsOf<C>, SlotContractOf<C>>>;
   };
 }
 
@@ -534,7 +978,7 @@ export function withLoading(
   fallback: () => unknown,
 ): <C extends Component<any, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotsOf<C>>> {
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotContractOf<C>>> {
   return <C extends Component<any, any, any, any, any>>(component: C) => {
     const i = internals(component);
     return toComponentLike(component, { ...i, loading: fallback });
@@ -546,7 +990,7 @@ export function withSpan(
   _attributes?: Record<string, unknown>,
 ): <C extends Component<any, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotsOf<C>>> {
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotContractOf<C>>> {
   return <C extends Component<any, any, any, any, any>>(component: C) => {
     const i = internals(component);
     return toComponentLike(component, {
@@ -560,7 +1004,7 @@ export function memo<Props>(
   equals: (prev: Props, next: Props) => boolean,
 ): <C extends Component<Props, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<Props, Requirements<C>, Errors<C>, BindingsOf<C>, SlotsOf<C>>> {
+) => PreserveRouteMetadata<C, Component<Props, Requirements<C>, Errors<C>, BindingsOf<C>, SlotContractOf<C>>> {
   return <C extends Component<Props, any, any, any, any>>(component: C) => {
     const i = internals(component);
     return toComponentLike(component, { ...i, memo: equals });
@@ -569,27 +1013,27 @@ export function memo<Props>(
 
 export function tapSetup<Props, Req, E, Bindings, E2, R2>(
   tap: (bindings: Bindings) => Effect.Effect<unknown, E2, R2>,
-): <C extends Component<Props, Req, E, Bindings, any>>(component: C) => PreserveRouteMetadata<C, Component<Props, Req | R2, E | E2, Bindings, SlotsOf<C>>> {
+): <C extends Component<Props, Req, E, Bindings, any>>(component: C) => PreserveRouteMetadata<C, Component<Props, Req | R2, E | E2, Bindings, SlotContractOf<C>>> {
   return <C extends Component<Props, Req, E, Bindings, any>>(component: C) => {
     const i = internals(component);
     return toComponentLike(component, {
       ...i,
       setup: (props) => i.setup(props).pipe(Effect.tap(tap as any)) as any,
-    }) as PreserveRouteMetadata<C, Component<Props, Req | R2, E | E2, Bindings, SlotsOf<C>>>;
+    }) as PreserveRouteMetadata<C, Component<Props, Req | R2, E | E2, Bindings, SlotContractOf<C>>>;
   };
 }
 
-export function withViewTransform<Props, Req, E, Bindings, Slots>(
+export function withViewTransform<Props, Req, E, Bindings, SlotContract = {}>(
   transform: (result: unknown, props: Props, bindings: Bindings) => unknown,
-): <C extends Component<Props, Req, E, Bindings, Slots>>(component: C) => PreserveRouteMetadata<C, Component<Props, Req, E, Bindings, Slots>> {
-  return <C extends Component<Props, Req, E, Bindings, Slots>>(component: C) => {
+): <C extends Component<Props, Req, E, Bindings, SlotContract>>(component: C) => PreserveRouteMetadata<C, Component<Props, Req, E, Bindings, SlotContractOf<C>>> {
+  return <C extends Component<Props, Req, E, Bindings, SlotContract>>(component: C) => {
     const i = internals(component);
     return toComponentLike(component, {
       ...i,
       view: i.view === undefined
         ? undefined
         : (props: Props, bindings: Bindings) => transform(i.view!(props, bindings), props, bindings),
-    }) as PreserveRouteMetadata<C, Component<Props, Req, E, Bindings, Slots>>;
+    }) as PreserveRouteMetadata<C, Component<Props, Req, E, Bindings, SlotContractOf<C>>>;
   };
 }
 
@@ -597,13 +1041,13 @@ export function withPreSetup<E2, R2>(
   pre: Effect.Effect<unknown, E2, R2>,
 ): <C extends Component<any, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | R2, Errors<C> | E2, BindingsOf<C>, SlotsOf<C>>> {
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | R2, Errors<C> | E2, BindingsOf<C>, SlotContractOf<C>>> {
   return <C extends Component<any, any, any, any, any>>(component: C) => {
     const i = internals(component);
     return toComponentLike(component, {
       ...i,
       setup: (props) => pre.pipe(Effect.flatMap(() => i.setup(props))) as any,
-    }) as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | R2, Errors<C> | E2, BindingsOf<C>, SlotsOf<C>>>;
+    }) as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | R2, Errors<C> | E2, BindingsOf<C>, SlotContractOf<C>>>;
   };
 }
 
@@ -611,7 +1055,7 @@ export function withSetupRetry(
   retry: Schedule.Schedule<unknown, any, any>,
 ): <C extends Component<any, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotsOf<C>>> {
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotContractOf<C>>> {
   return <C extends Component<any, any, any, any, any>>(component: C) => {
     const i = internals(component);
     return toComponentLike(component, {
@@ -625,7 +1069,7 @@ export function withSetupTimeout(
   duration: number | string,
 ): <C extends Component<any, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C> | { readonly _tag: "ComponentSetupTimeout" }, BindingsOf<C>, SlotsOf<C>>> {
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C> | { readonly _tag: "ComponentSetupTimeout" }, BindingsOf<C>, SlotContractOf<C>>> {
   return <C extends Component<any, any, any, any, any>>(component: C) => {
     const i = internals(component);
     const timeout = typeof duration === "number" ? `${duration} millis` : duration;
@@ -637,7 +1081,7 @@ export function withSetupTimeout(
           Effect.flatMap(() => Effect.fail({ _tag: "ComponentSetupTimeout" as const })),
         ),
       ),
-    }) as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C> | { readonly _tag: "ComponentSetupTimeout" }, BindingsOf<C>, SlotsOf<C>>>;
+    }) as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C> | { readonly _tag: "ComponentSetupTimeout" }, BindingsOf<C>, SlotContractOf<C>>>;
   };
 }
 
@@ -684,6 +1128,11 @@ function copyRouteDecorations(
   source: Component<any, any, any, any, any>,
   target: Component<any, any, any, any, any>,
 ): void {
+  const slotContract = slotContractRegistry.get(source);
+  if (slotContract !== undefined) {
+    slotContractRegistry.set(target, slotContract);
+  }
+
   const sourceRoute = asRoutedComponent(source);
   const targetRoute = asRoutedComponent(target);
 
@@ -706,13 +1155,13 @@ function copyRouteDecorations(
   targetRoute.__routeGuards = sourceRoute.__routeGuards;
 }
 
-function toComponentLike<Source extends Component<any, any, any, any, any>, Props, Req, E, Bindings, Slots = SlotsOf<Source>>(
+function toComponentLike<Source extends Component<any, any, any, any, any>, Props, Req, E, Bindings, SlotContract = SlotContractOf<Source>>(
   source: Source,
   internal: InternalComponent<Props, Req, E, Bindings>,
-): PreserveRouteMetadata<Source, Component<Props, Req, E, Bindings, Slots>> {
-  const wrapped = toComponent(internal);
+): PreserveRouteMetadata<Source, Component<Props, Req, E, Bindings, SlotContract>> {
+  const wrapped = toComponent<Props, Req, E, Bindings, SlotContract>(internal);
   copyRouteDecorations(source, wrapped);
-  return wrapped as PreserveRouteMetadata<Source, Component<Props, Req, E, Bindings, Slots>>;
+  return wrapped as PreserveRouteMetadata<Source, Component<Props, Req, E, Bindings, SlotContract>>;
 }
 
 function decodeRouteOption<A>(schema: Schema.Schema<A>) {
@@ -741,14 +1190,14 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
     readonly exact?: boolean;
     readonly onParseError?: "not-found" | "error" | ((error: unknown) => Effect.Effect<void>);
   },
-): <Props, Req, E, Bindings, Slots extends SlotMap | {}>(
-  component: Component<Props, Req, E, Bindings, Slots>,
-) => (Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, Bindings, Slots>
+): <Props, Req, E, Bindings, SlotContract>(
+  component: Component<Props, Req, E, Bindings, SlotContract>,
+) => (Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract>
   & Route.RoutedComponent<P, Q, H>) {
-  return <Props, Req, E, Bindings, Slots extends SlotMap | {}>(component: Component<Props, Req, E, Bindings, Slots>) => {
+  return <Props, Req, E, Bindings, SlotContract>(component: Component<Props, Req, E, Bindings, SlotContract>) => {
     const i = internals(component);
 
-    let wrapped: Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, Slots>;
+    let wrapped: Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
 
     wrapped = toComponent({
       ...i,
@@ -953,7 +1402,7 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
         }
         return i.view(props, bindings.__routeInner as Bindings);
       },
-    }) as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, Slots>;
+    }) as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
 
     const meta: Route.RouteMeta<P, Q, H> = {
       pattern,
@@ -966,7 +1415,7 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
     };
     setRoutedMeta<P, Q, H>(wrapped, meta);
     Route.registerRoute(wrapped, meta);
-    return wrapped as unknown as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, Bindings, Slots> & Route.RoutedComponent<P, Q, H>;
+    return wrapped as unknown as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract> & Route.RoutedComponent<P, Q, H>;
   };
 }
 
@@ -979,22 +1428,22 @@ export function guard<Req, E>(
   check: Effect.Effect<unknown, E, Req>,
 ): <C extends Component<any, any, any, any, any>>(
   component: C,
-) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | Req, Errors<C> | E, BindingsOf<C>, SlotsOf<C>>> {
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | Req, Errors<C> | E, BindingsOf<C>, SlotContractOf<C>>> {
   return <C extends Component<any, any, any, any, any>>(component: C) => {
     const routed = asRoutedComponent(component);
     const current = routed.__routeGuards ?? [];
     routed.__routeGuards = [...current, check];
-    return component as unknown as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | Req, Errors<C> | E, BindingsOf<C>, SlotsOf<C>>>;
+    return component as unknown as PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C> | Req, Errors<C> | E, BindingsOf<C>, SlotContractOf<C>>>;
   };
 }
 
-export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings>>(
+export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings>, SlotContract = {}>(
   behavior: Behavior.Behavior<Elements, AddedBindings, BR, BE>,
   selectElements: (bindings: Bindings, props: Props) => Elements,
   merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
 ): (
-  component: Component<Props, Req, E, Bindings, Slots>,
-) => Component<Props, Req | BR, E | BE, Bindings & AddedBindings, Slots> {
+  component: Component<Props, Req, E, Bindings, SlotContract>,
+) => Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract> {
   return (component) => {
     const i = internals(component);
     return toComponentLike(component, {
@@ -1008,7 +1457,7 @@ export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bin
         }
         return { ...(base as any), ...(added as any) };
       }) as any,
-    }) as Component<Props, Req | BR, E | BE, Bindings & AddedBindings, Slots>;
+    }) as Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract>;
   };
 }
 
@@ -1062,21 +1511,34 @@ export const Component = {
   props,
   propsSchema,
   require,
+  setup,
+  bind,
+  value,
+  doEffect,
+  use,
   setupEffect,
   renderEffect,
   renderViewEffect,
+  validateSlotContract,
+  validateRenderedSlotContract,
   mount,
+  signal,
+  effect,
   state,
   derived,
   query,
   action,
+  optimistic,
   ref,
   registerViewSlots,
   getViewSlots,
+  getSlotContract,
   fromDequeue,
   schedule,
   scheduleEffect,
   withLayer,
+  withSlotContract,
+  withSlots,
   withErrorBoundary,
   withLoading,
   withSpan,
@@ -1095,3 +1557,7 @@ export const Component = {
   slotDraggable,
   slotCollection,
 } as const;
+
+
+
+

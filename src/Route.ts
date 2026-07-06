@@ -224,7 +224,7 @@ type RouteChildrenEnhancer =
 type RouteTarget = AnyAppRouteNode | AnyRoute;
 type RouteTargetComponent = ComponentType<any, any, any, any, any> | AnyRoute;
 type GuardEnhancer<Req, E> = UnifiedGuardEnhancer<Req, E>
-  & (<Props, R0, E0, B, Slots>(component: ComponentType<Props, R0, E0, B, Slots>) => ComponentType<Props, R0 | Req, E0 | E, B, Slots>);
+  & (<Props, R0, E0, B, SlotContract>(component: ComponentType<Props, R0, E0, B, SlotContract>) => ComponentType<Props, R0 | Req, E0 | E, B, SlotContract>);
 type TitleRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(route: T) => T)
   & NodeTitleEnhancer<AnyAppRouteNode>
   & TitleEnhancer<P, A, E>;
@@ -236,7 +236,13 @@ type LoaderRouteEnhancer<P, A, E, R> = LoaderEnhancer<P, A, E, R>
   & (<C, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<C, P, Q, H, A, E>)
   & RouteNodePipeOp<"loader", { readonly data: A; readonly error: E }>;
 
-export type MaterializedAppRoute<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE> = RoutedComponent<P, Q, H> & LoaderTaggedComponent<A, LE> & C;
+export type MaterializedAppRoute<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE> =
+  C extends ComponentType<infer Props, infer Req, infer Err, infer B, infer SlotContract>
+    ? ComponentType<Props, Req, Err, B, SlotContract>
+      & Omit<C, keyof ComponentType<any, any, any, any, any>>
+      & RoutedComponent<P, Q, H>
+      & LoaderTaggedComponent<A, LE>
+    : RoutedComponent<P, Q, H> & LoaderTaggedComponent<A, LE> & C;
 
 export interface AppRouteNodeDef<P = unknown, Q = unknown, H = unknown, C extends ComponentType<any, any, any, any, any> = ComponentType<any, any, any, any, any>, A = unknown, LE = unknown> {
   readonly kind: "page" | "layout" | "index";
@@ -627,9 +633,9 @@ function withNodeChildren<P, Q, H, C extends ComponentType<any, any, any, any, a
 
 function materializeNode<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(
   node: AppRouteNode<P, Q, H, C, A, LE>,
-): (RoutedComponent<P, Q, H> & LoaderTaggedComponent<A, LE> & C) {
+): MaterializedAppRoute<P, Q, H, C, A, LE> {
   if (node.state.materialized) {
-    return node.state.materialized as RoutedComponent<P, Q, H> & LoaderTaggedComponent<A, LE> & C;
+    return node.state.materialized as MaterializedAppRoute<P, Q, H, C, A, LE>;
   }
   const routed = node.component.pipe(ComponentRuntime.route(node.path, toComponentRouteOptions(node)));
   let current = asRouteComponent<P, Q, H, A, LE>(routed);
@@ -644,13 +650,13 @@ function materializeNode<P, Q, H, C extends ComponentType<any, any, any, any, an
       routeRegistryById.set(node.options.id, { component: current, meta: withId });
     }
   }
-  const materialized = current as RoutedComponent<P, Q, H> & LoaderTaggedComponent<A, LE> & C;
-  (node.state as { materialized?: RoutedComponent<P, Q, H> & LoaderTaggedComponent<A, LE> & C }).materialized = materialized;
+  const materialized = current as MaterializedAppRoute<P, Q, H, C, A, LE>;
+  (node.state as { materialized?: MaterializedAppRoute<P, Q, H, C, A, LE> }).materialized = materialized;
   return materialized;
 }
 
-type WithLoaderComponent<C, RAdd, EAdd, A, E> = C extends ComponentType<infer Props, infer Req, infer Err, infer B, infer Slots>
-  ? (ComponentType<Props, Req | RAdd, Err | EAdd, B, Slots>
+type WithLoaderComponent<C, RAdd, EAdd, A, E> = C extends ComponentType<infer Props, infer Req, infer Err, infer B, infer SlotContract>
+  ? (ComponentType<Props, Req | RAdd, Err | EAdd, B, SlotContract>
     & Omit<C, keyof ComponentType<any, any, any, any, any>>
     & RoutedComponent<RouteParamsOf<C>, RouteQueryOf<C>, RouteHashOf<C>>
     & LoaderTaggedComponent<A, E>)
@@ -663,7 +669,10 @@ type LoaderEnhancer<P, A, E, R> =
   & (<C extends RoutedComponent<P, any, any> & ComponentType<any, any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>)
   & (<C extends ComponentType<any, any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>);
 
-type NodeLoaderEnhancer<T extends AnyAppRouteNode, A, E, R> = LoaderEnhancer<RouteNodeParamsOf<T>, A, E, R> & ((route: T) => WithNodeLoader<T, A, E>);
+type NodeLoaderEnhancer<T extends AnyAppRouteNode, A, E, R> =
+  & LoaderEnhancer<RouteNodeParamsOf<T>, A, E, R>
+  & (<RouteNode extends T>(route: RouteNode) => WithNodeLoader<RouteNode, A, E>)
+  & RouteNodePipeOp<"loader", { readonly data: A; readonly error: E }>;
 
 type TitleEnhancer<P, A, E> =
   & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, A, E>) => AppRouteNode<P, Q, H, C, A, E>)
@@ -684,15 +693,20 @@ type LoaderAttachResult<T, P, A, E, R> =
   : T extends ComponentType<any, any, any, any, any> ? WithLoaderComponent<T, R, E, A, E>
   : never;
 
-type UnifiedRouteWithLoader<T extends AnyRoute, A, E> = T extends Route<infer C, infer P, infer Q, infer H, any, any>
-  ? Route<C, P, Q, H, A, E>
+type UnifiedRouteWithLoader<T extends AnyRoute, A, E, R = never> = T extends Route<infer C, infer P, infer Q, infer H, any, any>
+  ? Route<ComponentWithAddedReqE<C, R, E>, P, Q, H, A, E>
   : never;
 
+type ComponentWithAddedReqE<C, R, E> =
+  C extends ComponentType<infer Props, infer R0, infer E0, infer B, infer SlotContract>
+    ? ComponentType<Props, R0 | R, E0 | E, B, SlotContract>
+    : C;
+
 type UnifiedLoaderEnhancer<A, E, R> =
-  <C, P, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<C, P, Q, H, A, E>;
+  <C, P, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<ComponentWithAddedReqE<C, R, E>, P, Q, H, A, E>;
 
 type UnifiedGuardEnhancer<Req, E> =
-  <C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>;
+  <C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<ComponentWithAddedReqE<C, Req, E>, P, Q, H, LD, LE>;
 
 type UnifiedTitleEnhancer<P, A, E> =
   <C, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>;
@@ -1145,7 +1159,14 @@ export function hashSchema<H>(schema: Schema.Schema<H>): RouteHashSchemaEnhancer
 }
 
 /** Materialize and extract the routed component behind a route node. */
-export function componentOf<T extends AppRouteNode<any, any, any, any, any, any>>(route: T): RoutedComponent<RouteNodeParamsOf<T>, RouteNodeQueryOf<T>, RouteNodeHashOf<T>> & LoaderTaggedComponent<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> & T["component"] {
+export function componentOf<T extends AppRouteNode<any, any, any, any, any, any>>(route: T): MaterializedAppRoute<
+  RouteNodeParamsOf<T>,
+  RouteNodeQueryOf<T>,
+  RouteNodeHashOf<T>,
+  T["component"],
+  RouteNodeLoaderDataOf<T>,
+  RouteNodeLoaderErrorOf<T>
+> {
   return materializeNode(route);
 }
 
@@ -2076,10 +2097,19 @@ export function loader<T extends AnyAppRouteNode, A, E, R>(
   fn: (params: RouteNodeParamsOf<T>, deps?: { readonly parent: <X>() => X }) => Effect.Effect<A, E, R>,
   options?: LoaderOptions,
 ): NodeLoaderEnhancer<T, A, E, R>;
-export function loader<C, P, Q, H, A, E, R>(
+export function loader<C extends ComponentType<any, any, any, any, any>, P, Q, H, A, E, R>(
   fn: (params: P, deps?: { readonly parent: <X>() => X }) => Effect.Effect<A, E, R>,
   options?: LoaderOptions,
-): (route: Route<C, P, Q, H, void, never>) => Route<C, P, Q, H, A, E>;
+): (route: Route<C, P, Q, H, void, never>) => Route<
+  ComponentType<
+    [C] extends [ComponentType<infer Props, any, any, any, any>] ? Props : never,
+    ([C] extends [ComponentType<any, infer R0, any, any, any>] ? R0 : never) | R,
+    ([C] extends [ComponentType<any, any, infer E0, any, any>] ? E0 : never) | E,
+    [C] extends [ComponentType<any, any, any, infer B, any>] ? B : never,
+    [C] extends [ComponentType<any, any, any, any, infer SlotContract>] ? SlotContract : never
+  >,
+  P, Q, H, A, E
+>;
 export function loader<P, A, E, R>(
   fn: (params: P, deps?: { readonly parent: <X>() => X }) => Effect.Effect<A, E, R>,
   options?: LoaderOptions,
@@ -3116,3 +3146,5 @@ export const Route = {
   matchPattern,
   extractParams,
 } as const;
+
+

@@ -1,4 +1,5 @@
 import { Effect, Layer, Schedule, Scope, ServiceMap } from "effect";
+import * as Atom from "../Atom.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
 import * as Route from "../Route.js";
@@ -101,7 +102,11 @@ const StateComponent = Component.make(
   () => Effect.gen(function* () {
     const count = yield* Component.state(0);
     const config = yield* Component.state<{ retries: number }>({ retries: 0 });
-    return { count, config };
+    const [step, setStep] = yield* Component.signal(1);
+    yield* Component.effect(() => {
+      step();
+    });
+    return { count, config, step, setStep };
   }),
   () => null,
 );
@@ -109,6 +114,61 @@ const StateComponent = Component.make(
 type _StateBindings = Component.BindingsOf<typeof StateComponent>;
 type _StateCountCheck = Expect<Equal<_StateBindings["count"], import("../Atom.js").WritableAtom<number>>>;
 type _StateConfigCheck = Expect<Equal<_StateBindings["config"], import("../Atom.js").WritableAtom<{ retries: number }>>>;
+type _SignalAccessorCheck = Expect<Equal<_StateBindings["step"], import("../api.js").Accessor<number>>>;
+type _SignalSetterCheck = Expect<Equal<_StateBindings["setStep"], import("../api.js").Setter<number>>>;
+
+const BuilderFragment = Component.setup<{ readonly id: string }>()
+  .bind("page", () => Component.state(0))
+  .value("pageLabel", ({ props, bindings }) => `${props.id}:${bindings.page()}`);
+
+const BuilderSetup = Component.setup<{ readonly id: string }>()
+  .use(BuilderFragment)
+  .bind("user", ({ props, bindings }) =>
+    Component.query(() =>
+      Effect.gen(function* () {
+        const api = yield* Api;
+        const suffix = bindings.pageLabel;
+        return `${yield* api.find(props.id)}:${suffix}`;
+      })
+    )
+  )
+  .bind("save", ({ props }) =>
+    Component.action((value: string) =>
+      Effect.gen(function* () {
+        const api = yield* Api;
+        return yield* api.find(`${props.id}:${value}`);
+      })
+    )
+  );
+
+type _BuilderSetupBindings = Component.SetupBindingsOf<typeof BuilderSetup>;
+type _BuilderPage = Expect<Equal<_BuilderSetupBindings["page"], Atom.WritableAtom<number>>>;
+type _BuilderPageLabel = Expect<Equal<_BuilderSetupBindings["pageLabel"], string>>;
+type _BuilderUserValue = Expect<Equal<Atom.ValueOf<_BuilderSetupBindings["user"]>, import("../effect-ts.js").Result<string, never>>>;
+type _BuilderSaveInput = Expect<Equal<Component.ActionInputOf<_BuilderSetupBindings["save"]>, string>>;
+type _BuilderSetupReq = Expect<Equal<Component.SetupRequirementsOf<typeof BuilderSetup>, Api>>;
+
+const BuilderComponent = Component.make(
+  Component.props<{ readonly id: string }>(),
+  Component.require<never>(),
+  BuilderSetup,
+  (_props, _bindings) => null,
+);
+
+type _BuilderComponentReq = Expect<Equal<Component.Requirements<typeof BuilderComponent>, Api>>;
+type _BuilderComponentBindings = Expect<Equal<Component.BindingsOf<typeof BuilderComponent>, _BuilderSetupBindings>>;
+
+const PipeBuilderSetup = Component.setup<{ readonly id: string }>().pipe(
+  Component.bind("count", () => Component.state(0)),
+);
+
+type _PipeBuilderBindings = Component.SetupBindingsOf<typeof PipeBuilderSetup>;
+type _PipeBuilderCount = Expect<Equal<_PipeBuilderBindings["count"], Atom.WritableAtom<number>>>;
+
+Component.setup<{}>()
+  .bind("count", () => Component.state(0))
+  // @ts-expect-error setup builder binding names must be unique
+  .bind("count", () => Component.state(1));
 
 const QueryRequirementComponent = Component.make(
   Component.props<{ readonly id: string }>(),
@@ -126,6 +186,11 @@ const QueryRequirementComponent = Component.make(
 );
 
 type _QueryRequirement = Expect<Equal<Component.Requirements<typeof QueryRequirementComponent>, Api>>;
+type _QueryBindings = Component.BindingsOf<typeof QueryRequirementComponent>;
+type _QueryAtom = _QueryBindings["user"];
+type _QueryValue = Expect<Equal<Atom.ValueOf<_QueryAtom>, import("../effect-ts.js").Result<string, never>>>;
+type _QueryError = Expect<Equal<Atom.ErrorOf<_QueryAtom>, never>>;
+type _QueryCapturedRequirements = Expect<Equal<Atom.RequirementsOf<_QueryAtom>, never>>;
 
 const ActionRequirementComponent = Component.make(
   Component.props<{}>(),
@@ -145,6 +210,25 @@ const ActionRequirementComponent = Component.make(
 
 type _ActionRequirement = Expect<Equal<Component.Requirements<typeof ActionRequirementComponent>, Api>>;
 type _ActionErrors = Expect<Equal<Component.Errors<typeof ActionRequirementComponent>, never>>;
+type _ActionBindings = Component.BindingsOf<typeof ActionRequirementComponent>;
+type _ActionHandle = _ActionBindings["save"];
+type _ActionArgs = Expect<Equal<Component.ActionArgsOf<_ActionHandle>, [id: string]>>;
+type _ActionInput = Expect<Equal<Component.ActionInputOf<_ActionHandle>, string>>;
+type _ActionSuccess = Expect<Equal<Component.ActionSuccessOf<_ActionHandle>, number>>;
+type _ActionError = Expect<Equal<Component.ActionErrorOf<_ActionHandle>, SaveError>>;
+type _ActionRunError = Expect<Equal<Component.ActionRunErrorOf<_ActionHandle>, SaveError>>;
+type _ActionEffectError = Expect<Equal<
+  Component.ActionEffectErrorOf<_ActionHandle>,
+  SaveError | import("../effect-ts.js").BridgeError | import("../effect-ts.js").MutationSupersededError
+>>;
+type _ActionRunEffect = Expect<Equal<Component.ActionRunEffectOf<_ActionHandle>, (id: string) => Effect.Effect<number, SaveError>>>;
+type _ActionEffect = Expect<Equal<
+  Component.ActionEffectOf<_ActionHandle>,
+  (id: string) => Effect.Effect<void, SaveError | import("../effect-ts.js").BridgeError | import("../effect-ts.js").MutationSupersededError>
+>>;
+type _ActionCallReturn = Expect<Equal<ReturnType<_ActionHandle>, void>>;
+type _ActionRunReturn = Expect<Equal<ReturnType<_ActionHandle["run"]>, void>>;
+type _ActionHasNoRequirementAxis = Expect<Equal<_ActionHandle extends Component.ComponentAction<any, any, any> ? true : false, true>>;
 
 const ActionWithApi = ActionRequirementComponent.pipe(
   Component.withLayer(Layer.succeed(Api, { find: (id: string) => Effect.succeed(id) })),

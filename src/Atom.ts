@@ -58,6 +58,8 @@ type DeepWiden<T> =
   T extends object ? { [K in keyof T]: DeepWiden<T[K]> } :
   WidenLiteral<T>;
 
+type WithFallbackValue<A, Fallback> = Exclude<A, null | undefined> | Fallback;
+
 const refreshMap = new WeakMap<ReadonlyAtom<any, any, any>, RefreshRef>();
 const selfWriteMap = new WeakMap<Writable<any, any>, (value: any) => void>();
 
@@ -131,7 +133,6 @@ export type ErrorOf<T> = T extends ReadonlyAtom<any, infer E, any> ? E : never;
 export type RequirementsOf<T> = T extends ReadonlyAtom<any, any, infer R> ? R : never;
 
 export interface ResultBridge {
-  <A, E>(self: AsyncAtom<A, E, any>): Effect.Effect<A, E | BridgeError>;
   <A, E>(self: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>): Effect.Effect<A, E | BridgeError>;
 }
 
@@ -146,7 +147,6 @@ export interface Context {
   /** Write a value to a writable atom. */
   set<R, W>(atom: Writable<R, W, any, any>, value: W): void;
   /** Read an async/result atom as an Effect value. */
-  result<A, E>(atom: AsyncAtom<A, E, any>): Effect.Effect<A, E | BridgeError>;
   result<A, E>(atom: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>): Effect.Effect<A, E | BridgeError>;
   /** Register cleanup for the current owner scope. */
   addFinalizer(finalizer: () => void): void;
@@ -163,7 +163,6 @@ export interface WriteContext<A> {
   /** Directly set the current atom's underlying signal value. */
   setSelf(value: A): void;
   /** Read an async/result atom as an Effect value. */
-  result<T, E>(atom: AsyncAtom<T, E, any>): Effect.Effect<T, E | BridgeError>;
   result<T, E>(atom: ReadonlyAtom<Result<T, E> | FetchResult.Result<T, E>, any, any>): Effect.Effect<T, E | BridgeError>;
   /** Register cleanup for the current owner scope. */
   addFinalizer(finalizer: () => void): void;
@@ -677,6 +676,128 @@ export function withOptimistic<A>(self?: Atom<A>): OptimisticAtom<A> | ((self: A
   return wrapped;
 }
 
+export interface OptimisticActionSpec<A, Input, Success, E, R> {
+  readonly name?: string;
+  readonly update: (current: A, input: Input) => A;
+  readonly effect: (next: A, input: Input) => Effect.Effect<Success, E, R>;
+  readonly reconcile?: (optimistic: A, success: Success, input: Input) => A;
+  readonly commit?: (confirmed: A, input: Input, success: Success) => void;
+  readonly reactivityKeys?: ReactivityKeysInput;
+  readonly singleFlight?: false | SingleFlightClientOptions<Input>;
+  readonly onSuccess?: (success: Success, input: Input, confirmed: A) => void;
+  readonly onFailure?: (error: E, input: Input) => void;
+  readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
+}
+
+export interface OptimisticActionHandle<Input, A, Success, E> extends ActionHandle<Input, E, Success> {
+  value: Accessor<A>;
+  committed: Accessor<A>;
+  optimistic: Accessor<A | undefined>;
+  hasOptimistic: Accessor<boolean>;
+  rollback(): void;
+  clear(): void;
+}
+
+export type OptimisticActionInputOf<T> = T extends OptimisticActionHandle<infer Input, any, any, any> ? Input : never;
+export type OptimisticActionValueOf<T> = T extends OptimisticActionHandle<any, infer A, any, any> ? A : never;
+export type OptimisticActionSuccessOf<T> = T extends OptimisticActionHandle<any, any, infer Success, any> ? Success : never;
+export type OptimisticActionErrorOf<T> = T extends OptimisticActionHandle<any, any, any, infer E> ? E : never;
+export type OptimisticActionEffectErrorOf<T> = ActionEffectErrorOf<T>;
+export type OptimisticActionRunErrorOf<T> = ActionRunErrorOf<T>;
+export type OptimisticActionRunEffectOf<T> = ActionRunEffectOf<T>;
+export type OptimisticActionEffectOf<T> = ActionEffectOf<T>;
+
+export interface OptimisticBuilder<A> {
+  action<Success = A, E = never, R = never, Input = void>(
+    spec: OptimisticActionSpec<A, Input, Success, E, R>,
+  ): OptimisticActionHandle<Input, A, Success, E>;
+}
+
+function optimisticBuilder<A, RRuntime>(
+  source: Writable<A, A, any, any>,
+  runtimeArg?: RuntimeLike<RRuntime, unknown>,
+): OptimisticBuilder<A> {
+  return {
+    action<Success = A, E = never, R = never, Input = void>(
+      spec: OptimisticActionSpec<A, Input, Success, E, R>,
+    ): OptimisticActionHandle<Input, A, Success, E> {
+      const overlay = createOptimistic(source);
+
+      const runEffect = (input: Input): Effect.Effect<Success, E, R> =>
+        Effect.sync(() => {
+          const next = spec.update(overlay.get(), input);
+          overlay.set(next);
+          return next;
+        }).pipe(
+          Effect.flatMap((next) =>
+            spec.effect(next, input).pipe(
+              Effect.tap((success) =>
+                Effect.sync(() => {
+                  const confirmed = spec.reconcile?.(next, success, input) ?? next;
+                  if (spec.commit) {
+                    spec.commit(confirmed, input, success);
+                  } else {
+                    source.set(confirmed);
+                  }
+                  overlay.clear();
+                  spec.onSuccess?.(success, input, confirmed);
+                })
+              ),
+              Effect.tapError((error) =>
+                Effect.sync(() => {
+                  overlay.clear();
+                  spec.onFailure?.(error, input);
+                })
+              ),
+              Effect.tapDefect(() =>
+                Effect.sync(() => {
+                  overlay.clear();
+                })
+              ),
+            )
+          ),
+        );
+
+      const handle: ActionHandle<Input, E, Success> = runtimeArg === undefined
+        ? action<Success, E, R, Input>(runEffect, {
+          name: spec.name,
+          reactivityKeys: spec.reactivityKeys,
+          singleFlight: spec.singleFlight,
+          onTransition: spec.onTransition,
+        })
+        : action(runtimeArg as RuntimeLike<any, unknown>, runEffect as (input: Input) => Effect.Effect<Success, E, any>, {
+          name: spec.name,
+          reactivityKeys: spec.reactivityKeys,
+          singleFlight: spec.singleFlight,
+          onTransition: spec.onTransition,
+        }) as ActionHandle<Input, E, Success>;
+
+      const out = handle as OptimisticActionHandle<Input, A, Success, E>;
+      out.value = overlay.get;
+      out.committed = source;
+      out.optimistic = () => overlay.isPending() ? overlay.get() : undefined;
+      out.hasOptimistic = overlay.isPending;
+      out.rollback = overlay.clear;
+      out.clear = overlay.clear;
+      return out;
+    },
+  };
+}
+
+export function optimistic<A>(
+  source: Writable<A, A, any, any>,
+): OptimisticBuilder<A>;
+export function optimistic<A, R>(
+  source: Writable<A, A, any, any>,
+  runtime: RuntimeLike<R, unknown>,
+): OptimisticBuilder<A>;
+export function optimistic<A, R>(
+  source: Writable<A, A, any, any>,
+  runtime?: RuntimeLike<R, unknown>,
+): OptimisticBuilder<A> {
+  return optimisticBuilder(source, runtime);
+}
+
 /**
  * Pipeable retry policy for async result atoms.
  *
@@ -831,8 +952,17 @@ export interface ActionHandle<Input, E, A = void> {
 export type ActionInputOf<T> = T extends ActionHandle<infer Input, any, any> ? Input : never;
 export type ActionErrorOf<T> = T extends ActionHandle<any, infer E, any> ? E : never;
 export type ActionSuccessOf<T> = T extends ActionHandle<any, any, infer A> ? A : never;
+export type ActionEffectErrorOf<T> = T extends ActionHandle<any, infer E, any>
+  ? E | BridgeError | MutationSupersededError
+  : never;
 export type ActionRunErrorOf<T> = T extends ActionHandle<any, infer E, any>
   ? E | BridgeError | MutationSupersededError
+  : never;
+export type ActionRunEffectOf<T> = T extends ActionHandle<infer Input, infer E, infer A>
+  ? (input: Input) => Effect.Effect<A, E | BridgeError | MutationSupersededError>
+  : never;
+export type ActionEffectOf<T> = T extends ActionHandle<infer Input, infer E, any>
+  ? (input: Input) => Effect.Effect<void, E | BridgeError | MutationSupersededError>
   : never;
 
 /**
@@ -870,6 +1000,7 @@ export interface AtomRuntime<R, E = unknown> {
       readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
     },
     ): ActionHandle<Input, E2, A>;
+  optimistic<A>(source: Writable<A, A, any, any>): OptimisticBuilder<A>;
   dispose(): Promise<void>;
 }
 
@@ -1072,6 +1203,9 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
       out.pending = handle.pending;
       return out;
     },
+    optimistic<A>(source: Writable<A, A, any, any>): OptimisticBuilder<A> {
+      return optimisticBuilder(source, managed as RuntimeLike<R, unknown>);
+    },
     dispose(): Promise<void> {
       return managed.dispose();
     },
@@ -1139,45 +1273,56 @@ export function flushReactivity(): Effect.Effect<void> {
  */
 export function withReactivity(
   input: ReactivityKeysInput,
-): <A>(self: Atom<A>) => Atom<A>;
-export function withReactivity<A>(
-  self: Atom<A>,
+): <A, E = never, R = never>(self: ReadonlyAtom<A, E, R>) => ReadonlyAtom<A, E, R>;
+export function withReactivity<A, E = never, R = never>(
+  self: ReadonlyAtom<A, E, R>,
   input: ReactivityKeysInput,
-): Atom<A>;
-export function withReactivity<A>(
-  arg1: Atom<A> | ReactivityKeysInput,
+): ReadonlyAtom<A, E, R>;
+export function withReactivity<A, E = never, R = never>(
+  arg1: ReadonlyAtom<A, E, R> | ReactivityKeysInput,
   arg2?: ReactivityKeysInput,
-): Atom<A> | ((self: Atom<A>) => Atom<A>) {
+): ReadonlyAtom<A, E, R> | ((self: ReadonlyAtom<A, E, R>) => ReadonlyAtom<A, E, R>) {
   if (arg2 === undefined) {
     const keys = normalizeReactivityKeys(arg1 as ReactivityKeysInput);
-    return (self: Atom<A>) => {
-      const wrapped = readable((get) => {
+    return (self: ReadonlyAtom<A, E, R>) => {
+      const wrapped = readable<A, E, R>((get) => {
         trackReactivityRuntime(keys);
         return get(self);
-      }) as Atom<A> & ReactivityTagged;
+      }) as Atom<A, E, R> & ReactivityTagged;
       wrapped[ReactivityKeysSymbol] = keys;
       return wrapped;
     };
   }
 
-  const self = arg1 as Atom<A>;
+  const self = arg1 as ReadonlyAtom<A, E, R>;
   const keys = normalizeReactivityKeys(arg2);
-  const wrapped = readable((get) => {
+  const wrapped = readable<A, E, R>((get) => {
       trackReactivityRuntime(keys);
       return get(self);
-  }) as Atom<A> & ReactivityTagged;
+  }) as Atom<A, E, R> & ReactivityTagged;
   wrapped[ReactivityKeysSymbol] = keys;
   return wrapped;
 }
 
 /** Introspect normalized reactivity keys attached by `withReactivity`. */
-export function reactivityKeys<A>(self: Atom<A>): ReadonlyArray<string> {
-  const tagged = self as Atom<A> & ReactivityTagged;
+export function reactivityKeys<A, E = never, R = never>(self: ReadonlyAtom<A, E, R>): ReadonlyArray<string> {
+  const tagged = self as ReadonlyAtom<A, E, R> & ReactivityTagged;
   return tagged[ReactivityKeysSymbol] ?? [];
 }
 
 export function action<A, E, Input = void>(
   effectFn: (input: Input) => Effect.Effect<A, E, never>,
+  options?: {
+    readonly name?: string;
+    readonly reactivityKeys?: ReactivityKeysInput;
+    readonly singleFlight?: false | SingleFlightClientOptions<Input>;
+    readonly onError?: (error: E) => void;
+    readonly onSuccess?: (input: Input) => void;
+    readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
+  },
+): ActionHandle<Input, E, A>;
+export function action<A, E, R, Input = void>(
+  effectFn: (input: Input) => Effect.Effect<A, E, R>,
   options?: {
     readonly name?: string;
     readonly reactivityKeys?: ReactivityKeysInput;
@@ -1733,8 +1878,18 @@ export interface ProjectionAsyncOptions<T, R>
 export function projectionAsync<T, E, R = never>(
   derive: (draft: T, get: Context) => Effect.Effect<void | T, E, R>,
   initial: T,
+  options?: ProjectionAsyncOptions<T, R> & { readonly runtime?: undefined },
+): AsyncAtom<T, E, R>;
+export function projectionAsync<T, E, R = never>(
+  derive: (draft: T, get: Context) => Effect.Effect<void | T, E, R>,
+  initial: T,
+  options: ProjectionAsyncOptions<T, R> & { readonly runtime: RuntimeLike<R, unknown> },
+): AsyncAtom<T, E>;
+export function projectionAsync<T, E, R = never>(
+  derive: (draft: T, get: Context) => Effect.Effect<void | T, E, R>,
+  initial: T,
   options?: ProjectionAsyncOptions<T, R>,
-): AsyncAtom<T, E> {
+): AsyncAtom<T, E, R> {
   let current = initial;
   const key = options?.key ?? "id";
 
@@ -1753,9 +1908,9 @@ export function projectionAsync<T, E, R = never>(
     );
   });
 
-  return options?.runtime === undefined
+  return (options?.runtime === undefined
     ? query(run)
-    : query(options.runtime, run);
+    : query(options.runtime, run)) as AsyncAtom<T, E, R>;
 }
 
 export function map<A, B>(f: (a: A) => B): <E = never, R = never>(self: ReadonlyAtom<A, E, R>) => ReadonlyAtom<B, E, R>;
@@ -1787,8 +1942,13 @@ export function map<A, B>(
   return readable((get) => f(get(self)));
 }
 
-export function withFallback<A>(fallback: A): <E>(self: ReadonlyAtom<A | E>) => ReadonlyAtom<A>;
-export function withFallback<A, E>(self: ReadonlyAtom<A | E>, fallback: A): ReadonlyAtom<A>;
+export function withFallback<Fallback>(
+  fallback: Fallback,
+): <A, E = never, R = never>(self: ReadonlyAtom<A, E, R>) => ReadonlyAtom<WithFallbackValue<A, Fallback>, E, R>;
+export function withFallback<A, Fallback, E = never, R = never>(
+  self: ReadonlyAtom<A, E, R>,
+  fallback: Fallback,
+): ReadonlyAtom<WithFallbackValue<A, Fallback>, E, R>;
 /**
  * Provide a fallback when an atom returns `null` or `undefined`.
  *
@@ -1797,22 +1957,22 @@ export function withFallback<A, E>(self: ReadonlyAtom<A | E>, fallback: A): Read
  * @example
  * const safeName = Atom.withFallback(nameAtom, "anonymous")
  */
-export function withFallback<A, E>(
-  arg1: A | ReadonlyAtom<A | E>,
-  arg2?: A,
-): ReadonlyAtom<A> | ((self: ReadonlyAtom<A | E>) => ReadonlyAtom<A>) {
+export function withFallback<A, Fallback, E = never, R = never>(
+  arg1: Fallback | ReadonlyAtom<A, E, R>,
+  arg2?: Fallback,
+): ReadonlyAtom<WithFallbackValue<A, Fallback>, E, R> | ((self: ReadonlyAtom<A, E, R>) => ReadonlyAtom<WithFallbackValue<A, Fallback>, E, R>) {
   if (arg2 === undefined) {
-    const fallback = arg1 as A;
-    return (self: ReadonlyAtom<A | E>) => readable((get) => {
+    const fallback = arg1 as Fallback;
+    return (self: ReadonlyAtom<A, E, R>) => readable<WithFallbackValue<A, Fallback>, E, R>((get) => {
       const value = get(self);
-      return (value ?? fallback) as A;
+      return (value ?? fallback) as WithFallbackValue<A, Fallback>;
     });
   }
-  const self = arg1 as ReadonlyAtom<A | E>;
+  const self = arg1 as ReadonlyAtom<A, E, R>;
   const fallback = arg2;
-  return readable((get) => {
+  return readable<WithFallbackValue<A, Fallback>, E, R>((get) => {
     const value = get(self);
-    return (value ?? fallback) as A;
+    return (value ?? fallback) as WithFallbackValue<A, Fallback>;
   });
 }
 
@@ -1834,9 +1994,6 @@ export const get = <A, E = never, R = never>(self: ReadonlyAtom<A, E, R>): Effec
   Effect.sync(() => defaultContext.get(self));
 
 export function result(): ResultBridge;
-export function result<A, E>(
-  self: AsyncAtom<A, E, any>,
-): Effect.Effect<A, E | BridgeError>;
 export function result<A, E>(
   self: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>,
 ): Effect.Effect<A, E | BridgeError>;
@@ -2090,7 +2247,7 @@ export function fromSchedule<A>(
 
 export function query<A, E, R>(
   fn: () => Effect.Effect<A, E, R>,
-): AsyncAtom<A, E>;
+): AsyncAtom<A, E, R>;
 export function query<A, E, R>(
   runtime: RuntimeLike<R, unknown>,
   fn: () => Effect.Effect<A, E, R>,
@@ -2114,7 +2271,7 @@ export function query<A, E, R>(
 export function query<A, E, R>(
   arg1: RuntimeLike<R, unknown> | (() => Effect.Effect<A, E, R>),
   arg2?: () => Effect.Effect<A, E, R>,
-): AsyncAtom<A, E> {
+): AsyncAtom<A, E, R> {
   let accessor: Accessor<Result<A, E>> | null = null;
 
   const getAccessor = (): Accessor<Result<A, E>> => {
@@ -2127,7 +2284,7 @@ export function query<A, E, R>(
     return accessor as Accessor<Result<A, E>>;
   };
 
-  return readable<Result<A, E>, E>(() => getAccessor()());
+  return readable<Result<A, E>, E, R>(() => getAccessor()());
 }
 
 /**

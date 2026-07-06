@@ -845,6 +845,154 @@ describe("effect-atom style API", () => {
     expect(optimistic()).toBe(1);
   });
 
+  it("supports Atom.optimistic(...).action success commit", async () => {
+    const count = Atom.make(1);
+    const save = Atom.optimistic(count).action({
+      update: (current, delta: number) => current + delta,
+      effect: (next) => Effect.succeed(next).pipe(Effect.delay("10 millis")),
+    });
+
+    save.run(2);
+
+    expect(save.value()).toBe(3);
+    expect(save.committed()).toBe(1);
+    expect(save.optimistic()).toBe(3);
+    expect(save.hasOptimistic()).toBe(true);
+    expect(save.pending()).toBe(true);
+
+    await Effect.runPromise(Effect.sleep("20 millis"));
+
+    expect(count()).toBe(3);
+    expect(save.value()).toBe(3);
+    expect(save.optimistic()).toBeUndefined();
+    expect(save.hasOptimistic()).toBe(false);
+    expect(save.result()._tag).toBe("Success");
+  });
+
+  it("supports Atom.optimistic(...).action typed failure rollback", async () => {
+    const count = Atom.make(1);
+    const save = Atom.optimistic(count).action({
+      update: (current, delta: number) => current + delta,
+      effect: () => Effect.fail({ _tag: "SaveFailed", message: "nope" } as const).pipe(Effect.delay("10 millis")),
+    });
+
+    save.run(2);
+
+    expect(save.value()).toBe(3);
+    expect(save.committed()).toBe(1);
+    expect(save.hasOptimistic()).toBe(true);
+
+    await Effect.runPromise(Effect.sleep("20 millis"));
+
+    expect(count()).toBe(1);
+    expect(save.value()).toBe(1);
+    expect(save.hasOptimistic()).toBe(false);
+    expect(save.result()).toMatchObject({
+      _tag: "Failure",
+      error: { _tag: "SaveFailed", message: "nope" },
+    });
+  });
+
+  it("supports Atom.optimistic(...).action defect rollback", async () => {
+    const count = Atom.make(1);
+    const save = Atom.optimistic(count).action({
+      update: (current, delta: number) => current + delta,
+      effect: () => Effect.die("boom").pipe(Effect.delay("10 millis")),
+    });
+
+    save.run(2);
+
+    expect(save.value()).toBe(3);
+    expect(save.hasOptimistic()).toBe(true);
+
+    await Effect.runPromise(Effect.sleep("20 millis"));
+
+    expect(count()).toBe(1);
+    expect(save.value()).toBe(1);
+    expect(save.hasOptimistic()).toBe(false);
+    expect(save.result()._tag).toBe("Defect");
+  });
+
+  it("supports Atom.optimistic(...).action reconcile with server-confirmed values", async () => {
+    const count = Atom.make(1);
+    const save = Atom.optimistic(count).action({
+      update: (current, delta: number) => current + delta,
+      effect: () => Effect.succeed({ confirmed: 10 }).pipe(Effect.delay("10 millis")),
+      reconcile: (_optimistic, success) => success.confirmed,
+    });
+
+    save.run(1);
+
+    expect(save.value()).toBe(2);
+
+    await Effect.runPromise(Effect.sleep("20 millis"));
+
+    expect(count()).toBe(10);
+    expect(save.value()).toBe(10);
+    expect(save.result()._tag).toBe("Success");
+  });
+
+  it("supports Atom.optimistic(...).action custom commit without default source commit", async () => {
+    const count = Atom.make(1);
+    let committed = 0;
+    const save = Atom.optimistic(count).action({
+      update: (current, delta: number) => current + delta,
+      effect: (next) => Effect.succeed(next).pipe(Effect.delay("10 millis")),
+      commit: (confirmed) => {
+        committed = confirmed;
+      },
+    });
+
+    save.run(2);
+
+    expect(save.value()).toBe(3);
+
+    await Effect.runPromise(Effect.sleep("20 millis"));
+
+    expect(committed).toBe(3);
+    expect(count()).toBe(1);
+    expect(save.value()).toBe(1);
+  });
+
+  it("supports Atom.optimistic(...).action latest-run-wins behavior", async () => {
+    const count = Atom.make(0);
+    const save = Atom.optimistic(count).action({
+      update: (_current, next: number) => next,
+      effect: (next) => Effect.succeed(next).pipe(Effect.delay(next === 1 ? "30 millis" : "5 millis")),
+    });
+
+    save.run(1);
+    expect(save.value()).toBe(1);
+
+    save.run(2);
+    expect(save.value()).toBe(2);
+
+    await Effect.runPromise(Effect.sleep("15 millis"));
+    expect(count()).toBe(2);
+
+    await Effect.runPromise(Effect.sleep("30 millis"));
+    expect(count()).toBe(2);
+    expect(save.value()).toBe(2);
+  });
+
+  it("supports Atom.optimistic(...).action reactivity key invalidation", async () => {
+    let runCount = 0;
+    const reactive = Atom.withReactivity(Atom.make(() => ++runCount), ["counter"]);
+    const count = Atom.make(0);
+    const save = Atom.optimistic(count).action({
+      update: (current, delta: number) => current + delta,
+      effect: (next) => Effect.succeed(next).pipe(Effect.delay("10 millis")),
+      reactivityKeys: ["counter"],
+    });
+
+    expect(Effect.runSync(Atom.get(reactive))).toBe(1);
+
+    save.run(1);
+    await Effect.runPromise(Effect.sleep("20 millis"));
+
+    expect(Effect.runSync(Atom.get(reactive))).toBe(2);
+  });
+
   it("supports Atom.runtimeEffect for effectful bootstrap", async () => {
     const runtime = await Effect.runPromise(Atom.runtimeEffect(Layer.empty));
     const value = runtime.atom(Effect.succeed(42));

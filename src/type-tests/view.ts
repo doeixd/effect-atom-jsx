@@ -61,17 +61,17 @@ const Commit = View.Event.make("commit");
 const DataTestId = View.Attribute.make("data-testid");
 const Pointer = View.Requirement.make("pointer");
 
-const witnessSlot = View.slot("input", {
+const contractSlot = View.slot("input", {
   capability: Element.Capability.TextInput,
   allowedEvents: [View.Event.Input, View.Event.Focus, Commit],
   allowedAttributes: [View.Attribute.AriaLabel, DataTestId],
   platformRequirements: [View.Requirement.Keyboard, Pointer],
 });
 
-type _WitnessSlotCapability = Expect<Equal<View.SlotCapabilityOf<typeof witnessSlot>, "TextInput">>;
-type _WitnessSlotEvents = Expect<Equal<View.SlotEventsOf<typeof witnessSlot>, "input" | "focus" | "commit">>;
-type _WitnessSlotAttributes = Expect<Equal<View.SlotAttributesOf<typeof witnessSlot>, "aria-label" | "data-testid">>;
-type _WitnessSlotRequirements = Expect<Equal<View.SlotRequirementsOf<typeof witnessSlot>, "keyboard" | "pointer">>;
+type _ContractSlotCapability = Expect<Equal<View.SlotCapabilityOf<typeof contractSlot>, "TextInput">>;
+type _ContractSlotEvents = Expect<Equal<View.SlotEventsOf<typeof contractSlot>, "input" | "focus" | "commit">>;
+type _ContractSlotAttributes = Expect<Equal<View.SlotAttributesOf<typeof contractSlot>, "aria-label" | "data-testid">>;
+type _ContractSlotRequirements = Expect<Equal<View.SlotRequirementsOf<typeof contractSlot>, "keyboard" | "pointer">>;
 
 const mixedSlot = View.slot("mixed", {
   capability: DatePicker,
@@ -157,6 +157,32 @@ const treeView = View.tree(
 type TreeViewSlots = View.SlotsOf<typeof treeView>;
 type _TreeViewSlots = Expect<Equal<TreeViewSlots, { readonly root: Element.Container; readonly trigger: Element.Interactive }>>;
 
+const pipeableView = View.make(treeSlots, "runtime-node").pipe(
+  View.withTree(typedTree),
+  View.withChildren(View.element<Slots>(Element.Capability.Interactive, { slot: "trigger" })),
+  View.withName("PipeableTree"),
+  View.withMetadata({ purpose: "type-test" }),
+  View.withSlotMetadata({
+    root: View.slot("root", { capability: Element.Capability.Container }),
+  }),
+  View.withRemaps(View.remap<Slots>("root", "root")),
+);
+
+type PipeableViewSlots = View.SlotsOf<typeof pipeableView>;
+type _PipeableViewSlots = Expect<Equal<PipeableViewSlots, Slots>>;
+const _pipeableRoot: PipeableViewSlots["root"] = root;
+
+const needsMissingSlot = (value: View.View<{ readonly missing: Element.Container }>) => value;
+
+// @ts-expect-error pipe transforms must accept the view's slot map
+View.make(treeSlots, "runtime-node").pipe(needsMissingSlot);
+
+View.make(treeSlots, "runtime-node").pipe(
+  View.withName("still-safe"),
+  // @ts-expect-error multi-step pipe transforms must remain compatible with the view's slot map
+  needsMissingSlot,
+);
+
 const TreeComponent = Component.make<{}, never, never, { readonly slots: Slots }>(
   Component.props<{}>(),
   Component.require<never>(),
@@ -225,7 +251,7 @@ type _BoundName = Expect<Equal<View.Slot.NameOf<typeof boundInput>, "input">>;
 type _BoundHandle = Expect<Equal<View.Slot.HandleOf<typeof boundInput>, Element.TextInput>>;
 type _BoundMetadata = Expect<Equal<View.Slot.MetadataOf<typeof boundInput>, typeof InputSlot.metadata>>;
 
-const witnessSlots = View.Slots.make({
+const contractSlots = View.Slots.make({
   root: boundRoot,
   input: boundInput,
   trigger: boundTrigger,
@@ -233,50 +259,50 @@ const witnessSlots = View.Slots.make({
 
 View.Slots.make({
   root: boundRoot,
-  // @ts-expect-error object key must match bound slot witness name
+  // @ts-expect-error object key must match bound slot name
   field: boundInput,
 });
 
-type _WitnessSlotNames = Expect<Equal<View.Slots.NamesOf<typeof witnessSlots>, "root" | "input" | "trigger">>;
-type _WitnessPublicNames = Expect<Equal<View.Slots.PublicNamesOf<typeof witnessSlots>, "root" | "input">>;
-type _WitnessHiddenNames = Expect<Equal<View.Slots.HiddenNamesOf<typeof witnessSlots>, "trigger">>;
-type _WitnessHandles = Expect<Equal<View.Slots.HandlesOf<typeof witnessSlots>, {
+type _ContractSlotNames = Expect<Equal<View.Slots.NamesOf<typeof contractSlots>, "root" | "input" | "trigger">>;
+type _ContractPublicNames = Expect<Equal<View.Slots.PublicNamesOf<typeof contractSlots>, "root" | "input">>;
+type _ContractHiddenNames = Expect<Equal<View.Slots.HiddenNamesOf<typeof contractSlots>, "trigger">>;
+type _ContractHandles = Expect<Equal<View.Slots.HandlesOf<typeof contractSlots>, {
   readonly root: Element.Container;
   readonly input: Element.TextInput;
   readonly trigger: Element.Interactive;
 }>>;
-type _WitnessMetadata = Expect<Equal<View.Slots.MetadataOf<typeof witnessSlots>, {
+type _ContractMetadata = Expect<Equal<View.Slots.MetadataOf<typeof contractSlots>, {
   readonly root: typeof RootSlot.metadata;
   readonly input: typeof InputSlot.metadata;
   readonly trigger: typeof HiddenTriggerSlot.metadata;
 }>>;
-type _WitnessTextInputSlots = Expect<Equal<keyof View.Slots.WithCapability<typeof witnessSlots, typeof Element.Capability.TextInput>, "input">>;
-type _WitnessFocusableSlots = Expect<Equal<keyof View.Slots.WithCapability<typeof witnessSlots, typeof Element.Capability.Focusable>, "input">>;
+type _ContractTextInputSlots = Expect<Equal<keyof View.Slots.WithCapability<typeof contractSlots, typeof Element.Capability.TextInput>, "input">>;
+type _ContractFocusableSlots = Expect<Equal<keyof View.Slots.WithCapability<typeof contractSlots, typeof Element.Capability.Focusable>, "input">>;
 
 function identitySlots<S extends View.Slots.Any>(slots: S): S {
   return slots;
 }
-const forwardedSlots = identitySlots(witnessSlots);
+const forwardedSlots = identitySlots(contractSlots);
 type _ForwardedSlotNames = Expect<Equal<View.Slots.NamesOf<typeof forwardedSlots>, "root" | "input" | "trigger">>;
 
-const witnessView = View.fromSlots(witnessSlots, "node", {
-  tree: View.fragment<View.Slots.HandlesOf<typeof witnessSlots>>([
-    View.element<View.Slots.HandlesOf<typeof witnessSlots>>(Element.Capability.Container, { slot: "root" }),
-    View.element<View.Slots.HandlesOf<typeof witnessSlots>>(Element.Capability.TextInput, { slot: "input" }),
+const contractView = View.fromSlots(contractSlots, "node", {
+  tree: View.fragment<View.Slots.HandlesOf<typeof contractSlots>>([
+    View.element<View.Slots.HandlesOf<typeof contractSlots>>(Element.Capability.Container, { slot: "root" }),
+    View.element<View.Slots.HandlesOf<typeof contractSlots>>(Element.Capability.TextInput, { slot: "input" }),
   ]),
 });
 
-type WitnessViewSlots = View.SlotsOf<typeof witnessView>;
-type _WitnessViewSlots = Expect<Equal<WitnessViewSlots, View.Slots.HandlesOf<typeof witnessSlots>>>;
+type ContractViewSlots = View.SlotsOf<typeof contractView>;
+type _ContractViewSlots = Expect<Equal<ContractViewSlots, View.Slots.HandlesOf<typeof contractSlots>>>;
 
-const WitnessComponent = Component.make<{}, never, never, { readonly slots: View.Slots.HandlesOf<typeof witnessSlots> }>(
+const ContractComponent = Component.make<{}, never, never, { readonly slots: View.Slots.HandlesOf<typeof contractSlots> }>(
   Component.props<{}>(),
   Component.require<never>(),
-  () => Effect.succeed({ slots: View.Slots.handles(witnessSlots) }),
-  () => View.fromSlots(witnessSlots, "node"),
+  () => Effect.succeed({ slots: View.Slots.handles(contractSlots) }),
+  () => View.fromSlots(contractSlots, "node"),
 );
 
-const WrappedWitnessComponent = WitnessComponent.pipe(
+const WrappedContractComponent = ContractComponent.pipe(
   Style.attachByView(Style.make({
     root: Style.slot({ color: "red" }),
     input: Style.slot({ opacity: 1 }),
@@ -284,7 +310,7 @@ const WrappedWitnessComponent = WitnessComponent.pipe(
   Component.guard(Effect.void),
 );
 
-type _WrappedWitnessComponentSlots = Expect<Equal<
-  Component.SlotsOf<typeof WrappedWitnessComponent>,
-  View.Slots.HandlesOf<typeof witnessSlots>
+type _WrappedContractComponentSlots = Expect<Equal<
+  Component.SlotsOf<typeof WrappedContractComponent>,
+  View.Slots.HandlesOf<typeof contractSlots>
 >>;

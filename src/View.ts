@@ -94,7 +94,13 @@ export interface ViewDiagnostic {
   readonly platform?: string;
 }
 
-export interface View<Slots> {
+type ViewPipeable<Slots> = {
+  pipe(): View<Slots>;
+  pipe(...fns: ReadonlyArray<(self: View<Slots>) => View<Slots>>): View<Slots>;
+  pipe<A>(ab: (self: View<Slots>) => A): A;
+};
+
+export interface View<Slots> extends ViewPipeable<Slots> {
   readonly [ViewTypeId]: {
     readonly Slots: Slots;
   };
@@ -136,9 +142,16 @@ type BindableHandle<S extends Slot.Any, H extends SlotHandle> =
 
 type Pipeable<Self> = {
   pipe(): Self;
+  pipe(...fns: ReadonlyArray<(self: Self) => Self>): Self;
   pipe<A>(ab: (self: Self) => A): A;
   pipe<A, B>(ab: (self: Self) => A, bc: (a: A) => B): B;
   pipe<A, B, C>(ab: (self: Self) => A, bc: (a: A) => B, cd: (b: B) => C): C;
+  pipe<A, B, C, D>(ab: (self: Self) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D): D;
+  pipe<A, B, C, D, E>(ab: (self: Self) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D, ef: (d: D) => E): E;
+  pipe<A, B, C, D, E, F>(ab: (self: Self) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D, ef: (d: D) => E, fg: (e: E) => F): F;
+  pipe<A, B, C, D, E, F, G>(ab: (self: Self) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D, ef: (d: D) => E, fg: (e: E) => F, gh: (f: F) => G): G;
+  pipe<A, B, C, D, E, F, G, H>(ab: (self: Self) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D, ef: (d: D) => E, fg: (e: E) => F, gh: (f: F) => G, hi: (g: G) => H): H;
+  pipe<A, B, C, D, E, F, G, H, I>(ab: (self: Self) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D, ef: (d: D) => E, fg: (e: E) => F, gh: (f: F) => G, hi: (g: G) => H, ij: (h: H) => I): I;
 };
 
 function pipeSelf(self: unknown, fns: ReadonlyArray<(value: any) => any>): unknown {
@@ -255,6 +268,74 @@ export namespace Slot {
   ): Bound<S, H> {
     return { slot, handle };
   }
+
+  export function capability<const C extends SlotCapability>(
+    cap: C,
+  ): <N extends string, OldC extends SlotCapability, E extends readonly (string | EventName)[], A extends readonly (string | AttributeName)[], R extends readonly (string | RequirementName)[], H extends boolean>(
+    slot: Slot<N, OldC, E, A, R, H>,
+  ) => Slot<N, C, E, A, R, H> {
+    return (slot) => make(slot.name, {
+      capability: cap,
+      allowedEvents: slot.metadata.allowedEvents,
+      allowedAttributes: slot.metadata.allowedAttributes,
+      platformRequirements: slot.metadata.platformRequirements,
+      hidden: slot.metadata.hidden,
+    }) as any;
+  }
+
+  export function events<const E extends readonly (string | EventName)[]>(
+    ...evts: E
+  ): <N extends string, C extends SlotCapability, OldE extends readonly (string | EventName)[], A extends readonly (string | AttributeName)[], R extends readonly (string | RequirementName)[], H extends boolean>(
+    slot: Slot<N, C, OldE, A, R, H>,
+  ) => Slot<N, C, E, A, R, H> {
+    return (slot) => make(slot.name, {
+      capability: slot.metadata.capability,
+      allowedEvents: evts,
+      allowedAttributes: slot.metadata.allowedAttributes,
+      platformRequirements: slot.metadata.platformRequirements,
+      hidden: slot.metadata.hidden,
+    }) as any;
+  }
+
+  export function attributes<const A extends readonly (string | AttributeName)[]>(
+    ...attrs: A
+  ): <N extends string, C extends SlotCapability, E extends readonly (string | EventName)[], OldA extends readonly (string | AttributeName)[], R extends readonly (string | RequirementName)[], H extends boolean>(
+    slot: Slot<N, C, E, OldA, R, H>,
+  ) => Slot<N, C, E, A, R, H> {
+    return (slot) => make(slot.name, {
+      capability: slot.metadata.capability,
+      allowedEvents: slot.metadata.allowedEvents,
+      allowedAttributes: attrs,
+      platformRequirements: slot.metadata.platformRequirements,
+      hidden: slot.metadata.hidden,
+    }) as any;
+  }
+
+  export function requires<const R extends readonly (string | RequirementName)[]>(
+    ...reqs: R
+  ): <N extends string, C extends SlotCapability, E extends readonly (string | EventName)[], A extends readonly (string | AttributeName)[], OldR extends readonly (string | RequirementName)[], H extends boolean>(
+    slot: Slot<N, C, E, A, OldR, H>,
+  ) => Slot<N, C, E, A, R, H> {
+    return (slot) => make(slot.name, {
+      capability: slot.metadata.capability,
+      allowedEvents: slot.metadata.allowedEvents,
+      allowedAttributes: slot.metadata.allowedAttributes,
+      platformRequirements: reqs,
+      hidden: slot.metadata.hidden,
+    }) as any;
+  }
+
+  export function hidden<N extends string, C extends SlotCapability, E extends readonly (string | EventName)[], A extends readonly (string | AttributeName)[], R extends readonly (string | RequirementName)[], H extends boolean>(
+    slot: Slot<N, C, E, A, R, H>,
+  ): Slot<N, C, E, A, R, true> {
+    return make(slot.name, {
+      capability: slot.metadata.capability,
+      allowedEvents: slot.metadata.allowedEvents,
+      allowedAttributes: slot.metadata.allowedAttributes,
+      platformRequirements: slot.metadata.platformRequirements,
+      hidden: true,
+    }) as any;
+  }
 }
 
 type BoundSlotRecord = Record<string, Slot.BoundAny>;
@@ -320,6 +401,23 @@ export namespace Slots {
       out[name] = bound.slot.metadata;
     }
     return out as MetadataOf<T>;
+  }
+
+  export function withCapability<T extends Any, C extends SlotCapability>(
+    slots: T,
+    capability: C,
+  ): {
+    readonly [K in keyof BoundOf<T> & string as MetadataToken.NameOf<C> extends Slot.AssignableCapabilityNamesOf<BoundOf<T>[K]> ? K : never]: BoundOf<T>[K];
+  } {
+    const out: Record<string, Slot.BoundAny> = {};
+    const capabilityName = MetadataToken.nameOf(capability);
+    for (const [name, bound] of Object.entries(slots.bound)) {
+      const slotCapabilityName = MetadataToken.nameOf(bound.slot.metadata.capability);
+      if (Element.extendsCapability(slotCapabilityName, capabilityName)) {
+        out[name] = bound;
+      }
+    }
+    return out as any;
   }
 }
 
@@ -582,7 +680,7 @@ export function make<Slots>(
     readonly slotRemaps?: readonly SlotRemap<Slots>[];
   },
 ): View<Slots> {
-  return {
+  const out = {
     [ViewTypeId]: {
       Slots: undefined as unknown as Slots,
     },
@@ -593,7 +691,10 @@ export function make<Slots>(
     metadata: options?.metadata,
     slotMetadata: options?.slotMetadata,
     slotRemaps: options?.slotRemaps,
-  };
+  } as View<Slots>;
+  return Object.assign(out, {
+    pipe: (...fns: ReadonlyArray<(value: any) => any>) => pipeSelf(out, fns),
+  }) as View<Slots>;
 }
 
 export function isView(value: unknown): value is View<unknown> {
@@ -650,6 +751,18 @@ export function children(value: unknown): ChildrenHole {
   };
 }
 
+type SlotsOfViewNodeChildren<T> = T extends readonly ViewNode<infer Slots>[] ? Slots : {};
+
+export function element<
+  const S extends Slot.Any,
+  const Children extends readonly ViewNode<any>[] | undefined = undefined,
+>(
+  element: S,
+  options?: {
+    readonly props?: ViewProps;
+    readonly children?: Children;
+  },
+): ViewElement<Record<Slot.NameOf<S>, unknown> & SlotsOfViewNodeChildren<Children>>;
 export function element<Slots>(
   element: SlotCapability,
   options?: {
@@ -657,11 +770,22 @@ export function element<Slots>(
     readonly props?: ViewProps;
     readonly children?: readonly ViewNode<Slots>[];
   },
+): ViewElement<Slots>;
+export function element<Slots>(
+  element: SlotCapability | Slot.Any,
+  options?: {
+    readonly slot?: keyof Slots & string;
+    readonly props?: ViewProps;
+    readonly children?: readonly ViewNode<Slots>[];
+  },
 ): ViewElement<Slots> {
+  const slotWitness = typeof element === "object" && element !== null && SlotTypeId in element
+    ? element as Slot.Any
+    : undefined;
   return {
     kind: "view.node.element",
-    element,
-    slot: options?.slot,
+    element: slotWitness?.metadata.capability ?? element as SlotCapability,
+    slot: options?.slot ?? slotWitness?.name as keyof Slots & string | undefined,
     props: options?.props,
     children: options?.children,
   };
@@ -724,6 +848,131 @@ export function fromSlots<S extends Slots.Any>(
       ...Slots.metadata(slots),
       ...options?.slotMetadata,
     } as SlotMetadataMap<Slots.HandlesOf<S>>,
+  });
+}
+
+function cloneView<Slots>(
+  view: View<Slots>,
+  options: {
+    readonly tree?: ViewNode<Slots>;
+    readonly name?: string;
+    readonly metadata?: ViewMetadata;
+    readonly slotMetadata?: SlotMetadataMap<Slots>;
+    readonly slotRemaps?: readonly SlotRemap<Slots>[];
+  },
+): View<Slots> {
+  return make(view.slots, view.node, {
+    tree: options.tree,
+    name: options.name,
+    metadata: options.metadata,
+    slotMetadata: options.slotMetadata,
+    slotRemaps: options.slotRemaps,
+  });
+}
+
+function appendTreeChildren<Slots>(
+  treeNode: ViewNode<Slots> | undefined,
+  added: readonly ViewNode<Slots>[],
+): ViewNode<Slots> {
+  if (treeNode === undefined) return fragment(added);
+  switch (treeNode.kind) {
+    case "view.node.fragment":
+      return fragment([...treeNode.children, ...added]);
+    case "view.node.element":
+      return {
+        ...treeNode,
+        children: [...(treeNode.children ?? []), ...added],
+      };
+    case "view.node.text":
+    case "view.node.hole":
+      return fragment([treeNode, ...added]);
+  }
+}
+
+export function withTree(
+  tree: ViewNode<any>,
+): <Slots>(view: View<Slots>) => View<Slots> {
+  return (view) => cloneView(view, {
+    tree: tree as unknown as ViewNode<typeof view.slots>,
+    name: view.name,
+    metadata: view.metadata,
+    slotMetadata: view.slotMetadata,
+    slotRemaps: view.slotRemaps,
+  });
+}
+
+export function withChildren(
+  ...children: readonly ViewNode<any>[]
+): <Slots>(view: View<Slots>) => View<Slots> {
+  return appendChildren(...children);
+}
+
+export function appendChildren(
+  ...children: readonly ViewNode<any>[]
+): <Slots>(view: View<Slots>) => View<Slots> {
+  return (view) => cloneView(view, {
+    tree: appendTreeChildren(view.tree, children as unknown as readonly ViewNode<typeof view.slots>[]),
+    name: view.name,
+    metadata: view.metadata,
+    slotMetadata: view.slotMetadata,
+    slotRemaps: view.slotRemaps,
+  });
+}
+
+export function withName(
+  name: string,
+): <Slots>(view: View<Slots>) => View<Slots> {
+  return (view) => cloneView(view, {
+    tree: view.tree,
+    name,
+    metadata: view.metadata,
+    slotMetadata: view.slotMetadata,
+    slotRemaps: view.slotRemaps,
+  });
+}
+
+export function withMetadata(
+  metadata: ViewMetadata,
+): <Slots>(view: View<Slots>) => View<Slots> {
+  return (view) => cloneView(view, {
+    tree: view.tree,
+    name: view.name,
+    metadata: {
+      ...view.metadata,
+      ...metadata,
+    },
+    slotMetadata: view.slotMetadata,
+    slotRemaps: view.slotRemaps,
+  });
+}
+
+export function withSlotMetadata<MetadataSlots>(
+  slotMetadata: SlotMetadataMap<MetadataSlots>,
+): <Slots extends MetadataSlots>(view: View<Slots>) => View<Slots> {
+  return <ViewSlots extends MetadataSlots>(view: View<ViewSlots>) => cloneView(view, {
+    tree: view.tree,
+    name: view.name,
+    metadata: view.metadata,
+    slotMetadata: {
+      ...view.slotMetadata,
+      ...slotMetadata,
+    } as SlotMetadataMap<ViewSlots>,
+    slotRemaps: view.slotRemaps,
+  });
+}
+
+export function withRemaps<Slots>(
+  ...slotRemaps: readonly SlotRemap<Slots>[]
+): (view: View<Slots>) => View<Slots> {
+  return (view) => cloneView(view, {
+    tree: view.tree,
+    name: view.name,
+    metadata: view.metadata,
+    slotMetadata: view.slotMetadata,
+    slotRemaps: [
+      ...(view.slotRemaps ?? []),
+      ...slotRemaps,
+    ],
   });
 }
 
@@ -1048,6 +1297,13 @@ export const View = {
   Slots,
   make,
   fromSlots,
+  withTree,
+  withChildren,
+  appendChildren,
+  withName,
+  withMetadata,
+  withSlotMetadata,
+  withRemaps,
   platform,
   isView,
   node,

@@ -5,6 +5,7 @@ This guide focuses on the three APIs you will use most when wiring Effect servic
 - `useService(tag)` for synchronous service lookup
 - `defineQuery(fn, options?)` for reactive reads
 - `Atom.runtime(layer).action(...)` for linear runtime-bound writes
+- `Atom.runtime(layer).optimistic(source).action(...)` for optimistic writes
 - `defineMutation(fn, options?)` as callback-style mutation alternative
 
 ---
@@ -15,9 +16,15 @@ This guide focuses on the three APIs you will use most when wiring Effect servic
 - `useService(tag)` reads services from that runtime
 - `defineQuery` runs read effects reactively and exposes `Result`
 - `apiRuntime.action` runs mutation effects in a linear Effect flow and supports `reactivityKeys`
+- `apiRuntime.optimistic(source).action(...)` owns optimistic value, pending,
+  rollback, result, commit, and reconciliation
 - `defineMutation` runs mutation effects with callback lifecycle hooks
 
-Use `defineQuery` for query/read paths. For writes, prefer `apiRuntime.action` first and use `defineMutation` when callback hooks are a better fit.
+Use `defineQuery` for query/read paths. For writes, prefer
+`apiRuntime.action(...)` for normal writes and
+`apiRuntime.optimistic(source).action(...)` when the UI should update before the
+server confirms the change. Use `defineMutation` when callback hooks are a
+better fit.
 
 ---
 
@@ -50,7 +57,7 @@ Notes:
 
 - Must be called under `mount(..., layer)`.
 - Throws if no ambient runtime exists.
-- Best used to grab a service handle, then run effects via `defineQuery` and `Atom.runtime(...).action(...)` (or `defineMutation` when callback hooks fit better).
+- Best used to grab a service handle, then run effects via `defineQuery`, `Atom.runtime(...).action(...)`, and `Atom.runtime(...).optimistic(source).action(...)` (or `defineMutation` when callback hooks fit better).
 - `useServices({ api: Api, clock: Clock })` resolves multiple services in one call.
 
 ---
@@ -126,28 +133,54 @@ const cached = latest(users.result);
 
 ---
 
-## `Atom.runtime(layer).action(...)` (preferred for service-backed writes)
+## `Atom.runtime(layer).optimistic(source).action(...)` (optimistic writes)
+
+Builds a runtime-bound optimistic action. The handle owns the visible value,
+committed value, pending/result state, rollback, and commit/reconcile lifecycle.
+
+```ts
+import { Effect } from "effect";
+import { Atom } from "effect-atom-jsx";
+
+const apiRuntime = Atom.runtime(ApiLive);
+const savedCount = Atom.make(0);
+
+const saveCount = apiRuntime.optimistic(savedCount).action({
+  name: "counter.save",
+  update: (current, delta: number) => current + delta,
+  effect: (next) =>
+    Effect.gen(function* () {
+      const api = yield* Api;
+      return yield* api.saveCount(next);
+    }),
+  reconcile: (_optimistic, confirmed) => confirmed,
+  reactivityKeys: ["counter"],
+});
+
+saveCount.run(1);
+saveCount.value();          // optimistic visible count
+saveCount.committed();      // durable count
+saveCount.pending();        // derived from Result
+saveCount.hasOptimistic();  // visible value is temporary
+```
+
+## `Atom.runtime(layer).action(...)` (normal service-backed writes)
 
 Builds a runtime-bound action with a linear Effect generator flow.
 
 ```ts
 import { Effect } from "effect";
-import { Atom, createOptimistic, createSignal } from "effect-atom-jsx";
+import { Atom } from "effect-atom-jsx";
 
 const apiRuntime = Atom.runtime(ApiLive);
-const [savedCount] = createSignal(0);
-const optimisticCount = createOptimistic(() => savedCount());
 
 const saveCount = apiRuntime.action(
   Effect.fn(function* (next: number) {
-    optimisticCount.set(next);
     const api = yield* Api;
-    yield* api.saveCount(next);
+    return yield* api.saveCount(next);
   }),
   {
     reactivityKeys: ["counter"],
-    onSuccess: () => optimisticCount.clear(),
-    onError: () => optimisticCount.clear(),
   },
 );
 
@@ -224,15 +257,16 @@ function CounterPage() {
     { name: "counter" },
   );
 
-  const increment = apiRuntime.action(
-    Effect.fn(function* () {
-      const api = yield* Api;
-      yield* api.incrementCounter();
-    }),
-    {
-      reactivityKeys: [counter.key],
-    },
-  );
+  const savedCount = Atom.make(0);
+  const increment = apiRuntime.optimistic(savedCount).action({
+    update: (current, _input: void) => current + 1,
+    effect: (next) =>
+      Effect.gen(function* () {
+        const api = yield* Api;
+        return yield* api.saveCounter(next);
+      }),
+    reactivityKeys: [counter.key],
+  });
 
   return (
     <>
@@ -254,6 +288,6 @@ function CounterPage() {
 ## Common Pitfalls
 
 - Calling `useService(tag)` outside a mounted layer boundary.
-- Using `defineQuery` for write operations (prefer `Atom.runtime(...).action(...)` or `defineMutation`).
-- Forgetting to clear optimistic overlays on success.
+- Using `defineQuery` for write operations (prefer `Atom.runtime(...).action(...)`, `Atom.runtime(...).optimistic(source).action(...)`, or `defineMutation`).
+- Manually coordinating optimistic overlays when `Atom.optimistic(source).action(...)` can own rollback/commit.
 - Treating `Refreshing` as initial loading. Use `Loading` vs `Refreshing` distinctly in UI.

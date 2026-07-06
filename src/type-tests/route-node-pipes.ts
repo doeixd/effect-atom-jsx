@@ -11,6 +11,14 @@ type Equal<A, B> =
     : false;
 type Expect<T extends true> = T;
 
+const RootSlot = View.Slot.make("root", {
+  capability: Element.Capability.Container,
+});
+const makeRootSlots = () =>
+  View.Slots.make({
+    root: View.Slot.bind(RootSlot, Element.container()),
+  });
+
 const SearchRouteBase = Route.path("/teams/:teamId")(Component.from<{}>(() => null));
 const SearchRouteWithId = Route.id("teams.detail")(SearchRouteBase);
 const SearchRouteWithParams = Route.paramsSchema(Schema.Struct({ teamId: Schema.String }))(SearchRouteWithId);
@@ -154,12 +162,8 @@ const ViewBacked = Component.make<
 >(
   Component.props<{}>(),
   Component.require<never>(),
-  () => Effect.succeed({ slots: { root: Element.container() } }),
-  (_props, bindings) => View.make(bindings.slots, null, {
-    slotMetadata: {
-      root: View.slot("root", { capability: Element.Capability.Container }),
-    },
-  }),
+  () => Effect.succeed({ slots: View.Slots.handles(makeRootSlots()) }),
+  () => View.fromSlots(makeRootSlots(), null),
 );
 
 const LegacyViewRoute = ViewBacked.pipe(Component.route("/typed-view"));

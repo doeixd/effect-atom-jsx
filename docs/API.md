@@ -4,6 +4,9 @@
 
 AF-UI convergence work is tracked against the canonical contract in [`AF_UI_CONTRACT.md`](./AF_UI_CONTRACT.md). Use that document for the target architecture when implementation details and older exploratory docs differ.
 
+For authored slot-based components, use the slot-contract path in
+[`SLOT_CONTRACT_GOLDEN_PATH.md`](./SLOT_CONTRACT_GOLDEN_PATH.md).
+
 **Mental model:** atoms are the reactive layer; Effect is the async layer. When they meet — in async atoms, actions, and components — Effect's types flow through unmodified.
 
 ---
@@ -13,14 +16,14 @@ AF-UI convergence work is tracked against the canonical contract in [`AF_UI_CONT
 - **`Atom`** — The reactive state unit. Callable for reads (`atom()`), writable variants expose `set`/`update`/`modify`. Atoms track their own dependencies; derived atoms recompute lazily when upstreams change.
 - **`Derived atom`** — Read-only atom computed from other atoms. Created with `Atom.make((get) => ...)` or `Atom.derived(...)`. Results are cached until dependencies change.
 - **`QueryRef`** — Async read handle from `defineQuery`. Bundles `result`, `pending`, `latest`, `effect`, and invalidation APIs into one ergonomic object.
-- **`Mutation handle`** — Async write handle from `defineMutation`. Exposes `run`, `effect`, `result`, `pending`.
+- **`Mutation handle`** — Async write handle from `Atom.optimistic(...).action(...)`, `Atom.runtime(...).action(...)`, or callback-style `defineMutation(...)`. Exposes `run`, `effect`, `runEffect`, `result`, and `pending`; optimistic handles also expose `value`, `committed`, `optimistic`, `hasOptimistic`, `rollback`, and `clear`.
 - **`Action handle`** — Runtime-bound mutation handle from `Atom.action` / `Atom.runtime(...).action`. The preferred way to express mutations when you have Effect-native code.
 - **`Result`** — The five-state async type (`Loading`, `Refreshing`, `Success`, `Failure`, `Defect`). Distinguishing *initial load* from *revalidation* and *typed failures* from *defects* makes UI states explicit rather than derived.
 - **`Effect`** (from the `effect` package) — A typed program `Effect<A, E, R>`. The `.effect(...)` methods on query/mutation handles convert reactive state into composable Effect values.
 - **`BridgeError`** — Tagged errors emitted when you compose a reactive atom into an Effect pipeline and the atom is still `Loading` (`ResultLoadingError`) or has a `Defect` (`ResultDefectError`). Makes the gap between reactive state and Effect's error channel explicit.
 - **`MutationSupersededError`** — Emitted when a newer mutation run interrupts an earlier one. Lets Effect pipelines react to cancellation rather than silently dropping results.
 - **`AtomRef`** — Object/collection-centric reactive refs with property-level access. Use when you want per-property subscriptions on a shared object without splitting it into many atoms.
-- **`OptimisticRef`** — Temporary overlay state from `createOptimistic`. Lets UI read an optimistic value while the real mutation is in flight.
+- **`Optimistic action`** — Authored optimistic lifecycle from `Atom.optimistic(source).action(...)`, `Atom.runtime(layer).optimistic(source).action(...)`, or `Component.optimistic(source).action(...)`. Lets UI read one visible value while preserving committed state, rollback, typed `Result`, pending, and reconciliation.
 - **`Store`** — There is no separate top-level store. Use `AtomRef` for object/draft-style state or `Atom.projection(...)` for computed mutable views.
 
 ---
@@ -425,13 +428,24 @@ The key insight is that `Component.make` separates *setup* (an Effect that runs 
 - `Component.from(fn)` — create from a plain function component
 - `Component.props<P>()` / `Component.propsSchema(schema)` — declare prop shape
 - `Component.require(...tags)` — declare required Effect services
-- metadata extractors: `Component.Requirements<T>`, `Component.Errors<T>`, `Component.PropsOf<T>`, `Component.BindingsOf<T>`, `Component.SlotsOf<T>`
+- metadata extractors: `Component.Requirements<T>`, `Component.Errors<T>`, `Component.PropsOf<T>`, `Component.BindingsOf<T>`, `Component.SlotsOf<T>`, `Component.SlotContractOf<T>`
+- slot contract helpers: `Component.withSlots(slots)` for authored `View.Slots` contracts, `Component.withSlotContract(contract)` for the direct lower-level spelling. When the contract is a `View.Slots` value, `Component.SlotsOf<T>` is projected from `View.Slots.HandlesOf<typeof slots>`.
 - setup/render bridges: `Component.setupEffect(component, props)`, `Component.renderEffect(component, props)`, and `Component.renderViewEffect(component, props)`
+- **setup builder** (pipeable authoring layer over setup-as-Effect):
+  - `Component.setup<Props>()` — start a named binding builder
+  - `Component.bind(name, effect)` — add an Effect-created binding
+  - `Component.value(name, fn)` — add a pure setup value
+  - `Component.doEffect(effect)` — run setup work without adding a binding
+  - `Component.use(fragment)` — merge a reusable setup fragment
+  - extractors: `Component.SetupPropsOf<T>`, `Component.SetupBindingsOf<T>`, `Component.SetupErrorsOf<T>`, `Component.SetupRequirementsOf<T>`
 - **setup helpers** (yield inside setup Effect):
+  - `Component.signal(initial)` — local live accessor and setter for setup-owned state
+  - `Component.effect(fn)` — setup-scoped reactive effect with cleanup support
   - `Component.state(initial)` — local writable atom
   - `Component.derived(fn)` — local derived atom
-  - `Component.query(effect, options?)` — local async query, auto-managed lifetime
-  - `Component.action(fn, options?)` — local action, auto-managed lifetime
+  - `Component.query(effect, options?)` — local async query, auto-managed lifetime. Queries capture the setup service map so async work can use services supplied by component layers.
+  - `Component.action(fn, options?)` — local action, auto-managed lifetime. Returned handles are callable and expose `run(...)`, `runEffect(...)`, `effect(...)`, `result`, and `pending`; action handles capture the setup service map so later runs can use services supplied by component layers.
+  - `Component.optimistic(source).action(spec)` — component-local optimistic action over setup-owned state; captures the setup service map like `Component.action(...)`.
   - `Component.ref<T>()` — DOM or imperative ref
   - `Component.fromDequeue(dequeue, handler)` — wire an Effect Queue into component lifetime
   - `Component.schedule(schedule, run)` — run on an Effect Schedule
@@ -454,11 +468,28 @@ const Counter = Component.make(
   Component.require<never>(),
   ({ start }) => Effect.gen(function* () {
     // Setup runs once — acquire state, queries, actions here
-    const count = yield* Component.state(start);
+    const [count, setCount] = yield* Component.signal(start);
     const doubled = yield* Component.derived(() => count() * 2);
-    return { count, doubled };
+    return { count, setCount, doubled };
   }),
   // View is a reactive function — runs whenever its atom reads change
+  (_props, { doubled }) => doubled(),
+);
+```
+
+The same setup can be authored as a pipeable named-binding builder:
+
+```ts
+const CounterSetup = Component.setup<{ readonly start: number }>()
+  .bind("count", ({ props }) => Component.state(props.start))
+  .bind("doubled", ({ bindings }) =>
+    Component.derived(() => bindings.count() * 2)
+  );
+
+const Counter = Component.make(
+  Component.props<{ readonly start: number }>(),
+  Component.require<never>(),
+  CounterSetup,
   (_props, { doubled }) => doubled(),
 );
 ```
@@ -470,7 +501,7 @@ const Counter = Component.make(
 Runtime-native view wrapper for exposing structural slot metadata while preserving current JSX/unknown render output.
 
 - `View.make(slots, node, options?)` — create an inspectable `View<Slots>`
-- `View.Slot.make(name, options?)`, `View.Slot.bind(slot, handle)`, `View.Slots.make(...)`, `View.fromSlots(...)` — preferred slot witness path for authored views
+- `View.Slot.make(name, options?)`, `View.Slot.bind(slot, handle)`, `View.Slots.make(...)`, `View.fromSlots(...)` — preferred slot contract path for authored views
 - `View.tree(slots, tree, node?, options?)` — create a `View<Slots>` with optional renderer-neutral typed tree metadata while preserving the runtime node
 - `View.element(...)`, `View.fragment(...)`, `View.textNode(...)`, `View.hole(...)` — build typed tree metadata nodes
 - `View.isView(value)` / `View.node(value)` — detect and unwrap view-backed output
@@ -487,6 +518,10 @@ Runtime-native view wrapper for exposing structural slot metadata while preservi
 - `Element.extendsCapability(...)` / `View.extendsCapability(...)` — test capability hierarchy compatibility
 - extraction helpers: `View.SlotCapabilityOf<T>`, `View.SlotEventsOf<T>`, `View.PlatformCapabilitiesOf<T>`, `View.PlatformEventsOf<T>`
 - compatibility helpers: `View.MissingPlatformSupport<Slot, Platform>`, `View.IsPlatformCompatible<Slot, Platform>`
+
+Use `View.Slots` plus `View.fromSlots(...)` for authored components. Direct
+`slotMetadata` is still available for dynamic/generated views and low-level
+renderer adapters.
 
 When a component render function returns a `View`, `Component.renderEffect(...)` registers the view slots and, if `View.platform(...)` is installed in the current Effect environment, reports platform diagnostics for the active renderer boundary.
 
@@ -581,9 +616,12 @@ Composable behavior building blocks for headless UI logic. A `Behavior` is an Ef
 The `Element.*` constructors define what capability a slot needs (is it interactive? focusable? a text input?). Behaviors are then attached by matching slots to those capabilities.
 
 - `Behavior.make(run)` — define a behavior as an Effect program
+- `Behavior.forSlots(slots)(run)` — define authored behavior over a `View.Slots` contract
 - `Behavior.compose(a, b, ...)` — merge multiple behaviors into one
 - `Behavior.decorator(behavior)` — behavior that wraps another
 - `Behavior.attach(behavior, { select, merge? })` — attach behavior to elements by slot name
+- `Behavior.attachToSlots(behavior, slots)` — attach authored behavior to the same slot contract
+- `Behavior.attachBySlotContract(behavior, elementMap, merge?)` — typed remapping through slot contracts
 - `Behavior.attachBySlots(behavior, elementMap, merge?)` — explicit slot → element wiring
 - `Behavior.events(eventMap)` / `Behavior.withMetadata(behavior, metadata)` — declare event requirements for attachment diagnostics
 - `Behavior.validateAttachmentBySlots(behavior, elementMap, view)` — validate slot targets and required behavior events against `View.slot(...)` metadata
@@ -601,20 +639,19 @@ const NeedsInput = Behavior.events({
   >(({ input }) => input.on("input", () => undefined).pipe(Effect.as({}))),
 );
 
+const Field = View.Slot.make("field", {
+  capability: Element.Capability.TextInput,
+  allowedEvents: [View.Event.Input],
+});
+
+const FieldSlots = View.Slots.make({
+  field: View.Slot.bind(Field, Element.textInput()),
+});
+
 Behavior.validateAttachmentBySlots(
   NeedsInput,
   { input: "field" },
-  View.make(
-    { field: Element.textInput() },
-    null,
-    {
-      slotMetadata: {
-        field: View.slot("field", {
-          allowedEvents: [View.Event.Input],
-        }),
-      },
-    },
-  ),
+  View.fromSlots(FieldSlots, null),
 );
 ```
 
@@ -656,6 +693,9 @@ Typed style composition that treats CSS as data. Styles are assembled as structu
 
 **Style maps and attachment:**
 - `Style.make` — create a style map (slot name → style)
+- `Style.forSlots(slots)` — create an authored style map over a `View.Slots` contract
+- `Style.attachToSlots(style, slots)` — attach authored styles to the same slot contract
+- `Style.attachBySlotContract(style, map)` — typed remapping through slot contracts
 - `Style.attach`, `Style.attachBySlots` — attach style maps to element slots
 - `Style.attachBySlotsFor<Bindings>()` — type-safe attach that validates slot names against component bindings
 - `Style.validateComponentAttachment(style, component, props)` — render a component View and validate style slot targets against its metadata
@@ -1661,8 +1701,11 @@ const data = defineQuery(() => fetch('/data'), {
 
 ### Mutations
 
-- **`createOptimistic(source)`** — create an optimistic overlay with `get`, `set`, `clear`, `isPending`. `source` can be any callable read (`Accessor<T>` or callable atom). The overlay is temporary state: UI reads from it while the real mutation is in-flight; clear it on success or rollback on failure.
-- **`defineMutation(fn, options?)`** — create an Effect-powered mutation action with `optimistic`, `rollback`, `onSuccess`, `onFailure`, `refresh` hooks. Returns `{ run, effect, result, pending }`. Supports `invalidates` for query key invalidation.
+- **`Atom.optimistic(source).action(spec)`** — create an optimistic action over a writable atom. `spec.update(current, input)` computes the visible optimistic value; `spec.effect(next, input)` runs the typed Effect; optional `reconcile`, `commit`, and `reactivityKeys` control server confirmation and refresh.
+- **`Atom.runtime(layer).optimistic(source).action(spec)`** — runtime-bound optimistic action that satisfies service requirements from the runtime layer.
+- **`Component.optimistic(source).action(spec)`** — component-scoped optimistic action for setup-created state.
+- **`createOptimistic(source)`** — lower-level optimistic overlay primitive with `get`, `set`, `clear`, `isPending`. Use when integrating custom mutation machinery.
+- **`defineMutation(fn, options?)`** — lower-level callback-style mutation with `optimistic`, `rollback`, `onSuccess`, `onFailure`, `refresh` hooks. Returns `{ run, effect, result, pending }`. Supports `invalidates` for query key invalidation.
   - `effect(input)` returns `Effect<void, E | BridgeError | MutationSupersededError>`
   - `options.onTransition` emits `{ phase: start|success|failure|defect }`
   - `options.observe` emits metrics events

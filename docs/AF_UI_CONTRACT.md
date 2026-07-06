@@ -7,10 +7,15 @@ This document is the source of truth for aligning `effect-atom-jsx` with the AF-
 AF-UI is an Effect-native UI algebra built around an inside-out component model:
 
 ```text
-Component<Props, Req, E, Bindings, Slots> -> View<Slots>
+Component<Props, Req, E, Bindings, SlotContract> -> View<Slots>
 ```
 
-Components own logic and state. Views own structure. Slots are the public structural API. Styles and behaviors attach from the outside to those slots. Runtime services provide routing, reactivity, single-flight, hydration, rendering, and platform integration.
+Components own logic and state. Views own structure. `View.Slots` is the
+canonical authored slot contract. Runtime slot handle maps, static component
+slot metadata, style targets, behavior targets, and diagnostics should be
+derived from that contract. Styles and behaviors attach from the outside to
+those slots. Runtime services provide routing, reactivity, single-flight,
+hydration, rendering, and platform integration.
 
 ## Core Boundaries
 
@@ -36,8 +41,8 @@ Element.Capability.make("DatePicker", {
 })
 ```
 
-String capability names remain supported for compatibility and generated code,
-but witnesses are preferred because their literal names survive generic
+String capability names remain available for generated/dynamic code, but
+witnesses are preferred because their literal names survive generic
 composition.
 
 Capabilities may form a lightweight hierarchy. A more specific capability can
@@ -75,11 +80,15 @@ the domain-specific witness APIs (`Element.Capability.*`, `View.Event.*`,
 `View.Attribute.*`, `View.Requirement.*`, `Style.Property.*`) rather than raw
 magic strings in new authored code.
 
-Slot identity should also move toward first-class witnesses rather than
-duplicated string keys and separate metadata records. The migration plan is
-tracked in [`SLOT_WITNESS_PLAN.md`](SLOT_WITNESS_PLAN.md): new APIs should let
-callers define a slot once, bind it to a handle, and derive both the `slots` map
-and `slotMetadata` from that value.
+Slot identity should use first-class witnesses rather than duplicated string
+keys and separate metadata records. The witness design is tracked in
+[`SLOT_WITNESS_PLAN.md`](SLOT_WITNESS_PLAN.md).
+
+The next design step is tracked in
+[`SLOT_CONTRACT_UNIFICATION_PLAN.md`](SLOT_CONTRACT_UNIFICATION_PLAN.md):
+`View.Slots` should become the single canonical authored slot contract object.
+`Component.SlotsOf<T>` should remain the runtime handle-map projection, while
+`Component.SlotContractOf<T>` exposes the authored contract metadata.
 
 ### View
 
@@ -93,10 +102,35 @@ interface View<Slots> {
 
 The target model is not "component returns opaque JSX". JSX is authoring syntax for a typed view. The implementation may use the current JSX runtime internally while moving toward explicit view metadata, but the public contract is `View<Slots>`.
 
-Today `View<Slots>` is runtime-inspectable through `View.make(...)` and
-`Component.renderViewEffect(...)`. Static component metadata extraction beyond
-the `Slots` type axis is future work; runtime diagnostics are currently the
-source of truth for generated/dynamic attachment checks.
+Today `View<Slots>` is runtime-inspectable through `View.make(...)`,
+`View.fromSlots(...)`, and `Component.renderViewEffect(...)`. Components carry
+static slot contract metadata through the single `SlotContract` axis. Runtime
+diagnostics remain the source of truth for generated/dynamic attachment checks
+and for implementation drift.
+
+The current implementation also stores the authored component slot contract at
+runtime through `Component.withSlots(slots)`. `Component.getSlotContract(...)`
+can inspect that contract, while `Component.validateSlotContract(...)` and
+`Component.validateRenderedSlotContract(...)` compare the declared contract with
+rendered `View` slots and, when present, `bindings.slots`.
+Declared-vs-rendered component diagnostics are explicit-only for now: normal
+render paths do not automatically report them, while tests, adapters, and future
+dev tools can opt into the validation helpers.
+
+When `Component.withSlots(...)` receives a `View.Slots` contract,
+`Component.SlotsOf<T>` is projected from `View.Slots.HandlesOf<typeof slots>`.
+The authored contract is therefore the source of truth for the public handle-map
+type, even while compatibility paths still allow `bindings.slots`.
+`withSlots(View.Slots)` also makes the projected handles available as
+`bindings.slots` when setup did not already expose a slots object, so authored
+view-backed components can use behavior attachment without duplicating the slot
+map in setup.
+
+For the ownership boundary between caller configuration, setup-created state,
+and structural attachment points, see
+[`PROPS_BINDINGS_SLOTS.md`](PROPS_BINDINGS_SLOTS.md).
+For the async consistency role of bindings, see
+[`BINDINGS_ASYNC_COMMIT_BOUNDARY.md`](BINDINGS_ASYNC_COMMIT_BOUNDARY.md).
 
 The next typed-view step is tracked in
 [`TYPED_VIEW_TREE_PLAN.md`](TYPED_VIEW_TREE_PLAN.md). That plan keeps
@@ -109,14 +143,14 @@ adapters.
 A component separates setup from structure:
 
 ```ts
-interface Component<Props, Req, E, Bindings, Slots> {
-  (props: Props): View<Slots>;
+interface Component<Props, Req, E, Bindings, SlotContract> {
+  (props: Props): View<View.Slots.HandlesOf<SlotContract>>;
   readonly type: {
     readonly Props: Props;
     readonly Req: Req;
     readonly E: E;
     readonly Bindings: Bindings;
-    readonly Slots: Slots;
+    readonly SlotContract: SlotContract;
   };
 }
 ```
@@ -125,7 +159,32 @@ interface Component<Props, Req, E, Bindings, Slots> {
 - `Req` is the Effect environment required by setup, children, styles, behaviors, loaders, or routes.
 - `E` is the typed error channel.
 - `Bindings` are logical state created during setup.
-- `Slots` are structural element handles exposed by the view.
+- `SlotContract` is the authored `View.Slots` contract when available.
+- `Component.SlotsOf<T>` derives the structural element handle map exposed by
+  the view.
+- `Component.SlotContractOf<T>` exposes the authored slot contract metadata.
+
+The current implementation now carries a single `SlotContract` axis. Handle-map
+types are projections through `Component.SlotsOf<T>`, so authored contract
+metadata and structural attachment types cannot drift as separate component
+generic parameters.
+
+`Props`, `Bindings`, and `SlotContract` are deliberately separate:
+
+- `Props` are caller-owned configuration.
+- `Bindings` are setup-created implementation state.
+- `SlotContract` is the public structural attachment surface.
+
+Bindings also act as the component-level async commit boundary: setup produces a
+coherent binding snapshot, then the view renders from that snapshot and
+style/behavior effects attach after the view/slot snapshot exists.
+
+Optimistic UI follows the same separation. Committed atom state remains durable
+truth, optimistic overlays are temporary visible truth, and actions/mutations
+carry the async lifecycle through `Result`. The improved design is tracked in
+[`OPTIMISTIC_ACTION_DESIGN_PLAN.md`](OPTIMISTIC_ACTION_DESIGN_PLAN.md): the
+target authored API is `Atom.optimistic(source).action(...)`, with runtime and
+component variants for service-bound and setup-scoped optimistic actions.
 
 Requirement and error bubbling are part of the contract: rendering a child component, attaching a behavior, attaching a style, adding a loader, or providing a local layer must transform the component's `Req` and `E` types predictably.
 
@@ -138,6 +197,16 @@ Behavior<Elements, Bindings, Req, E>
 ```
 
 Behaviors attach listeners, attributes, visibility, focus logic, keyboard handling, and other interaction directly to element handles. They do not rely on prop spreading. Cleanup is scoped through Effect lifecycle management.
+
+The preferred authored behavior path is slot-contract-first:
+
+```ts
+Behavior.forSlots(slots)(...)
+Behavior.attachToSlots(behavior, slots)
+```
+
+`Behavior.attachBySlotContract(...)` is the typed remapping path.
+`Behavior.attachBySlots(...)` is the dynamic/generated string-map path.
 
 Attachment must be slot-safe:
 
@@ -178,6 +247,16 @@ Style merge order is:
 ```text
 Theme -> Recipe -> Variant -> Utility -> Handle Override
 ```
+
+The preferred authored style path mirrors behavior:
+
+```ts
+Style.forSlots(slots)(...)
+Style.attachToSlots(style, slots)
+```
+
+`Style.attachBySlotContract(...)` is the typed remapping path.
+`Style.attachBySlots(...)` is the dynamic/generated string-map path.
 
 ### Route
 
@@ -235,13 +314,13 @@ Style platform metadata follows the same witness-compatible model through
 
 ### Current Checkpoint
 
-As of 2026-06-23, AF-UI convergence has started in this repo.
+As of 2026-07-01, AF-UI convergence is active in this repo.
 
 Completed in the current checkpoint:
 
 - Added this canonical contract doc.
 - Added `docs/GEN2_UI_IMPLEMENTATION_NOTES.md` after inspecting `../gen2`.
-- Added project-level `AGENTS.md` with source-of-truth and migration guidance.
+- Added project-level `AGENTS.md` with source-of-truth and implementation guidance.
 - Added an explicit fifth `Slots` type axis to `Component.Component`.
 - Added `Component.SlotsOf<T>`.
 - Updated behavior/style slot attachment paths to preserve component slot metadata.
@@ -250,6 +329,17 @@ Completed in the current checkpoint:
 - Made component render paths unwrap `View.node` while preserving existing JSX/unknown returns.
 - Added initial slot metadata, hidden slot, remap, and diagnostics helpers on `View`.
 - Added style/behavior validation helpers that consume `View` diagnostics before dynamic/generated attachments.
+- Added first-class `View.Slot` / `View.Slots` witnesses and `View.fromSlots(...)`.
+- Added typed view tree metadata and pipeable `View<Slots>` transforms.
+- Added `Component.SlotContractOf<T>`, `Component.withSlots(...)`, and
+  `Component.withSlotContract(...)` as the current static slot-contract
+  metadata implementation path.
+- Added slot-contract-first style/behavior APIs:
+  - `Style.forSlots(...)`
+  - `Style.attachToSlots(...)`
+  - `Behavior.forSlots(...)`
+  - `Behavior.attachToSlots(...)`
+- Added `docs/SLOT_CONTRACT_UNIFICATION_PLAN.md` as the next slot design plan.
 - Verified the code with:
   - `npm run typecheck`
   - `npm test`
@@ -257,19 +347,19 @@ Completed in the current checkpoint:
 
 Current state:
 
-- Components now carry slot metadata at the type level.
+- Components now carry runtime slot handle metadata and static slot contract metadata at the type level.
 - Existing components still generally expose runtime handles through `bindings.slots`.
 - Runtime view functions can return JSX-like `unknown` or an opt-in `View<Slots>`.
-- `View<Slots>` exists as a minimal wrapper around current runtime output; typed holes and static view trees are still future work.
-- `View` can carry optional slot metadata, hidden slots, and remaps; validation helpers can diagnose unknown/hidden targets and incompatible remaps.
-- `Style` and `Behavior` expose validation helpers for checking attachments against `View` metadata without changing existing attach semantics.
+- `View<Slots>` can carry slot metadata, hidden slots, remaps, typed tree metadata, and pipeable transforms.
+- `Style` and `Behavior` expose slot-contract-first authored APIs plus dynamic validation helpers.
+- The next design gap is making `View.Slots` the single component slot contract and adding diagnostics for drift between declared contract, rendered `View`, and setup/runtime slots.
 
 ### Primary Goal
 
 Move the project from “Effect atoms plus JSX runtime with component/style/behavior modules” to AF-UI:
 
 ```text
-Component<Props, Req, E, Bindings, Slots> -> View<Slots>
+Component<Props, Req, E, Bindings, SlotContract> -> View<Slots>
 ```
 
 AF-UI should provide:
@@ -369,7 +459,7 @@ Acceptance:
 - Existing JSX return values keep working — done.
 - Components can opt into returning `View<Slots>` — done.
 - `Component.renderEffect` unwraps `View.node` for current runtime behavior — done.
-- Component type metadata can be inferred from current binding slot compatibility path — done.
+- Component type metadata can be inferred from current binding slot conventions — done.
 - Type tests show `View.SlotsOf` and `Component.SlotsOf` for view-backed components — done.
 
 Non-goal for this milestone:
@@ -379,7 +469,7 @@ Non-goal for this milestone:
 
 ### Milestone 3: View-Aware Component API
 
-Status: partially complete.
+Status: complete for the current `View.Slots` contract path.
 
 Goal:
 
@@ -388,13 +478,14 @@ Make `Component.make` and related helpers understand view-backed components.
 Work:
 
 - Add overloads or helpers for view-returning component definitions — initial support done.
-- Preserve existing `Component.make(..., view: () => unknown)` compatibility.
+- Keep existing `Component.make(..., view: () => unknown)` working while the typed view path becomes primary.
 - Add explicit `Component.view(...)` or `View.from(...)` helper if overload inference gets awkward.
 - Ensure transforms preserve slots when internal bindings change, especially route wrappers and behavior attachments.
 
 Acceptance:
 
-- A component can expose slots without requiring the public slot map to be derived only from `bindings.slots`.
+- A component can expose slots without requiring the public slot map to be
+  authored in `bindings.slots`.
 - Style/behavior attach types target component slot metadata directly.
 - Existing examples and tests keep passing.
 
@@ -509,7 +600,7 @@ Acceptance:
 
 ### Milestone 8: Route-Node Golden Path
 
-Status: pending.
+Status: complete.
 
 Goal:
 
@@ -530,8 +621,8 @@ Work:
 
 Acceptance:
 
-- One nested router example demonstrates the full golden path, including explicit route-node tree assembly.
-- Docs stop presenting multiple route APIs as equally primary.
+- One nested router example demonstrates the full golden path, including explicit route-node tree assembly. — Done: `examples/router-golden-path/`
+- Docs stop presenting multiple route APIs as equally primary. — Done: README Route Nodes section leads with route-node API, references golden path example.
 
 ### Milestone 9: SSR, Hydration, And SingleFlight Product Example
 
@@ -568,7 +659,7 @@ Required before release checkpoints:
 
 ### Milestone 11: Platform Metadata And Renderer Boundary
 
-Status: pending.
+Status: complete for the current `View.Slots` contract path.
 
 Goal:
 
@@ -604,13 +695,14 @@ Target:
 
 - add `Slots` to the component type model
 - make view/slot metadata explicit
-- keep current bindings-compatible path during migration
+- replace binding-shape conventions with explicit slot contracts
 
 Acceptance:
 
 - a component exposes a typed `Slots` parameter — done
 - `Behavior.attachBySlots` and `Style.attachBySlots` preserve component slot metadata — done
-- view-backed components can expose slots without relying only on `bindings.slots` — pending
+- view-backed components can expose slots without relying only on
+  author-written `bindings.slots` — done via `Component.withSlots(View.Slots)`
 
 ### Gap 2: View Is Still Mostly Opaque Runtime Output
 

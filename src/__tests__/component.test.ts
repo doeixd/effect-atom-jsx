@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { Effect, Layer } from "effect";
-import { createRoot } from "../api.js";
+import { Effect, Layer, ServiceMap } from "effect";
+import { createRoot, flush } from "../api.js";
 import * as Behavior from "../Behavior.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
@@ -9,22 +9,93 @@ import * as View from "../View.js";
 
 describe("Component", () => {
   it("runs setupEffect with Effect-native setup helpers", () => {
+    const effectLog: number[] = [];
+    const cleanupLog: number[] = [];
     const Counter = Component.make(
       Component.props<{ readonly start: number }>(),
       Component.require<never>(),
       ({ start }) => Effect.gen(function* () {
         const count = yield* Component.state(start);
+        const [step, setStep] = yield* Component.signal(1);
         const doubled = yield* Component.derived(() => count() * 2);
-        return { count, doubled };
+        yield* Component.effect(() => {
+          effectLog.push(step());
+          return () => cleanupLog.push(step());
+        });
+        return { count, doubled, step, setStep };
       }),
       (_props, bindings) => bindings.doubled(),
     );
 
+    createRoot((dispose) => {
+      const bindings = Effect.runSync(Component.setupEffect(Counter, { start: 2 }));
+      expect(bindings.count()).toBe(2);
+      expect(bindings.step()).toBe(1);
+      expect(bindings.doubled()).toBe(4);
+      expect(effectLog).toEqual([1]);
+
+      bindings.count.set(4);
+      flush();
+      expect(bindings.doubled()).toBe(8);
+      expect(effectLog).toEqual([1]);
+      expect(cleanupLog).toEqual([]);
+
+      bindings.setStep(3);
+      flush();
+      expect(effectLog).toEqual([1, 3]);
+      expect(cleanupLog).toEqual([3]);
+
+      dispose();
+      expect(cleanupLog).toEqual([3, 3]);
+    });
+  });
+
+  it("supports pipeable setup builders", () => {
+    const order: string[] = [];
+    const pagination = Component.setup<{ readonly start: number }>()
+      .bind("page", () => {
+        order.push("page");
+        return Component.state(0);
+      })
+      .value("pageLabel", ({ props, bindings }) => {
+        order.push("pageLabel");
+        return `${props.start}:${bindings.page()}`;
+      });
+
+    const setup = Component.setup<{ readonly start: number }>()
+      .bind("count", ({ props }) => {
+        order.push("count");
+        return Component.state(props.start);
+      })
+      .use(pagination)
+      .bind("increment", ({ bindings }) => {
+        order.push("increment");
+        return Effect.succeed(() => bindings.count.update((n) => n + bindings.page() + 1));
+      })
+      .doEffect(({ bindings }) =>
+        Effect.sync(() => {
+          order.push(`ready:${bindings.pageLabel}`);
+        })
+      );
+
+    const Counter = Component.make(
+      Component.props<{ readonly start: number }>(),
+      Component.require<never>(),
+      setup,
+      (_props, bindings) => bindings.count(),
+    );
+
     const bindings = Effect.runSync(Component.setupEffect(Counter, { start: 2 }));
+
+    expect(order).toEqual(["count", "page", "pageLabel", "increment", "ready:2:0"]);
     expect(bindings.count()).toBe(2);
-    expect(bindings.doubled()).toBe(4);
-    bindings.count.set(4);
-    expect(bindings.doubled()).toBe(8);
+    expect(bindings.page()).toBe(0);
+    expect(bindings.pageLabel).toBe("2:0");
+
+    bindings.page.set(3);
+    bindings.increment();
+
+    expect(bindings.count()).toBe(6);
   });
 
   it("supports headless render-prop components", () => {
@@ -60,6 +131,156 @@ describe("Component", () => {
     });
   });
 
+  it("supports component-scoped optimistic actions", async () => {
+    const Counter = Component.make(
+      Component.props<{ readonly initial: number }>(),
+      Component.require<never>(),
+      ({ initial }) => Effect.gen(function* () {
+        const count = yield* Component.state(initial);
+        const save = yield* Component.optimistic(count).action({
+          update: (current, delta: number) => current + delta,
+          effect: (next) => Effect.succeed(next).pipe(Effect.delay("10 millis")),
+        });
+        return { count, save };
+      }),
+      (_props, bindings) => bindings.save.value(),
+    );
+
+    const bindings = Effect.runSync(Component.setupEffect(Counter, { initial: 1 }));
+    bindings.save.run(2);
+
+    expect(bindings.save.value()).toBe(3);
+    expect(bindings.count()).toBe(1);
+    expect(bindings.save.hasOptimistic()).toBe(true);
+
+    await Effect.runPromise(Effect.sleep("20 millis"));
+
+    expect(bindings.count()).toBe(3);
+    expect(bindings.save.value()).toBe(3);
+    expect(bindings.save.hasOptimistic()).toBe(false);
+  });
+
+  it("supports component action effect bridge", async () => {
+    const log: Array<number> = [];
+    const Counter = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const save = yield* Component.action((n: number) =>
+          Effect.sync(() => {
+            log.push(n);
+            return n + 1;
+          })
+        );
+        return { save };
+      }),
+      () => null,
+    );
+
+    const bindings = Effect.runSync(Component.setupEffect(Counter, {}));
+
+    await Effect.runPromise(bindings.save.effect(3));
+    const value = await Effect.runPromise(bindings.save.runEffect(4));
+
+    expect(log).toEqual([3, 4]);
+    expect(value).toBe(5);
+  });
+
+  it("runs component actions with the setup runtime context", async () => {
+    type Api = { readonly save: (n: number) => Effect.Effect<number> };
+    const Api = ServiceMap.Service<Api>("ComponentActionApi");
+
+    const Counter = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const save = yield* Component.action((n: number) =>
+          Effect.gen(function* () {
+            const api = yield* Api;
+            return yield* api.save(n);
+          })
+        );
+        return { save };
+      }),
+      () => null,
+    ).pipe(
+      Component.withLayer(Layer.succeed(Api, {
+        save: (n) => Effect.succeed(n + 10),
+      })),
+    );
+
+    const bindings = Effect.runSync(Component.setupEffect(Counter, {}));
+
+    await Effect.runPromise(bindings.save.effect(1));
+    await expect(Effect.runPromise(bindings.save.runEffect(2))).resolves.toBe(12);
+  });
+
+  it("runs component queries with the setup runtime context", async () => {
+    type Api = { readonly load: () => Effect.Effect<string> };
+    const Api = ServiceMap.Service<Api>("ComponentQueryApi");
+
+    const User = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const user = yield* Component.query(() =>
+          Effect.gen(function* () {
+            const api = yield* Api;
+            return yield* api.load();
+          })
+        );
+        return { user };
+      }),
+      () => null,
+    ).pipe(
+      Component.withLayer(Layer.succeed(Api, {
+        load: () => Effect.succeed("Ada"),
+      })),
+    );
+
+    const bindings = Effect.runSync(Component.setupEffect(User, {}));
+
+    await Effect.runPromise(Effect.sleep("5 millis"));
+    expect(bindings.user()._tag).toBe("Success");
+    if (bindings.user()._tag === "Success") {
+      expect(bindings.user().value).toBe("Ada");
+    }
+  });
+
+  it("runs component optimistic actions with the setup runtime context", async () => {
+    type Api = { readonly save: (n: number) => Effect.Effect<{ readonly confirmed: number }> };
+    const Api = ServiceMap.Service<Api>("ComponentOptimisticApi");
+
+    const Counter = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const count = yield* Component.state(0);
+        const save = yield* Component.optimistic(count).action({
+          update: (current, delta: number) => current + delta,
+          effect: (next) =>
+            Effect.gen(function* () {
+              const api = yield* Api;
+              return yield* api.save(next);
+            }),
+          reconcile: (_optimistic, success) => success.confirmed,
+        });
+        return { count, save };
+      }),
+      () => null,
+    ).pipe(
+      Component.withLayer(Layer.succeed(Api, {
+        save: (n) => Effect.succeed({ confirmed: n + 10 }),
+      })),
+    );
+
+    const bindings = Effect.runSync(Component.setupEffect(Counter, {}));
+
+    await expect(Effect.runPromise(bindings.save.runEffect(2))).resolves.toEqual({ confirmed: 12 });
+    expect(bindings.count()).toBe(12);
+    expect(bindings.save.value()).toBe(12);
+  });
+
   it("supports typed setup error boundaries", async () => {
     const Broken = Component.make(
       Component.props<{}>(),
@@ -93,6 +314,13 @@ describe("Component", () => {
   });
 
   it("preserves inspectable View metadata through common wrappers", () => {
+    const rootSlot = View.Slot.make("root", {
+      capability: Element.Capability.Container,
+      allowedAttributes: [View.Attribute.AriaLabel],
+    });
+    const slots = View.Slots.make({
+      root: View.Slot.bind(rootSlot, Element.container()),
+    });
     const addReady = Behavior.make<
       { readonly root: Element.Container },
       { readonly ready: true },
@@ -108,21 +336,9 @@ describe("Component", () => {
     >(
       Component.props<{}>(),
       Component.require<never>(),
-      () => Effect.succeed({ slots: { root: Element.container() } }),
-      (_props, bindings) => View.make(
-        bindings.slots,
-        "rendered",
-        {
-          name: "WrappedView",
-          slotMetadata: {
-            root: View.slot("root", {
-              capability: Element.Capability.Container,
-              allowedAttributes: [View.Attribute.AriaLabel],
-            }),
-          },
-        },
-      ),
-    );
+      () => Effect.succeed({ slots: View.Slots.handles(slots) }),
+      () => View.fromSlots(slots, "rendered", { name: "WrappedView" }),
+    ).pipe(Component.withSlots(slots));
 
     const Wrapped = Base.pipe(
       Component.withBehavior(addReady, (bindings) => ({ root: bindings.slots.root })),
@@ -142,24 +358,20 @@ describe("Component", () => {
 
   it("reports platform diagnostics for View-backed component render output", () => {
     const diagnostics: Array<View.ViewDiagnostic> = [];
+    const inputSlot = View.Slot.make("input", {
+      capability: Element.Capability.TextInput,
+      allowedEvents: [View.Event.Input],
+      platformRequirements: [View.Requirement.Keyboard],
+    });
+    const slots = View.Slots.make({
+      input: View.Slot.bind(inputSlot, Element.textInput()),
+    });
     const ViewBacked = Component.make(
       Component.props<{}>(),
       Component.require<never>(),
-      () => Effect.gen(function* () {
-        const input = yield* Component.slotTextInput();
-        return { slots: { input } };
-      }),
-      (_props, bindings) => View.make(bindings.slots, "rendered", {
-        name: "InputView",
-        slotMetadata: {
-          input: View.slot("input", {
-            capability: "TextInput",
-            allowedEvents: ["input"],
-            platformRequirements: ["keyboard"],
-          }),
-        },
-      }),
-    );
+      () => Effect.succeed({ slots: View.Slots.handles(slots) }),
+      () => View.fromSlots(slots, "rendered", { name: "InputView" }),
+    ).pipe(Component.withSlots(slots));
 
     const rendered = Effect.runSync(
       Component.renderEffect(ViewBacked, {}).pipe(
@@ -204,6 +416,10 @@ describe("Component", () => {
 
   it("reports platform diagnostics for View-backed headless render props", () => {
     const diagnostics: Array<View.ViewDiagnostic> = [];
+    const rootSlot = View.Slot.make("root", {
+      capability: Element.Capability.Container,
+      allowedAttributes: [View.Attribute.AriaLabel],
+    });
     const Headless = Component.headless(
       Component.props<{}>(),
       Component.require<never>(),
@@ -215,14 +431,12 @@ describe("Component", () => {
 
     const rendered = Effect.runSync(
       Component.renderEffect(Headless, {
-        children: ({ slots }) => View.make(slots, "headless-view", {
-          slotMetadata: {
-            root: View.slot("root", {
-              capability: "Container",
-              allowedAttributes: ["aria-label"],
-            }),
-          },
-        }),
+        children: ({ slots }) => {
+          const slotContract = View.Slots.make({
+            root: View.Slot.bind(rootSlot, slots.root),
+          });
+          return View.fromSlots(slotContract, "headless-view");
+        },
       }).pipe(
         Effect.provide(View.platform(
           {
@@ -248,5 +462,128 @@ describe("Component", () => {
     expect(View.isView(view)).toBe(true);
     expect(view.slots.root).toBe(root);
     expect(View.node(view)).toBe("node");
+  });
+
+  it("validates rendered View slots against the authored component slot contract", () => {
+    const rootSlot = View.Slot.make("root", { capability: Element.Capability.Container });
+    const slots = View.Slots.make({
+      root: View.Slot.bind(rootSlot, Element.container()),
+    });
+
+    const Card = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: View.Slots.handles(slots) }),
+      () => View.fromSlots(slots, "card", { name: "Card" }),
+    ).pipe(Component.withSlots(slots));
+
+    const diagnostics = Effect.runSync(Component.validateRenderedSlotContract(Card, {}));
+
+    expect(diagnostics).toEqual([]);
+    expect(Component.getSlotContract(Card)).toBe(slots);
+  });
+
+  it("reports declared slots missing from the rendered View", () => {
+    const rootSlot = View.Slot.make("root", { capability: Element.Capability.Container });
+    const inputSlot = View.Slot.make("input", { capability: Element.Capability.TextInput });
+    const declaredSlots = View.Slots.make({
+      root: View.Slot.bind(rootSlot, Element.container()),
+      input: View.Slot.bind(inputSlot, Element.textInput()),
+    });
+    const renderedSlots = View.Slots.make({
+      root: declaredSlots.bound.root,
+    });
+
+    const Field = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: View.Slots.handles(declaredSlots) }),
+      () => View.fromSlots(renderedSlots, "field", { name: "Field" }),
+    ).pipe(Component.withSlots(declaredSlots));
+
+    const diagnostics = Effect.runSync(Component.validateRenderedSlotContract(Field, {}));
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["component:missing-declared-slot"]);
+    expect(diagnostics[0]?.slot).toBe("input");
+    expect(diagnostics[0]?.declaredCapability).toBe("TextInput");
+  });
+
+  it("reports View slots that are not declared by the component contract", () => {
+    const rootSlot = View.Slot.make("root", { capability: Element.Capability.Container });
+    const extraSlot = View.Slot.make("extra", { capability: Element.Capability.Focusable });
+    const declaredSlots = View.Slots.make({
+      root: View.Slot.bind(rootSlot, Element.container()),
+    });
+    const renderedSlots = View.Slots.make({
+      root: declaredSlots.bound.root,
+      extra: View.Slot.bind(extraSlot, Element.focusable()),
+    });
+
+    const Card = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: View.Slots.handles(declaredSlots) }),
+      () => View.fromSlots(renderedSlots, "card", { name: "Card" }),
+    ).pipe(Component.withSlots(declaredSlots));
+
+    const diagnostics = Effect.runSync(Component.validateRenderedSlotContract(Card, {}));
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["component:undeclared-view-slot"]);
+    expect(diagnostics[0]?.slot).toBe("extra");
+    expect(diagnostics[0]?.renderedCapability).toBe("Focusable");
+  });
+
+  it("reports rendered slot capability mismatches", () => {
+    const inputSlot = View.Slot.make("input", { capability: Element.Capability.TextInput });
+    const declaredSlots = View.Slots.make({
+      input: View.Slot.bind(inputSlot, Element.textInput()),
+    });
+
+    const Field = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: View.Slots.handles(declaredSlots) }),
+      () => View.make({ input: Element.container() }, "field", {
+        name: "Field",
+        slotMetadata: {
+          input: View.slot("input", { capability: Element.Capability.Container }),
+        },
+      }),
+    ).pipe(Component.withSlots(declaredSlots));
+
+    const diagnostics = Effect.runSync(Component.validateRenderedSlotContract(Field, {}));
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["component:slot-capability-mismatch"]);
+    expect(diagnostics[0]?.slot).toBe("input");
+    expect(diagnostics[0]?.declaredCapability).toBe("TextInput");
+    expect(diagnostics[0]?.renderedCapability).toBe("Container");
+  });
+
+  it("preserves component slot contracts through wrappers", () => {
+    const rootSlot = View.Slot.make("root", { capability: Element.Capability.Container });
+    const slots = View.Slots.make({
+      root: View.Slot.bind(rootSlot, Element.container()),
+    });
+    const ready = Behavior.make<
+      { readonly root: Element.Container },
+      { readonly ready: true },
+      never,
+      never
+    >(() => Effect.succeed({ ready: true as const }));
+
+    const Card = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: View.Slots.handles(slots) }),
+      () => View.fromSlots(slots, "card", { name: "Card" }),
+    ).pipe(Component.withSlots(slots));
+
+    const Wrapped = Card.pipe(
+      Component.withBehavior(ready, (bindings) => ({ root: bindings.slots.root })),
+      Component.withLayer(Layer.empty),
+    );
+
+    expect(Component.getSlotContract(Wrapped)).toBe(slots);
+    expect(Effect.runSync(Component.validateRenderedSlotContract(Wrapped, {}))).toEqual([]);
   });
 });

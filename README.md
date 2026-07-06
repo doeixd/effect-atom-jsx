@@ -5,6 +5,8 @@
 Fine-grained reactive JSX runtime powered by Effect v4. Combines **effect-atom style state management**, a **dom-expressions JSX runtime**, and **Effect v4 service integration** into a single, cohesive framework.
 
 > AF-UI alignment is now tracked against the canonical contract in [`docs/AF_UI_CONTRACT.md`](./docs/AF_UI_CONTRACT.md). That document is the source of truth for the inside-out component, view, slot, style, behavior, routing, reactivity, single-flight, and hydration direction.
+>
+> For authored slot-based components, start with the [`slot contract golden path`](./docs/SLOT_CONTRACT_GOLDEN_PATH.md).
 
 ```bash
 npm i effect-atom-jsx effect@^4.0.0-beta.29
@@ -20,7 +22,7 @@ effect-atom-jsx = Effect v4 services + Atom/Registry state + dom-expressions JSX
 
 - **Local state** via `Atom` / `AtomRef` — reactive graph primitives (`Registry` available for advanced/manual control)
 - **Async state** via `defineQuery` / `atomEffect` / `Atom.fromResource` — Effect fibers with automatic cancellation
-- **Mutations** via `defineMutation` / `createOptimistic` — optimistic UI with rollback
+- **Mutations** via `Atom.optimistic(...).action(...)`, `Atom.runtime(...).action(...)`, and `defineMutation` — optimistic UI with rollback
 - **Routing** via first-class `Route.page` / `Route.layout` / `Route.index` nodes — typed route trees, loaders, links, and metadata
 - **Testing** via `renderWithLayer` / `withTestLayer` / `mockService` — DOM-free test harness
 - **Form validation** via `AtomSchema` — Schema-driven reactive fields with touched/dirty tracking
@@ -105,13 +107,13 @@ mountApp(() => <App />, document.getElementById("root")!);
 - `Atom`: core reactive unit; callable read (`count()`) plus write methods on writable atoms (`set`/`update`/`modify`).
 - `derived atom`: read-only atom computed from other atoms (`Atom.make((get) => ...)` or `Atom.derived(...)`).
 - `Query`: reactive async read (`defineQuery`), returns a `QueryRef` with `result`, `pending`, `latest`, `effect`, `invalidate`.
-- `Mutation`: callback-style async write (`defineMutation`), returns handle with `run`, `effect`, `result`, `pending`.
+- `Mutation`: async write handle from `Atom.optimistic(...).action(...)`, `Atom.runtime(...).action(...)`, or callback-style `defineMutation(...)`.
 - `Action`: linear runtime-bound write (`Atom.runtime(layer).action(...)`), preferred service mutation path.
 - `Result`: primary async state model (`Loading` / `Refreshing` / `Success` / `Failure` / `Defect`).
 - `Effect` (capital E): typed effect program from the `effect` package (`Effect<A, E, R>`).
 - `effect(...)` methods (lowercase): bridge helpers that expose state handles as `Effect` programs (`query.effect()`, `mutation.effect(input)`, `action.effect(input)`).
 - `Ref` (`AtomRef`): object/collection-focused reactive state with property-level access (`ref.prop("x")`) and callable reads (`ref()`).
-- `Optimistic`: temporary overlay on top of a source value (`createOptimistic`) used for immediate UI before async confirmation.
+- `Optimistic`: action-owned temporary overlay on top of committed atom state; read with `handle.value()`, inspect with `handle.hasOptimistic()`.
 - `Store`: not a separate top-level primitive in this package; use `AtomRef` or `Atom.projection(...)` for object/draft-style state.
 
 ### Type Architecture (A / E / R)
@@ -179,15 +181,16 @@ For most apps, start with this stack:
 - Service/runtime wiring: `Atom.runtime(layer)` for service-bound atoms/actions (preferred)
 - Ambient runtime alternative: `createMount(layer)` + `useService(Tag)`
 - Async reads: `defineQuery(...)`
-- Writes: `Atom.runtime(...).action(...)` (primary) or `defineMutation(...)` (callback alternative)
+- Writes: `Atom.runtime(...).action(...)` for normal writes, `Atom.optimistic(...).action(...)` for optimistic writes, or `defineMutation(...)` as callback alternative
 - Routing: `Route.page(...)`, `Route.layout(...)`, `Route.index(...)`, `Route.define(...)`
-- Optimistic UX: `createOptimistic(...)`
+- Optimistic UX: `Atom.optimistic(source).action(...)`
 - Async UI rendering: `Async`, `Loading`, `Errored`
 
 For runtime-bound atom APIs, prefer:
 
 - `Atom.runtime(layer).atom(...)` for reads
 - `Atom.runtime(layer).action(...)` for writes (linear Effect flow)
+- `Atom.runtime(layer).optimistic(source).action(...)` for service-backed optimistic writes
 - `Atom.effect(...)` for standalone async atoms
 
 Batching uses microtask mode by default. Use `flush()` when you need immediate deterministic commit ordering.
@@ -229,6 +232,8 @@ userHref({ userId: "ada" }, { query: { tab: "profile" } });
 ```
 
 Use `Route.componentOf(User)` when an API needs the materialized routed component behind a node. The older `Component.pipe(Route.path(...))` form remains available for compatibility, but new examples should prefer route nodes.
+
+See `examples/router-golden-path/` for a complete end-to-end demonstration of the route-node API, including nested layouts, typed params/query, loaders with domain services, typed links, error handling, and head metadata.
 
 ### Atom & Registry — Local State
 
@@ -519,31 +524,64 @@ const view = FetchResult.builder(FetchResult.fromResult(users()))
 
 `Result` is **Exit-first internally** — each settled state (`Success`, `Failure`, `Defect`) carries a `.exit` field holding the canonical Effect `Exit`. This enables lossless round-trips and integration with Effect's error model. Combinators `Result.match`, `.map`, `.flatMap`, `.getOrElse`, and `.getOrThrow` are available for ergonomic pattern matching and transformation.
 
-### Mutations: Linear First
+### Mutations: Optimistic Actions First
 
-Prefer linear write flows with `Atom.runtime(layer).action(...)` when working with services.
+Use optimistic action handles when visible state should update before the server
+confirms it. The handle owns the temporary value, async `Result`, pending
+projection, rollback, commit, and optional reconciliation.
 
 ```ts
 import { Effect } from "effect";
-import { Atom, createOptimistic } from "effect-atom-jsx";
+import { Atom } from "effect-atom-jsx";
 
-const optimisticUsers = createOptimistic(users);
+type User = {
+  readonly id: string;
+  readonly name: string;
+};
 
-const addUser = apiRuntime.action(
-  Effect.fn(function* (name: string) {
-    optimisticUsers.set((prev) => [...prev, { id: "optimistic", name }]);
+const users = Atom.make<ReadonlyArray<User>>([]);
+
+const addUser = apiRuntime.optimistic(users).action({
+  name: "users.add",
+  update: (current, name: string) => [
+    ...current,
+    { id: "optimistic", name },
+  ],
+  effect: (_optimisticUsers, name) =>
+    Effect.gen(function* () {
+      const api = yield* Api;
+      return yield* api.addUser(name);
+    }),
+  reconcile: (optimisticUsers, savedUser) =>
+    optimisticUsers.map((user) =>
+      user.id === "optimistic" ? savedUser : user
+    ),
+  reactivityKeys: ["users"],
+});
+
+addUser.run("Ada");
+addUser.value();          // includes optimistic user immediately
+addUser.committed();      // durable source value
+addUser.pending();        // derived from Result
+addUser.hasOptimistic();  // visible value is temporary
+```
+
+For non-optimistic service writes, use `Atom.runtime(layer).action(...)`:
+
+```ts
+const refreshUsers = apiRuntime.action(
+  Effect.fn(function* () {
     const api = yield* Api;
-    yield* api.addUser(name);
+    return yield* api.refreshUsers();
   }),
   {
     reactivityKeys: ["users"],
-    onError: () => optimisticUsers.clear(),
-    onSuccess: () => optimisticUsers.clear(),
   },
 );
 ```
 
-Use `defineMutation(...)` when you want callback-style lifecycle hooks.
+Use `defineMutation(...)` when you want lower-level callback-style lifecycle
+hooks.
 
 ```ts
 import { Effect } from "effect";
@@ -849,21 +887,23 @@ Architecture decisions (in progress): `docs/adr/`
 | Counter | `examples/counter/` | Signals, atoms, Registry, async data with `atomEffect` |
 | Projection | `examples/projection/` | `Atom.projection` + `Atom.projectionAsync` with `Async` rendering |
 | OOO Async | `examples/ooo-async/` | `Atom.pull` + OOO chunk merge, rendered via `Async`, `Loading`, and `Errored` |
-| TodoMVC | `examples/todomvc/` | Full app with `defineQuery`, `defineMutation`, optimistic UI, service injection |
+| TodoMVC | `examples/todomvc/` | Full app with `defineQuery`, callback mutations, optimistic UI, service injection |
 | RPC & HTTP API | `examples/rpc-httpapi/` | `AtomRpc.Tag()`, `AtomHttpApi.Tag()`, `MatchTag` component |
 | Schema Form | `examples/schema-form/` | `AtomSchema` validation, touched/dirty/reset, `AtomLogger.snapshot` |
 | SSR | `examples/ssr/` | `renderToString`, `hydrateRoot`, `Hydration.dehydrate/hydrate` |
+| Router Golden Path | `examples/router-golden-path/` | Route-node API: nested layouts, typed params/query, loaders, typed links, error handling, head metadata |
 
 ## How It Works
 
-1. **`Atom.runtime(layer)`** creates a runtime-bound API for reads (`runtime.atom`) and writes (`runtime.action`)
+1. **`Atom.runtime(layer)`** creates a runtime-bound API for reads (`runtime.atom`), writes (`runtime.action`), and optimistic writes (`runtime.optimistic(source).action`)
 2. Effects inside runtime-bound atoms/actions resolve services via Effect context (`yield* Api`) with requirements satisfied by the bound layer
 3. **`defineQuery()` / `atomEffect()`** run async effects reactively, exposing `Result` state
-4. **`defineMutation()`** remains the callback-style mutation alternative (optimistic/rollback hooks)
-5. Component lifetimes are scope-backed: mount/root and component boundaries map to Effect scopes so parent disposal interrupts descendant fibers transitively
-6. **`createMount(layer)` + `useService(Tag)`** remain the ambient-runtime alternative for simpler trees
-7. **`scopedRootEffect()` / `scopedQueryEffect()` / `scopedMutationEffect()`** are advanced Effect-first lifetime constructors
-8. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
+4. **`Atom.optimistic(source).action(...)`** owns optimistic value, rollback, pending, result, commit, and reconciliation
+5. **`defineMutation()`** remains the callback-style mutation alternative
+6. Component lifetimes are scope-backed: mount/root and component boundaries map to Effect scopes so parent disposal interrupts descendant fibers transitively
+7. **`createMount(layer)` + `useService(Tag)`** remain the ambient-runtime alternative for simpler trees
+8. **`scopedRootEffect()` / `scopedQueryEffect()` / `scopedMutationEffect()`** are advanced Effect-first lifetime constructors
+9. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
 
 ## Testing
 
@@ -871,7 +911,7 @@ DOM-free test harness via `effect-atom-jsx/testing`:
 
 ```ts
 import { Effect } from "effect";
-import { Atom, defineQuery, defineMutation, useService } from "effect-atom-jsx";
+import { Atom, defineQuery, useService } from "effect-atom-jsx";
 import { withTestLayer, renderWithLayer, mockService } from "effect-atom-jsx/testing";
 
 const ApiMock = mockService(Api, {
@@ -898,7 +938,11 @@ await harness.dispose();
 
 // Option 3: renderWithLayer — runs UI immediately
 const harness2 = renderWithLayer(ApiMock, () => {
-  const save = defineMutation((n: number) => useService(Api).save(n));
+  const count = Atom.make(0);
+  const save = Atom.optimistic(count).action({
+    update: (_current, next: number) => next,
+    effect: (next) => useService(Api).save(next),
+  });
   save.run(42);
 });
 await harness2.tick();
@@ -928,7 +972,7 @@ This project provides an effect-atom-like ergonomic surface, implemented nativel
 
 - **Same:** namespace-style API (`Atom`, `Result`, `Registry`, `AtomRef`), atom graph patterns, waiting/revalidation async model
 - **Different:** native implementation tuned for JSX + dom-expressions, targets Effect v4 beta (vs v3)
-- **Guidance:** if you already think in effect-atom terms, this API should feel familiar. Prefer `defineQuery` / `defineMutation` / `createMount` for Effect service integration.
+- **Guidance:** if you already think in effect-atom terms, this API should feel familiar. Prefer `Atom.runtime(layer).atom(...)`, `Atom.runtime(layer).action(...)`, `Atom.optimistic(source).action(...)`, and `createMount` for Effect service integration.
 
 
 

@@ -205,7 +205,14 @@ export function focusable(): Focusable {
 }
 
 export function textInput(): TextInput {
-  return makeHandle("TextInput") as TextInput;
+  const h = makeHandle("TextInput") as TextInput;
+  h.focus = () => {
+    h.emit("focus");
+  };
+  h.blur = () => {
+    h.emit("blur");
+  };
+  return h;
 }
 
 export function draggable(): Draggable {

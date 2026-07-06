@@ -52,11 +52,32 @@ const behavior = Behavior.events({
 
 Behavior.validateComponentAttachmentBySlots(behavior, { root: "root" }, Card, {});
 
+const RootSlot = View.Slot.make("root", {
+  capability: Element.Capability.Container,
+});
+const remappedBehavior = Behavior.make<
+  { readonly container: Element.Container },
+  {},
+  never,
+  never
+>(() => Effect.succeed({}));
+const BehaviorMappedCard = Card.pipe(
+  Behavior.attachBySlotContract(remappedBehavior, { container: RootSlot }),
+);
+type _BehaviorMappedCardSlots = Expect<Equal<Component.SlotsOf<typeof BehaviorMappedCard>, Component.SlotsOf<typeof Card>>>;
+
 const style = Style.make({
   root: Style.slot({ color: "red" }),
 });
 
 Style.validateComponentAttachment(style, Card, {});
+const remappedStyle = Style.make({
+  container: Style.slot({ color: "blue" }),
+});
+const StyleMappedCard = Card.pipe(
+  Style.attachBySlotContract(remappedStyle, { container: RootSlot }),
+);
+type _StyleMappedCardSlots = Expect<Equal<Component.SlotsOf<typeof StyleMappedCard>, Component.SlotsOf<typeof Card>>>;
 Style.validatePlatform(style, {
   name: "public-test",
   properties: [Style.Property.Color],

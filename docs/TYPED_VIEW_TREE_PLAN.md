@@ -5,6 +5,12 @@ wrapper toward a typed, renderer-neutral view tree. It is intentionally
 incremental: existing JSX/unknown returns must keep working, and
 `Component.renderEffect(...)` must continue to return the current runtime node.
 
+Slot identity for typed trees should follow the slot contract direction in
+[`SLOT_CONTRACT_UNIFICATION_PLAN.md`](SLOT_CONTRACT_UNIFICATION_PLAN.md):
+new authored examples should prefer `View.Slot` / `View.Slots`,
+`View.fromSlots(...)`, and `Component.withSlots(...)` over manually threading
+`bindings.slots` plus separate `slotMetadata`.
+
 ## Current State
 
 `View<Slots>` is currently:
@@ -98,7 +104,7 @@ interface View<Slots> {
 }
 ```
 
-The key compatibility rule is that `node` remains the runtime output. `tree` is
+The key runtime rule is that `node` remains the current output. `tree` is
 initially metadata for diagnostics, SSR/hydration planning, and future renderer
 adapters.
 
@@ -119,7 +125,46 @@ Where:
 - `View.tree(...)` creates a `View<Slots>` with both `tree` and `node`.
 - `View.make(...)` stays unchanged and can optionally accept `tree` later.
 
-The ergonomic first path can be:
+### Pipeable View Transforms
+
+Future view construction should support pipeable transforms without replacing
+the current constructors:
+
+```ts
+const view = View.fromSlots(slots, jsxNode).pipe(
+  View.withTree(View.element(Root)),
+  View.withChildren(View.element(Input)),
+);
+```
+
+This should not introduce `View.make().pipe(...)`; `View.make(...)` should
+continue to require `slots` and `node`. The goal is to make constructed
+`View<Slots>` records pipeable, not to add a zero-argument builder.
+
+Proposed helpers:
+
+- `View.withTree(tree)`
+- `View.withChildren(...children)`
+- `View.appendChildren(...children)`
+- `View.withName(name)`
+- `View.withMetadata(metadata)`
+- `View.withSlotMetadata(metadata)`
+- `View.withRemaps(...remaps)`
+
+`View.children(...)` should keep its current meaning as a dynamic children hole.
+Pipeable tree transforms should use distinct names so this remains unambiguous.
+
+Transform rules:
+
+- Preserve `slots`, `slotMetadata`, `slotRemaps`, `metadata`, and `node` unless
+  the helper explicitly changes that field.
+- Preserve the `Slots` type axis exactly.
+- `View.withChildren(...)` should append to an existing element/fragment tree
+  when possible, or create a fragment if no tree exists.
+- `View.node(view)` must keep returning the original runtime node unless a
+  future explicit helper changes it.
+
+The low-level runtime path can be:
 
 ```ts
 const view = View.tree(
@@ -150,6 +195,27 @@ const view = View.tree(
 No cast should be required. If a helper cannot infer slot names or hole types
 without a cast, the helper shape needs to change.
 
+The canonical authored path should instead define slots once and derive both
+handles and metadata:
+
+```ts
+const view = View.fromSlots(slots, jsxNode).pipe(
+  View.withTree(View.element(Root, {
+    children: [
+      View.element(Input, {
+        props: {
+          className: View.className(["field", { invalid }]),
+          onInput: View.event<InputEvent>((event) => Effect.sync(() => {})),
+        },
+      }),
+    ],
+  })),
+);
+```
+
+`bindings.slots` and manual `slotMetadata` remain low-level/dynamic paths,
+not the preferred typed-tree authoring model.
+
 ## Typed Holes
 
 Existing hole helpers become the value layer used by typed tree props:
@@ -158,7 +224,7 @@ Existing hole helpers become the value layer used by typed tree props:
 - `View.className(value)` for class values
 - `View.style(value)` for inline style values
 - `View.event(handler)` for event handlers with `Req`/`E` metadata
-- `View.children(value)` for compatibility children
+- `View.children(value)` for dynamic children holes
 - `View.html(safeHtml)` for explicitly branded safe HTML only
 
 Next type-level helpers should extract event requirements and errors from a
@@ -210,6 +276,8 @@ Future SSR/hydration uses:
 4. Add diagnostics that only run when `tree` exists.
 5. Add renderer adapters that can consume `tree` but fall back to `node`.
 6. Later, teach the JSX transform to emit typed tree metadata where useful.
+7. Align typed-tree examples with `View.Slots` as the canonical slot contract
+   and `Component.withSlots(...)` as the component publishing helper.
 
 At every step, existing components should still render through
 `Component.renderEffect(...)` without behavior changes.
@@ -258,10 +326,16 @@ Migration constraints:
    - unknown slot reference inside tree
    - hidden slot reference inside public tree
    - tree slot capability mismatch with `slotMetadata`
-2. Add `View.RequirementsOf<T>` / `View.ErrorsOf<T>` extraction for event holes.
-3. Add SSR/hydration metadata sketch based on typed tree boundaries.
-4. Add optional JSX transform integration that emits tree metadata while
+2. Add pipeable `View<Slots>` records and transform helpers. Status: complete.
+   - constructors return pipeable views
+   - transform helpers preserve the `Slots` axis and current runtime node
+   - tests cover `View.withTree(...)`, `View.withChildren(...)`, and metadata/remap helpers
+3. Add `View.RequirementsOf<T>` / `View.ErrorsOf<T>` extraction for event holes.
+4. Add SSR/hydration metadata sketch based on typed tree boundaries.
+5. Add optional JSX transform integration that emits tree metadata while
    preserving current runtime node output.
+6. Add slot-contract-aware tree diagnostics that compare declared component
+   contracts against rendered tree slot references.
 
 ## Open Questions
 

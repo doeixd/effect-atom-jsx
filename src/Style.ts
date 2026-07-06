@@ -12,6 +12,16 @@ import type { TokenPath } from "./style-types.js";
 type AnySlot = Record<string, unknown>;
 type SlotHandleMap = Record<string, Element.Handle | Element.Collection<Element.Handle>>;
 type SlotMapFrom<T> = T extends { readonly slots: infer Slots extends SlotHandleMap } ? Slots : T extends SlotHandleMap ? T : never;
+type SlotContractRecord = Record<string, View.Slot.Any>;
+type SlotContractInput = SlotContractRecord | View.Slots.Any;
+type SlotContractNames<T> =
+  T extends View.Slots.Any ? keyof View.Slots.BoundOf<T> & string
+    : T extends SlotContractRecord ? keyof T & string
+      : never;
+type SlotContractTargetNames<T> =
+  T extends View.Slots.Any ? keyof View.Slots.BoundOf<T> & string
+    : T extends SlotContractRecord ? View.Slot.NameOf<T[keyof T & string]> & string
+      : never;
 
 export interface Property<Name extends string = string> extends MetadataToken.MetadataToken<"style.property", Name> {}
 
@@ -262,6 +272,20 @@ export function transition(value: Record<string, unknown>): AnimationPiece {
 
 export function make<S extends string>(slots: SlotStyles<S>): ComposedStyle<S> {
   return { slots };
+}
+
+export function forSlots<const W extends SlotContractInput>(
+  _slots: W,
+): (
+  styles: { readonly [K in SlotContractNames<W>]?: StyleValue },
+) => ComposedStyle<SlotContractNames<W>> {
+  return (styles) => {
+    const out: Record<string, StyleValue> = {};
+    for (const [slotName, styleValue] of Object.entries(styles) as Array<[string, StyleValue | undefined]>) {
+      if (styleValue !== undefined) out[slotName] = styleValue;
+    }
+    return make(out as SlotStyles<SlotContractNames<W>>);
+  };
 }
 
 export type PseudoClass =
@@ -526,9 +550,10 @@ export function attach<S extends string>(
   E,
   Slots extends { readonly [K in S]: Element.Handle | Element.Collection<Element.Handle> },
   Bindings extends { readonly slots: Slots },
+  SlotContract = Slots,
 >(
-  component: Component.Component<Props, Req, E, Bindings, Slots>,
-) => Component.Component<Props, Req, E, Bindings, Slots> {
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+) => Component.Component<Props, Req, E, Bindings, SlotContract> {
   return Component.tapSetup((bindings) =>
     Effect.gen(function* () {
       const maybePlatform = yield* Effect.serviceOption(PlatformTag);
@@ -554,15 +579,11 @@ export function attach<S extends string>(
 
 export function attachByView<S extends string>(
   style: ComposedStyle<S>,
-): <
-  Props,
-  Req,
-  E,
-  Bindings,
-  Slots extends { readonly [K in S]: Element.Handle | Element.Collection<Element.Handle> },
->(
-  component: Component.Component<Props, Req, E, Bindings, Slots>,
-) => Component.Component<Props, Req, E, Bindings, Slots> {
+): <C extends Component.Component<any, any, any, any, any>>(
+  component: Component.SlotsOf<C> extends { readonly [K in S]: Element.Handle | Element.Collection<Element.Handle> }
+    ? C
+    : never,
+) => C {
   return Component.withViewTransform((result, _props, _bindings) => {
     if (!View.isView(result)) return result;
     const overrides = useContext(OverrideContext);
@@ -591,18 +612,91 @@ export function attachBySlots<
   Slots extends Record<string, Element.Handle | Element.Collection<Element.Handle>>,
   M extends { readonly [K in S]: keyof Slots & string },
   Bindings extends { readonly slots: Slots },
+  SlotContract = Slots,
 >(
   style: ComposedStyle<S>,
   map: M,
 ): (
-  component: Component.Component<Props, Req, E, Bindings, Slots>,
-) => Component.Component<Props, Req, E, Bindings, Slots> {
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+) => Component.Component<Props, Req, E, Bindings, SlotContract> {
   const mappedSlots: Record<string, StyleValue> = {};
   for (const styleSlot of Object.keys(map) as Array<keyof M>) {
     const componentSlot = map[styleSlot];
     mappedSlots[String(componentSlot)] = style.slots[String(styleSlot) as S];
   }
   return attach(make(mappedSlots));
+}
+
+export function attachBySlotContract<
+  S extends string,
+  Props,
+  Req,
+  E,
+  Slots extends Record<string, Element.Handle | Element.Collection<Element.Handle>>,
+  M extends { readonly [K in S]: View.Slot.Any },
+  Bindings extends { readonly slots: Slots },
+  SlotContract = Slots,
+>(
+  style: ComposedStyle<S>,
+  map: M,
+): (
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+) => Component.Component<Props, Req, E, Bindings, SlotContract> {
+  const mappedSlots: Record<string, StyleValue> = {};
+  for (const styleSlot of Object.keys(map) as Array<keyof M>) {
+    const componentSlot = map[styleSlot];
+    mappedSlots[componentSlot.name] = style.slots[String(styleSlot) as S];
+  }
+  return attach(make(mappedSlots));
+}
+
+export function attachToSlots<S extends SlotContractInput>(
+  style: ComposedStyle<SlotContractNames<S>>,
+  _slots: S,
+): <C extends Component.Component<any, any, any, any, any>>(
+  component: Component.SlotsOf<C> extends Record<SlotContractTargetNames<S>, Element.Handle | Element.Collection<Element.Handle>>
+    ? C
+    : never,
+) => C {
+  return attachByView(style) as any;
+}
+
+export function attachToAllWithCapability<C extends View.SlotCapability>(
+  style: StyleValue,
+  capability: C,
+): <
+  Props,
+  Req,
+  E,
+  Bindings,
+  Slots extends Record<string, Element.Handle | Element.Collection<Element.Handle>>,
+  SlotContract = Slots,
+>(
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+) => Component.Component<Props, Req, E, Bindings, SlotContract> {
+  return Component.withViewTransform((result, _props, _bindings) => {
+    if (!View.isView(result)) return result;
+    const slotMetadata = result.slotMetadata as Record<string, View.SlotMetadata> | undefined;
+    if (!slotMetadata) return result;
+
+    const slots = result.slots as Record<string, Element.Handle | Element.Collection<Element.Handle>>;
+    for (const [slotName, metadata] of Object.entries(slotMetadata)) {
+      const slotCapability = metadata.capability ?? View.capabilityOf(slots[slotName]);
+      if (slotCapability === undefined || !View.extendsCapability(slotCapability, capability)) continue;
+
+      const target = slots[slotName];
+      if (!target) continue;
+
+      const resolved = resolveSlot(style);
+      if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
+        const collection = target as Element.Collection<Element.Handle>;
+        Effect.runSync(collection.observeEach((item) => applyResolvedStyleToHandle(item, resolved).pipe(Effect.as(() => {}))));
+      } else {
+        Effect.runSync(applyResolvedStyleToHandle(target as Element.Handle, resolved));
+      }
+    }
+    return result;
+  }) as any;
 }
 
 export function attachBySlotsFor<SlotsOrBindings extends SlotHandleMap | { readonly slots: SlotHandleMap }>() {
@@ -791,6 +885,7 @@ export const Style = {
   keyframes,
   transition,
   make,
+  forSlots,
   nest,
   child,
   descendant,
@@ -821,8 +916,11 @@ export const Style = {
   tokenFontSize,
   attach,
   attachBySlots,
+  attachBySlotContract,
+  attachToSlots,
   attachBySlotsFor,
   attachByView,
+  attachToAllWithCapability,
   platform,
   Property,
   nameOfProperty,
@@ -840,3 +938,5 @@ export const Style = {
   ThemeLight: Theme.ThemeLight,
   lookupToken: Theme.lookupToken,
 } as const;
+
+

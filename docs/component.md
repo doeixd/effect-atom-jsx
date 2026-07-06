@@ -1,3 +1,37 @@
+# Component System
+
+Current status: the implemented component API uses setup-as-Effect, not the
+older `ctx` setup API shown in the historical notes below. For current authoring,
+start with the **Current API: Setup As Effect** section and the helper signature
+summary near the end of this document.
+
+The current model is:
+
+```ts
+Component.make(
+  Component.props<Props>(),
+  Component.require<Req>(...tags),
+  (props) => Effect.gen(function* () {
+    const service = yield* SomeService;
+    const state = yield* Component.state(initial);
+    const query = yield* Component.query(() => service.load(props.id));
+    const save = yield* Component.action((input: Input) => service.save(input));
+    return { state, query, save };
+  }),
+  (props, bindings) => ViewOrJsx,
+);
+```
+
+Setup helper requirements bubble to `Component.Requirements<typeof C>`. Helpers
+that create async handles capture the setup service map, so the returned
+bindings are already runtime-bound.
+
+## Historical Design Notes
+
+The following section is retained as design history. It uses the old proposed
+`ctx.service(...)`, `ctx.query(...)`, and `ctx.action(...)` API shape. That is not
+the current public API.
+
 This is the right instinct. Right now components are plain functions, which means their requirements are invisible — you discover missing atoms, services, or props at runtime. A `Component` primitive that makes requirements explicit in the type system, while staying composable and pipeable, would complete the architectural story.
 
 Here's how I'd design it.
@@ -1741,11 +1775,15 @@ const html: Effect<string, HttpError | DbError, Api | Db> =
 
 Resource preloading could be expressed as "run all queries in the component tree's setup functions, collect their results, serialize to the HTML response." The scope tree gives you the exact set of queries. The typed requirements tell you which layers to provide. The error channel tells you what can go wrong.
 
-The overall point is that making `Component` a typed Effect-aware primitive doesn't just add type safety to the UI layer — it makes the component tree a structured, inspectable, testable Effect program. Every component becomes a scoped Effect with typed inputs, typed errors, typed requirements, and structured concurrency. The UI framework becomes an Effect application framework where rendering is just one of many observable side effects.These are all the right questions and they point toward a deeper redesign of the setup function.
+The overall point is that making `Component` a typed Effect-aware primitive doesn't just add type safety to the UI layer — it makes the component tree a structured, inspectable, testable Effect program. Every component becomes a scoped Effect with typed inputs, typed errors, typed requirements, and structured concurrency. The UI framework becomes an Effect application framework where rendering is just one of many observable side effects.
+
+## Current API: Setup As Effect
+
+The implementation has converged on this section's model. Older `ctx.*` examples above are historical design notes; the current API uses setup as an Effect and exposes helpers through `Component.state`, `Component.query`, `Component.action`, `Component.optimistic`, and related setup helpers.
 
 **Setup should be an Effect.**
 
-Right now setup is a plain function that receives `ctx` and returns bindings synchronously. But everything it does — creating atoms, forking query fibers, acquiring services, attaching finalizers — is effectful. Making setup a plain function means all of that effectful work is hidden behind imperative `ctx` methods, which loses tracing, typed errors, and composability. If setup is an Effect, everything follows naturally:
+This is the key redesign: setup is an Effect. Creating atoms, forking query fibers, acquiring services, and attaching finalizers are all effectful operations. Keeping them in the Effect model preserves tracing, typed errors, requirement bubbling, scoping, and normal Effect composition. Once setup is an Effect, everything follows naturally:
 
 ```ts
 const UserCard = Component.make(
@@ -2199,29 +2237,46 @@ These are the primitives that the setup Effect yields. Each one returns a reacti
 ```ts
 declare namespace Component {
   // Create a reactive query — returns an atom backed by an Effect fiber
-  function query<A, E>(
-    effect: () => Effect<A, E>,
+  function query<A, E, R>(
+    effect: () => Effect<A, E, R>,
     options?: QueryOptions,
-  ): Effect<ReadonlyAtom<Result<A, E>>, never, Scope>;
+  ): Effect<ReadonlyAtom<Result<A, E>, E>, never, R>;
 
   // Create a reactive derived value
   function derived<A>(
     fn: () => A,
-  ): Effect<ReadonlyAtom<A>, never, Scope>;
+  ): Effect<ReadonlyAtom<A>>;
 
   // Create writable state
   function state<A>(
     initial: A,
-  ): Effect<WritableAtom<A>, never, Scope>;
+  ): Effect<WritableAtom<A>>;
 
   // Create an action
-  function action<Args extends readonly unknown[], A, E>(
-    fn: (...args: Args) => Effect<A, E>,
+  function action<Args extends readonly unknown[], A, E, R>(
+    fn: (...args: Args) => Effect<A, E, R>,
     options?: ActionOptions,
-  ): Effect<Action<Args, A, E>, never, Scope>;
+  ): Effect<Action<Args, A, E>, never, R>;
+
+  function optimistic<A>(
+    source: WritableAtom<A>,
+  ): {
+    action<Success, E, R, Input>(
+      spec: OptimisticActionSpec<A, Input, Success, E, R>,
+    ): Effect<OptimisticActionHandle<Input, A, Success, E>, never, R>;
+  };
+
+  interface Action<Args extends readonly unknown[], A, E> {
+    (...args: Args): void;
+    run(...args: Args): void;
+    runEffect(...args: Args): Effect<A, E>;
+    effect(...args: Args): Effect<void, E | BridgeError | MutationSupersededError>;
+    result: Accessor<Result<void, E>>;
+    pending: Accessor<boolean>;
+  }
 
   // Create a ref
-  function ref<T extends HTMLElement>(): Effect<ComponentRef<T>, never, Scope>;
+  function ref<T extends HTMLElement>(): Effect<ComponentRef<T>>;
 
   // Subscribe to a Dequeue (from PubSub.subscribe)
   function fromDequeue<A>(
@@ -2231,7 +2286,22 @@ declare namespace Component {
 }
 ```
 
-Every one of these requires `Scope` in its `R` channel. The component's setup runs inside a `Scope`, so the requirement is satisfied automatically. When the scope closes, all queries are interrupted, all subscriptions are closed, all refs are cleared.
+The helper `R` channel is the requirement of the work you pass in. The component
+setup type bubbles that requirement to `Component.Requirements<typeof C>`, and
+`Component.withLayer(...)` can satisfy it at the component boundary. The returned
+binding handles do not expose that `R` again because they capture the setup
+service map when created.
+
+Helpers that create long-lived scoped fibers (`fromDequeue`, `schedule`, and
+`scheduleEffect`) also require `Scope.Scope`; the component's setup runs inside a
+scope, so that requirement is satisfied automatically. When the scope closes,
+scoped subscriptions and schedules are interrupted.
+
+`Component.query(...)`, `Component.action(...)`, and
+`Component.optimistic(...).action(...)` capture the setup service map when their
+handles are created. That means async query/action bodies can use services
+provided by `Component.withLayer(...)` even when work runs later from a refresh,
+click handler, or `runEffect(...)` call.
 
 The beautiful part: because these are Effects, you can compose them with standard Effect combinators:
 
@@ -2535,14 +2605,18 @@ Component<Props, Req, E>
   Req → service requirements (inferred from yield* in setup)
   E → error channel (inferred from Effects in setup + queries + actions)
 
-Setup: (props: Props) → Effect<Bindings, SetupError, Req | Scope>
+Setup: (props: Props) → Effect<Bindings, SetupError, Req>
 View: (props: Props, bindings: Bindings) → JSX.Element
 
-Component.query    → Effect<ReadonlyAtom<Result<A, E>>, never, Scope>
-Component.state    → Effect<WritableAtom<A>, never, Scope>
-Component.derived  → Effect<ReadonlyAtom<A>, never, Scope>
-Component.action   → Effect<Action<Args, A, E>, never, Scope>
-Component.ref      → Effect<ComponentRef<T>, never, Scope>
+Component.query    → Effect<ReadonlyAtom<Result<A, E>, E>, never, R>
+Component.state    → Effect<WritableAtom<A>>
+Component.derived  → Effect<ReadonlyAtom<A>>
+Component.action   → Effect<Action<Args, A, E>, never, R>
+Component.optimistic(source).action(spec)
+                    → Effect<OptimisticActionHandle<Input, A, Success, E>, never, R>
+Component.ref      → Effect<ComponentRef<T>>
+Component.fromDequeue / schedule / scheduleEffect
+                    → Effect<void, never, Scope | R>
 
 Pipes transform the setup Effect:
   withLayer     → Effect.provide (eliminates from Req)
@@ -2553,9 +2627,9 @@ Pipes transform the setup Effect:
   withLoading   → Effect.catchTag for loading state
 
 Setup fragments compose via yield*:
-  withPagination()  → Effect<PaginationBindings, never, Scope>
-  withSelection()   → Effect<SelectionBindings, never, Scope>
-  withSorting()     → Effect<SortingBindings, never, Scope>
+  withPagination()  → Effect<PaginationBindings, never, R>
+  withSelection()   → Effect<SelectionBindings, never, R>
+  withSorting()     → Effect<SortingBindings, never, R>
 
 Everything is:
   - Scoped (cleanup is automatic via Scope)

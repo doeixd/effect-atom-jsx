@@ -1,6 +1,6 @@
 # Design/Styling/Behavior System in AF-UI
 
-> Canonical contract: [`AF_UI_CONTRACT.md`](./AF_UI_CONTRACT.md). This document provides the broader design narrative, but the contract doc wins when older examples or terminology disagree.
+> Canonical contract: [`AF_UI_CONTRACT.md`](./AF_UI_CONTRACT.md). Current slot direction: [`SLOT_CONTRACT_UNIFICATION_PLAN.md`](./SLOT_CONTRACT_UNIFICATION_PLAN.md). This document provides the broader design narrative, but the contract and current slot plan win when older examples or terminology disagree.
 
 ## The Main Value Add: Why AF-UI?
 

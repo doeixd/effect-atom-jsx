@@ -77,11 +77,21 @@ const action = Atom.action(
 );
 
 type ActionRunEffectType = ReturnType<typeof action.runEffect>;
+type ActionEffectType = ReturnType<typeof action.effect>;
+type ActionCallReturn = ReturnType<typeof action>;
+type ActionRunReturn = ReturnType<typeof action.run>;
 declare const actionRunEffectValue: ActionRunEffectType;
+declare const actionEffectValue: ActionEffectType;
 const _actionRunEffectAssignable: Effect.Effect<number, BridgeError | MutationSupersededError, never> = actionRunEffectValue;
+const _actionEffectAssignable: Effect.Effect<void, BridgeError | MutationSupersededError, never> = actionEffectValue;
 type _ActionInput = Expect<Equal<Atom.ActionInputOf<typeof action>, number>>;
 type _ActionError = Expect<Equal<Atom.ActionErrorOf<typeof action>, never>>;
+type _ActionEffectError = Expect<Equal<Atom.ActionEffectErrorOf<typeof action>, BridgeError | MutationSupersededError>>;
 type _ActionRunError = Expect<Equal<Atom.ActionRunErrorOf<typeof action>, BridgeError | MutationSupersededError>>;
 type _ActionSuccess = Expect<Equal<Atom.ActionSuccessOf<typeof action>, number>>;
+type _ActionRunEffect = Expect<Equal<Atom.ActionRunEffectOf<typeof action>, (input: number) => Effect.Effect<number, BridgeError | MutationSupersededError>>>;
+type _ActionEffect = Expect<Equal<Atom.ActionEffectOf<typeof action>, (input: number) => Effect.Effect<void, BridgeError | MutationSupersededError>>>;
+type _ActionCallReturn = Expect<Equal<ActionCallReturn, void>>;
+type _ActionRunReturn = Expect<Equal<ActionRunReturn, void>>;
 
 type _RuntimeShape = Expect<Equal<typeof runtime extends Atom.AtomRuntime<never, never> ? true : false, true>>;
