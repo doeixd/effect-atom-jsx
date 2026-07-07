@@ -32,13 +32,17 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
   P2, D1, S1–S4, F6) is **done**; three items remain as **dedicated passes**
   (each too large/risky to fold into feature work) plus the test-gate
   burndown — see "What remains" under **In Progress / Next**.
-- Standard quality gates are green: `npm run typecheck`, `npm test` (484
-  passing), `npm run build`. A second gate `npm run typecheck:tests` now
-  type-checks `src/__tests__` (20 residual, legacy-drift, tracked).
-- The "finish the plan" pass fixed two real bugs (`ServerRoute.dispatch`
-  layer drop; `Atom.family` invisible plain overload) and added five library
-  robustness improvements — all detailed in
-  `docs/archive/REDESIGN_COMPLETED_LOG.md`.
+- Standard quality gates are green: `npm run typecheck`, `npm test` (488
+  passing), `npm run build`. Two more gates exist: `npm run typecheck:tests`
+  (`src/__tests__`, 9 residual) and `npm run typecheck:examples`
+  (`examples/`, ~61 residual, all in the routing examples — see below).
+- The "finish the plan" + readiness passes fixed a genuine SSR XSS, **six**
+  real library bugs surfaced by the test gate, and several DX/setup bugs
+  (no JSX types shipped; `render` not top-level; wrong babel `moduleName`) —
+  all detailed in `docs/archive/REDESIGN_COMPLETED_LOG.md`. Remaining example
+  + test-gate + P6 errors converge on ONE routing dual-representation seam
+  (`Route` vs `AppRouteNode`); a Codex agent is attempting it on branch
+  `codex/routing-unify`.
 
 ## Current Goals
 
