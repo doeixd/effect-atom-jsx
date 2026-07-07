@@ -212,18 +212,20 @@ backlog + archive log):
 | 5 | Result consolidation (Finding 5) | ✅ release-blocking core done (loaderResult + title/meta emit unified Result; no defect union on golden path); step-2 internal cache/wire cleanup is a non-blocking follow-up pass |
 | 6 | Typed-tree/claims sweep (Finding 6) | ✅ claims scoped in docs; typed-tree-by-default is v1.x per #2 |
 | 7 | Reactivity key witnesses (P2) | ✅ shipped end-to-end |
-| 8 | Routing consolidation (P6) | ◑ audited → **3-tier model, not a deletion** (history infra / component-first `Component.route` / route-first tree); reclassified the misleading "transitional" JSDoc. Remaining: dedupe constructor-vs-piped forms + fix `RouteChildrenEnhancer` overloads (deep, scoped) |
-| 9 | Docs/archive alignment (PR2) + green gates | ◑ log + fully-historical docs archived; exploratory-doc sweep remains; gates green |
+| 8 | Routing consolidation (P6) | ◑ audited → **3-tier model, not a deletion** (history infra / component-first `Component.route` / route-first tree); reclassified the misleading "transitional" JSDoc. `RouteChildrenEnhancer`/pipe-overload type seam fixed (Codex, type-only). Remaining: dedupe constructor-vs-piped forms (cosmetic) |
+| 9 | Docs/archive alignment (PR2) + green gates | ◑ log + fully-historical docs archived; exploratory-doc sweep remains; **all gates green + enforced** (`npm run check` = typecheck main/tests/examples + 488 tests) |
 | 10 | Services/layers S1/S2/S3 | ✅ mount-with-runtime shipped, guide shipped, isolation test green |
 
-Remaining release-blocking work (updated 2026-07-07 — Finding-3 resolved as a
-2-tier model not a deletion; Finding-5 release-blocking core done): (a) **P6
-routing consolidation** (unified model + `RouterRuntime` canonical; delete the
-legacy service-first generation); (b) a **deep type-helper batch** to make
-`typecheck:tests` a required gate; (c) **PR2 exploratory-doc archive sweep**.
-Non-blocking follow-ups: Finding-5 step 2 (internal FetchResult cleanup),
-Finding-5 wire format. Everything else in this list is done. Do not cut by
-re-adding deferred features.
+Remaining release-blocking work (updated 2026-07-07): (a) **P6 routing
+constructor-vs-piped dedupe** — cosmetic now that the type seam is fixed and all
+examples typecheck; (b) **PR2 exploratory-doc archive sweep**; (c) **`effect`
+stable release** (external — currently pinned to `^4.0.0-beta.29`). Resolved
+since last update: the tests/examples typecheck gates are now green and wired
+into `npm run check` (was item b, "deep type-helper batch"); all 13 example apps
+migrated to the current API and typecheck clean; `MaterializedAppRoute` now
+discharges `RouteContext` in its type. Non-blocking follow-ups: Finding-5 step 2
+(internal FetchResult cleanup), Finding-5 wire format, dead type-alias sweep in
+`Route.ts`. Do not cut by re-adding deferred features.
 
 ## Update rule
 
