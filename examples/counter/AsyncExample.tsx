@@ -2,11 +2,11 @@
  * AsyncExample — demonstrates atomEffect with typed errors and Effect-TS
  * structured concurrency.
  *
- * Shows how async state flows through the reactive graph as an AsyncResult
+ * Shows how async state flows through the reactive graph as a Result
  * instead of thrown exceptions, with automatic cancellation of stale requests
  * when the user-id atom changes.
  */
-import { Atom, Registry, atomEffect, Async } from "effect-atom-jsx";
+import { Atom, atomEffect, Async } from "effect-atom-jsx";
 import { Effect, pipe } from "effect";
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
@@ -43,27 +43,26 @@ function fetchUser(id: number): Effect.Effect<User, FetchError> {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function AsyncUserCard() {
-  const registry = Registry.make();
   const userId = Atom.make<number>(1);
 
   // atomEffect creates an accessor driven by an Effect computation.
-  // When registry.get(userId) changes, the previous Effect fiber is interrupted and a
+  // When userId() changes, the previous Effect fiber is interrupted and a
   // new one starts — structured concurrency, no manual AbortController needed.
-  const userResult = atomEffect(() => fetchUser(registry.get(userId)));
+  const userResult = atomEffect(() => fetchUser(userId()));
 
   return (
     <div class="counter">
       <h2>Async User (Effect-TS)</h2>
       <p>
-        User ID: <strong>{registry.get(userId)}</strong>
+        User ID: <strong>{userId()}</strong>
       </p>
-      <button onClick={() => registry.update(userId, (id) => Math.max(1, id - 1))}>Prev</button>
-      <button onClick={() => registry.update(userId, (id) => id + 1)}>Next</button>
+      <button onClick={() => userId.update((id: number) => Math.max(1, id - 1))}>Prev</button>
+      <button onClick={() => userId.update((id: number) => id + 1)}>Next</button>
 
-      {/* Pattern-match on AsyncResult — no try/catch, typed errors */}
+      {/* Pattern-match on Result — no try/catch, typed errors */}
         <Async
           result={userResult()}
-          loading={() => <p>Loading user {registry.get(userId)}...</p>}
+          loading={() => <p>Loading user {userId()}...</p>}
         error={(e: FetchError) => (
           <p style="color:red">
             ✗ {e.message} (HTTP {e.status})

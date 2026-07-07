@@ -11,7 +11,6 @@
  */
 import {
   Atom,
-  Registry,
   Hydration,
   isServer,
   renderToString,
@@ -23,16 +22,15 @@ import {
 // ─── Shared component ─────────────────────────────────────────────────────────
 
 function Greeting() {
-  const registry = Registry.make();
   const name = Atom.make<string>("World");
 
   return (
     <div class="card">
-      <h2>Hello, {registry.get(name)}!</h2>
+      <h2>Hello, {name()}!</h2>
       <input
         type="text"
-        value={registry.get(name)}
-        onInput={(e: Event) => registry.set(name, (e.currentTarget as HTMLInputElement).value)}
+        value={name()}
+        onInput={(e: Event) => name.set((e.currentTarget as HTMLInputElement).value)}
         placeholder="Enter your name"
       />
     </div>
@@ -40,15 +38,14 @@ function Greeting() {
 }
 
 function Counter() {
-  const registry = Registry.make();
   const count = Atom.make<number>(0);
 
   return (
     <div class="card">
-      <h2>Counter: {registry.get(count)}</h2>
-      <button onClick={() => registry.update(count, (c) => c - 1)}>-</button>
-      <button onClick={() => registry.set(count, 0)}>Reset</button>
-      <button onClick={() => registry.update(count, (c) => c + 1)}>+</button>
+      <h2>Counter: {count()}</h2>
+      <button onClick={() => count.update((c: number) => c - 1)}>-</button>
+      <button onClick={() => count.set(0)}>Reset</button>
+      <button onClick={() => count.update((c: number) => c + 1)}>+</button>
     </div>
   );
 }
@@ -66,7 +63,6 @@ function AppContent() {
 // ─── SSR demo (runs in the browser to demonstrate the API) ───────────────────
 
 export function App() {
-  const registry = Registry.make();
   const ssrHtml = Atom.make<string>("");
 
   return (
@@ -84,14 +80,14 @@ export function App() {
           setRequestEvent({ url: "/demo", method: "GET" });
           const html = renderToString(() => <AppContent />);
           setRequestEvent(undefined);
-          registry.set(ssrHtml, html);
+          ssrHtml.set(html);
         }}>
           renderToString()
         </button>
-        {registry.get(ssrHtml) ? (
+        {ssrHtml() ? (
           <div>
             <h3>Raw HTML output:</h3>
-            <pre>{registry.get(ssrHtml)}</pre>
+            <pre>{ssrHtml()}</pre>
           </div>
         ) : null}
       </div>

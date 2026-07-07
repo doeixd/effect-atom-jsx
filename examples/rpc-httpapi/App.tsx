@@ -39,13 +39,28 @@ function RpcApp() {
     <div style="border: 1px solid #ccc; padding: 1rem; border-radius: 8px;">
       <h2>AtomRpc Demo</h2>
       <MatchTag
-        value={userQuery}
+        value={userQuery()}
         cases={{
-          Initial: () => <p>Loading user...</p>,
+          Loading: () => <p>Loading user...</p>,
           Failure: (err) => <p style="color: red;">Error: {err.error}</p>,
+          Refreshing: (res) => (
+            <div>
+              <p>
+                Current Name:{" "}
+                <strong>
+                  {res.previous._tag === "Success" ? res.previous.value.name : "?"}
+                </strong>{" "}
+                (refreshing...)
+              </p>
+              <form onSubmit={submit}>
+                <input name="name" placeholder="New Name" required />
+                <button type="submit">Update & Refresh</button>
+              </form>
+            </div>
+          ),
           Success: (res) => (
             <div>
-              <p>Current Name: <strong>{res.value.name}</strong> {res.waiting ? "(refreshing...)" : ""}</p>
+              <p>Current Name: <strong>{res.value.name}</strong></p>
               <form onSubmit={submit}>
                 <input name="name" placeholder="New Name" required />
                 <button type="submit">Update & Refresh</button>
@@ -86,16 +101,21 @@ function HttpApiApp() {
     <div style="border: 1px solid #ccc; padding: 1rem; border-radius: 8px;">
       <h2>AtomHttpApi Demo</h2>
       <MatchTag
-        value={todosQuery}
+        value={todosQuery()}
         cases={{
-          Initial: () => <p>Loading todos...</p>,
+          Loading: () => <p>Loading todos...</p>,
+          Refreshing: () => (
+            <div>
+              <button disabled>Refreshing...</button>
+            </div>
+          ),
           Success: (res) => (
             <div>
               <ul>
-                {res.value.items.map((item) => <li>{item}</li>)}
+                {res.value.items.map((item: string) => <li>{item}</li>)}
               </ul>
               <button onClick={() => HttpApiClient.refresh("todos", "list", { limit: 3 })}>
-                {res.waiting ? "Refreshing..." : "Refresh List"}
+                Refresh List
               </button>
             </div>
           ),

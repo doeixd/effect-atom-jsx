@@ -1,7 +1,6 @@
-import { Atom, Registry, Async } from "effect-atom-jsx";
+import { Atom, Async } from "effect-atom-jsx";
 import { Effect, Layer } from "effect";
 
-const registry = Registry.make();
 const runtime = Atom.runtime(Layer.empty);
 
 const selectedId = Atom.make<string>("a");
@@ -49,9 +48,9 @@ function bumpMultiplier() {
 }
 
 export function App() {
-  const selected = registry.get(selectedMap);
-  const state = registry.get(stats);
-  const asyncUsers = registry.get(users);
+  const selected = selectedMap();
+  const state = stats();
+  const asyncUsers = users();
 
   return (
     <main>
@@ -75,8 +74,8 @@ export function App() {
         <Async
           result={asyncUsers}
           loading={() => <p>Loading users...</p>}
-          error={(e) => <p style="color:red">Error: {String(e)}</p>}
-          success={(rows) => (
+          error={(e: never) => <p style="color:red">Error: {String(e)}</p>}
+          success={(rows: Array<{ id: string; name: string }>) => (
             <ul>
               {rows.map((u) => <li>{u.id}: {u.name}</li>)}
             </ul>

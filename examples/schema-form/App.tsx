@@ -2,33 +2,31 @@
  * Schema Form — AtomSchema with Atom/Registry rendering.
  */
 import { Schema, Effect, Option } from "effect";
-import { Atom, AtomSchema, AtomLogger, Registry } from "effect-atom-jsx";
+import { Atom, AtomSchema, AtomLogger } from "effect-atom-jsx";
 
 const AgeSchema = Schema.Int;
 const NameSchema = Schema.String;
-
-const ui = Registry.make();
 
 function IntField(props: {
   label: string;
   field: AtomSchema.ValidatedAtom<number, number>;
 }) {
   return (
-    <div class={`form-field ${ui.get(props.field.isValid) ? "valid" : ui.get(props.field.touched) ? "invalid" : ""}`}>
+    <div class={`form-field ${props.field.isValid() ? "valid" : props.field.touched() ? "invalid" : ""}`}>
       <label>{props.label}</label>
       <input
         type="number"
-        value={ui.get(props.field.input)}
+        value={props.field.input()}
         onInput={(e: Event) => {
           const raw = Number((e.currentTarget as HTMLInputElement).value);
-          ui.set(props.field.input, raw);
+          props.field.input.set(raw);
         }}
       />
-      {ui.get(props.field.touched) && !ui.get(props.field.isValid) ? <div class="error">Must be a whole number</div> : null}
+      {props.field.touched() && !props.field.isValid() ? <div class="error">Must be a whole number</div> : null}
       <div class="meta">
-        <span>touched: {ui.get(props.field.touched) ? "yes" : "no"}</span>
-        <span>dirty: {ui.get(props.field.dirty) ? "yes" : "no"}</span>
-        <span>valid: {ui.get(props.field.isValid) ? "yes" : "no"}</span>
+        <span>touched: {props.field.touched() ? "yes" : "no"}</span>
+        <span>dirty: {props.field.dirty() ? "yes" : "no"}</span>
+        <span>valid: {props.field.isValid() ? "yes" : "no"}</span>
       </div>
     </div>
   );
@@ -39,18 +37,18 @@ function StringField(props: {
   field: AtomSchema.ValidatedAtom<string, string>;
 }) {
   return (
-    <div class={`form-field ${ui.get(props.field.dirty) ? "valid" : ""}`}>
+    <div class={`form-field ${props.field.dirty() ? "valid" : ""}`}>
       <label>{props.label}</label>
       <input
         type="text"
-        value={ui.get(props.field.input)}
+        value={props.field.input()}
         onInput={(e: Event) => {
-          ui.set(props.field.input, (e.currentTarget as HTMLInputElement).value);
+          props.field.input.set((e.currentTarget as HTMLInputElement).value);
         }}
       />
       <div class="meta">
-        <span>touched: {ui.get(props.field.touched) ? "yes" : "no"}</span>
-        <span>dirty: {ui.get(props.field.dirty) ? "yes" : "no"}</span>
+        <span>touched: {props.field.touched() ? "yes" : "no"}</span>
+        <span>dirty: {props.field.dirty() ? "yes" : "no"}</span>
       </div>
     </div>
   );
@@ -78,7 +76,7 @@ export function App() {
       <IntField label="Age" field={ageField} />
 
       <div class="result">
-        Summary: {ui.get(summary)}
+        Summary: {summary()}
       </div>
 
       <div style="margin-top: 1rem">
@@ -90,7 +88,7 @@ export function App() {
             AtomLogger.snapshot([
               ["name", nameField.input as Atom.Atom<string>],
               ["age", tracedAge],
-              ["ageValid", ageField.isValid],
+              ["ageValid", ageField.isValid as unknown as Atom.Atom<boolean>],
             ]),
           );
           console.log("Form snapshot:", snap);

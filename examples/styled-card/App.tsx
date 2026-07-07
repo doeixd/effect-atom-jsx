@@ -1,4 +1,4 @@
-import { Component, Style, StyleUtils } from "effect-atom-jsx";
+import { Component, Element, Style, StyleUtils } from "effect-atom-jsx";
 import { Effect } from "effect";
 
 const cardRecipe = Style.recipe({
@@ -41,14 +41,16 @@ type CardProps = Style.RecipeProps<typeof cardRecipe> & {
   readonly body: string;
 };
 
-const Card = Component.make<CardProps, never, never, {
+type CardBindings = {
   readonly slots: {
-    readonly root: ReturnType<typeof Component.slotContainer> extends Effect.Effect<infer S, any, any> ? S : never;
-    readonly header: ReturnType<typeof Component.slotContainer> extends Effect.Effect<infer S, any, any> ? S : never;
-    readonly title: ReturnType<typeof Component.slotInteractive> extends Effect.Effect<infer S, any, any> ? S : never;
-    readonly body: ReturnType<typeof Component.slotContainer> extends Effect.Effect<infer S, any, any> ? S : never;
+    readonly root: Element.Container;
+    readonly header: Element.Container;
+    readonly title: Element.Interactive;
+    readonly body: Element.Container;
   };
-}>(
+};
+
+const Card = Component.make<CardProps, never, never, CardBindings>(
   Component.props<CardProps>(),
   Component.require<never>(),
   () => Effect.gen(function* () {
@@ -68,7 +70,7 @@ const Card = Component.make<CardProps, never, never, {
     </section>
   ),
 ).pipe(
-  Component.tapSetup((bindings) =>
+  Component.tapSetup<CardProps, never, never, CardBindings, never, never>((bindings) =>
     Effect.sync(() => {
       bindings.slots.header.emit("mounted");
     }),

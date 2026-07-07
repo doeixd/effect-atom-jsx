@@ -1,11 +1,10 @@
 import {
   type Accessor,
-  type AsyncResult as AsyncResultType,
+  type Result,
   Atom,
-  Registry,
   defineQuery,
   createOptimistic,
-  mutationEffect,
+  defineMutation,
   useService,
 } from "effect-atom-jsx";
 import { Effect } from "effect";
@@ -13,7 +12,6 @@ import { TodoApi, type Todo, type TodoError } from "./todo-service.js";
 
 type Filter = "all" | "active" | "completed";
 
-const ui = Registry.make();
 const filterAtom = Atom.make<Filter>("all");
 const draftAtom = Atom.make<string>("");
 const editingIdAtom = Atom.make<string | null>(null);
@@ -23,7 +21,7 @@ const errorTextAtom = Atom.make<string | null>(null);
 const toErrorText = (error: TodoError | { readonly defect: string }): string =>
   "defect" in error ? error.defect : error.message;
 
-function settledTodos(result: Accessor<AsyncResultType<ReadonlyArray<Todo>, TodoError>>): ReadonlyArray<Todo> {
+function settledTodos(result: Accessor<Result<ReadonlyArray<Todo>, TodoError>>): ReadonlyArray<Todo> {
   const r = result();
   if (r._tag === "Success") return r.value;
   if (r._tag === "Refreshing" && r.previous._tag === "Success") return r.previous.value;
@@ -43,7 +41,7 @@ export function TodoMvcApp() {
 
   const clearOptimistic = () => optimistic.clear();
 
-  const addTodo = mutationEffect(
+  const addTodo = defineMutation(
     (title: string) => useService(TodoApi).add(title).pipe(Effect.asVoid),
     {
       invalidates: todosQuery.key,
@@ -63,17 +61,17 @@ export function TodoMvcApp() {
       rollback: clearOptimistic,
       onSuccess: () => {
         clearOptimistic();
-        ui.set(draftAtom, "");
-        ui.set(errorTextAtom, null);
+        draftAtom.set("");
+        errorTextAtom.set(null);
       },
       onFailure: (e) => {
         clearOptimistic();
-        ui.set(errorTextAtom, toErrorText(e));
+        errorTextAtom.set(toErrorText(e));
       },
     },
   );
 
-  const toggleTodo = mutationEffect(
+  const toggleTodo = defineMutation(
     (id: string) => useService(TodoApi).toggle(id),
     {
       invalidates: todosQuery.key,
@@ -85,16 +83,16 @@ export function TodoMvcApp() {
       rollback: clearOptimistic,
       onSuccess: () => {
         clearOptimistic();
-        ui.set(errorTextAtom, null);
+        errorTextAtom.set(null);
       },
       onFailure: (e) => {
         clearOptimistic();
-        ui.set(errorTextAtom, toErrorText(e));
+        errorTextAtom.set(toErrorText(e));
       },
     },
   );
 
-  const removeTodo = mutationEffect(
+  const removeTodo = defineMutation(
     (id: string) => useService(TodoApi).remove(id),
     {
       invalidates: todosQuery.key,
@@ -102,16 +100,16 @@ export function TodoMvcApp() {
       rollback: clearOptimistic,
       onSuccess: () => {
         clearOptimistic();
-        ui.set(errorTextAtom, null);
+        errorTextAtom.set(null);
       },
       onFailure: (e) => {
         clearOptimistic();
-        ui.set(errorTextAtom, toErrorText(e));
+        errorTextAtom.set(toErrorText(e));
       },
     },
   );
 
-  const renameTodo = mutationEffect(
+  const renameTodo = defineMutation(
     ({ id, title }: { id: string; title: string }) => useService(TodoApi).rename(id, title),
     {
       invalidates: todosQuery.key,
@@ -125,18 +123,18 @@ export function TodoMvcApp() {
       rollback: clearOptimistic,
       onSuccess: () => {
         clearOptimistic();
-        ui.set(editingIdAtom, null);
-        ui.set(editingTitleAtom, "");
-        ui.set(errorTextAtom, null);
+        editingIdAtom.set(null);
+        editingTitleAtom.set("");
+        errorTextAtom.set(null);
       },
       onFailure: (e) => {
         clearOptimistic();
-        ui.set(errorTextAtom, toErrorText(e));
+        errorTextAtom.set(toErrorText(e));
       },
     },
   );
 
-  const clearCompleted = mutationEffect(
+  const clearCompleted = defineMutation(
     (_: void) => useService(TodoApi).clearCompleted().pipe(Effect.asVoid),
     {
       invalidates: todosQuery.key,
@@ -144,11 +142,11 @@ export function TodoMvcApp() {
       rollback: clearOptimistic,
       onSuccess: () => {
         clearOptimistic();
-        ui.set(errorTextAtom, null);
+        errorTextAtom.set(null);
       },
       onFailure: (e) => {
         clearOptimistic();
-        ui.set(errorTextAtom, toErrorText(e));
+        errorTextAtom.set(toErrorText(e));
       },
     },
   );
@@ -167,18 +165,18 @@ export function TodoMvcApp() {
   const submitDraft = (event: KeyboardEvent) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    addTodo.run(ui.get(draftAtom));
+    addTodo.run(draftAtom());
   };
 
   const beginEdit = (todo: Todo) => {
-    ui.set(editingIdAtom, todo.id);
-    ui.set(editingTitleAtom, todo.title);
+    editingIdAtom.set(todo.id);
+    editingTitleAtom.set(todo.title);
   };
 
   const submitEdit = (event: KeyboardEvent, id: string) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    renameTodo.run({ id, title: ui.get(editingTitleAtom) });
+    renameTodo.run({ id, title: editingTitleAtom() });
   };
 
   return (
@@ -192,17 +190,17 @@ export function TodoMvcApp() {
         <input
           class="new-todo"
           placeholder="What needs to be done?"
-          value={ui.get(draftAtom)}
-          onInput={(e) => ui.set(draftAtom, (e.currentTarget as HTMLInputElement).value)}
+          value={draftAtom()}
+          onInput={(e) => draftAtom.set((e.currentTarget as HTMLInputElement).value)}
           onKeyDown={submitDraft}
         />
 
         {refreshing() && <p class="hint">Refreshing...</p>}
-        {ui.get(errorTextAtom) && <p class="error">{ui.get(errorTextAtom)}</p>}
+        {errorTextAtom() && <p class="error">{errorTextAtom()}</p>}
 
         <ul class="todo-list">
-          {ui.get(visibleTodos).map((todo) => {
-            const editing = ui.get(editingIdAtom) === todo.id;
+          {visibleTodos().map((todo) => {
+            const editing = editingIdAtom() === todo.id;
             return (
               <li class={`todo-item ${todo.completed ? "done" : ""}`}>
                 <label class="row">
@@ -214,9 +212,9 @@ export function TodoMvcApp() {
                   {editing ? (
                     <input
                       class="edit"
-                      value={ui.get(editingTitleAtom)}
-                      onInput={(e) => ui.set(editingTitleAtom, (e.currentTarget as HTMLInputElement).value)}
-                      onBlur={() => renameTodo.run({ id: todo.id, title: ui.get(editingTitleAtom) })}
+                      value={editingTitleAtom()}
+                      onInput={(e) => editingTitleAtom.set((e.currentTarget as HTMLInputElement).value)}
+                      onBlur={() => renameTodo.run({ id: todo.id, title: editingTitleAtom() })}
                       onKeyDown={(e) => submitEdit(e as KeyboardEvent, todo.id)}
                     />
                   ) : (
@@ -230,18 +228,18 @@ export function TodoMvcApp() {
         </ul>
 
         <footer class="footer">
-          <span>{ui.get(activeCount)} active</span>
+          <span>{activeCount()} active</span>
           <nav class="filters">
-            <button class={ui.get(filterAtom) === "all" ? "selected" : ""} onClick={() => ui.set(filterAtom, "all")}>All</button>
-            <button class={ui.get(filterAtom) === "active" ? "selected" : ""} onClick={() => ui.set(filterAtom, "active")}>Active</button>
-            <button class={ui.get(filterAtom) === "completed" ? "selected" : ""} onClick={() => ui.set(filterAtom, "completed")}>Completed</button>
+            <button class={filterAtom() === "all" ? "selected" : ""} onClick={() => filterAtom.set("all")}>All</button>
+            <button class={filterAtom() === "active" ? "selected" : ""} onClick={() => filterAtom.set("active")}>Active</button>
+            <button class={filterAtom() === "completed" ? "selected" : ""} onClick={() => filterAtom.set("completed")}>Completed</button>
           </nav>
           <button
             class="clear"
-            disabled={ui.get(completedCount) === 0}
+            disabled={completedCount() === 0}
             onClick={() => clearCompleted.run(void 0)}
           >
-            Clear completed ({ui.get(completedCount)})
+            Clear completed ({completedCount()})
           </button>
         </footer>
       </section>

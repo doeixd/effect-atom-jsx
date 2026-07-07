@@ -1,51 +1,49 @@
 /**
- * Counter — Atom/Registry-first example.
+ * Counter — callable-atom example.
  */
-import { Atom, Registry } from "effect-atom-jsx";
+import { Atom } from "effect-atom-jsx";
 import { AsyncUserCard } from "./AsyncExample.js";
 
 function LocalCounter() {
-  const registry = Registry.make();
   const count = Atom.make<number>(0);
-  const doubled = Atom.map(count, (n) => n * 2);
-  const parity = Atom.map(count, (n) => (n % 2 === 0 ? "even" : "odd"));
+  const doubled = Atom.map(count, (n: number) => n * 2);
+  const parity = Atom.map(count, (n: number) => (n % 2 === 0 ? "even" : "odd"));
 
   return (
     <div class="counter">
       <h2>Local Atom Counter</h2>
       <p>
-        Count: <strong>{registry.get(count)}</strong>
-        {" "}- doubled: <strong>{registry.get(doubled)}</strong>
-        {" "}- <em>{registry.get(parity)}</em>
+        Count: <strong>{count()}</strong>
+        {" "}- doubled: <strong>{doubled()}</strong>
+        {" "}- <em>{parity()}</em>
       </p>
-      <button onClick={() => registry.update(count, (n) => n - 1)}>−</button>
-      <button onClick={() => registry.set(count, 0)}>Reset</button>
-      <button onClick={() => registry.update(count, (n) => n + 1)}>+</button>
-      <button onClick={() => Atom.batch(() => {
-        registry.set(count, 10);
-        registry.update(count, (n) => n + 5);
-      })}>
+      <button onClick={() => count.update((n: number) => n - 1)}>−</button>
+      <button onClick={() => count.set(0)}>Reset</button>
+      <button onClick={() => count.update((n: number) => n + 1)}>+</button>
+      <button onClick={() => {
+        count.set(10);
+        count.update((n: number) => n + 5);
+      }}>
         Batch → 15
       </button>
     </div>
   );
 }
 
-const sharedRegistry = Registry.make();
 const sharedCount = Atom.make<number>(0);
-const sharedDoubled = Atom.map(sharedCount, (n) => n * 2);
+const sharedDoubled = Atom.map(sharedCount, (n: number) => n * 2);
 
 function SharedCounter() {
   return (
     <div class="counter">
       <h2>Shared Atom Counter</h2>
       <p>
-        Count: <strong>{sharedRegistry.get(sharedCount)}</strong>
-        {" "}- doubled: <strong>{sharedRegistry.get(sharedDoubled)}</strong>
+        Count: <strong>{sharedCount()}</strong>
+        {" "}- doubled: <strong>{sharedDoubled()}</strong>
       </p>
-      <button onClick={() => sharedRegistry.update(sharedCount, (n) => n - 1)}>−</button>
-      <button onClick={() => sharedRegistry.set(sharedCount, 0)}>Reset</button>
-      <button onClick={() => sharedRegistry.update(sharedCount, (n) => n + 1)}>+</button>
+      <button onClick={() => sharedCount.update((n: number) => n - 1)}>−</button>
+      <button onClick={() => sharedCount.set(0)}>Reset</button>
+      <button onClick={() => sharedCount.update((n: number) => n + 1)}>+</button>
     </div>
   );
 }
