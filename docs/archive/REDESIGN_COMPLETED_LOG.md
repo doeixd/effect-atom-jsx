@@ -1164,3 +1164,35 @@ Pre-release hardening (from the readiness scrutiny).
   verification, not just typecheck-passing — scoped as follow-up.
 
 Standard gates green (typecheck, 488 tests, build incl. dist/jsx-runtime).
+
+### Example Migration (8/13) + Routing Dual-Representation Convergence (2026-07-07)
+
+Migrated the example apps to the current API (delegated the bulk; verified
+quality — callable atoms not Registry, `Result` not `AsyncResult`, current
+mutations, no `as any`):
+
+- **Done, committed (8):** counter, counter/AsyncExample, projection,
+  schema-form, ssr, styled-card, todomvc, rpc-httpapi. Example error count
+  110 → 61.
+- **Blocked (5 routing examples):** router-basic, router-typed-links,
+  router-single-flight, router-single-flight-fetch, router-golden-path (61
+  errors, all reverted to HEAD to avoid shipping half-migrated code).
+
+**Key finding — a single root cause under three symptoms.** The routing
+examples cannot be cleanly migrated because of the library's **dual node
+representation**: `Route<...>` (unified, `[UnifiedRouteSymbol]`, produced by
+`Route.path(...)`) vs `AppRouteNode<...>` (`[RouteNodeSymbol]`, produced by
+`Route.page/layout/index(...)`). The helpers are split across the two —
+`Route.title/meta/pipe-enhancers` want `Route`; `Route.link/componentOf/
+children` want `AppRouteNode` — so any example mixing them (all of them do)
+fails, and converting `page`→`path` just moves the error from one helper to
+the other. **This same seam causes the remaining `typecheck:tests` routing
+errors (route.test 135/136/234/239, route-loader 146) and is the core of P6.**
+
+So examples + test-gate + P6 collapse into ONE fix: unify the node
+representations (or make every routing helper uniformly accept both). It is
+deep, risky type-core surgery — the routing types already emit "type
+instantiation excessively deep, possibly infinite" (TS2589) warnings, meaning
+they're near TS's limits and a careless change tips into non-termination. It
+needs a focused, careful pass, not an end-of-session edit. Scoped as the P6
+core follow-up; clearing it unblocks the routing examples AND the test gate.
