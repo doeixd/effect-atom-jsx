@@ -216,14 +216,15 @@ backlog + archive log):
 | 9 | Docs/archive alignment (PR2) + green gates | ◑ log + fully-historical docs archived; exploratory-doc sweep remains; **all gates green + enforced** (`npm run check` = typecheck main/tests/examples + 488 tests) |
 | 10 | Services/layers S1/S2/S3 | ✅ mount-with-runtime shipped, guide shipped, isolation test green |
 
-Remaining release-blocking work (updated 2026-07-07): (a) **P6 routing
-constructor-vs-piped dedupe** — cosmetic now that the type seam is fixed and all
-examples typecheck; (b) **PR2 exploratory-doc archive sweep**; (c) **`effect`
-stable release** (external — currently pinned to `^4.0.0-beta.29`). Resolved
-since last update: the tests/examples typecheck gates are now green and wired
-into `npm run check` (was item b, "deep type-helper batch"); all 13 example apps
-migrated to the current API and typecheck clean; `MaterializedAppRoute` now
-discharges `RouteContext` in its type. Non-blocking follow-ups: Finding-5 step 2
+Remaining release-blocking work (updated 2026-07-07): **`effect` stable
+release** (external — currently pinned to `^4.0.0-beta.29`) is the only
+hard blocker left. Resolved since last update: tests/examples typecheck gates
+green and wired into `npm run check`; all 13 example apps migrated + typecheck
+clean; `MaterializedAppRoute` discharges `RouteContext` in its type; **P6
+constructor-vs-piped dedupe closed** (verified non-redundant — both forms
+load-bearing — stale "transitional" JSDoc corrected); **PR2 doc archive sweep
+done** (47 exploratory/plan docs moved to `docs/archive/`, live set = 13
+reference docs, zero broken links). Non-blocking follow-ups: Finding-5 step 2
 (internal FetchResult cleanup), Finding-5 wire format, dead type-alias sweep in
 `Route.ts`. Do not cut by re-adding deferred features.
 

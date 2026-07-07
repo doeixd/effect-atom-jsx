@@ -6,17 +6,17 @@ This repository is `effect-atom-jsx`, a runtime JSX and Effect-based reactive UI
 
 Use these documents first:
 
-- [`docs/AF_UI_CONTRACT.md`](docs/AF_UI_CONTRACT.md) — canonical AF-UI architecture contract.
+- [`docs/AF_UI_CONTRACT.md`](docs/archive/AF_UI_CONTRACT.md) — canonical AF-UI architecture contract.
 - [`docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md`](docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md) — current implementation status and backlog.
-- [`docs/SLOT_CONTRACT_UNIFICATION_PLAN.md`](docs/SLOT_CONTRACT_UNIFICATION_PLAN.md) — current slot unification record; `View.Slots` is the canonical authored slot contract.
-- [`docs/PROPS_BINDINGS_SLOTS.md`](docs/PROPS_BINDINGS_SLOTS.md) — ownership model for caller props, setup bindings, and public slots.
-- [`docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md`](docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md) — bindings as the component-level async commit boundary.
-- [`docs/SLOT_WITNESS_PLAN.md`](docs/SLOT_WITNESS_PLAN.md) — historical slot witness plan; useful background, but `View.Slots` / slot contracts are the current authored API.
-- [`docs/TYPED_VIEW_TREE_PLAN.md`](docs/TYPED_VIEW_TREE_PLAN.md) — typed renderer-neutral tree plan.
-- [`docs/GEN2_UI_IMPLEMENTATION_NOTES.md`](docs/GEN2_UI_IMPLEMENTATION_NOTES.md) — notes from `../gen2` UI IR implementation and what can be adapted here.
-- [`docs/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md`](docs/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md) — route-node, server-route, and runtime architecture notes.
-- [`docs/DESIGN_STYLING_BEHAVIOR_SYSTEM.md`](docs/DESIGN_STYLING_BEHAVIOR_SYSTEM.md) — broader design narrative.
-- [`docs/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md`](docs/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md) — runtime, routing, reactivity, single-flight, hydration vision.
+- [`docs/SLOT_CONTRACT_UNIFICATION_PLAN.md`](docs/archive/SLOT_CONTRACT_UNIFICATION_PLAN.md) — current slot unification record; `View.Slots` is the canonical authored slot contract.
+- [`docs/PROPS_BINDINGS_SLOTS.md`](docs/archive/PROPS_BINDINGS_SLOTS.md) — ownership model for caller props, setup bindings, and public slots.
+- [`docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md`](docs/archive/BINDINGS_ASYNC_COMMIT_BOUNDARY.md) — bindings as the component-level async commit boundary.
+- [`docs/SLOT_WITNESS_PLAN.md`](docs/archive/SLOT_WITNESS_PLAN.md) — historical slot witness plan; useful background, but `View.Slots` / slot contracts are the current authored API.
+- [`docs/TYPED_VIEW_TREE_PLAN.md`](docs/archive/TYPED_VIEW_TREE_PLAN.md) — typed renderer-neutral tree plan.
+- [`docs/GEN2_UI_IMPLEMENTATION_NOTES.md`](docs/archive/GEN2_UI_IMPLEMENTATION_NOTES.md) — notes from `../gen2` UI IR implementation and what can be adapted here.
+- [`docs/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md`](docs/archive/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md) — route-node, server-route, and runtime architecture notes.
+- [`docs/DESIGN_STYLING_BEHAVIOR_SYSTEM.md`](docs/archive/DESIGN_STYLING_BEHAVIOR_SYSTEM.md) — broader design narrative.
+- [`docs/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md`](docs/archive/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md) — runtime, routing, reactivity, single-flight, hydration vision.
 
 When older exploratory docs conflict with `docs/AF_UI_CONTRACT.md`, the contract wins.
 

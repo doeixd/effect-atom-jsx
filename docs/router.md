@@ -2,8 +2,8 @@
 
 Current status: this is an exploratory router design note. The current
 route-node/server-route direction is tracked in
-[`ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md`](ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md),
-[`RUNTIME_ROUTING_REACTIVITY_SYSTEM.md`](RUNTIME_ROUTING_REACTIVITY_SYSTEM.md),
+[`ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md`](archive/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md),
+[`RUNTIME_ROUTING_REACTIVITY_SYSTEM.md`](archive/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md),
 and the runnable `examples/router-golden-path/` example. Older examples below
 may use raw component setup `Effect.gen(...)` or earlier route helper shapes.
 

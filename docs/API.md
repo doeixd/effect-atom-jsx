@@ -2,7 +2,7 @@
 
 `effect-atom-jsx` is a reactive UI library built on two complementary foundations: a signal-based reactive graph (Solid.js-compatible) and Effect's typed async/error model. The central thesis is that reactive state and typed effects are better together — atoms give you fine-grained reactivity with zero boilerplate, and Effect gives you a principled, composable way to handle everything async.
 
-AF-UI convergence work is tracked against the canonical contract in [`AF_UI_CONTRACT.md`](./AF_UI_CONTRACT.md). Use that document for the target architecture when implementation details and older exploratory docs differ.
+AF-UI convergence work is tracked against the canonical contract in [`AF_UI_CONTRACT.md`](./archive/AF_UI_CONTRACT.md). Use that document for the target architecture when implementation details and older exploratory docs differ.
 
 For authored slot-based components, use the slot-contract path in
 [`SLOT_CONTRACT_GOLDEN_PATH.md`](./SLOT_CONTRACT_GOLDEN_PATH.md).
@@ -1663,7 +1663,7 @@ HTTP API client factory for grouped endpoints. Same ergonomics as `AtomRpc` but 
 
 ## Effect Integration (`src/effect-ts.ts`)
 
-For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOURCE.md`](ACTION_EFFECT_USE_RESOURCE.md).
+For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOURCE.md`](archive/ACTION_EFFECT_USE_RESOURCE.md).
 
 > `Result` and scoped constructors are also available from `effect-atom-jsx/advanced`.
 
