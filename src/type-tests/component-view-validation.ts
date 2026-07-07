@@ -59,9 +59,11 @@ Behavior.validateComponentAttachmentBySlots(
   {},
 );
 
+// Dynamic string-map escape hatch: any string target is accepted at the type
+// level; unknown targets are reported as runtime diagnostics (validated
+// against the rendered View, not the static SlotContract).
 Behavior.validateComponentAttachmentBySlots(
   NeedsInput,
-  // @ts-expect-error mapped target must be a component slot
   { input: "missing" },
   Field,
   {},

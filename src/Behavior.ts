@@ -372,7 +372,11 @@ export function validateComponentAttachmentBySlots<
   E,
   Bindings,
   Slots,
-  M extends { readonly [K in keyof Elements]: keyof Slots & string },
+  // Dynamic string-map escape hatch: component-slot targets are plain strings,
+  // validated against the rendered View's slot metadata at runtime (not the
+  // static SlotContract, which may be empty for view-only / bindings-based
+  // slots). Unknown targets surface as diagnostics — the point of this helper.
+  M extends { readonly [K in keyof Elements]: string },
 >(
   behavior: Behavior<Elements, unknown, unknown, unknown>,
   elementMap: M,
@@ -383,7 +387,8 @@ export function validateComponentAttachmentBySlots<
   },
 ): Effect.Effect<readonly View.ViewDiagnostic[], E, Req> {
   return Component.renderViewEffect(component, props).pipe(
-    Effect.map((view) => view === undefined ? [] : validateAttachmentBySlots(behavior, elementMap, view, options)),
+    // elementMap is a dynamic string map; validated against the rendered view.
+    Effect.map((view) => view === undefined ? [] : validateAttachmentBySlots(behavior, elementMap as never, view, options)),
   );
 }
 
