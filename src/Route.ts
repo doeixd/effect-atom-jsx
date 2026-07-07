@@ -6,7 +6,9 @@ import { useContext, type Accessor } from "./api.js";
 import {
   ManagedRuntimeContext,
   defineMutation,
+  Result as CoreResult,
   type Result as MutationResult,
+  type Result as CoreResultType,
   type BridgeError,
   type MutationSupersededError,
 } from "./effect-ts.js";
@@ -1946,12 +1948,38 @@ export function loaderData<A>(): Effect.Effect<Atom.ReadonlyAtom<A>, never, Rout
 }
 
 /**
- * Loader state accessor for async rendering.
+ * Loader state accessor for async rendering, as the unified `Result` model
+ * (`Loading` / `Refreshing` / `Success` / `Failure` / `Defect`) — the same
+ * model queries and actions emit. Use this with `Async` / `Result`
+ * control-flow components.
  *
- * Use this with `Async` / `Result` control-flow components instead of
- * introducing router-specific loading UI abstractions.
+ * The internal loader cache still stores the stale-while-revalidate
+ * `FetchResult` shape; this accessor converts at the boundary via
+ * `FetchResult.toResult`. Callers that need the raw `FetchResult` (waiting /
+ * previousSuccess metadata) can use `loaderFetchResult()`.
  */
-export function loaderResult<A, E = unknown>(): Effect.Effect<Atom.ReadonlyAtom<FetchResult.Result<A, E>>, never, RouteContext<any, any, any>> {
+export function loaderResult<A, E = unknown>(): Effect.Effect<Atom.ReadonlyAtom<CoreResultType<A, E>>, never, RouteContext<any, any, any>> {
+  return Effect.gen(function* () {
+    const ctx = yield* RouteContextTag;
+    if (ctx.loaderResult) {
+      const source = ctx.loaderResult as Atom.ReadonlyAtom<FetchResult.Result<A, E>>;
+      return Atom.derived(() => FetchResult.toResult(source())) as Atom.ReadonlyAtom<CoreResultType<A, E>>;
+    }
+    if (ctx.loaderData) {
+      return Atom.derived(() => CoreResult.success(ctx.loaderData!() as A)) as Atom.ReadonlyAtom<CoreResultType<A, E>>;
+    }
+    return Atom.derived(() => CoreResult.loading) as Atom.ReadonlyAtom<CoreResultType<A, E>>;
+  });
+}
+
+/**
+ * @deprecated Loader state as the stale-while-revalidate `FetchResult` shape.
+ * Prefer `loaderResult()` (unified `Result`). This accessor exists for one
+ * release for callers that read `FetchResult`-specific fields (`waiting`,
+ * `previousSuccess`); it will be removed when `FetchResult` becomes
+ * compat-subpath-only.
+ */
+export function loaderFetchResult<A, E = unknown>(): Effect.Effect<Atom.ReadonlyAtom<FetchResult.Result<A, E>>, never, RouteContext<any, any, any>> {
   return Effect.gen(function* () {
     const ctx = yield* RouteContextTag;
     if (ctx.loaderResult) {
