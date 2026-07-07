@@ -1,9 +1,9 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-06 (design review findings + ergonomics workstream)
+Last updated: 2026-07-07 ("finish the plan" execution pass)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
-V1 scope authority (draft, needs ratification): `docs/V1_SCOPE.md`
+V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 
@@ -25,12 +25,20 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
 
 ## Overall
 
-- Redesign is actively in progress.
-- We are taking a breaking-change-first approach to reduce API overlap and legacy aliases.
-- Core direction is now visible in code (not only docs): smaller top-level exports, stronger action/query primitives, and clearer internal boundaries.
-- AF-UI convergence is now the active architecture track. Slot contract
-  unification is closed for now; the active follow-up is the
-  typesafety/composability track from `docs/new_ideas.md`.
+- Redesign is actively in progress; breaking-change-first to reduce API
+  overlap and legacy aliases.
+- **`V1_SCOPE.md` is ratified** and is the triage authority. Of the 10
+  release-blocking items, the ergonomics/typesafety set (Findings 1/2/4/6,
+  P2, D1, S1–S4, F6) is **done**; three items remain as **dedicated passes**
+  (each too large/risky to fold into feature work) plus the test-gate
+  burndown — see "What remains" under **In Progress / Next**.
+- Standard quality gates are green: `npm run typecheck`, `npm test` (484
+  passing), `npm run build`. A second gate `npm run typecheck:tests` now
+  type-checks `src/__tests__` (20 residual, legacy-drift, tracked).
+- The "finish the plan" pass fixed two real bugs (`ServerRoute.dispatch`
+  layer drop; `Atom.family` invisible plain overload) and added five library
+  robustness improvements — all detailed in
+  `docs/archive/REDESIGN_COMPLETED_LOG.md`.
 
 ## Current Goals
 
@@ -615,7 +623,7 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Package boundary decision (P7): split vs single package before v1; enforce internal layering either way.
 - [ ] Review and ratify `docs/V1_SCOPE.md` (PR1): resolve the marked decisions; use it to triage all other backlog items.
 - [ ] Plan-doc consolidation sweep (PR2): **partially done 2026-07-06** — completed-work log (~860 lines) extracted to `docs/archive/REDESIGN_COMPLETED_LOG.md` with a high-level summary left in place; `BINDINGS_VS_SLOTS_REFACTOR.md`, `style2.md`, `STYLE2_IMPLEMENTATION_PLAN.md` moved to `docs/archive/` (no live inbound links). Remaining: the "older exploratory" docs (`view.md`, `router.md`, `style.md`, `composables.md`, `renderer.md`, `platform.md`, and similar) still carry historical-note banners but are linked from live docs — move them only with a reference-updating pass.
-- [ ] Perf benchmark harness in CI (PR3): js-framework-benchmark subset + style-update microbenchmark with regression threshold.
+- [ ] Perf benchmark harness in CI (PR3): **first slice landed 2026-07-07** — `npm run bench` (vitest bench) with `src/__bench__/reactive-hot-paths.bench.ts` characterizing the core hot paths that back the README/afui perf claims (atom read/write, 3-level derived propagation, family trie vs equals-scan lookup, reactivity key normalization/derivation). `__bench__` excluded from typecheck/build/dist. Remaining: wire into CI with regression thresholds, and add a style-application + a component-mount benchmark.
 - [ ] Compile-error engineering (D1): **first slice landed 2026-07-06** — `View.TypeErrorMessage<Message>` branded diagnostic; `View.BindableHandle<S, H>` (now exported) resolves invalid bindings to a readable message (`Handle capability 'Container' does not satisfy slot 'input' capability 'TextInput'`) instead of `never`; compile-time error-text snapshots in `src/type-tests/slots-define.ts` assert the exact message plus hierarchy-aware acceptance. Remaining: apply the same `TypeErrorMessage` treatment to attachment (`attachToSlots` capability/event mismatches) and remap boundaries.
 - [x] AI-assistant guidance artifact (D2): **first slice landed 2026-07-07** — `llms.txt` at repo root with the core mental model, correct golden-path snippets, and a renamed/removed "do not emit" table (the type-checked-generation-as-a-feature framing from F4). Remaining: publish/package as an agent skill and keep versioned with the API.
 - [ ] Scaffolding (D3): `create-af-ui` starter + slot-contract component generator.

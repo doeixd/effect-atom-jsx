@@ -5,6 +5,7 @@
     "dist",
     "examples",
     "src/__tests__/**/*",
-    "src/type-tests/**/*"
+    "src/type-tests/**/*",
+    "src/__bench__/**/*"
   ]
 }
