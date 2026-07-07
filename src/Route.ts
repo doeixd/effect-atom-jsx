@@ -742,10 +742,10 @@ export function createRouteId(): string {
 }
 
 /**
- * Internal transitional registry hook.
+ * Internal registry hook backing the component-first routing tier.
  *
- * Unified-route execution should prefer explicit route trees over this global
- * registry path.
+ * Explicit route trees are preferred when available; component-first routes
+ * (`Component.route`) resolve through this registry by design.
  */
 export function registerRoute(component: ComponentType<any, any, any, any, any>, meta: RouteMeta<any, any, any>): void {
   const entry = { component, meta };
@@ -753,7 +753,7 @@ export function registerRoute(component: ComponentType<any, any, any, any, any>,
   if (meta.id) routeRegistryById.set(meta.id, entry);
 }
 
-/** Internal transitional lookup for registry-backed legacy flows. */
+/** Internal lookup for the registry-backed component-first routing tier. */
 export function findRegisteredRoute(pattern: string): RegisteredRoute | undefined {
   return routeRegistry.get(pattern);
 }
@@ -771,7 +771,7 @@ export function collectAll(_root: unknown): ReadonlyArray<RegisteredRoute> {
   return [...routeRegistryById.values()];
 }
 
-/** Internal transitional lookup for registry-backed legacy flows. */
+/** Internal lookup for the registry-backed component-first routing tier. */
 export function getRegisteredRouteById(routeId: string): RegisteredRoute | undefined {
   return routeRegistryById.get(routeId);
 }
@@ -1028,9 +1028,10 @@ export function page<C extends ComponentType<any, any, any, any, any>>(path: str
 /**
  * Mark a route as a layout route.
  *
- * `Route.layout()` is the unified-route form used in a pipe chain. The
- * constructor form is still present temporarily while the refactor is in
- * progress.
+ * Two forms coexist by design (see the 3-tier routing model): the no-arg
+ * `Route.layout()` is the unified-route enhancer used in a pipe chain, while
+ * `Route.layout(component)` is the route-first constructor that builds an
+ * `AppRouteNode` tree. Both are supported first-class; neither is transitional.
  */
 export function layout(): <C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => LayoutRoute<C, P, Q, H, LD, LE>;
 export function layout<C extends ComponentType<any, any, any, any, any>>(component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown>;
