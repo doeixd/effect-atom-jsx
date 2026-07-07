@@ -139,6 +139,11 @@ export interface Route<C, P, Q, H, LD = void, LE = never> extends Pipeable<Route
  */
 export interface LayoutRoute<C, P, Q, H, LD = void, LE = never> extends Route<C, P, Q, H, LD, LE> {
   readonly kind: "layout";
+  pipe(): LayoutRoute<C, P, Q, H, LD, LE>;
+  pipe<A>(ab: (self: LayoutRoute<C, P, Q, H, LD, LE>) => A): A;
+  pipe<A, B>(ab: (self: LayoutRoute<C, P, Q, H, LD, LE>) => A, bc: (a: A) => B): B;
+  pipe<A, B, C2>(ab: (self: LayoutRoute<C, P, Q, H, LD, LE>) => A, bc: (a: A) => B, cd: (b: B) => C2): C2;
+  pipe<A, B, C2, D>(ab: (self: LayoutRoute<C, P, Q, H, LD, LE>) => A, bc: (a: A) => B, cd: (b: B) => C2, de: (c: C2) => D): D;
 }
 
 export type AnyRoute = Route<any, any, any, any, any, any>;
@@ -206,6 +211,7 @@ type PipeRouteNode<T extends AnyAppRouteNode, Ops extends readonly unknown[]> =
     : T;
 type AnyRouteAttachTarget = AnyAppRouteNode | ComponentType<any, any, any, any, any>;
 type RouteIdEnhancer =
+  & (<C, P, Q, H, LD, LE>(route: LayoutRoute<C, P, Q, H, LD, LE>) => LayoutRoute<C, P, Q, H, LD, LE>)
   & (<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, Q, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
   & (<C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
   & RouteNodePipeOp<"identity">;
@@ -222,8 +228,7 @@ type RouteHashSchemaEnhancer<H> =
   & (<C, P, Q, LD, LE>(route: Route<C, P, Q, any, LD, LE>) => Route<C, P, Q, H, LD, LE>)
   & RouteNodePipeOp<"hash", H>;
 type RouteChildrenEnhancer =
-  & (<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, Q, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
-  & (<C, P, Q, H, LD, LE>(route: LayoutRoute<C, P, Q, H, LD, LE>) => LayoutRoute<C, P, Q, H, LD, LE>)
+  & (<T extends AnyLayoutRoute | AnyAppRouteNode>(route: T) => T)
   & RouteNodePipeOp<"identity">;
 type RouteTarget = AnyAppRouteNode | AnyRoute;
 type RouteTargetComponent = ComponentType<any, any, any, any, any> | AnyRoute;
@@ -237,7 +242,7 @@ type MetaRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(rou
   & MetaEnhancer<P, A, E>;
 type LoaderRouteEnhancer<P, A, E, R> = LoaderEnhancer<P, A, E, R>
   & NodeLoaderEnhancer<AnyAppRouteNode, A, E, R>
-  & (<C, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<C, P, Q, H, A, E>)
+  & (<C, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<ComponentWithAddedReqE<C, R, E>, P, Q, H, A, E>)
   & RouteNodePipeOp<"loader", { readonly data: A; readonly error: E }>;
 
 export type MaterializedAppRoute<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE> =
@@ -681,6 +686,7 @@ type NodeLoaderEnhancer<T extends AnyAppRouteNode, A, E, R> =
 type TitleEnhancer<P, A, E> =
   & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, A, E>) => AppRouteNode<P, Q, H, C, A, E>)
   & (<C extends RoutedComponent<P, any, any> & LoaderTaggedComponent<A, E> & ComponentType<any, any, any, any, any>>(component: C) => C)
+  & (<C extends RoutedComponent<P, any, any> & ComponentType<any, any, any, any, any>>(component: C) => C)
   & (<C extends ComponentType<any, any, any, any, any>>(component: C) => C);
 
 type NodeTitleEnhancer<T extends AnyAppRouteNode> = TitleEnhancer<RouteNodeParamsOf<T>, RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> & ((route: T) => T);
@@ -688,6 +694,7 @@ type NodeTitleEnhancer<T extends AnyAppRouteNode> = TitleEnhancer<RouteNodeParam
 type MetaEnhancer<P, A, E> =
   & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, A, E>) => AppRouteNode<P, Q, H, C, A, E>)
   & (<C extends RoutedComponent<P, any, any> & LoaderTaggedComponent<A, E> & ComponentType<any, any, any, any, any>>(component: C) => C)
+  & (<C extends RoutedComponent<P, any, any> & ComponentType<any, any, any, any, any>>(component: C) => C)
   & (<C extends ComponentType<any, any, any, any, any>>(component: C) => C);
 
 type NodeMetaEnhancer<T extends AnyAppRouteNode> = MetaEnhancer<RouteNodeParamsOf<T>, RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> & ((route: T) => T);
@@ -2145,16 +2152,7 @@ export function loader<T extends AnyAppRouteNode, A, E, R>(
 export function loader<C extends ComponentType<any, any, any, any, any>, P, Q, H, A, E, R>(
   fn: (params: P, deps?: { readonly parent: <X>() => X }) => Effect.Effect<A, E, R>,
   options?: LoaderOptions,
-): (route: Route<C, P, Q, H, void, never>) => Route<
-  ComponentType<
-    [C] extends [ComponentType<infer Props, any, any, any, any>] ? Props : never,
-    ([C] extends [ComponentType<any, infer R0, any, any, any>] ? R0 : never) | R,
-    ([C] extends [ComponentType<any, any, infer E0, any, any>] ? E0 : never) | E,
-    [C] extends [ComponentType<any, any, any, infer B, any>] ? B : never,
-    [C] extends [ComponentType<any, any, any, any, infer SlotContract>] ? SlotContract : never
-  >,
-  P, Q, H, A, E
->;
+): LoaderRouteEnhancer<P, A, E, R>;
 export function loader<P, A, E, R>(
   fn: (params: P, deps?: { readonly parent: <X>() => X }) => Effect.Effect<A, E, R>,
   options?: LoaderOptions,
@@ -2684,7 +2682,7 @@ export function guard<Req, E>(
 
 export function title<P, A = unknown, E = unknown>(
   value: NonNodeRouteTitleValue<P, A, E>,
-): <T extends Route<any, P, any, any, A, E>>(route: T) => T;
+): TitleRouteEnhancer<P, A, E>;
 export function title<T extends AnyAppRouteNode>(
   value: string | ((params: RouteNodeParamsOf<T>, loaderData: RouteNodeLoaderDataOf<T> | undefined, loaderResult: CoreResultType<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> | undefined) => string),
 ): NodeTitleEnhancer<T>;
@@ -2714,7 +2712,7 @@ export function title(
 
 export function meta<P, A = unknown, E = unknown>(
   value: NonNodeRouteMetaExtraValue<P, A, E>,
-): <T extends Route<any, P, any, any, A, E>>(route: T) => T;
+): MetaRouteEnhancer<P, A, E>;
 export function meta<T extends AnyAppRouteNode>(
   value: RouteMetaRecord | ((params: RouteNodeParamsOf<T>, loaderData: RouteNodeLoaderDataOf<T> | undefined, loaderResult: CoreResultType<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> | undefined) => RouteMetaRecord),
 ): NodeMetaEnhancer<T>;
