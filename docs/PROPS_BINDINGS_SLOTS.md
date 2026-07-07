@@ -320,21 +320,20 @@ type FieldBindings = {
   readonly value: Atom.WritableAtom<string>;
 };
 
-const Field = Component.make<FieldProps, never, never, FieldBindings>(
+// Props/Bindings/Slots are all inferred — no explicit generics needed.
+const Field = Component.make(
   Component.props<FieldProps>(),
   Component.require<never>(),
   () => Effect.succeed({
     value: Atom.value(""),
   }),
   (props, bindings) =>
-    View.fromSlots(FieldSlots, null, {
-      tree: View.element(Root, {
-        children: [
-          View.textNode(props.label),
-          View.element(Input),
-        ],
-      }),
-    }),
+    View.fromSlots(FieldSlots, (
+      <label>
+        {props.label}
+        <input value={bindings.value()} />
+      </label>
+    )),
 ).pipe(
   Component.withSlots(FieldSlots),
 );

@@ -175,9 +175,9 @@ const Field = Component.make(
 
 // Appearance, from outside — token paths are type-checked against the theme.
 const FieldStyle = Style.forSlots(FieldSlots)({
-  root:  Style.slot({ display: "grid", gap: "0.5rem" }),
+  root:  Style.slot({ display: "grid", gap: "sm" }),
   label: Style.slot({ fontWeight: 600 }),
-  input: Style.slot({ padding: "0.5rem" }),
+  input: Style.slot({ padding: "sm" }),
 });
 
 // Interaction, from outside — scoped: listeners clean up on unmount.

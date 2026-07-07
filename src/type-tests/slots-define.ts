@@ -1,4 +1,8 @@
+import { Effect } from "effect";
+import * as Behavior from "../Behavior.js";
+import * as Component from "../Component.js";
 import * as Element from "../Element.js";
+import * as Style from "../Style.js";
 import * as View from "../View.js";
 
 // Slots.define derives witness names from keys, capabilities from options,
@@ -57,3 +61,48 @@ type TextInputSlots = View.Slots.WithCapability<typeof FieldSlots, typeof Elemen
 type TextInputNames = keyof TextInputSlots & string;
 const textInputName: TextInputNames = "input";
 void textInputName;
+
+// ── Finding 4 acceptance: the authored golden path needs no explicit generics ──
+// Props come from Component.props, Req from Component.require, Bindings from
+// setup inference, and the slot contract from Component.withSlots.
+const Field = Component.make(
+  Component.props<{ readonly label: string }>(),
+  Component.require<never>(),
+  () => Effect.succeed({ draft: "" }),
+  (props, bindings) => {
+    // props and bindings are fully inferred inside the view
+    const label: string = props.label;
+    const draft: string = bindings.draft;
+    void label;
+    void draft;
+    return View.fromSlots(FieldSlots, null);
+  },
+).pipe(Component.withSlots(FieldSlots));
+
+// the published contract is precise without annotations
+type FieldContract = Component.SlotContractOf<typeof Field>;
+type FieldContractNames = View.Slots.NamesOf<FieldContract>;
+const contractName: FieldContractNames = "input";
+void contractName;
+
+// styles and behaviors attach without generics and reject unknown slots
+const fieldStyle = Style.forSlots(FieldSlots)({
+  root: Style.slot({ display: "grid" }),
+  input: Style.slot({ padding: "sm" }),
+});
+const fieldBehavior = Behavior.forSlots(FieldSlots)((elements) => {
+  // element types derive from slot capabilities
+  const focus: (() => void) | undefined = elements.input.focus;
+  void focus;
+  return Effect.succeed({});
+});
+const Styled = Field.pipe(
+  Style.attachToSlots(fieldStyle, FieldSlots),
+  Behavior.attachToSlots(fieldBehavior, FieldSlots),
+);
+void Styled;
+
+Style.forSlots(FieldSlots)({
+  // @ts-expect-error unknown slot in a contract-keyed style
+  missing: Style.slot({ color: "red" }),
+});
