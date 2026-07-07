@@ -1003,7 +1003,10 @@ describe("effect-atom style API", () => {
 
   it("supports withRetry / withPolling / withStaleTime pipeables", async () => {
     let attempts = 0;
-    const source = Atom.readable(
+    // Annotate as the unified Result type so the atom is a ResultAtom<number,
+    // "retry"> (the ternary alone infers the narrow Success|Failure union,
+    // which the withRetry pipeable can't destructure into A/E).
+    const source = Atom.readable<AsyncResult<number, "retry">, "retry">(
       () => {
         attempts += 1;
         return attempts < 2
