@@ -1296,7 +1296,7 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
   },
 ): <Props, Req, E, Bindings, SlotContract>(
   component: Component<Props, Req, E, Bindings, SlotContract>,
-) => (Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract>
+) => (Component<Props, Exclude<Req, Route.RouteContext<any, any, any>> | Route.RouterService, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract>
   & Route.RoutedComponent<P, Q, H>) {
   return <Props, Req, E, Bindings, SlotContract>(component: Component<Props, Req, E, Bindings, SlotContract>) => {
     const i = internals(component);
@@ -1521,7 +1521,7 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
     };
     setRoutedMeta<P, Q, H>(wrapped, meta);
     Route.registerRoute(wrapped, meta);
-    return wrapped as unknown as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract> & Route.RoutedComponent<P, Q, H>;
+    return wrapped as unknown as Component<Props, Exclude<Req, Route.RouteContext<any, any, any>> | Route.RouterService, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract> & Route.RoutedComponent<P, Q, H>;
   };
 }
 

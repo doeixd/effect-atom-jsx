@@ -272,5 +272,7 @@ const Routed = QueryRequirementComponent.pipe(
 
 type _RoutedKeepsApi = Expect<Api extends Component.Requirements<typeof Routed> ? true : false>;
 type _RoutedAddsRouter = Expect<Route.RouterService extends Component.Requirements<typeof Routed> ? true : false>;
-type _RoutedAddsRouteContext = Expect<Route.RouteContext<any, any, any> extends Component.Requirements<typeof Routed> ? true : false>;
+// Component.route provides RouteContext to the inner setup, so it must NOT
+// leak into the wrapped component's requirements.
+type _RoutedDischargesRouteContext = Expect<Route.RouteContext<any, any, any> extends Component.Requirements<typeof Routed> ? false : true>;
 type _RoutedAddsParseError = Expect<{ readonly _tag: "RouteParseError" } extends Component.Errors<typeof Routed> ? true : false>;
