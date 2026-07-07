@@ -206,7 +206,7 @@ describe("Capability filtering helpers", () => {
     });
 
     it("does not attach style when no slots match", () => {
-      const textInputStyle = Style.make({ color: "red" });
+      const textInputStyle = Style.slot({ color: "red" });
 
       const Root = View.Slot.make("root", { capability: Element.Capability.Container });
 
