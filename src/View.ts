@@ -42,6 +42,7 @@ export const Event = {
 export const Attribute = {
   make: makeAttribute,
   AriaLabel: makeAttribute("aria-label"),
+  AriaDescribedby: makeAttribute("aria-describedby"),
   Role: makeAttribute("role"),
   Disabled: makeAttribute("disabled"),
   Value: makeAttribute("value"),
@@ -899,6 +900,21 @@ export function hole(hole: Hole): ViewHoleNode {
     kind: "view.node.hole",
     hole,
   };
+}
+
+/** Narrow a `ViewNode` to a `ViewElement` (has `element`, `slot`, `children`). */
+export function isElement<Slots>(node: ViewNode<Slots> | undefined): node is ViewElement<Slots> {
+  return node?.kind === "view.node.element";
+}
+
+/** Narrow a `ViewNode` to a `ViewFragment` (has `children`). */
+export function isFragment<Slots>(node: ViewNode<Slots> | undefined): node is ViewFragment<Slots> {
+  return node?.kind === "view.node.fragment";
+}
+
+/** Narrow a `ViewNode` to a `ViewTextNode`. */
+export function isTextNode<Slots>(node: ViewNode<Slots> | undefined): node is ViewTextNode {
+  return node?.kind === "view.node.text";
 }
 
 export function tree<Slots>(

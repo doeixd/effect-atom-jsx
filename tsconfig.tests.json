@@ -1,0 +1,9 @@
+{
+  "//": "Type-checks src including __tests__ (the base config and build exclude tests). Run via `npm run typecheck:tests`. NOTE: not yet green — see docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md (test-typecheck gate). rootDir is relaxed so example-integration tests can import from examples/.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "."
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "examples"]
+}

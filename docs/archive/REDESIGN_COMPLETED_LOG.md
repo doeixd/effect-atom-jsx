@@ -930,3 +930,30 @@ Extracted from docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md on 2026-07-06 (PR2 plan-d
 - Added "when not to use this" sections (F6) to `README.md`, `README.new.md`,
   and `docs/afui.md`.
 - Validation: typecheck clean, full test suite pass, build clean.
+
+### Test-Typecheck Gate + Library Hardening (2026-07-07)
+
+- Added `npm run typecheck:tests` (`tsconfig.tests.json`) so `src/__tests__`
+  is type-checked (the standard `typecheck`/build exclude tests). Not yet
+  green — residual tracked below — but the gate now exists and is runnable.
+- Library improvements surfaced while burning down test-type errors (all keep
+  standard gates green: typecheck, 484 tests, build):
+  - `Behavior.make<Elements, Bindings = {}, Req = never, E = never>` — trailing
+    generic defaults, so `Behavior.make<Els, Binds>` is valid (was: all four
+    required).
+  - `View.Attribute.AriaDescribedby` witness added.
+  - `View.isElement` / `View.isFragment` / `View.isTextNode` `ViewNode`
+    narrowing guards (public; used to fix union-access in tests).
+  - `Component.renderEffect` now carries the 5th `SlotContract` type param
+    (matching `renderViewEffect`) — components with a published contract via
+    `withSlots(...)` now pass to `renderEffect` without a variance error.
+- Test-side fixes: `Result` re-read narrowing (`component.test`), `ViewNode`
+  guard usage (`view.test`).
+- Reduced test-type errors 40 -> 23.
+- **Genuine bug surfaced by the gate (recorded, not yet fixed):**
+  `Atom.family` overload ordering — when the family function returns an atom
+  (the common case, `family((id) => Atom.make(...))`), the schema overload
+  greedily matches and demands the (schema) options arg, so
+  `Atom.family(fn)` and `Atom.family(fn, { equals })` mis-resolve. Fix needs
+  careful overload reordering that preserves the schema-exit return type;
+  scoped with the Finding-3/P6 test-migration pass.

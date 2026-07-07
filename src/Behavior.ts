@@ -70,7 +70,7 @@ type CompatibleSlotKey<Slots extends SlotMapLike, Needed> = {
       : never;
 }[keyof Slots];
 
-export function make<Elements, Bindings, Req, E>(
+export function make<Elements, Bindings = {}, Req = never, E = never>(
   run: (elements: Elements) => Effect.Effect<Bindings, E, Req>,
   metadata?: BehaviorMetadata<Elements>,
 ): Behavior<Elements, Bindings, Req, E> {

@@ -666,8 +666,8 @@ export function setupEffect<Props, Req, E, Bindings>(
   return i.setup(parsed);
 }
 
-export function renderEffect<Props, Req, E, Bindings>(
-  component: Component<Props, Req, E, Bindings>,
+export function renderEffect<Props, Req, E, Bindings, SlotContract>(
+  component: Component<Props, Req, E, Bindings, SlotContract>,
   propsValue: Props,
 ): Effect.Effect<unknown, E, Req> {
   const i = internals(component);

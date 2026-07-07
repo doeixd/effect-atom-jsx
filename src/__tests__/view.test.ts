@@ -209,7 +209,7 @@ describe("View", () => {
     expect(View.node(view)).toBe("runtime-node");
     expect(view.tree).toBe(tree);
     expect(view.tree?.kind).toBe("view.node.element");
-    expect(view.tree?.children?.[0]?.kind).toBe("view.node.element");
+    expect(View.isElement(view.tree) ? view.tree.children?.[0]?.kind : undefined).toBe("view.node.element");
   });
 
   it("supports pipeable view tree and metadata transforms without changing node unwrapping", () => {
@@ -242,7 +242,7 @@ describe("View", () => {
     expect(view.slotMetadata?.input?.name).toBe("input");
     expect(view.slotRemaps).toEqual([View.remap<Slots>("root", "root")]);
     expect(view.tree?.kind).toBe("view.node.element");
-    expect(view.tree?.children?.map((child) => child.kind)).toEqual([
+    expect(View.isElement(view.tree) ? view.tree.children?.map((child) => child.kind) : undefined).toEqual([
       "view.node.element",
       "view.node.text",
     ]);
@@ -301,7 +301,7 @@ describe("View", () => {
     expect(rendered).toBe("card-node");
     expect(inspected?.name).toBe("Card");
     expect(inspected?.tree?.kind).toBe("view.node.element");
-    expect(inspected?.tree?.slot).toBe("root");
+    expect(View.isElement(inspected?.tree) ? inspected?.tree.slot : undefined).toBe("root");
   });
 
   it("validates typed tree slot references and capabilities", () => {

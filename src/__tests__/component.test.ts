@@ -414,9 +414,10 @@ describe("Component", () => {
     const bindings = Effect.runSync(Component.setupEffect(User, {}));
 
     await Effect.runPromise(Effect.sleep("5 millis"));
-    expect(bindings.user()._tag).toBe("Success");
-    if (bindings.user()._tag === "Success") {
-      expect(bindings.user().value).toBe("Ada");
+    const settled = bindings.user();
+    expect(settled._tag).toBe("Success");
+    if (settled._tag === "Success") {
+      expect(settled.value).toBe("Ada");
     }
   });
 
