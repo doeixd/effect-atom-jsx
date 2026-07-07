@@ -212,4 +212,73 @@ describe("Server render bridge", () => {
     expect(clientRender).toBe("Client user: User alice");
     expect(loaderRuns).toBe(serverLoaderRuns);
   });
+
+  // ── Finding-5 characterization: the full SSR wire round-trip ──
+  // Existing hydration tests pass `loaderPayload` straight to hydrate, skipping
+  // the JSON serialize/deserialize wire trip. This test inserts that trip so the
+  // on-the-wire loader-result shape is pinned end-to-end. It MUST stay green
+  // (or be intentionally updated with a versioned wire format) through the
+  // FetchResult -> unified Result migration — a silent hydration mismatch would
+  // otherwise ship undetected.
+  it("survives the full SSR wire round-trip: render -> serialize -> deserialize -> hydrate -> first client render", () => {
+    clearLoaderCache();
+    let loaderRuns = 0;
+    const UserView = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const user = yield* Route.loaderData<{ readonly id: string; readonly name: string }>();
+        return { user };
+      }),
+      (_props, bindings) => `Client user: ${bindings.user().name}`,
+    );
+    const UserRouteBase = Route.page("/wire/users/:userId", UserView).pipe(
+      Route.id("users.wire"),
+      Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+    );
+    const App = Route.loader<typeof UserRouteBase, { readonly id: string; readonly name: string }, never, never>((params) =>
+      Effect.sync(() => {
+        loaderRuns += 1;
+        return { id: params.userId, name: `User ${params.userId}` };
+      }))(UserRouteBase);
+
+    // 1. Server render produces the loader payload.
+    const renderResult = Effect.runSync(Route.renderRequest(App, {
+      request: new Request("http://example.com/wire/users/alice"),
+    }));
+    expect(renderResult.loaderPayload.length).toBeGreaterThan(0);
+    const serverLoaderRuns = loaderRuns;
+
+    // 2. Serialize to the on-the-wire JSON string, then 3. deserialize it.
+    const wire = Route.serializeLoaderData(renderResult.loaderPayload);
+    expect(typeof wire).toBe("string");
+    const decoded = Route.deserializeLoaderData(wire);
+
+    // The decoded loader result preserves the settled value across the wire.
+    const entry = decoded["users.wire"];
+    expect(entry?._tag).toBe("Success");
+    expect(entry?._tag === "Success" ? entry.value : undefined).toEqual({ id: "alice", name: "User alice" });
+
+    // 4. Reconstruct the payload from the decoded wire data and hydrate.
+    clearLoaderCache();
+    Effect.runSync(Route.hydrateSingleFlightPayload(
+      {
+        mutation: { ok: true as const },
+        url: "http://example.com/wire/users/alice",
+        loaders: Object.entries(decoded).map(([routeId, result]) => ({ routeId, result })),
+      },
+      App,
+    ));
+
+    // 5. The client reads the hydrated value on first render without re-running the loader.
+    const runsBeforeClient = loaderRuns;
+    const clientRender = Effect.runSync(
+      Component.renderEffect(Route.componentOf(App), {}).pipe(
+        Effect.provide(Route.Router.Server({ url: "http://example.com/wire/users/alice" })),
+      ),
+    );
+    expect(clientRender).toBe("Client user: User alice");
+    expect(loaderRuns).toBe(runsBeforeClient); // no loader rerun after hydration
+    expect(serverLoaderRuns).toBeGreaterThan(0);
+  });
 });

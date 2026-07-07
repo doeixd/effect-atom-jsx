@@ -96,6 +96,29 @@ describe("Route loader", () => {
     expect(scripts[0]).toContain("__LOADER_DATA__");
   });
 
+  // ── Finding-5 characterization: pin the CURRENT on-the-wire loader-result
+  // shape. This is the FetchResult JSON shape. The migration to unified Result
+  // will change these fields intentionally; when it does, update this test
+  // deliberately (and bump the wire-format version) rather than letting the
+  // shape drift silently. See docs/RESULT_CONSOLIDATION_PROPOSAL.md.
+  it("pins the current loader-result wire shape (FetchResult; changes with the Result migration)", () => {
+    const successWire = JSON.parse(Route.serializeLoaderData([
+      { routeId: "r1", result: { _tag: "Success", value: { n: 1 }, waiting: false, timestamp: 1234 } as any },
+    ]));
+    expect(successWire.r1).toEqual({ _tag: "Success", value: { n: 1 }, waiting: false, timestamp: 1234 });
+
+    const failureWire = JSON.parse(Route.serializeLoaderData([
+      { routeId: "r2", result: { _tag: "Failure", error: { _tag: "Boom" }, waiting: false, previousSuccess: null } as any },
+    ]));
+    expect(failureWire.r2).toEqual({ _tag: "Failure", error: { _tag: "Boom" }, waiting: false, previousSuccess: null });
+
+    // deserialize is a structural inverse of serialize for settled results
+    const roundTrip = Route.deserializeLoaderData(Route.serializeLoaderData([
+      { routeId: "r3", result: { _tag: "Success", value: [1, 2, 3], waiting: false, timestamp: 5 } as any },
+    ]));
+    expect(roundTrip.r3).toEqual({ _tag: "Success", value: [1, 2, 3], waiting: false, timestamp: 5 });
+  });
+
   it("supports critical/deferred streaming navigation batches", () => {
     const Critical = Component.from<{}>(() => null).pipe(
       Component.route("/stream/users/:userId", { params: Schema.Struct({ userId: Schema.String }) }),
