@@ -90,13 +90,15 @@ type Pipeable<Self> = {
 };
 
 type UnifiedRouteKind = "path" | "layout" | "index";
+// Internal loader-result flow (cache/wire) stays FetchResult (step 2 migrates it).
 type UnknownRouteResult = FetchResult.Result<unknown, unknown>;
-type RouteTitleValue<P, LD, LE> = string | ((params: P, loaderData: LD | undefined, loaderResult: FetchResult.Result<LD, LE> | undefined) => string);
-type RouteMetaExtraValue<P, LD, LE> = RouteMetaRecord | ((params: P, loaderData: LD | undefined, loaderResult: FetchResult.Result<LD, LE> | undefined) => RouteMetaRecord);
+// Head callbacks receive the unified Result model (matching loaderResult()).
+type RouteTitleValue<P, LD, LE> = string | ((params: P, loaderData: LD | undefined, loaderResult: CoreResultType<LD, LE> | undefined) => string);
+type RouteMetaExtraValue<P, LD, LE> = RouteMetaRecord | ((params: P, loaderData: LD | undefined, loaderResult: CoreResultType<LD, LE> | undefined) => RouteMetaRecord);
 type NonNodeRouteTitleValue<P, LD, LE> = P extends AnyAppRouteNode ? never : RouteTitleValue<P, LD, LE>;
 type NonNodeRouteMetaExtraValue<P, LD, LE> = P extends AnyAppRouteNode ? never : RouteMetaExtraValue<P, LD, LE>;
-type StoredRouteTitle = string | ((params: unknown, loaderData: unknown, loaderResult: UnknownRouteResult | undefined) => string);
-type StoredRouteMetaExtra = RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: UnknownRouteResult | undefined) => RouteMetaRecord);
+type StoredRouteTitle = string | ((params: unknown, loaderData: unknown, loaderResult: CoreResultType<unknown, unknown> | undefined) => string);
+type StoredRouteMetaExtra = RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: CoreResultType<unknown, unknown> | undefined) => RouteMetaRecord);
 
 interface UnifiedRouteInternals<P, Q, H, LD, LE> {
   readonly kind: UnifiedRouteKind;
@@ -409,8 +411,8 @@ type RouteDecoratedComponent<P = unknown, Q = unknown, H = unknown, A = unknown,
   __routeLoader?: LoaderFn;
   __routeLoaderOptions?: LoaderOptions;
   __routeLoaderError?: LoaderErrorCases<any, any>;
-  __routeTitle?: string | ((params: P, loaderData: A | undefined, loaderResult: FetchResult.Result<A, E> | undefined) => string);
-  __routeMetaExtra?: RouteMetaRecord | ((params: P, loaderData: A | undefined, loaderResult: FetchResult.Result<A, E> | undefined) => RouteMetaRecord);
+  __routeTitle?: string | ((params: P, loaderData: A | undefined, loaderResult: CoreResultType<A, E> | undefined) => string);
+  __routeMetaExtra?: RouteMetaRecord | ((params: P, loaderData: A | undefined, loaderResult: CoreResultType<A, E> | undefined) => RouteMetaRecord);
   __routeTransition?: { readonly enter?: Effect.Effect<unknown>; readonly exit?: Effect.Effect<unknown> };
   __routeSitemapParams?: () => Effect.Effect<ReadonlyArray<any>>;
   __routeGuards?: ReadonlyArray<Effect.Effect<unknown, any, any>>;
@@ -521,11 +523,11 @@ function setLoaderInternals<P, A, E>(
   setRouteLoaderMeta<A, E>(routed);
 }
 
-function setTitleInternal(component: ComponentType<any, any, any, any, any>, value: string | ((params: unknown, loaderData: unknown, loaderResult: FetchResult.Result<unknown, unknown> | undefined) => string)): void {
+function setTitleInternal(component: ComponentType<any, any, any, any, any>, value: string | ((params: unknown, loaderData: unknown, loaderResult: CoreResultType<unknown, unknown> | undefined) => string)): void {
   asRouteComponent(component).__routeTitle = value;
 }
 
-function setMetaInternal(component: ComponentType<any, any, any, any, any>, value: RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: FetchResult.Result<unknown, unknown> | undefined) => RouteMetaRecord)): void {
+function setMetaInternal(component: ComponentType<any, any, any, any, any>, value: RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: CoreResultType<unknown, unknown> | undefined) => RouteMetaRecord)): void {
   asRouteComponent(component).__routeMetaExtra = value;
 }
 
@@ -1596,15 +1598,17 @@ function setResolvedTreeHeadEntries(
     const params = extractParams(fullPattern, url.pathname) ?? {};
     const loaderResult = resultByRouteId.get(routeId);
     const loaderData = loaderResult?._tag === "Success" ? loaderResult.value : undefined;
+    // Callbacks receive the unified Result model; the cache stores FetchResult.
+    const unifiedResult = toUnifiedLoaderResult(loaderResult);
     const resolvedTitle = title === undefined
       ? undefined
       : typeof title === "function"
-        ? title(params, loaderData, loaderResult)
+        ? title(params, loaderData, unifiedResult)
         : title;
     const resolvedMeta = metaExtra === undefined
       ? undefined
       : typeof metaExtra === "function"
-        ? metaExtra(params, loaderData, loaderResult)
+        ? metaExtra(params, loaderData, unifiedResult)
         : metaExtra;
 
     routeHeadEntries.set(routeId, {
@@ -1970,6 +1974,17 @@ export function loaderResult<A, E = unknown>(): Effect.Effect<Atom.ReadonlyAtom<
     }
     return Atom.derived(() => CoreResult.loading) as Atom.ReadonlyAtom<CoreResultType<A, E>>;
   });
+}
+
+/**
+ * Convert an internal loader `FetchResult` (or `undefined`) to the unified
+ * `Result` model that head callbacks and `loaderResult()` expose. Shared by the
+ * tree-render and legacy-component head-resolution paths so both are identical.
+ */
+export function toUnifiedLoaderResult<A, E>(
+  result: FetchResult.Result<A, E> | undefined,
+): CoreResultType<A, E> | undefined {
+  return result ? FetchResult.toResult(result) : undefined;
 }
 
 /**
@@ -2671,13 +2686,13 @@ export function title<P, A = unknown, E = unknown>(
   value: NonNodeRouteTitleValue<P, A, E>,
 ): <T extends Route<any, P, any, any, A, E>>(route: T) => T;
 export function title<T extends AnyAppRouteNode>(
-  value: string | ((params: RouteNodeParamsOf<T>, loaderData: RouteNodeLoaderDataOf<T> | undefined, loaderResult: FetchResult.Result<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> | undefined) => string),
+  value: string | ((params: RouteNodeParamsOf<T>, loaderData: RouteNodeLoaderDataOf<T> | undefined, loaderResult: CoreResultType<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> | undefined) => string),
 ): NodeTitleEnhancer<T>;
 export function title<P, A = unknown, E = unknown>(
   value: NonNodeRouteTitleValue<P, A, E>,
 ): TitleEnhancer<P, A, E>;
 export function title(
-  value: string | ((params: unknown, loaderData: unknown, loaderResult: FetchResult.Result<unknown, unknown> | undefined) => string),
+  value: string | ((params: unknown, loaderData: unknown, loaderResult: CoreResultType<unknown, unknown> | undefined) => string),
 ): TitleRouteEnhancer<unknown, unknown, unknown> {
   const attach = <C extends ComponentType<any, any, any, any, any> | AnyAppRouteNode | AnyRoute>(component: C): C => {
     if (isUnifiedRoute(component)) {
@@ -2701,13 +2716,13 @@ export function meta<P, A = unknown, E = unknown>(
   value: NonNodeRouteMetaExtraValue<P, A, E>,
 ): <T extends Route<any, P, any, any, A, E>>(route: T) => T;
 export function meta<T extends AnyAppRouteNode>(
-  value: RouteMetaRecord | ((params: RouteNodeParamsOf<T>, loaderData: RouteNodeLoaderDataOf<T> | undefined, loaderResult: FetchResult.Result<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> | undefined) => RouteMetaRecord),
+  value: RouteMetaRecord | ((params: RouteNodeParamsOf<T>, loaderData: RouteNodeLoaderDataOf<T> | undefined, loaderResult: CoreResultType<RouteNodeLoaderDataOf<T>, RouteNodeLoaderErrorOf<T>> | undefined) => RouteMetaRecord),
 ): NodeMetaEnhancer<T>;
 export function meta<P, A = unknown, E = unknown>(
   value: NonNodeRouteMetaExtraValue<P, A, E>,
 ): MetaEnhancer<P, A, E>;
 export function meta(
-  value: RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: FetchResult.Result<unknown, unknown> | undefined) => RouteMetaRecord),
+  value: RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: CoreResultType<unknown, unknown> | undefined) => RouteMetaRecord),
 ): MetaRouteEnhancer<unknown, unknown, unknown> {
   const attach = <C extends ComponentType<any, any, any, any, any> | AnyAppRouteNode | AnyRoute>(component: C): C => {
     if (isUnifiedRoute(component)) {

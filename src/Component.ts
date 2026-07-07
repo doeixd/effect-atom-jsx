@@ -1446,7 +1446,9 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
             return;
           }
           const loaderDataForHead = loaderDataAtom ? loaderDataAtom() : undefined;
-          const loaderResultForHead = loaderResultAtom ? loaderResultAtom() : undefined;
+          // Head callbacks receive the unified Result model (matching the
+          // tree-render path and Route.loaderResult()); the cache is FetchResult.
+          const loaderResultForHead = Route.toUnifiedLoaderResult(loaderResultAtom ? loaderResultAtom() : undefined);
           const titleResolved = routeTitle === undefined
             ? undefined
             : typeof routeTitle === "function"

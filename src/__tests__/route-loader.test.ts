@@ -333,6 +333,38 @@ describe("Route loader", () => {
     expect(observedDescription).toBe("User alice (ALICE)");
   });
 
+  // Finding-5: the title/meta loaderResult (3rd) callback param is the unified
+  // Result model, not FetchResult. A settled loader gives a unified `Success`.
+  it("passes the unified Result model to title/meta loaderResult callbacks", () => {
+    let observedTag: string | undefined;
+    let observedValue: unknown;
+
+    const Page = Route.title((
+      _params: { readonly userId: string },
+      _loaderData: { readonly name: string } | undefined,
+      loaderResult,
+    ) => {
+      observedTag = loaderResult?._tag;
+      // unified Success carries `.value`; there is no FetchResult `waiting`/`timestamp`
+      observedValue = loaderResult?._tag === "Success" ? loaderResult.value : undefined;
+      expect(loaderResult && "waiting" in loaderResult).toBe(false);
+      return "t";
+    })(
+      Route.loader((params: { readonly userId: string }) => Effect.succeed({ name: params.userId.toUpperCase() }))(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/head-result/users/:userId")(Component.from<{}>(() => null)),
+        ),
+      ),
+    );
+
+    Effect.runSync(
+      Route.renderRequest(Page, { request: new Request("http://test.local/head-result/users/alice") }),
+    );
+
+    expect(observedTag).toBe("Success");
+    expect(observedValue).toEqual({ name: "ALICE" });
+  });
+
   it("supports typed tagged loader error handlers on unified routes", () => {
     const ErrorRoute = Route.loaderError({
       UserNotFound: (error, params) => `missing:${params.userId}:${error.id}`,
