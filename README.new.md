@@ -335,6 +335,20 @@ The runtime is self-contained — mount an AF-UI tree inside a React (or
 anything) component the way you'd mount a D3 chart, and adopt incrementally:
 atoms first, components where contracts pay off.
 
+## When not to use this
+
+- **Your team isn't investing in Effect.** The type system is the product;
+  without fluency in `Effect.gen`, layers, and typed errors you pay the
+  learning curve without collecting the payoff.
+- **You need a mature component ecosystem today.** The behavior pack covers
+  core headless primitives, not a shadcn-sized catalog.
+- **It's a small static site or a throwaway prototype.** Contracts and typed
+  services earn their cost in long-lived apps with real state, not landing
+  pages.
+
+What you don't give up: incremental adoption inside an existing app, and SSR
+(hydration, streaming loaders, single flight are first-class).
+
 ## Learn more
 
 - `docs/afui.md` — the full narrative: inside-out model, runtime, routing

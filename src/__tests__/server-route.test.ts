@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Schema, ServiceMap } from "effect";
 import * as Component from "../Component.js";
 import * as Route from "../Route.js";
 import * as ServerRoute from "../ServerRoute.js";
@@ -277,5 +277,39 @@ describe("ServerRoute", () => {
 
     expect(result.response).toEqual({ ok: true });
     expect(result.headers.get("x-helper")).toEqual(["1"]);
+  });
+
+  it("provides the dispatch layer to data-route handlers with per-request isolation", async () => {
+    const RequestContext = ServiceMap.Service<{ readonly id: number }>("RequestContext");
+
+    let built = 0;
+    // Request-scoped layer: constructing the service marks a new request.
+    const requestLayer = Layer.sync(RequestContext, () => {
+      built += 1;
+      return { id: built };
+    });
+
+    const WhoAmI = ServerRoute.json({ key: "whoami" }).pipe(
+      ServerRoute.method("GET"),
+      ServerRoute.path("/whoami"),
+      ServerRoute.handle(() => Effect.gen(function* () {
+        const context = yield* RequestContext;
+        return { requestId: context.id };
+      })),
+    );
+
+    const routes = ServerRoute.define(WhoAmI);
+    const dispatchOnce = () => Effect.runPromise(
+      ServerRoute.dispatch(routes, new Request("http://example.com/whoami"), { layer: requestLayer }),
+    );
+
+    const first = await dispatchOnce();
+    const second = await dispatchOnce();
+
+    // the layer reaches data-route handlers (not only document routes)...
+    expect(first._tag).toBe("data");
+    expect((first as { result: { response: unknown } }).result.response).toEqual({ requestId: 1 });
+    // ...and is built per dispatch, so request state never leaks across requests
+    expect((second as { result: { response: unknown } }).result.response).toEqual({ requestId: 2 });
   });
 });

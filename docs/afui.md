@@ -666,6 +666,23 @@ Unlike traditional CSS-in-JS that parses massive template literals at runtime, A
 **5. Ecosystem Interop: Can I use this in an existing React app?**
 Yes, incrementally. Because AF-UI separates its lifecycle and rendering from React's VDOM, an AF-UI component tree can be mounted inside a standard React component using a `useEffect` hook (much like mounting a complex D3 chart or WebGL canvas). You can adopt AF-UI to build your core design system or complex state-heavy forms without rewriting your existing React application.
 
+## When Not to Use AF-UI
+
+Honest scoping, because the rest of this document argues the other side:
+
+- **Teams not investing in Effect-TS.** The compile-time guarantees are the
+  product; without Effect fluency you pay the ceremony without collecting
+  the safety.
+- **Projects that need a mature component ecosystem now.** The behavior pack
+  covers core headless primitives; it is not yet a shadcn-scale catalog.
+- **Small static sites and throwaway prototypes.** Slot contracts pay for
+  themselves in long-lived, customized, state-heavy applications — not in a
+  landing page.
+
+Unlike most alternatives in this space, you do *not* give up incremental
+adoption (AF-UI mounts inside an existing React app) or SSR (hydration,
+streaming loaders, and single-flight mutations are first-class).
+
 ## Conclusion
 
 AF-UI's Slot Contract / Style / Behavior system represents a paradigm shift in UI architecture. By applying Effect's service/layer model to UI development — and making the slot contract the single, typed source of truth shared by views, styles, behaviors, and platforms — it achieves true type safety, effortless composability, and genuine platform independence, finally solving the long-standing problems of Tailwind and `shadcn/ui`.

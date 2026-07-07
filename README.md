@@ -31,6 +31,23 @@ effect-atom-jsx = Effect v4 services + Atom state + AF-UI components + dom-expre
 - **AF-UI components** via `Component.setup(...)`, `View.Slots`, `Component.withSlots(...)`, `Style.forSlots(...)`, and `Behavior.forSlots(...)` — the current inside-out component model
 - **Component setup ownership** via `Component.state(...)`, `Component.query(...)`, `Component.action(...)`, and related setup helpers — local handles are tied to the component setup scope when one is present
 
+### When not to use this
+
+Honest scoping — use something else if:
+
+- **Your team isn't investing in Effect.** The type system is the product
+  here; without fluency in `Effect.gen`, layers, and typed errors you pay
+  the learning curve without collecting the payoff.
+- **You need a mature component ecosystem today.** The behavior pack covers
+  core headless primitives; it is not yet a shadcn-sized catalog.
+- **It's a small static site or a throwaway prototype.** Slot contracts and
+  typed services earn their cost in long-lived apps with real state and
+  customization needs, not in a landing page.
+
+What you don't give up: **incremental adoption** (mount inside an existing
+React/other app; adopt atoms first, components where contracts pay off) and
+**SSR** (hydration, streaming loaders, and single-flight are first-class).
+
 ## Quick Start
 
 ### 1. Configure Babel

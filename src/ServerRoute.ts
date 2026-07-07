@@ -400,9 +400,10 @@ export function find(
 export function execute<T extends ServerRouteNode<any, any, any, any>>(
   route: T,
   request: Request,
+  options?: { readonly layer?: import("effect").Layer.Layer<any> },
 ): Effect.Effect<ExecuteResult<ResponseOf<T>>, unknown> {
   const responseService = createResponseService();
-  return executeWithServices(route, request, responseService);
+  return executeWithServices(route, request, responseService, options);
 }
 
 function createResponseService(): ResponseService {
@@ -430,11 +431,18 @@ function createResponseService(): ResponseService {
   };
 }
 
-/** Execute a typed server route using explicit request/response services. */
+/** Execute a typed server route using explicit request/response services.
+ *
+ * When `options.layer` is provided it is built per execution, so
+ * request-scoped services (auth context, request-derived state) get a fresh
+ * instance per request. Build expensive app-lifetime services (DB pools, RPC
+ * clients) once outside and merge them in instead of constructing them here.
+ */
 export function executeWithServices<T extends ServerRouteNode<any, any, any, any>>(
   route: T,
   request: Request,
   responseService: ResponseService,
+  options?: { readonly layer?: import("effect").Layer.Layer<any> },
 ): Effect.Effect<ExecuteResult<ResponseOf<T>>, unknown> {
   return Effect.tryPromise({
     try: async () => {
@@ -472,6 +480,7 @@ export function executeWithServices<T extends ServerRouteNode<any, any, any, any
         }) as Effect.Effect<ResponseOf<T>, unknown, never>).pipe(
           Effect.provideService(Route.ServerRequestTag, { request, url }),
           Effect.provideService(Route.ServerResponseTag, responseService),
+          (effect) => options?.layer ? Effect.provide(effect, options.layer) as typeof effect : effect,
         ),
       ));
 
@@ -563,7 +572,7 @@ export function dispatch(
     }
     return {
       _tag: "data",
-      result: yield* execute(matched, request),
+      result: yield* execute(matched, request, options),
     } satisfies DispatchResult;
   });
 }

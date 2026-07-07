@@ -626,15 +626,15 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Amend P5 with story/scene test taxonomy and naming conventions (F3).
 - [ ] Amend D2 with the AI docs section: type-checked generation as a feature + MCP runtime half (F4).
 - [ ] Amend P1 design to include a typed behavior out-event axis alongside published state (F5).
-- [ ] Add "when not to use this" section to README/afui.md (F6).
+- [x] Add "when not to use this" section to README/afui.md (F6): **done 2026-07-06** — added to `README.md` (Overview), `README.new.md`, and `docs/afui.md`, each claiming the incremental-adoption/SSR ground competitors concede.
 - [ ] Amend P8/behavior pack with the two-tier taxonomy and catalog roadmap: Dialog, Tooltip, Popover, Tabs, Slider, Calendar/DatePicker, DragAndDrop (F7).
 - [ ] Amend P5 with inline outcome resolution: `resolveAction(...)` / `resolveQuery(...)` driving handle `Result` without mock layers (F8.1).
 - [ ] Amend P11 so operation `name` is load-bearing: timeline, `observe` metrics, diagnostics, docs nudge (F8.2).
 - [ ] Schema-validated action inputs (P13): optional `Atom.action(fn, { inputSchema })` with typed boundary error; prioritize for single-flight-invokable actions (F8.3).
-- [ ] Two-runtimes decision (S1): document the one-composition-root golden path now; DECIDE whether `Component.mount` accepts an `AtomRuntime` for v1.
-- [ ] Write `docs/SERVICES_AND_LAYERS.md` (S2): four-tier decision table; memoization/sharing semantics; layer failure blast radius; capture-at-setup interaction.
-- [ ] Server request-scoping rule (S3): document app-lifetime + per-request layer pattern; add a request-isolation test.
-- [ ] Promote services-as-reactive-participants pattern (S4): canonical in services doc, README, and afui.md.
+- [ ] Two-runtimes decision (S1): composition-root doctrine **documented 2026-07-06** in `docs/SERVICES_AND_LAYERS.md`; the DECIDE (should `Component.mount` accept an `AtomRuntime`) remains open for V1_SCOPE ratification.
+- [x] Write `docs/SERVICES_AND_LAYERS.md` (S2): **done 2026-07-06** — four-tier decision table, per-instance `withLayer` sharing semantics, failure blast radius, capture-at-setup, requirement subsets.
+- [x] Server request-scoping rule (S3): **done 2026-07-06** — documented app-lifetime + per-request layer pattern; **fixed a real gap found during implementation**: `ServerRoute.dispatch({ layer })` silently dropped the layer for data-route handlers (only document routes received it); layer now threads through `execute`/`executeWithServices` and is built per dispatch; request-isolation test added in `server-route.test.ts`.
+- [x] Promote services-as-reactive-participants pattern (S4): **done 2026-07-06** — canonical section in `SERVICES_AND_LAYERS.md` using key witnesses; README/afui reactivity examples already lead with the pattern after P2 slice 2.
 - [x] Add `Component.withSlots(...)` as the canonical component slot contract helper.
 - [x] Add `Component.withSlotContract(...)` and primary `SlotContract` metadata.
 - [x] Add `Component.SlotContractOf<T>` as the canonical slot contract extraction helper.

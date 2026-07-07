@@ -910,3 +910,23 @@ Extracted from docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md on 2026-07-06 (PR2 plan-d
   `docs/afui.md` and `README.new.md` reactivity/loader examples lead with
   witnesses and note strings as the dynamic escape hatch.
 - Validation: typecheck clean, 481 tests pass, build clean.
+
+### Services & Layers Docs + Server Layer Fix (S2/S3/S4/F6) (2026-07-06)
+
+- Added `docs/SERVICES_AND_LAYERS.md`: one-composition-root doctrine (single
+  `AppLayer` feeds both `Atom.runtime` and `Component.mount`), four provision
+  tiers with a decision table (app root / subtree / per-operation / ambient
+  framework tags), sharing semantics (verified: `withLayer` builds the layer
+  per component instance via `Effect.provide` around setup — siblings never
+  share), failure blast radius, capture-at-setup interaction, requirement
+  subsets, server request-scoping rule, services-as-reactive-participants
+  with key witnesses, and testing-by-layer-substitution.
+- Fixed `ServerRoute.dispatch({ layer })`: the per-dispatch layer was only
+  applied to document routes; data-route handlers ran without it. `execute`
+  and `executeWithServices` now accept `options.layer` and provide it around
+  the handler (built per execution). Added request-isolation coverage in
+  `src/__tests__/server-route.test.ts` proving the layer reaches data
+  handlers and is constructed fresh per dispatch.
+- Added "when not to use this" sections (F6) to `README.md`, `README.new.md`,
+  and `docs/afui.md`.
+- Validation: typecheck clean, full test suite pass, build clean.
