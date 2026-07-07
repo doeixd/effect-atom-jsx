@@ -52,11 +52,18 @@ React/other app; adopt atoms first, components where contracts pay off) and
 
 ### 1. Configure Babel
 
+`babel-plugin-jsx-dom-expressions` compiles JSX to fine-grained DOM
+operations. Point `moduleName` at the `effect-atom-jsx/runtime` subpath (that
+is where the compiler-facing helpers live). For `tsc` type-checking of your
+JSX, also set `"jsx": "preserve"` and `"jsxImportSource": "effect-atom-jsx"`
+in `tsconfig.json`.
+
 ```json
 {
   "plugins": [
     ["babel-plugin-jsx-dom-expressions", {
-      "moduleName": "effect-atom-jsx",
+      "moduleName": "effect-atom-jsx/runtime",
+      "generate": "dom",
       "contextToCustomElements": true
     }]
   ]

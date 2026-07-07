@@ -636,7 +636,7 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Amend P5 with story/scene test taxonomy and naming conventions (F3).
 - [ ] Amend D2 with the AI docs section: type-checked generation as a feature + MCP runtime half (F4).
 - [ ] Amend P1 design to include a typed behavior out-event axis alongside published state (F5).
-- [x] Add "when not to use this" section to README/afui.md (F6): **done 2026-07-06** — added to `README.md` (Overview), `README.new.md`, and `docs/afui.md`, each claiming the incremental-adoption/SSR ground competitors concede.
+- [x] Add "when not to use this" section to README/afui.md (F6): **done 2026-07-06** — added to `README.md` (Overview) and `docs/afui.md` (README.new.md later consolidated into README.md), each claiming the incremental-adoption/SSR ground competitors concede.
 - [ ] Amend P8/behavior pack with the two-tier taxonomy and catalog roadmap: Dialog, Tooltip, Popover, Tabs, Slider, Calendar/DatePicker, DragAndDrop (F7).
 - [ ] Amend P5 with inline outcome resolution: `resolveAction(...)` / `resolveQuery(...)` driving handle `Result` without mock layers (F8.1).
 - [ ] Amend P11 so operation `name` is load-bearing: timeline, `observe` metrics, diagnostics, docs nudge (F8.2).
@@ -766,7 +766,7 @@ hardened), the following landed in one push (commits `c013264`..`64cf627`+):
   request-scoping fix + isolation test, reactive-participant doctrine. Found
   and fixed a real bug: `ServerRoute.dispatch({ layer })` dropped the layer
   for data routes.
-- **F6** — "when not to use this" in README/README.new/afui.
+- **F6** — "when not to use this" in README/afui.
 - **D2** — `llms.txt` first slice.
 - **PR2** — completed-work log + fully-historical docs archived.
 

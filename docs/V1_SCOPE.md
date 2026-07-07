@@ -136,11 +136,15 @@ findings. Status:
   mechanical import swaps.
 
 **Should-fix (quality):**
-- Two coexisting Result models (Finding-5 step 2), routing overload seam +
-  "type instantiation excessively deep" warnings in `Route.ts`, cast density
-  (`as any`/`as unknown as`), two READMEs (`README.md` + `README.new.md`)
-  unreconciled, unverified release mechanics (dist import smoke-test,
-  `exports`/`types` correctness, CHANGELOG/versioning for breaking changes).
+- Two coexisting Result models (Finding-5 step 2); routing overload seam +
+  "type instantiation excessively deep" warnings in `Route.ts`; cast density
+  (`as any`/`as unknown as`); CHANGELOG/versioning for breaking changes.
+- **Done 2026-07-07:** README consolidated (deleted the redundant
+  `README.new.md`; kept the comprehensive `README.md`) and two real README
+  setup bugs fixed — the `render` import (now top-level) and the babel
+  `moduleName` (was `effect-atom-jsx`, corrected to `effect-atom-jsx/runtime`,
+  which would otherwise break the JSX transform). Dist import smoke-test
+  passed (59 exports incl. `render`; `jsx-runtime` resolves).
 
 Verdict: architecturally strong, **not release-ready** — solid beta. A stable
 core dep, two green type gates (with the example migration), and a security-

@@ -1,45 +1,56 @@
 import { Component, Route, WithLayer } from "effect-atom-jsx";
 import { Schema } from "effect";
 
-const Home = Component.from<{}>(() => (
-  <section>
-    <h2>Home</h2>
-    <p>Welcome to the router basic example.</p>
-  </section>
-)).pipe(
-  Component.route("/"),
-  Route.title("Home"),
-  Route.meta({ description: "Router basic home route" }),
-);
-
-const Users = Component.from<{}>(() => (
-  <section>
-    <h2>Users</h2>
-    <ul>
-      <li><a href={userLink({ userId: "alice" })}>Alice</a></li>
-      <li><a href={userLink({ userId: "bob" })}>Bob</a></li>
-    </ul>
-  </section>
-)).pipe(
-  Component.route("/users"),
-  Route.title("Users"),
-  Route.meta({ description: "Users list route", keywords: ["users", "list"] }),
-);
-
-const UserProfile = Component.make(
-  Component.props<{}>(),
-  Component.require<Route.RouteContext<any, any, any>>(),
-  () => Route.params,
-  (_props, params: { userId?: string }) => (
+const HomeBase = Route.page(
+  "/",
+  Component.from<{}>(() => (
     <section>
-      <h2>User Profile</h2>
-      <p>Current user: {params.userId ?? "(missing)"}</p>
+      <h2>Home</h2>
+      <p>Welcome to the router basic example.</p>
     </section>
+  )),
+);
+const Home = HomeBase.pipe(
+  Route.title<typeof HomeBase>(() => "Home"),
+  Route.meta<typeof HomeBase>(() => ({ description: "Router basic home route" })),
+);
+
+const UsersBase = Route.page(
+  "/users",
+  Component.from<{}>(() => (
+    <section>
+      <h2>Users</h2>
+      <ul>
+        <li><a href={userLink({ userId: "alice" })}>Alice</a></li>
+        <li><a href={userLink({ userId: "bob" })}>Bob</a></li>
+      </ul>
+    </section>
+  )),
+);
+const Users = UsersBase.pipe(
+  Route.title<typeof UsersBase>(() => "Users"),
+  Route.meta<typeof UsersBase>(() => ({ description: "Users list route", keywords: ["users", "list"] })),
+);
+
+const UserProfileBase = Route.page(
+  "/users/:userId",
+  Component.make(
+    Component.props<{}>(),
+    Component.require<Route.RouteContext<any, any, any>>(),
+    () => Route.params,
+    (_props, params: { userId?: string }) => (
+      <section>
+        <h2>User Profile</h2>
+        <p>Current user: {params.userId ?? "(missing)"}</p>
+      </section>
+    ),
   ),
 ).pipe(
-  Component.route("/users/:userId", { params: Schema.Struct({ userId: Schema.String }) }),
-  Route.title<{ userId: string }>((params) => `Profile: ${params.userId}`),
-  Route.meta<{ userId: string }>((params) => ({
+  Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
+);
+const UserProfile = UserProfileBase.pipe(
+  Route.title<typeof UserProfileBase>((params) => `Profile: ${params.userId}`),
+  Route.meta<typeof UserProfileBase>((params) => ({
     description: `User profile for ${params.userId}`,
     keywords: ["users", "profile", params.userId],
   })),
@@ -48,6 +59,10 @@ const UserProfile = Component.make(
 const homeLink = Route.link(Home);
 const usersLink = Route.link(Users);
 const userLink = Route.link(UserProfile);
+
+const HomeView = Route.componentOf(Home);
+const UsersView = Route.componentOf(Users);
+const UserProfileView = Route.componentOf(UserProfile);
 
 export function App() {
   return (
@@ -66,9 +81,9 @@ export function App() {
           <Route.Switch
             fallback={<p>No route matched.</p>}
             children={[
-              Home({}),
-              Users({}),
-              UserProfile({}),
+              HomeView({}),
+              UsersView({}),
+              UserProfileView({}),
             ]}
           />
         </main>
