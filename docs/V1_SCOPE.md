@@ -107,6 +107,45 @@ Everything here is implemented today or is tracked release-blocking work.
 - Historical docs moved to `docs/archive/` (PR2)
 - Full typecheck/test/build green (existing gates)
 
+## Pre-Release Readiness Findings (2026-07-07 scrutiny pass)
+
+A skeptical readiness review surfaced concrete blockers beyond the redesign
+findings. Status:
+
+**Fixed:**
+- **SSR script-injection XSS** (was a live stored-XSS in `serializeLoaderData`
+  / `streamDeferredLoaderScripts` — unescaped JSON in `<script>`). Fixed +
+  regression test.
+- **No JSX types** — the library shipped zero JSX type infrastructure
+  (`jsxImportSource: effect-atom-jsx` resolved to nothing). Added
+  `src/jsx-runtime.ts` + `./jsx-runtime`/`./jsx-dev-runtime` exports.
+- **`render` not top-level** — README quick start imported it top-level but it
+  lived only in `/runtime`. Now re-exported (with SSR entry points).
+- **No example typecheck gate** — added `typecheck:examples`.
+
+**Release-blocking, still open:**
+- **Effect *beta* dependency.** `effect ^4.0.0-beta.29` (dep + peer). A 1.0
+  cannot be stable on a beta core. Gated on Effect 4 stable.
+- **`typecheck:tests` not green** (9 left) and **`typecheck:examples` not
+  green** (115 left, real per-example drift). Until both are required green
+  gates, "tests pass" overstates correctness — the tests gate alone already
+  found 6 real bugs.
+- **Examples drifted badly** — 16 apps, 115 type errors, several still on
+  deprecated patterns (Registry-first, `AsyncResult`, `mutationEffect`). Needs
+  a per-app migration to *current* patterns **and** runtime verification, not
+  mechanical import swaps.
+
+**Should-fix (quality):**
+- Two coexisting Result models (Finding-5 step 2), routing overload seam +
+  "type instantiation excessively deep" warnings in `Route.ts`, cast density
+  (`as any`/`as unknown as`), two READMEs (`README.md` + `README.new.md`)
+  unreconciled, unverified release mechanics (dist import smoke-test,
+  `exports`/`types` correctness, CHANGELOG/versioning for breaking changes).
+
+Verdict: architecturally strong, **not release-ready** — solid beta. A stable
+core dep, two green type gates (with the example migration), and a security-
+minded review of the remaining SSR/`innerHTML` paths stand between it and 1.0.
+
 ## Deferred (explicitly not v1)
 
 - **TUI / React Native renderers.** V1 ships platform *validation*
