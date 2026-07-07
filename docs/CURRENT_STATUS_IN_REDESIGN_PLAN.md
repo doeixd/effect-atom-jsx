@@ -606,7 +606,7 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Complete Result consolidation as release-blocking (Finding 5): all primary surfaces emit unified `Result`; `FetchResult` compat-only; no `E | { defect: string }` union in primary signatures.
 - [ ] Typed-tree-by-default + claims sweep (Finding 6): authored views always carry `tree` metadata; docs scope type-safety claims to enforced boundaries.
 - [ ] Behavior binding contracts + state-aware styling (P1): `Behavior.provides(...)` witness and `Style.whenBinding(...)`-style composition.
-- [ ] Reactivity key witnesses (P2): `Reactivity.Key.make(...)`, typed key families, key hierarchy; strings become the dynamic escape hatch.
+- [ ] Reactivity key witnesses (P2): **slice 1 landed 2026-07-06** (see archive log) — `Reactivity.Key.make/family/is`, `KeyNameOf<T>`, hierarchical `child(...)` with record-form parity, witnesses accepted everywhere `ReactivityKeysInput` flows, runtime + type coverage, gates green. Remaining: widen `Route.ts` loader option sites from `ReadonlyArray<string>` to `ReactivityKeysInput`; migrate docs/examples to witnesses as the authored path.
 - [ ] Unified diagnostics pipeline (P3): shared `Diagnostic` type + dev-mode auto-report layer + static CLI/CI check entry point.
 - [ ] User-declared token schema (P4): theme taxonomy as user schema with `ThemeLight` as default instance.
 - [ ] Test kit (P5): component render driver, DOM-free behavior driver, style data assertions.

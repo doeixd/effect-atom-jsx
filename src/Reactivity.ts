@@ -1,7 +1,73 @@
 import { Effect, Layer, ServiceMap } from "effect";
-import { invalidateReactivityRuntime, trackReactivityRuntime, type ReactivityKeysInput } from "./reactivity-runtime.js";
+import {
+  invalidateReactivityRuntime,
+  isReactivityKeyWitness,
+  makeReactivityKeyWitness,
+  trackReactivityRuntime,
+  type ReactivityKeysInput,
+  type ReactivityKeyWitness,
+} from "./reactivity-runtime.js";
 
 export type ReactivityKey = string;
+
+export type { ReactivityKeyWitness } from "./reactivity-runtime.js";
+
+/**
+ * A parameterized key family: `const todo = Key.family("todo"); todo(42)`
+ * derives the `"todo:42"` child witness; `todo.key` is the parent witness.
+ */
+export interface KeyFamily<Name extends string> {
+  <Sub extends string | number>(sub: Sub): ReactivityKeyWitness<`${Name}:${Sub}`>;
+  /** The parent witness for the whole family (e.g. `"todo"`). */
+  readonly key: ReactivityKeyWitness<Name>;
+}
+
+/** Extract the literal key name from a witness or family type. */
+export type KeyNameOf<T> = T extends ReactivityKeyWitness<infer Name> ? Name
+  : T extends KeyFamily<infer Name> ? Name
+  : never;
+
+/**
+ * First-class reactivity key witnesses.
+ *
+ * Keys were previously plain strings, with no compile-time connection between
+ * the `Reactivity.tracked(...)` site and the `Reactivity.invalidating(...)`
+ * site — a typo silently meant "never refreshes". Witnesses give both sides
+ * one shared value with a literal type:
+ *
+ * ```ts
+ * const Users = Reactivity.Key.make("users");
+ *
+ * // service read
+ * Reactivity.tracked(fetchUsers(), { keys: [Users] });
+ *
+ * // service write
+ * Reactivity.invalidating(api.addUser(name), [Users]);
+ *
+ * // parameterized members
+ * const user = Reactivity.Key.family("user");
+ * Reactivity.tracked(fetchUser(id), { keys: [user(id)] });
+ * ```
+ *
+ * Witnesses are accepted anywhere `ReactivityKeysInput` is accepted (tracked,
+ * invalidating, `reactivityKeys` options on atoms/actions/components) and mix
+ * freely with plain strings, which remain the dynamic/generated escape hatch —
+ * matching the slot-contract tiering.
+ *
+ * Hierarchy: `Users.child(42)` (or `family(...)` application) expands to
+ * `["users", "users:42"]` for both tracking and invalidation, matching the
+ * existing record-form convention — invalidating the parent reaches child
+ * observers and vice versa.
+ */
+export const Key = {
+  make: <Name extends string>(name: Name): ReactivityKeyWitness<Name> => makeReactivityKeyWitness(name),
+  family: <Name extends string>(name: Name): KeyFamily<Name> => {
+    const parent = makeReactivityKeyWitness(name);
+    const apply = <Sub extends string | number>(sub: Sub) => parent.child(sub);
+    return Object.assign(apply, { key: parent }) as KeyFamily<Name>;
+  },
+  is: isReactivityKeyWitness,
+} as const;
 
 export interface ReactivityService {
   readonly invalidate: (keys: ReadonlyArray<ReactivityKey>) => Effect.Effect<void>;
@@ -130,4 +196,5 @@ export const Reactivity = {
   test,
   tracked,
   invalidating,
+  Key,
 } as const;

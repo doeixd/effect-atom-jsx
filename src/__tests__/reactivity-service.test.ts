@@ -103,6 +103,80 @@ describe("Reactivity service", () => {
     }
   });
 
+  it("accepts key witnesses in tracked/invalidating with string parity", () => {
+    const service = Effect.runSync(
+      Effect.service(Reactivity.ReactivityTag).pipe(Effect.provide(Reactivity.test)) as Effect.Effect<Reactivity.ReactivityService, never, never>,
+    );
+
+    const Users = Reactivity.Key.make("users");
+
+    const restore = installReactivityService(service);
+    try {
+      let runs = 0;
+      const atom = Atom.readable(() => {
+        runs += 1;
+        return Effect.runSync(Reactivity.tracked(Effect.sync(() => runs), { keys: [Users] }));
+      });
+
+      expect(atom()).toBe(1);
+      // invalidate by plain string: witness-tracked reads must still refresh
+      Effect.runSync(Reactivity.invalidating(Effect.void, ["users"]));
+      Effect.runSync(service.flush());
+      expect(atom()).toBe(2);
+      // invalidate by witness
+      Effect.runSync(Reactivity.invalidating(Effect.void, [Users]));
+      Effect.runSync(service.flush());
+      expect(atom()).toBe(3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("expands child witnesses to ancestors plus self, matching record-form semantics", () => {
+    const service = Effect.runSync(
+      Effect.service(Reactivity.ReactivityTag).pipe(Effect.provide(Reactivity.test)) as Effect.Effect<Reactivity.ReactivityService, never, never>,
+    );
+
+    const Users = Reactivity.Key.make("users");
+    const alice = Users.child("alice");
+    expect(alice.name).toBe("users:alice");
+    expect(alice.keys).toEqual(["users", "users:alice"]);
+
+    const restore = installReactivityService(service);
+    try {
+      // invalidating a child must notify a parent-key observer
+      Effect.runSync(Reactivity.invalidating(Effect.void, [alice]));
+      Effect.runSync(service.flush());
+      const keys = service.lastInvalidated ? Effect.runSync(service.lastInvalidated()) : [];
+      expect(keys).toEqual(["users", "users:alice"]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("derives family members and dedupes shared ancestors", () => {
+    const service = Effect.runSync(
+      Effect.service(Reactivity.ReactivityTag).pipe(Effect.provide(Reactivity.test)) as Effect.Effect<Reactivity.ReactivityService, never, never>,
+    );
+
+    const todo = Reactivity.Key.family("todo");
+    expect(todo(42).name).toBe("todo:42");
+    expect(todo.key.name).toBe("todo");
+    expect(Reactivity.Key.is(todo.key)).toBe(true);
+    expect(Reactivity.Key.is("todo")).toBe(false);
+
+    const restore = installReactivityService(service);
+    try {
+      // two members share the "todo" ancestor; it must appear once
+      Effect.runSync(Reactivity.invalidating(Effect.void, [todo(1), todo(2)]));
+      Effect.runSync(service.flush());
+      const keys = service.lastInvalidated ? Effect.runSync(service.lastInvalidated()) : [];
+      expect(keys).toEqual(["todo", "todo:1", "todo:2"]);
+    } finally {
+      restore();
+    }
+  });
+
   it("invalidates keys on successful Reactivity.invalidating mutations", () => {
     const service = Effect.runSync(
       Effect.service(Reactivity.ReactivityTag).pipe(Effect.provide(Reactivity.test)) as Effect.Effect<Reactivity.ReactivityService, never, never>,

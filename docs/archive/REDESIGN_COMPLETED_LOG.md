@@ -862,3 +862,29 @@ Extracted from docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md on 2026-07-06 (PR2 plan-d
 - Marked `docs/style2.md` and `docs/STYLE2_IMPLEMENTATION_PLAN.md` with historical notes directing readers to the unified `Style` API.
 - Confirmed all advanced CSS descriptors (nest, vars, media, supports, container, pseudo, grid, layers, animate, enter/exit) already live directly in `src/Style.ts` — no separate "Style2" system.
 
+
+### Reactivity Key Witnesses Slice 1 (2026-07-06)
+
+- Added branded key witnesses to the reactivity runtime
+  (`src/reactivity-runtime.ts`): `ReactivityKeyTypeId`,
+  `ReactivityKeyWitness<Name>`, `makeReactivityKeyWitness(...)`,
+  `isReactivityKeyWitness(...)`.
+- `ReactivityKeysInput` array form now accepts `string | ReactivityKeyWitness`;
+  `normalizeReactivityKeys(...)` expands witnesses to their ancestor chain +
+  self and dedupes preserving order.
+- Hierarchy semantics deliberately match the existing record-form convention
+  (`{ users: ["alice"] }` -> `["users", "users:alice"]`) for both tracking and
+  invalidation; sibling over-invalidation through the shared parent key is a
+  documented trade-off.
+- Public surface in `src/Reactivity.ts`: `Reactivity.Key.make(name)`,
+  `Reactivity.Key.family(name)` (callable member derivation + `.key` parent),
+  `Reactivity.Key.is(...)`, `KeyFamily<Name>`, `KeyNameOf<T>`, re-exported
+  `ReactivityKeyWitness`.
+- No signature changes needed in Atom/Component/AtomRpc/AtomHttpApi — they
+  already share `ReactivityKeysInput`. `Route.ts` still uses
+  `ReadonlyArray<string>` at loader option sites (slice 2).
+- Coverage: three new runtime tests (string/witness parity, child expansion,
+  family + ancestor dedupe) in `src/__tests__/reactivity-service.test.ts`;
+  new type tests in `src/type-tests/reactivity-keys.ts` (literal name
+  preservation, `KeyNameOf`, mixed witness/string inputs, rejection cases).
+- Validation: typecheck clean, 480 tests pass, build clean.
