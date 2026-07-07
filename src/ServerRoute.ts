@@ -397,7 +397,7 @@ export function find(
 }
 
 /** Execute a typed non-document server route with Schema-driven request decoding. */
-export function execute<T extends ServerRouteNode<any, any, any, any>>(
+export function execute<T extends AnyServerRouteNode>(
   route: T,
   request: Request,
   options?: { readonly layer?: import("effect").Layer.Layer<any> },
@@ -438,7 +438,7 @@ function createResponseService(): ResponseService {
  * instance per request. Build expensive app-lifetime services (DB pools, RPC
  * clients) once outside and merge them in instead of constructing them here.
  */
-export function executeWithServices<T extends ServerRouteNode<any, any, any, any>>(
+export function executeWithServices<T extends AnyServerRouteNode>(
   route: T,
   request: Request,
   responseService: ResponseService,
@@ -612,7 +612,7 @@ export function dispatchWithRuntime(
 }
 
 /** Execute a typed server route using request/response services from the environment. */
-export function executeFromServices<T extends ServerRouteNode<any, any, any, any>>(
+export function executeFromServices<T extends AnyServerRouteNode>(
   route: T,
 ): Effect.Effect<ExecuteResult<ResponseOf<T>>, unknown, any> {
   return Effect.gen(function* () {
