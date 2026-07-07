@@ -1,12 +1,22 @@
 # Result Consolidation Proposal
 
 Date: 2026-03-10
-Status: In progress (redesign track) — **release-blocking** as of the
-2026-07-06 design review (see `CURRENT_STATUS_IN_REDESIGN_PLAN.md`, Finding 5).
-The two-model seam is exactly where users trip; consolidation must finish
-before v1. In particular, `FetchResult.Failure` carries
-`error: E | { readonly defect: string }` — that untagged union is awkward to
-pattern-match and must not appear in any primary public signature.
+Status: **release-blocking core done 2026-07-07** (steps 0-1); remaining
+internal cleanup (step 2) reclassified as follow-up, not release-blocking.
+
+The two-model seam is where users trip. The release-blocking criterion was:
+golden-path-reachable surfaces emit unified `Result`, and the
+`error: E | { readonly defect: string }` union appears in no primary public
+signature. **Both are now met:** `Route.loaderResult()` and the
+`Route.title`/`meta` loader callbacks emit unified `Result` (converted at the
+loader-cache boundary via `FetchResult.toResult`), and a grep for
+`defect: string` across `Route.ts`/`Component.ts` public API returns nothing.
+`FetchResult` now survives only in internal machinery (the loader cache, the
+`SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, and
+`Atom.pull`) — server-adapter-facing, not golden-path app-author surfaces.
+Step 2 removes that internal usage entirely; it changes the SSR wire format
+(protected by the characterization tests added in step 0) and is best done as
+its own focused pass.
 
 ## Problem
 

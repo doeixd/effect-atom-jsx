@@ -163,7 +163,7 @@ backlog + archive log):
 | 2 | JSX-as-node golden path; builders demoted (Finding 2) | ✅ decided + docs corrected |
 | 3 | Attachment API consolidation (Finding 3) | ◑ deprecated legacy forms; **physical removal is a follow-up pass** |
 | 4 | Inference audit (Finding 4) | ✅ authored path proven generic-free |
-| 5 | Result consolidation (Finding 5) | ◑ audited + alias de-disguised; **~60-site routing/SSR migration is a dedicated pass w/ hydration tests** |
+| 5 | Result consolidation (Finding 5) | ✅ release-blocking core done (loaderResult + title/meta emit unified Result; no defect union on golden path); step-2 internal cache/wire cleanup is a non-blocking follow-up pass |
 | 6 | Typed-tree/claims sweep (Finding 6) | ✅ claims scoped in docs; typed-tree-by-default is v1.x per #2 |
 | 7 | Reactivity key witnesses (P2) | ✅ shipped end-to-end |
 | 8 | Routing consolidation (P6) | ◑ survivors decided + legacy deprecated in docs; **physical delete is a follow-up pass** |

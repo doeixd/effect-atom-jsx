@@ -973,3 +973,31 @@ Extracted from docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md on 2026-07-06 (PR2 plan-d
 - Verified: main typecheck green (schema type-tests in
   `type-tests/atom-family-schema.ts` still resolve to `Exit`-wrapped members),
   test-gate errors 23 -> 20, 484 tests + build green.
+
+### Finding-5 Result Consolidation, Release-Blocking Core (2026-07-07)
+
+Steps 0-1 of the RESULT_CONSOLIDATION_PROPOSAL migration.
+
+- **Step 0 (characterization):** added the missing end-to-end SSR wire
+  round-trip test (`server-render.test.ts`): renderRequest -> serializeLoaderData
+  -> deserializeLoaderData -> hydrateSingleFlightPayload -> first client render,
+  asserting the settled value survives. Existing tests passed loaderPayload
+  straight to hydrate, skipping the JSON wire step entirely. Also pinned the
+  current FetchResult wire shape (`route-loader.test.ts`) so step-2's format
+  change is an explicit, visible test update rather than a silent break.
+- **Step 1 (public surface -> unified Result):**
+  - `Route.loaderResult()` now returns unified `Result` (Loading/Refreshing/
+    Success/Failure/Defect), converting the internal SWR `FetchResult` cache
+    shape via `FetchResult.toResult` at the accessor boundary. Added a
+    deprecated `Route.loaderFetchResult()` compat accessor.
+  - `Route.title`/`Route.meta` loader callbacks: the 3rd `loaderResult` param
+    migrated FetchResult -> unified Result. Added `Route.toUnifiedLoaderResult`
+    shared by the tree-render and legacy-component head paths — which had
+    diverged: the legacy `Component.route` path passed a raw FetchResult to
+    head callbacks while the tree path did not. New test locks in the unified
+    shape (Success.value, no `waiting` field).
+- **Acceptance met:** grep for `defect: string` across `Route.ts`/`Component.ts`
+  public API returns nothing; golden-path loader surfaces emit unified Result.
+  FetchResult now survives only in internal machinery (cache, wire payloads,
+  orchestration, Atom.pull) = step-2 non-blocking cleanup.
+- 487 tests + typecheck + build green.
