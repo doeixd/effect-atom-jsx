@@ -80,3 +80,18 @@ export {
   type MutationEffectHandle,
   type MutationEffectOptions,
 } from "./effect-ts.js";
+
+// User-facing app entry points (mount + SSR). The compiler-internal DOM
+// helpers (template/insert/spread/…) stay in the `effect-atom-jsx/runtime`
+// subpath that babel-plugin-jsx-dom-expressions targets.
+export {
+  render,
+  renderWithHMR,
+  withViteHMR,
+  renderToString,
+  hydrateRoot,
+  isServer,
+  setRequestEvent,
+  type ViteHotContext,
+} from "./dom.js";
+export type { Accessor } from "./api.js";

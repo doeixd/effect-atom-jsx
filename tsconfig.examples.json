@@ -1,0 +1,25 @@
+{
+  "//": "Type-checks the examples/ against the source (via path mapping) so copy-first code stays valid. Run: npm run typecheck:examples. NOTE: JSX types are permissive (see src/jsx-runtime.ts) — this catches import/API errors, not per-attribute web typing yet.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "jsx": "preserve",
+    "jsxImportSource": "effect-atom-jsx",
+    "paths": {
+      "effect-atom-jsx": ["./src/index.ts"],
+      "effect-atom-jsx/jsx-runtime": ["./src/jsx-runtime.ts"],
+      "effect-atom-jsx/jsx-dev-runtime": ["./src/jsx-runtime.ts"],
+      "effect-atom-jsx/testing": ["./src/testing.ts"],
+      "effect-atom-jsx/runtime": ["./src/runtime.ts"],
+      "effect-atom-jsx/advanced": ["./src/advanced.ts"],
+      "effect-atom-jsx/internals": ["./src/internals.ts"],
+      "effect-atom-jsx/server": ["./src/server.ts"],
+      "effect-atom-jsx/router-runtime": ["./src/router-runtime.ts"],
+      "effect-atom-jsx/*": ["./src/*"]
+    }
+  },
+  "include": ["examples/**/*.ts", "examples/**/*.tsx"],
+  "exclude": ["node_modules", "dist"]
+}

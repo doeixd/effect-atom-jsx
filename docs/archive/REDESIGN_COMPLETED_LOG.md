@@ -1128,3 +1128,39 @@ contracts. Fixed as one theme (6th + follow-on bugs from the test gate):
 Net: test-gate 16 → 9; all remaining errors are non-SlotContract (P6 routing
 overloads, `withRetry` union source, validation strictness, `componentOf`
 standalone RouteContext). Standard gates green (typecheck, 487 tests, build).
+
+### Security XSS Fix + JSX Types + Example Typecheck Gate (2026-07-07)
+
+Pre-release hardening (from the readiness scrutiny).
+
+- **SSR script-injection XSS (release-blocker) — FIXED.** `serializeLoaderData`
+  and `streamDeferredLoaderScripts` embedded `JSON.stringify` output into
+  `<script>` tags with no escaping. `JSON.stringify` does not escape
+  `</script>`, `<`, `>`, `&`, or U+2028/U+2029, so user-controlled loader data
+  containing `</script>` could break out → stored XSS. Now escapes to valid
+  JSON `\uXXXX` sequences (script-safe AND round-trips via `JSON.parse`).
+  Regression test in `route-loader.test.ts`.
+- **JSX types (real consumer gap) — ADDED.** The library shipped NO JSX type
+  infrastructure: no `jsx-runtime` module, no `JSX.IntrinsicElements`. Source
+  is all `.ts`, so the main typecheck never needed it, but consumers'
+  `jsxImportSource: effect-atom-jsx` JSX was untyped. Added `src/jsx-runtime.ts`
+  (permissive-but-present `JSX` namespace + `jsx`/`jsxs`/`Fragment`) and wired
+  `./jsx-runtime` + `./jsx-dev-runtime` package exports. Full per-element web
+  attribute typing is a scoped follow-up.
+- **Real export bug — FIXED.** `render` (and `renderWithHMR`/`renderToString`/
+  `hydrateRoot`/`isServer`/`setRequestEvent`/`withViteHMR`/`ViteHotContext`/
+  `Accessor`) were not re-exported from the top-level index, but the README
+  quick start does `import { render } from "effect-atom-jsx"` — the first
+  component example didn't compile. Now re-exported (user-facing app entry
+  points; compiler-internal DOM helpers stay in `/runtime`).
+- **Example typecheck gate — ADDED.** `tsconfig.examples.json` +
+  `npm run typecheck:examples` (path-maps the package to `./src`). Surfaced
+  that the 16 example apps had drifted badly: 435 errors → 302 were the JSX
+  stub being too strict (fixed) → real drift is **115** after the export fixes.
+  Remaining are genuine per-example content migration (old imports:
+  `Registry` now a subpath, `AsyncResult`→`Result`, `mutationEffect` removed;
+  `unknown` reactive reads needing annotations; event-param types). That is a
+  dedicated per-example pass — each app needs API updates AND runtime
+  verification, not just typecheck-passing — scoped as follow-up.
+
+Standard gates green (typecheck, 488 tests, build incl. dist/jsx-runtime).

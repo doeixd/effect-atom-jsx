@@ -14,6 +14,14 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./jsx-runtime": {
+      "import": "./dist/jsx-runtime.js",
+      "types": "./dist/jsx-runtime.d.ts"
+    },
+    "./jsx-dev-runtime": {
+      "import": "./dist/jsx-runtime.js",
+      "types": "./dist/jsx-runtime.d.ts"
+    },
     "./runtime": {
       "import": "./dist/runtime.js",
       "types": "./dist/runtime.d.ts"
@@ -152,6 +160,7 @@
     "bench": "vitest bench --run",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
+    "typecheck:examples": "tsc --noEmit -p tsconfig.examples.json",
     "prepack": "npm run build"
   },
   "dependencies": {
