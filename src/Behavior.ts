@@ -169,6 +169,14 @@ export function decorator<Elements, Bindings, Req, E>(
   return (component, attach) => component.pipe(attach(behavior));
 }
 
+/**
+ * @deprecated Legacy attachment form (selector-function based). The
+ * consolidated surface is exactly three forms:
+ * `Behavior.attachToSlots(behavior, slots)` (authored, contract-keyed),
+ * `Behavior.attachBySlotContract(behavior, remap)` (typed remapping), and
+ * `Behavior.attachBySlots(behavior, stringMap)` (dynamic/generated). Will be
+ * removed from the public surface in the v1 consolidation pass.
+ */
 export function attach<Elements, AddedBindings, BR, BE, Props, Req, E, Bindings>(
   behavior: Behavior<Elements, AddedBindings, BR, BE>,
   options: {

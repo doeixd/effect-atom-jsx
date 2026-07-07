@@ -542,7 +542,7 @@ export function override<T extends Overrides>(overrides: T): T {
   return overrides;
 }
 
-export function attach<S extends string>(
+function attachToBindingSlotsImpl<S extends string>(
   style: ComposedStyle<S>,
 ): <
   Props,
@@ -577,7 +577,18 @@ export function attach<S extends string>(
     })) as any;
 }
 
-export function attachByView<S extends string>(
+/**
+ * @deprecated Legacy attachment form (pre-slot-contract). The consolidated
+ * surface is exactly three forms: `Style.attachToSlots(style, slots)`
+ * (authored, contract-keyed), `Style.attachBySlotContract(style, remap)`
+ * (typed remapping), and `Style.attachBySlots(style, stringMap)`
+ * (dynamic/generated). This form relies on the deprecated `bindings.slots`
+ * convention and will be removed from the public surface in the v1
+ * consolidation pass.
+ */
+export const attach = attachToBindingSlotsImpl;
+
+function attachByViewImpl<S extends string>(
   style: ComposedStyle<S>,
 ): <C extends Component.Component<any, any, any, any, any>>(
   component: Component.SlotsOf<C> extends { readonly [K in S]: Element.Handle | Element.Collection<Element.Handle> }
@@ -604,6 +615,16 @@ export function attachByView<S extends string>(
   }) as any;
 }
 
+/**
+ * @deprecated Legacy attachment form (pre-slot-contract). The consolidated
+ * surface is exactly three forms: `Style.attachToSlots(style, slots)`
+ * (authored, contract-keyed), `Style.attachBySlotContract(style, remap)`
+ * (typed remapping), and `Style.attachBySlots(style, stringMap)`
+ * (dynamic/generated). Will be removed from the public surface in the v1
+ * consolidation pass.
+ */
+export const attachByView = attachByViewImpl;
+
 export function attachBySlots<
   S extends string,
   Props,
@@ -624,7 +645,7 @@ export function attachBySlots<
     const componentSlot = map[styleSlot];
     mappedSlots[String(componentSlot)] = style.slots[String(styleSlot) as S];
   }
-  return attach(make(mappedSlots));
+  return attachToBindingSlotsImpl(make(mappedSlots));
 }
 
 export function attachBySlotContract<
@@ -647,7 +668,7 @@ export function attachBySlotContract<
     const componentSlot = map[styleSlot];
     mappedSlots[componentSlot.name] = style.slots[String(styleSlot) as S];
   }
-  return attach(make(mappedSlots));
+  return attachToBindingSlotsImpl(make(mappedSlots));
 }
 
 export function attachToSlots<S extends SlotContractInput>(
@@ -658,7 +679,7 @@ export function attachToSlots<S extends SlotContractInput>(
     ? C
     : never,
 ) => C {
-  return attachByView(style) as any;
+  return attachByViewImpl(style) as any;
 }
 
 export function attachToAllWithCapability<C extends View.SlotCapability>(

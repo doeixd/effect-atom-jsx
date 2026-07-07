@@ -629,7 +629,7 @@ The `Element.*` constructors define what capability a slot needs (is it interact
 - `Behavior.forSlots(slots)(run)` — define authored behavior over a `View.Slots` contract
 - `Behavior.compose(a, b, ...)` — merge multiple behaviors into one
 - `Behavior.decorator(behavior)` — behavior that wraps another
-- `Behavior.attach(behavior, { select, merge? })` — low-level attach using a selector function
+- `Behavior.attach(behavior, { select, merge? })` — **deprecated** legacy selector-function attach; the consolidated surface is `attachToSlots` (authored) / `attachBySlotContract` (typed remap) / `attachBySlots` (dynamic string map)
 - `Behavior.attachToSlots(behavior, slots)` — attach authored behavior to the same slot contract
 - `Behavior.attachBySlotContract(behavior, elementMap, merge?)` — typed remapping through slot contracts
 - `Behavior.attachBySlots(behavior, elementMap, merge?)` — dynamic/generated string-map wiring
@@ -706,7 +706,7 @@ Typed style composition that treats CSS as data. Styles are assembled as structu
 - `Style.forSlots(slots)` — create an authored style map over a `View.Slots` contract
 - `Style.attachToSlots(style, slots)` — attach authored styles to the same slot contract
 - `Style.attachBySlotContract(style, map)` — typed remapping through slot contracts
-- `Style.attach` — low-level attach using explicit selection
+- `Style.attach` — **deprecated** legacy attach (pre-slot-contract, `bindings.slots` convention); the consolidated surface is `attachToSlots` (authored) / `attachBySlotContract` (typed remap) / `attachBySlots` (dynamic string map). `Style.attachByView` is deprecated on the same grounds.
 - `Style.attachBySlots` — dynamic/generated string-map wiring
 - `Style.attachBySlotsFor<Bindings>()` — compatibility helper for binding-slot maps
 - `Style.validateComponentAttachment(style, component, props)` — render a component View and validate style slot targets against its metadata
