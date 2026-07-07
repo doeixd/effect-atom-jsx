@@ -690,7 +690,7 @@ export function renderEffect<Props, Req, E, Bindings, SlotContract>(
 export function renderViewEffect<Props, Req, E, Bindings, Slots>(
   component: Component<Props, Req, E, Bindings, Slots>,
   propsValue: Props,
-): Effect.Effect<View.View<Slots> | undefined, E, Req> {
+): Effect.Effect<View.View<View.NormalizeSlots<Slots>> | undefined, E, Req> {
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
   return i.setup(parsed).pipe(
@@ -702,7 +702,8 @@ export function renderViewEffect<Props, Req, E, Bindings, Slots>(
         : i.view(parsed, bindings);
       if (!View.isView(result)) return undefined;
       registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
-      return result as View.View<Slots>;
+      // Runtime slots are the handle map; NormalizeSlots aligns the type.
+      return result as unknown as View.View<View.NormalizeSlots<Slots>>;
     }),
   );
 }

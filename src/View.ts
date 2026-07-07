@@ -68,6 +68,15 @@ export type SlotMetadataMap<Slots> = {
   readonly [K in keyof Slots & string]?: SlotMetadata<K>;
 };
 
+/**
+ * Project a slot type to its runtime handle-map form. A `View.Slots` witness
+ * collection (authored contract) normalizes to its `HandlesOf<...>` handle
+ * map; a plain handle map passes through unchanged. Use this wherever a
+ * `SlotContract`-axis type reaches `View<Slots>` (which is keyed by slot name
+ * → handle at runtime), so witness-collection contracts and handle maps agree.
+ */
+export type NormalizeSlots<S> = S extends Slots.Any ? Slots.HandlesOf<S> : S;
+
 export interface SlotRemap<Slots = Record<string, unknown>> {
   readonly source: keyof Slots & string;
   readonly target: keyof Slots & string;
