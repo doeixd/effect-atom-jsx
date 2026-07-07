@@ -957,3 +957,19 @@ Extracted from docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md on 2026-07-06 (PR2 plan-d
   `Atom.family(fn)` and `Atom.family(fn, { equals })` mis-resolve. Fix needs
   careful overload reordering that preserves the schema-exit return type;
   scoped with the Finding-3/P6 test-migration pass.
+
+### Atom.family Overload Bug Fix (2026-07-07)
+
+- Root cause: `Atom.family` had only ONE visible overload (the schema
+  variant); the plain signature was the (hidden) implementation signature, so
+  external callers had no plain overload to match. `family(fn)` failed with
+  "Expected 2 arguments" and `family(fn, { equals })` failed (missing
+  `schema`). Runtime was fine — types only — which is why the standard gate
+  (tests excluded) stayed green.
+- Fix: added the plain signature as a proper visible overload, ordered first,
+  with the schema overload second; a `{ schema }` object literal fails the
+  plain overload's excess-property check and falls through. Implementation
+  unchanged.
+- Verified: main typecheck green (schema type-tests in
+  `type-tests/atom-family-schema.ts` still resolve to `Exit`-wrapped members),
+  test-gate errors 23 -> 20, 484 tests + build green.

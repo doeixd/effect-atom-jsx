@@ -571,6 +571,13 @@ const familyPath = <T>(root: FamilyNode<T>, args: ReadonlyArray<unknown>, create
   return node;
 };
 
+// Plain overload first so `family(fn)` and `family(fn, { equals })` resolve to
+// it; a `{ schema }` object literal fails this overload's excess-property check
+// and falls through to the schema overload below.
+export function family<Args extends ReadonlyArray<unknown>, T>(
+  f: (...args: Args) => T,
+  options?: FamilyOptions<Args, T>,
+): Family<Args, T>;
 export function family<Args extends ReadonlyArray<unknown>, T, A>(
   f: (...args: Args) => ReadonlyAtom<T, any, any>,
   options: FamilySchemaOptions<Args, T, A>,
