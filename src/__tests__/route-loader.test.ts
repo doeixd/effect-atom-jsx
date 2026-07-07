@@ -119,6 +119,40 @@ describe("Route loader", () => {
     expect(roundTrip.r3).toEqual({ _tag: "Success", value: [1, 2, 3], waiting: false, timestamp: 5 });
   });
 
+  // ── Security: SSR loader data must not break out of a <script> tag (XSS).
+  it("escapes HTML-unsafe chars in serialized loader data (script-injection safety)", () => {
+    const hostile = "</script><script>alert(1)</script>";
+    const payload = [
+      { routeId: "r1", result: { _tag: "Success", value: { html: hostile, amp: "a&b", lt: "1<2>0" }, waiting: false, timestamp: 1 } as any },
+    ];
+
+    // serializeLoaderData: no literal `</script>` (or raw < > &) survives...
+    const wire = Route.serializeLoaderData(payload);
+    expect(wire).not.toContain("</script>");
+    expect(wire).not.toContain("<");
+    expect(wire).not.toContain(">");
+    expect(wire.includes("\\u003c")).toBe(true);
+    // ...but it still round-trips to the exact original value.
+    expect(Route.deserializeLoaderData(wire).r1).toEqual(payload[0].result);
+
+    // streamDeferredLoaderScripts: the embedded <script> body is injection-safe.
+    const scripts = Route.streamDeferredLoaderScripts(payload);
+    const body = scripts[0]!.replace(/^<script>/, "").replace(/<\/script>$/, "");
+    expect(body).not.toContain("</script>");
+    expect(body).not.toContain("<script>");
+
+    // line separators U+2028/U+2029 (valid JSON, invalid JS) are also escaped.
+    const u2028 = String.fromCharCode(0x2028);
+    const u2029 = String.fromCharCode(0x2029);
+    const sepValue = `a${u2028}b${u2029}c`;
+    const sepWire = Route.serializeLoaderData([
+      { routeId: "r2", result: { _tag: "Success", value: sepValue, waiting: false, timestamp: 1 } as any },
+    ]);
+    expect(sepWire).not.toContain(u2028);
+    expect(sepWire).not.toContain(u2029);
+    expect((Route.deserializeLoaderData(sepWire).r2 as any).value).toBe(sepValue);
+  });
+
   it("supports critical/deferred streaming navigation batches", () => {
     const Critical = Component.from<{}>(() => null).pipe(
       Component.route("/stream/users/:userId", { params: Schema.Struct({ userId: Schema.String }) }),
