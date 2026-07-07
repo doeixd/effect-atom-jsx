@@ -1,0 +1,94 @@
+# effect-atom-jsx
+
+> Effect-native fine-grained reactive JSX runtime: callable atoms, typed async
+> `Result` state, semantic key-based reactivity, and the inside-out AF-UI
+> component model (slot contracts + external style/behavior attachment), plus a
+> schema-first router, single-flight mutations, and SSR/hydration. Built on
+> Effect v4.
+
+This file orients LLMs generating or reviewing effect-atom-jsx code. The API is
+unusual; do **not** assume React/Tailwind/Zustand patterns. The compiler is
+strict — invalid slots, tokens, capabilities, and unprovided services are
+compile errors, which is the point: generated code that guesses wrong fails to
+compile rather than misbehaving at runtime.
+
+## Core mental model
+
+- **Atoms** are callable: `count()` reads, `count.set(1)` / `count.update(fn)`
+  write. No hooks, no provider wrapper, no `Registry` in the golden path.
+- **Async** is one tagged union `Result<A, E>` everywhere (Loading /
+  Refreshing / Success / Failure / Defect). Render with `Result.builder(...)`
+  or `<Async>`. Never invent an `isLoading` boolean.
+- **Services** are Effect layers. Requirements live on the `R`/`Req` type axis;
+  providing a layer subtracts from it. Forgetting a provider is a compile
+  error. See `docs/SERVICES_AND_LAYERS.md`.
+- **Reactivity** is semantic: invalidate a *key*, not an atom reference. Keys
+  are witnesses (`Reactivity.Key.make("users")`), shared by the tracked read
+  and the invalidating write.
+- **AF-UI components** publish a **slot contract**; styles and behaviors attach
+  from *outside* against that contract, checked at compile time. JSX is the
+  authored markup; `View.fromSlots(slots, <jsx/>)`.
+
+## Golden-path snippets (current, correct API)
+
+```ts
+// State
+const count = Atom.make(0);
+count.update((n) => n + 1);
+
+// Async + reactivity, one shared key witness
+const Users = Reactivity.Key.make("users");
+const runtime = Atom.runtime(Layer.mergeAll(ApiLive, Reactivity.live));
+const users = runtime.atom(() => api.listUsers());          // ReadonlyAtom<Result<User[], E>>
+const addUser = runtime.action((n: string) => api.addUser(n), { reactivityKeys: [Users] });
+
+// AF-UI component (slot contract + JSX)
+const FieldSlots = View.Slots.define({
+  root:  { capability: Element.Capability.Container },
+  input: { capability: Element.Capability.TextInput, allowedEvents: [View.Event.Input] },
+});
+const Field = Component.make(
+  Component.props<{ label: string }>(),
+  Component.require<never>(),
+  () => Effect.succeed({}),
+  (props) => View.fromSlots(FieldSlots, <label>{props.label}<input /></label>),
+).pipe(Component.withSlots(FieldSlots));
+
+const Styled = Field.pipe(
+  Style.attachToSlots(Style.forSlots(FieldSlots)({ input: Style.slot({ padding: "sm" }) }), FieldSlots),
+);
+
+// Mount (one composition root feeds both worlds)
+Component.mount(App, { props: {}, target: el, runtime });   // or { ..., layer: AppLayer }
+```
+
+## Renamed / removed — do NOT emit these (they are gone or deprecated)
+
+| Wrong / old | Correct |
+|---|---|
+| `ServerRoute.make("json")` | `ServerRoute.json()` |
+| `ServerRoute.bodySchema(s)` / `.handler(fn)` | `ServerRoute.body(s)` / `.handle(fn)` |
+| `AsyncResult` | `Result` (unified); `FetchResult` is compat-only |
+| `Atom.fn(...)`, `runtime.fn(...)` | `Atom.action(...)`, `runtime.action(...)` |
+| `Atom.batch(...)` | microtask batching is automatic; `flush()` is the escape hatch |
+| `signal(...)` / `computed(...)` OO facade | callable atoms; `Atom.make`, `Atom.derived` |
+| `Style.attach` / `Style.attachByView` / `Behavior.attach` | `attachToSlots` (authored) / `attachBySlotContract` (typed remap) / `attachBySlots` (dynamic) |
+| `View.Slot.make` x N + `Slot.bind` map (verbose) | `View.Slots.define({ name: { capability } })` |
+| hand-written `View.element(...)` trees as authored surface | JSX via `View.fromSlots(slots, <jsx/>)` |
+| top-level `Registry` import | `effect-atom-jsx/Registry` (advanced) |
+| reactivity string keys as the authored path | `Reactivity.Key.make/family(...)` witnesses (strings still work as escape hatch) |
+
+## When NOT to use this
+
+Not for: teams not investing in Effect; needs a mature component catalog today;
+small static sites / throwaway prototypes. It *does* support incremental
+adoption inside an existing app and SSR.
+
+## Where to read more
+
+- `README.md` — quick start, all subsystems
+- `docs/afui.md` — the inside-out model narrative (components/style/behavior/runtime/routing)
+- `docs/SLOT_CONTRACT_GOLDEN_PATH.md` — authored component shape + cheap tier
+- `docs/SERVICES_AND_LAYERS.md` — DI, provision tiers, request scoping
+- `docs/API.md` — API reference
+- `docs/V1_SCOPE.md` — what v1 ships vs. defers

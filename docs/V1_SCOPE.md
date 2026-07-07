@@ -154,23 +154,28 @@ Everything here is implemented today or is tracked release-blocking work.
 
 ## Release-blocking summary
 
-From findings/proposals, exactly these gate v1:
+Status as of 2026-07-07 (details in `CURRENT_STATUS_IN_REDESIGN_PLAN.md`
+backlog + archive log):
 
-1. Golden-path compression + cheap tier (Finding 1)
-2. JSX-as-node golden path documented; builders demoted (Finding 2 — per
-   decision above)
-3. Attachment API consolidation (Finding 3)
-4. Inference audit (Finding 4)
-5. Result consolidation (Finding 5)
-6. Typed-tree/claims sweep (Finding 6)
-7. Reactivity key witnesses (P2)
-8. Routing consolidation (P6)
-9. Docs/archive alignment (PR2) + green quality gates
-10. Services/layers: S1 composition-root decision resolved,
-    `SERVICES_AND_LAYERS.md` shipped, request-isolation test green (S2/S3)
+| # | Item | Status |
+|---|---|---|
+| 1 | Golden-path compression + cheap tier (Finding 1) | ✅ `View.Slots.define` + cheap tier shipped, golden path ~15 lines |
+| 2 | JSX-as-node golden path; builders demoted (Finding 2) | ✅ decided + docs corrected |
+| 3 | Attachment API consolidation (Finding 3) | ◑ deprecated legacy forms; **physical removal is a follow-up pass** |
+| 4 | Inference audit (Finding 4) | ✅ authored path proven generic-free |
+| 5 | Result consolidation (Finding 5) | ◑ audited + alias de-disguised; **~60-site routing/SSR migration is a dedicated pass w/ hydration tests** |
+| 6 | Typed-tree/claims sweep (Finding 6) | ✅ claims scoped in docs; typed-tree-by-default is v1.x per #2 |
+| 7 | Reactivity key witnesses (P2) | ✅ shipped end-to-end |
+| 8 | Routing consolidation (P6) | ◑ survivors decided + legacy deprecated in docs; **physical delete is a follow-up pass** |
+| 9 | Docs/archive alignment (PR2) + green gates | ◑ log + fully-historical docs archived; exploratory-doc sweep remains; gates green |
+| 10 | Services/layers S1/S2/S3 | ✅ mount-with-runtime shipped, guide shipped, isolation test green |
 
-Everything else is v1.x or later. If the list above proves too large, cut
-from the bottom of this list, not by re-adding deferred features.
+Remaining release-blocking work is concentrated in **three dedicated passes**
+(each too large/risky to fold into feature work): (a) Finding-5 Result
+migration across routing/SSR/single-flight with hydration round-trip tests;
+(b) Finding-3 + P6 physical deprecate-and-delete after example/test migration;
+(c) PR2 exploratory-doc archive sweep with link updates. Everything else in
+this list is done. Do not cut by re-adding deferred features.
 
 ## Update rule
 

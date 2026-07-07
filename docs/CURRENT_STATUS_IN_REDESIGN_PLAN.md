@@ -617,7 +617,7 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Plan-doc consolidation sweep (PR2): **partially done 2026-07-06** — completed-work log (~860 lines) extracted to `docs/archive/REDESIGN_COMPLETED_LOG.md` with a high-level summary left in place; `BINDINGS_VS_SLOTS_REFACTOR.md`, `style2.md`, `STYLE2_IMPLEMENTATION_PLAN.md` moved to `docs/archive/` (no live inbound links). Remaining: the "older exploratory" docs (`view.md`, `router.md`, `style.md`, `composables.md`, `renderer.md`, `platform.md`, and similar) still carry historical-note banners but are linked from live docs — move them only with a reference-updating pass.
 - [ ] Perf benchmark harness in CI (PR3): js-framework-benchmark subset + style-update microbenchmark with regression threshold.
 - [ ] Compile-error engineering (D1): **first slice landed 2026-07-06** — `View.TypeErrorMessage<Message>` branded diagnostic; `View.BindableHandle<S, H>` (now exported) resolves invalid bindings to a readable message (`Handle capability 'Container' does not satisfy slot 'input' capability 'TextInput'`) instead of `never`; compile-time error-text snapshots in `src/type-tests/slots-define.ts` assert the exact message plus hierarchy-aware acceptance. Remaining: apply the same `TypeErrorMessage` treatment to attachment (`attachToSlots` capability/event mismatches) and remap boundaries.
-- [ ] AI-assistant guidance artifact (D2): consumer-facing `llms.txt`/agent skill with golden path, current names, and wrong-old-names table.
+- [x] AI-assistant guidance artifact (D2): **first slice landed 2026-07-07** — `llms.txt` at repo root with the core mental model, correct golden-path snippets, and a renamed/removed "do not emit" table (the type-checked-generation-as-a-feature framing from F4). Remaining: publish/package as an agent skill and keep versioned with the API.
 - [ ] Scaffolding (D3): `create-af-ui` starter + slot-contract component generator.
 - [ ] A11y pattern contracts (P8): pattern-level slot/behavior contracts validated via the P3 diagnostics pipeline.
 - [ ] Forms vertical (P9): `Form` module composing schema fields, actions, optimistic, single-flight, and server validation errors.
@@ -726,37 +726,67 @@ compile-time teeth when P2 key witnesses land.)
   contract path, component slot axes are collapsed to `SlotContract`, typed
   style/behavior attachment is standardized, and declared-vs-rendered
   diagnostics are explicit-only.
-- Next focus areas:
-  - Execute the design-review ergonomics workstream (see "Design Review
-    Findings (2026-07-06)" above), in priority order:
-    1. Golden-path compression + cheap tier for one-off structure (Finding 1)
-    2. Witness-aware JSX authoring for typed trees (Finding 2)
-    3. Attachment API consolidation before release (Finding 3)
-    4. Inference audit — no explicit generics in authored code (Finding 4)
-    5. Result consolidation completion as release-blocking (Finding 5)
-    6. Typed-tree-by-default and type-safety claims sweep (Finding 6)
-  - Start the round-2 improvement proposals (see "Design Improvement
-    Proposals (2026-07-06, round 2)"), beginning with:
-    1. Reactivity key witnesses (P2) — small, high value
-    2. Behavior binding contracts + state-aware styling (P1)
-    - P6 (routing consolidation) and P7 (package boundary) should be decided
-      before v1 even if implementation lands later; P3-P5 can follow.
-  - Round-3 process/DX items (see "Design Improvement Proposals (2026-07-06,
-    round 3)"):
-    - PR1 first: review/ratify `docs/V1_SCOPE.md` and use it to triage
-      everything else.
-    - PR2 (plan-doc archive sweep) and D1 (compile-error engineering) are the
-      next cheapest high-leverage items; P10 needs only a short design note
-      before the renderer contract hardens.
-  - Services & layers (S1-S4): S1's composition-root doc note and S2's
-    `SERVICES_AND_LAYERS.md` are pure docs work and can land immediately;
-    S3 needs one isolation test alongside the docs; the S1 DECIDE
-    (mount-accepts-runtime) should be resolved with V1_SCOPE ratification.
-  - Foldkit takeaways (F1-F7): F6 (honest "when not to use" docs) is cheap
-    and immediate; F3/F4/F5/F7 are amendments to fold in when P5/D2/P1/P8
-    are picked up; P12 (gated subscriptions) is a small standalone API win;
-    P11 (devtools + MCP) stays post-v1 but should be designed against the
-    Registry/Reactivity data model before the runtime surface freezes.
+### "Finish the plan" execution pass (2026-07-06/07)
+
+Under an explicit directive to finish the plan (complete/documented/tested/
+hardened), the following landed in one push (commits `c013264`..`64cf627`+):
+
+- **All V1_SCOPE DECIDE markers resolved and the doc ratified** (Finding 2
+  JSX-as-node, P6 routing survivors, P1 deferral, P7 single-package, S1
+  mount-accepts-runtime, P12 v1.x, P13 boundary subset). See `V1_SCOPE.md`.
+- **Finding 1** — `View.Slots.define` compression + cheap no-contract tier;
+  golden path down to ~15 lines; docs/README/afui migrated. **Done.**
+- **Finding 2** — decided (JSX is the authored surface; builders demoted);
+  golden-path docs corrected. **Done for v1.**
+- **Finding 4** — authored path proven to need zero explicit generics
+  (`type-tests/slots-define.ts`); doc/example generic sites fixed. **Done.**
+  Also surfaced: `src/__tests__` is outside the typecheck gate (~40 latent
+  errors) — logged as a hardening TODO.
+- **D1** — `View.TypeErrorMessage` + exported `BindableHandle` give readable
+  branded compile errors for bad slot bindings, with error-text snapshots.
+  **First slice done.**
+- **Finding 3** — legacy `attach`/`attachByView` deprecated with migration
+  JSDoc; canonical paths emit no deprecation noise. **Demotion done;**
+  physical removal deferred to a consolidation pass.
+- **Finding 5** — audited; **corrected a mis-belief** (routing/SSR still on
+  `FetchResult`, disguised by a local `Result` alias, leaking the defect
+  union); de-disguised the alias. **Migration scoped as a dedicated pass**
+  (must ship with hydration round-trip tests — wire-format risk).
+- **P2** — reactivity key witnesses shipped end-to-end (both slices).
+- **S1/S2/S3/S4** — mount-with-runtime, `SERVICES_AND_LAYERS.md`, server
+  request-scoping fix + isolation test, reactive-participant doctrine. Found
+  and fixed a real bug: `ServerRoute.dispatch({ layer })` dropped the layer
+  for data routes.
+- **F6** — "when not to use this" in README/README.new/afui.
+- **D2** — `llms.txt` first slice.
+- **PR2** — completed-work log + fully-historical docs archived.
+
+### What remains (honest state)
+
+Three **dedicated passes** — each too large/risky to fold into feature work,
+all release-blocking:
+
+1. **Finding-5 Result migration** (~60 sites across routing/SSR/single-flight/
+   `Atom.pull`). Blocked on: needs hydration round-trip + serialize/deserialize
+   tests because the model is on the SSR wire (silent-failure mode). Plan in
+   `RESULT_CONSOLIDATION_PROPOSAL.md`.
+2. **Finding-3 + P6 physical deprecate-and-delete** (legacy attach forms,
+   legacy route service generation). Blocked on: migrating the tests and
+   behavior-pack/example call sites that still use them first.
+3. **PR2 exploratory-doc archive sweep** with inbound-link updates
+   (`view.md`, `router.md`, `style.md`, `composables.md`, `renderer.md`,
+   `platform.md`).
+
+Plus the **test-typecheck gate** hardening (add the gate, burn down the ~40
+latent errors) — `tsconfig.tests-check.json` is in-repo as the checking config.
+
+### Then: v1.x proposals (not release-blocking)
+
+  - Round-2/3 proposals P1, P3–P5, P8–P13 and Foldkit F1–F7 amendments — see
+    their sections above. Suggested first: P2 is done, so P1 (behavior
+    binding contracts + state-aware styling, now with F5's out-event axis)
+    and P11 (devtools + MCP, design against Registry/Reactivity before the
+    runtime surface freezes).
   - Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence):
     - Continue migrating selected examples/guides to the setup builder where it improves readability.
     - Continue migrating consumers toward the new `Atom<A, E, R>` metadata instead of result-wrapper-only extraction.
