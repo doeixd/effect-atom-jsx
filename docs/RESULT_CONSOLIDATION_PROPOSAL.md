@@ -1,7 +1,12 @@
 # Result Consolidation Proposal
 
 Date: 2026-03-10
-Status: In progress (redesign track)
+Status: In progress (redesign track) — **release-blocking** as of the
+2026-07-06 design review (see `CURRENT_STATUS_IN_REDESIGN_PLAN.md`, Finding 5).
+The two-model seam is exactly where users trip; consolidation must finish
+before v1. In particular, `FetchResult.Failure` carries
+`error: E | { readonly defect: string }` — that untagged union is awkward to
+pattern-match and must not appear in any primary public signature.
 
 ## Problem
 
@@ -55,6 +60,14 @@ Defects remain explicit in unified `Result` (`Defect`).
 3. Re-export former `Result` module as `FetchResult` for transition.
 4. Rewrite docs to teach unified `Result` in primary flows.
 5. Complete source/doc rename sweep to remove stale `AsyncResult` terminology.
+6. Finish the remaining migration (release-blocking):
+   - audit all primary surfaces (loaders, `Route.loaderResult`, queries,
+     actions, runtime snapshots, hydration payloads) so they emit unified
+     `Result` only
+   - confine `FetchResult` to the compatibility subpath; no primary API accepts
+     or returns it
+   - remove the `E | { defect: string }` union from any signature reachable
+     from the golden path (defects stay explicit via unified `Result.Defect`)
 
 ## Open Questions
 

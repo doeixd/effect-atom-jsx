@@ -78,3 +78,22 @@ const StyledField = Field.pipe(
   same contract.
 - Direct `slotMetadata` and string slot maps are low-level dynamic/generated
   APIs, not the authored golden path.
+
+## Known Ergonomic Debt (2026-07-06 design review)
+
+The example above is correct but too expensive: ~40 lines for a labeled text
+field, before any real logic. This is acceptable for design-system components
+that need a published override surface, but it is the wrong cost for one-off
+app UI. Tracked work (see `CURRENT_STATUS_IN_REDESIGN_PLAN.md`, Findings 1-3,
+and `SLOT_WITNESS_PLAN.md` follow-up slices 9-11):
+
+- Compress this example to roughly 15 lines with contract-inferring sugar
+  (setup-time slot allocation, a contract-first constructor, or both) without
+  losing `Component.SlotContractOf<T>` precision.
+- Replace hand-written `View.element(...)` tree building with witness-aware
+  JSX as the authored surface; the builder calls become the generated layer.
+- Offer a documented cheap tier: private components with no published contract
+  should pay zero slot ceremony.
+
+Until that lands, treat this page as the shape of the contract, not the final
+ergonomics.

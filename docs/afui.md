@@ -51,7 +51,7 @@ In this model:
 2. **Behaviors attach interaction** to those slots (event handlers, ARIA, state).
 3. **Styles attach appearance** to those slots (colors, spacing, layout, typography).
 4. **Both compose from outside** the view through piped transformations, keyed by the same slot contract.
-5. **Everything is type-safe** — attaching to a slot that doesn't exist, or requiring an event a slot doesn't allow, is a compile-time error (with runtime diagnostics as a second line of defense).
+5. **The boundaries are type-safe** — attaching to a slot that doesn't exist, or requiring an event a slot doesn't allow, is a compile-time error (with runtime diagnostics as a second line of defense). Slot contracts, attachments, tokens, and capability/platform checks are enforced today; the view body between slots carries typed tree metadata where authored, with full typed-tree-by-default still in progress.
 
 ## The Effect Influence
 

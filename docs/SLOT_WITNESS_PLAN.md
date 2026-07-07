@@ -750,7 +750,32 @@ the canonical model:
    - `View.children(...)` remains the dynamic children hole helper.
    - Type coverage proves transforms preserve `View.SlotsOf<T>`.
    - Runtime coverage proves transforms do not change `View.node(...)` unwrapping.
-9. Execute slot contract unification: **Complete for current contract path**
+9. Golden-path compression (from the 2026-07-06 design review): **Open, highest priority**
+   - The authored Field example currently costs ~40 lines before any logic.
+     Target is ~15 lines with the contract intact.
+   - Implement contract-inferring sugar so authoring does not require three
+     `View.Slot.make` calls plus `View.Slots.make` plus `Component.withSlots`
+     as separate steps. Candidates already sketched in this plan:
+     `Component.slots(FieldSlots)` setup allocation and
+     `Component.viewFromSlots(...)`; a combined contract-first component
+     constructor is also acceptable if inference holds.
+   - Define the cheap tier: one-off/private components must be authorable with
+     zero slot ceremony, with docs stating when a published contract is worth
+     it.
+10. Witness-aware JSX tree authoring: **Open**
+    - Hand-written `View.element(Root, { children: [...] })` chains are JSX
+      reinvented as function calls and should not be the authored surface.
+    - Let the JSX transform (or a thin JSX-compatible layer) produce typed
+      `tree` metadata from slot witnesses, keeping `View.element(...)` as the
+      renderer-neutral/generated layer underneath.
+11. Attachment API consolidation: **Open, pre-release**
+    - Converge on exactly three public attachment forms per Style/Behavior:
+      `attachToSlots` (authored), `attachBySlotContract` (typed remap),
+      `attachBySlots` (dynamic string map).
+    - Remove or demote `attach` and `attachByView` to internals/advanced with
+      migration notes; finish demoting raw `View.make` + `slotMetadata` to the
+      generated/dynamic escape hatch everywhere in docs and examples.
+12. Execute slot contract unification: **Complete for current contract path**
    - `View.Slots` is the single canonical authored slot contract object.
    - `Component.withSlots(...)` is the component helper.
    - `Component.SlotContractOf<T>` is the extraction helper.

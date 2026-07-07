@@ -1,7 +1,9 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-06 (docs modernization continuation)
+Last updated: 2026-07-06 (design review findings + ergonomics workstream)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
+
+V1 scope authority (draft, needs ratification): `docs/V1_SCOPE.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
 
@@ -915,6 +917,492 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
 - Marked `docs/style2.md` and `docs/STYLE2_IMPLEMENTATION_PLAN.md` with historical notes directing readers to the unified `Style` API.
 - Confirmed all advanced CSS descriptors (nest, vars, media, supports, container, pseudo, grid, layers, animate, enter/exit) already live directly in `src/Style.ts` — no separate "Style2" system.
 
+## Design Review Findings (2026-07-06)
+
+An external-perspective design review of the current AF-UI model (slot
+contracts, setup ownership, attachment APIs, runtime subsystems) confirmed the
+architecture direction but identified concentrated risk in authoring
+ergonomics and unfinished consolidation. These findings define the next
+workstream. Verdict summary: the slot contract as a shared witness, semantic
+reactivity keys, platform-support-as-data, and requirement subtraction via
+`Component.withLayer(...)` are the strongest parts of the design; the risks
+are cost-per-component and API redundancy, not soundness.
+
+### Finding 1 — Golden-path authoring cost is too high (highest priority)
+
+A labeled text field currently takes ~40 lines across `View.Slot.make` x3,
+`View.Slots.make`, `Component.make`, `Component.withSlots`, and separate
+style/behavior attachments before any real logic. The contract pays for itself
+for design-system components, but most app UI is one-off structure that will
+never be externally styled or re-behaviored.
+
+Direction:
+
+- Target: the golden-path Field example compresses to roughly 15 lines without
+  losing the contract.
+- Add contract-inferring sugar so slot witnesses do not require three separate
+  declarations plus a bind map plus a `withSlots` pipe (candidates from
+  `SLOT_WITNESS_PLAN.md`: `Component.slots(...)` setup allocation,
+  `Component.viewFromSlots(...)`, or a combined
+  `Component.makeWithSlots(...)`-style entry point).
+- Provide an explicitly cheap tier for one-off/private structure: a component
+  with no published contract should not pay contract ceremony. Document when
+  to use each tier.
+
+### Finding 2 — Typed tree authoring is JSX reinvented as function calls
+
+`View.element(Root, { children: [View.element(Label, { children:
+[View.textNode(props.label)] })] })` is the weakest ergonomic point of the
+authored path. It will not survive contact with users who have JSX available.
+
+Direction:
+
+- Prioritize witness-aware JSX authoring (slot witnesses usable as/in JSX tags
+  or slot attributes) so the typed tree is produced by the JSX transform
+  rather than hand-written builder calls.
+- Keep `View.element(...)` builders as the renderer-neutral/generated layer
+  under the JSX surface, not the authored surface.
+
+### Finding 3 — Attachment API redundancy
+
+`attach` / `attachToSlots` / `attachBySlotContract` / `attachBySlots` on both
+`Style` and `Behavior` (plus `attachByView`, `attachToAllWithCapability`) is
+too many ways to do one thing. The authored/typed-remap/dynamic tiering is
+defensible, but the migration layers are showing.
+
+Direction:
+
+- Before release, converge on: one authored path (`attachToSlots`), one typed
+  remap path (`attachBySlotContract`), one dynamic string-map path
+  (`attachBySlots`), and remove or demote the rest (`attach`, `attachByView`)
+  to internals/advanced with explicit migration notes.
+- Same sweep for `View.make` + `slotMetadata` vs `View.Slots`: the low-level
+  path stays, but it should be documented only as the generated/dynamic escape
+  hatch and removed from all authored examples (mostly done; finish the sweep
+  and decide whether `View.slot(...)`/`View.hidden(...)` remain public).
+
+### Finding 4 — Inference must carry the plain-setup path
+
+Test/authored code still needs explicit generics in places
+(`Component.make<{}, never, never, { input: Element.TextInput }>` in
+`composables.test.ts`). With the setup builder positioned as optional rather
+than the face of the framework, inference on the plain
+`(props) => Effect<Bindings, E, R>` path has to be strong enough that authored
+code never writes explicit type arguments.
+
+Direction:
+
+- Inference audit with acceptance criterion: no explicit generic arguments in
+  any authored example, doc snippet, or golden-path test. Explicit generics
+  remain acceptable only in library-internal helper definitions.
+- Fix the `Component.make` overloads/parameter ordering that force
+  annotations today (slot handle bindings in setup returns are the known
+  offender).
+
+### Finding 5 — Result/FetchResult divergence is unfinished business
+
+Two async state machines still ship: unified `Result`
+(Loading/Refreshing/Success/Failure/Defect) and `FetchResult`
+(Initial/Success/Failure + `waiting`, with the awkward
+`error: E | { defect: string }` union). Conversion seams
+(`FetchResult.fromResult/toResult`) are exactly where users will trip.
+
+Direction:
+
+- Treat `docs/RESULT_CONSOLIDATION_PROPOSAL.md` completion as release-blocking:
+  finish the migration so all primary surfaces (loaders, queries, actions,
+  route runtime snapshots) emit unified `Result`, and `FetchResult` is
+  compat-only with no untagged defect union in any primary signature.
+
+### Finding 6 — Type-safety claims are one step ahead of `node: unknown`
+
+Slot boundaries are typed; the view body between them mostly is not
+(`View.node` is `unknown`, `tree` is optional metadata). That is an acceptable
+staging decision, but docs must not claim "everything is type-safe" until the
+typed tree path is the default output of authoring.
+
+Direction:
+
+- Continue `docs/TYPED_VIEW_TREE_PLAN.md` so authored views (especially once
+  witness-aware JSX lands per Finding 2) always carry `tree` metadata.
+- Docs sweep: scope type-safety claims to what is enforced today (slot
+  contracts, attachments, tokens, capability/platform checks) and state the
+  `node: unknown` boundary explicitly. `docs/AF_UI_CONTRACT.md` already notes
+  this; README/marketing-style docs (`docs/afui.md`) should match.
+
+## Design Improvement Proposals (2026-07-06, round 2)
+
+A second review pass proposed forward-looking improvements beyond the
+ergonomics findings above. These are proposals (new capability/consolidation),
+not defects. Suggested starting pair: P2 (small, closes an inconsistency with
+the design's own philosophy) and P1 (first real-world need the current design
+cannot express).
+
+### P1 — Behavior state contracts + state-aware styling (high value)
+
+Slots have first-class witnesses; the bindings a behavior publishes do not.
+`disclosure` produces `isOpen`, `selection` produces selected keys, but that
+contract is implicit in the attachment merge — and styles cannot see it. The
+most common real styling need is state-dependent (open/closed, selected,
+pressed, invalid), and today Style and Behavior are parallel tracks that never
+talk.
+
+Direction:
+
+- Add a binding-contract witness to behaviors (e.g.
+  `Behavior.provides({ isOpen: ... })`) so what a behavior publishes is a
+  typed, inspectable contract like the slot contract.
+- Add state-aware style composition (e.g.
+  `Style.whenBinding(disclosure.isOpen, {...})`) with the same compile-time
+  attachment guarantees as slots.
+- Natural next unification after the slot-contract work.
+
+### P2 — Reactivity key witnesses (cheapest high-value item)
+
+Reactivity keys are the last magic strings standing.
+`Reactivity.tracked(fx, { keys: ["users"] })` and `reactivityKeys: ["users"]`
+have no compile-time connection between tracked and invalidating sites; a typo
+silently means "never refreshes."
+
+Direction:
+
+- Key witnesses: `const Users = Reactivity.Key.make("users")`.
+- Typed key families for parameterized keys: `Users.item(id)`.
+- Key hierarchy: invalidating `users` reaches `users/42`.
+- Apply the exact pattern that eliminated slot string drift; keep string keys
+  as the dynamic/generated escape hatch, matching the slot tiering.
+
+### P3 — One diagnostics pipeline someone will actually run
+
+A dozen explicit-only validators exist (`View.validateSlotTargets`,
+`validateRemaps`, `validatePlatform`, `validateTree`,
+`Component.validateSlotContract`, `Behavior.validateAttachmentBySlots`,
+`Route.validateLinks`, `ServerRoute.validate`, ...). Individually good;
+collectively nobody will call them.
+
+Direction:
+
+- One `Diagnostic` type with severity across View/Style/Behavior/Route/Server.
+- A dev-mode layer that auto-runs relevant checks at mount/attach and reports
+  once (explicit-only remains the production default).
+- A CLI/CI entry point ("af-ui doctor") that runs the static checks over a
+  route tree.
+
+### P4 — User-declared token schema
+
+Token paths type-check against a fixed built-in theme taxonomy. A design
+system cannot add `brand.tertiary` and keep compile-time safety, which
+undercuts the core anti-Tailwind pitch.
+
+Direction:
+
+- Make the theme a user-declared schema (generic parameter or module
+  augmentation), with `ThemeLight` as merely the default instance — the same
+  way the platform vocabulary is data.
+
+### P5 — Ship a test kit as a named deliverable
+
+The architecture's biggest practical payoff is testability (behaviors are
+Effects over abstract element handles, styles are data, `Reactivity.test`
+exists), but there is no packaged harness.
+
+Direction:
+
+- Component test driver: `render(Field, { props, layer })` returning typed
+  slot handles.
+- Behavior driver simulating `press`/`input` against `Element.Interactive`
+  with no DOM.
+- Style assertion helpers over style data.
+- Also the best demo artifact: keyboard-navigation tests for a combobox with
+  zero DOM.
+
+### P6 — Consolidate the three routing generations before v1
+
+Legacy `Route` service + `Component.route(...)`, route-node constructors, the
+unified route model, and `RouterRuntime` coexist, with helpers spread across
+them (`Route.actionSingleFlight` vs `Route.singleFlight` vs
+`Atom.action({ singleFlight })`). The atom surface got ruthless consolidation;
+routing has not, and it is now the largest module.
+
+Direction:
+
+- Pick the unified route model + `RouterRuntime` as canonical.
+- Give the rest the same deprecate-and-delete treatment the atom aliases got.
+
+### P7 — Decide the package boundary question
+
+One package contains the atom core, AF-UI (view/style/behavior), the router,
+and the server runtime. The incremental-adoption story argues for a split:
+someone who wants atoms + reactivity keys should not take a UI framework.
+
+Direction:
+
+- Decide split vs single package before v1.
+- Either way, define and enforce internal layering as if separate packages
+  (core → view/style/behavior → router → server) so dependencies stay honest
+  and a later split is cheap.
+
+## Design Improvement Proposals (2026-07-06, round 3)
+
+A third review pass covering process, DX, and feature gaps not addressed by
+rounds 1-2.
+
+### Process
+
+**PR1 — Define the v1 scope cut (do first).** Every plan doc is additive;
+none says what to cut. The largest project risk is non-convergence, not any
+design flaw. `docs/V1_SCOPE.md` now holds the draft ships/deferred split —
+review it, resolve the marked decisions, and treat it as the authority for
+"is this v1 work" when triaging backlog items.
+
+**PR2 — Give the plan docs the consolidation treatment the API got.** This
+file is 1,100+ append-only lines; "Completed So Far" is archaeology. Move
+completed sections to an archive file (e.g.
+`docs/archive/REDESIGN_COMPLETED_LOG.md`), keep this doc to goals + findings
++ proposals + backlog + next. Sweep the ~70 docs in `docs/` and move the
+historical-only ones into `docs/archive/` so the live set is legible to
+newcomers and agents.
+
+**PR3 — Back the performance claims with a benchmark.** `docs/afui.md`
+claims granular no-VDOM updates and lighter-than-CSS-in-JS styling; nothing
+measures either. Add a small perf harness (js-framework-benchmark subset plus
+a style-update microbenchmark) run in CI with a regression threshold, so the
+claims become tracked invariants.
+
+### DX
+
+**D1 — Engineer the compile errors, not just the types.** The "compiler as
+tutor" pitch fails if a wrong capability binding produces a 40-line
+structural dump of `SlotTypeId` internals. Add error-shaping conditional
+types that resolve to readable string literals (e.g. `Capability 'Container'
+does not satisfy 'TextInput'`), and extend the `@ts-expect-error` test suite
+to snapshot/assert on error *text* for the golden-path failure modes.
+Multiplies the value of the Finding-4 inference audit.
+
+**D2 — Ship AI-assistant guidance as a product artifact.** The API is
+unusual enough that LLMs will hallucinate React/Tailwind patterns at users.
+Publish a consumer-facing `llms.txt` / agent skill containing the golden
+path, current API names, and a "these old names are wrong" table (the
+routing/attach renames make this doubly necessary). Keep it versioned with
+the API like the README.
+
+**D3 — Scaffolding.** `create-af-ui` starter plus a component generator that
+emits the slot-contract + style + behavior + test skeleton. Blunts the
+Finding-1 ceremony cost immediately and doubles as an executable spec of the
+golden path.
+
+### Design / Features
+
+**P8 — Accessibility patterns as checkable contracts (candidate headline
+feature).** The pieces exist: slot `allowedAttributes`, behavior-attached
+ARIA, `focusTrap`, `keyboardNav`. Add pattern-level contracts (e.g. "combobox
+requires trigger + listbox + option slots with these roles and keyboard
+interactions") validated through the P3 diagnostics pipeline. "Provably
+implements the WAI-ARIA combobox pattern or it doesn't compile" is a stronger
+differentiator than platform-agnosticism and is reachable.
+
+**P9 — Forms as a first-class vertical.** `AtomSchema.struct`, optimistic
+actions, typed errors, single-flight mutations, and `ServerRoute` form
+schemas all exist but are not composed into a story. Add a `Form` module:
+schema-driven fields, touched/dirty tracking, submit-as-action with
+optimistic + single-flight, and server validation errors flowing back into
+typed field state. This is the demo that exercises every subsystem at once.
+
+**P10 — Exit animations need an owner.** `Style.animate`/`enter`/`exit`
+exist as descriptors, but exit animations require the runtime to delay
+unmount until the animation completes — a lifecycle problem, not a styling
+one, and miserable to retrofit. Write a short design note now deciding who
+owns deferred removal (renderer vs behavior vs a view transition service)
+before the renderer contract hardens.
+
+## Foldkit Comparison Takeaways (2026-07-06)
+
+Reviewed foldkit.dev (Elm Architecture on Effect: single Model, Messages,
+pure update, Commands-as-data, model-gated Subscriptions; client-side SPA
+only, no SSR, no incremental adoption). Architectural verdict: their
+single-Model uniformity is not worth stealing — our Registry + Reactivity
+choke points give equivalent inspectability without the update-function
+bottleneck, and their renderless `toView`-callback UI model validates our
+typed slot contracts by contrast. What they beat us on is productization.
+Takeaways F1-F7; several amend existing proposals rather than adding new
+ones.
+
+### F1 — Devtools with time travel + MCP (upgrades the post-v1 "devtools" note to a real proposal, P11)
+
+Foldkit's overlay logs every Message, inspects the Model with changed-path
+highlighting, time-travels, and lets AI agents connect over MCP to read
+state, walk history, rewind, and dispatch. We are better positioned than
+they are: `Registry` + `dehydrate()` is already a snapshot mechanism, and
+the Reactivity service is a natural keyed, timestamped event log — plus our
+data is richer (typed errors, pending states, optimistic vs committed).
+
+Direction (P11):
+
+- Devtools panel: atom snapshots, invalidation timeline, action/optimistic
+  lifecycle, slot-contract tree.
+- MCP server access as a requirement, not an afterthought (read
+  state/history, rewind via hydrate, dispatch actions).
+- Copy their knobs verbatim: `excludeFromHistory` for high-frequency
+  entries, `keyframeInterval` for replay memory, dev-only/always visibility,
+  shadow-DOM isolation.
+- Still post-v1, but now a designed deliverable, not a bullet.
+
+### F2 — Model-gated subscription primitive (new proposal, P12)
+
+Their best API idea: a subscription is a stream gated by a state slice —
+dependency extraction, structural-change scope restart (finalizers run),
+`keepAliveEquivalence` to control which deps restart, and
+`readDependencies()` to read latest state without restarting (auto-scroll
+during drag). We have stream helpers but no declarative "this stream exists
+while this condition holds, restart on these deps only" primitive; today it
+is hand-rolled in setup.
+
+Direction (P12):
+
+- Add `Atom.Stream.gated(deps, ({ deps }) => stream, { restartOn })` and/or
+  a `Component.subscription(...)` setup helper.
+- Deps are atom selections (strictly more general than their model paths);
+  scope-per-generation with finalizers; explicit restart-policy escape
+  hatch.
+
+### F3 — Story/scene test taxonomy (amends P5)
+
+Name the two test tiers and conventions: *story tests* (drive
+bindings/actions directly with a test layer, assert on state) and *scene
+tests* (simulate users against slot handles via accessible locators, always
+through the root production path); `*.story.test.ts` / `*.scene.test.ts`.
+Our DOM-free behavior driver makes "scene tests without a browser" a claim
+they cannot match. P5's test kit should ship this vocabulary, not just
+drivers.
+
+### F4 — Named AI story (amends D2)
+
+Foldkit has an `/ai/overview` section and leads with "explicit and
+predictable, so LLMs generate it well and humans review it easily." The
+claim is more true of AF-UI — the compiler rejects hallucinated
+slots/tokens/requirements, so wrong generation fails at compile time — but
+they say it and we don't. D2 grows from "ship llms.txt" to: llms.txt +
+agent skill + a docs section arguing type-checked generation as a feature,
+with F1's MCP devtools as the runtime half.
+
+### F5 — Typed out-events for behaviors (amends P1)
+
+Their stateful submodels communicate upward via a typed `OutMessage` the
+parent pattern-matches. Our behaviors return bindings (readable state) but
+no typed event channel ("selection changed", "dialog dismissed"). When P1's
+`Behavior.provides(...)` is designed, include an events axis alongside
+state, so parents subscribe to behavior events type-safely.
+
+### F6 — Honest "when not to use this" docs page (docs plan)
+
+Their comparisons page plainly lists what Foldkit is wrong for; it is
+disarming and builds trust. Add a short "use something else if..." section
+to README/afui.md (small static sites, teams without Effect fluency, need a
+mature component ecosystem today) — and honestly claim the
+incremental-adoption and SSR rows they concede.
+
+### F7 — Behavior pack roadmap from their catalog (amends P8)
+
+They ship 23+ headless components in two tiers (stateful submodels vs
+stateless render helpers); we have ~7 behaviors + combobox. Their catalog is
+a market-validated roadmap: Dialog, Tooltip, Popover, Tabs, Slider,
+Calendar/DatePicker, DragAndDrop are the gaps users hit first. Adopt the
+two-tier taxonomy (behaviors-with-state vs pure attachment helpers), and
+pair each pack entry with its WAI-ARIA pattern contract (P8) — the
+differentiator they don't have.
+
+### F8 — Async-result takeaways (amends P5, P11; adds P13)
+
+Reviewed Foldkit's async handling (`Command.define(name, Succeeded, Failed)`
+with errors returned as data messages). Verdict: they have no async result
+*type* — each app hand-rolls `isLoading` fields, which permits impossible
+states our tagged `Result<A, E>` makes unrepresentable. Do not trade
+`Result` for anything there; likewise skip the declared
+success/failure-constructor pair (we already have
+`onSuccess`/`onFailure`/`onTransition` without the ceremony). Three edge
+ideas are worth taking:
+
+1. **Test-side action/query resolution (amends P5).** Their
+   `Story.Command.resolve(FetchCount, SucceededFetchCount({...}))` scripts
+   an operation's outcome inline with no mock layers and no async. The test
+   kit should include the equivalent: `resolveAction(handle,
+   Result.success(...))` / `resolveQuery(atom, ...)` that short-circuits the
+   effect and drives the handle's `Result` directly. Stub layers remain the
+   integration-test path; this is the cheap unit-test path.
+2. **Load-bearing operation names (amends P11).** Their `name` field is what
+   makes the devtools message log legible. `Atom.action` /
+   `defineMutation` already accept optional `name`; make it load-bearing:
+   surfaced in the P11 timeline, `observe` metrics, and diagnostics, and
+   nudged in docs/examples so it is actually set.
+3. **P13 — Schema-validated action inputs (new, small).** Optional
+   `Atom.action(fn, { inputSchema })` validating dispatch inputs at the
+   boundary with a typed error. Matters more for us than for them: our
+   actions can be invoked from forms, URLs, and over the single-flight
+   transport, and every other boundary (routes, server routes) already
+   schema-validates. Keep it optional; compile-time typing remains the
+   default for purely local actions.
+
+## Services & Layers Review (2026-07-06)
+
+Reviewed how services/layers work across the library. The mechanics are
+sound: requirement subtraction (`Component.require` + `withLayer`),
+setup-inferred requirement bubbling, capture-at-setup ServiceMap semantics,
+runtime requirement subsets (`RReq extends R`), and framework services as
+ordinary tags (`Reactivity`, `Theme`, platform tags, single-flight
+transport). What's missing is the story layer, plus one structural decision.
+
+### S1 — The two-runtimes question (structural, needs a DECIDE)
+
+`Atom.runtime(layer)` and `Component.mount(..., { layer })` create two
+service worlds, and real apps will have both: module-level runtime-bound
+atoms plus a mounted tree with `withLayer` islands. A component reading an
+atom bound to runtime A while executing under mount layer B resolves each
+side in its own world — consistent but undocumented, and a "works in app,
+breaks in test" trap (e.g. two `Reactivity` instances).
+
+Direction:
+
+- Now: document the one-composition-root golden path — build one
+  `AppLayer`, feed it to both `Atom.runtime(...)` and
+  `Component.mount(...)`; never construct two separately-configured worlds.
+- DECIDE for v1: whether `Component.mount` should accept the `AtomRuntime`
+  directly (structurally one world) instead of/in addition to a raw layer.
+
+### S2 — Provision-tier guidance doc (highest-value unwritten docs page)
+
+We have four provision tiers — app root (mount/`Atom.runtime`), subtree
+(`withLayer`), per-operation (`Effect.provide`), ambient framework tags —
+and no page saying when to use which. Foldkit's Resources page does this
+with four decision criteria (construction cost, instance identity, failure
+blast radius, implementation variety); ours needs to cover more ground:
+
+- Write `docs/SERVICES_AND_LAYERS.md` with a decision table over the four
+  tiers.
+- Answer the sharp questions explicitly: do two sibling `withLayer(ApiLive)`
+  components share one instance or get two (per-build memoization → two —
+  sometimes exactly wrong for a pool); what happens when a layer fails to
+  build at mount vs in a subtree; how capture-at-setup interacts with
+  wrappers.
+
+### S3 — Server request-scoping rule
+
+`ServerRoute.dispatch({ layer })` takes a per-dispatch layer, which is
+correct, but nothing states the invariant: stateful/request-bound services
+(auth context, request info) must be request-scoped; expensive services (DB
+pools, RPC clients) are built once at app lifetime and merged in. Getting
+this wrong leaks one request's context into another. Document the pattern
+(app-lifetime layer + per-request layer built from the `Request`) in
+`SERVICES_AND_LAYERS.md` and the server docs, with a test proving isolation.
+
+### S4 — Promote services-as-reactive-participants to doctrine
+
+`Reactivity.tracked(...)` / `invalidating(...)` inside service methods is
+the answer to "how does a service drive the UI": service stays UI-agnostic,
+components stay service-agnostic, keys are the contract. Today it is
+discovered in the single-flight example; it should be presented as the
+canonical pattern in the services doc, README, and `afui.md`. (Gains
+compile-time teeth when P2 key witnesses land.)
+
 ## TODO Backlog (Redesign)
 
 - [x] Add explicit `Slots` parameter to `Component.Component` metadata and start migrating slot attachment typing away from binding-shape conventions.
@@ -939,6 +1427,44 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
 - [x] Finish API examples pass: ensure callable `Atom`/`AtomRef` style is used consistently in docs/snippets.
 - [x] Family lifecycle follow-up: add at least one end-to-end example showing `Atom.family(...).evict/clear` in component lifetime cleanup.
 - [ ] Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence).
+- [ ] Golden-path compression (Finding 1): reduce the authored slot-contract Field example to ~15 lines via contract-inferring sugar (`Component.slots(...)` / `Component.viewFromSlots(...)` or equivalent) without losing the published contract.
+- [ ] Cheap tier for one-off structure (Finding 1): document and, if needed, add a no-contract authoring tier for private/app-local components with zero slot ceremony.
+- [ ] Witness-aware JSX authoring (Finding 2): produce typed `tree` metadata from JSX instead of hand-written `View.element(...)` chains; demote builder calls to the generated/renderer-neutral layer.
+- [ ] Attachment API consolidation (Finding 3): converge Style/Behavior on `attachToSlots` / `attachBySlotContract` / `attachBySlots`; remove or demote `attach` and `attachByView` before release.
+- [ ] Finish the `View.make` + `slotMetadata` demotion sweep (Finding 3): generated/dynamic escape hatch only; decide public fate of `View.slot(...)` / `View.hidden(...)`.
+- [ ] Inference audit (Finding 4): no explicit generic arguments in any authored example, doc snippet, or golden-path test; fix `Component.make` sites that force annotations.
+- [ ] Complete Result consolidation as release-blocking (Finding 5): all primary surfaces emit unified `Result`; `FetchResult` compat-only; no `E | { defect: string }` union in primary signatures.
+- [ ] Typed-tree-by-default + claims sweep (Finding 6): authored views always carry `tree` metadata; docs scope type-safety claims to enforced boundaries.
+- [ ] Behavior binding contracts + state-aware styling (P1): `Behavior.provides(...)` witness and `Style.whenBinding(...)`-style composition.
+- [ ] Reactivity key witnesses (P2): `Reactivity.Key.make(...)`, typed key families, key hierarchy; strings become the dynamic escape hatch.
+- [ ] Unified diagnostics pipeline (P3): shared `Diagnostic` type + dev-mode auto-report layer + static CLI/CI check entry point.
+- [ ] User-declared token schema (P4): theme taxonomy as user schema with `ThemeLight` as default instance.
+- [ ] Test kit (P5): component render driver, DOM-free behavior driver, style data assertions.
+- [ ] Routing consolidation (P6): unified route model + `RouterRuntime` canonical; deprecate-and-delete the earlier generations.
+- [ ] Package boundary decision (P7): split vs single package before v1; enforce internal layering either way.
+- [ ] Review and ratify `docs/V1_SCOPE.md` (PR1): resolve the marked decisions; use it to triage all other backlog items.
+- [ ] Plan-doc consolidation sweep (PR2): archive completed log sections and historical docs into `docs/archive/`; keep this file to goals/findings/proposals/backlog/next.
+- [ ] Perf benchmark harness in CI (PR3): js-framework-benchmark subset + style-update microbenchmark with regression threshold.
+- [ ] Compile-error engineering (D1): error-shaping conditional types with readable messages; error-text assertions for golden-path failure modes.
+- [ ] AI-assistant guidance artifact (D2): consumer-facing `llms.txt`/agent skill with golden path, current names, and wrong-old-names table.
+- [ ] Scaffolding (D3): `create-af-ui` starter + slot-contract component generator.
+- [ ] A11y pattern contracts (P8): pattern-level slot/behavior contracts validated via the P3 diagnostics pipeline.
+- [ ] Forms vertical (P9): `Form` module composing schema fields, actions, optimistic, single-flight, and server validation errors.
+- [ ] Exit-animation ownership note (P10): decide who owns deferred unmount before the renderer contract hardens.
+- [ ] Devtools + MCP (P11, post-v1 but designed now): registry snapshots, invalidation timeline, action/optimistic lifecycle, slot-contract tree; MCP read/rewind/dispatch; history/keyframe knobs.
+- [ ] Gated subscription primitive (P12): `Atom.Stream.gated(...)` / `Component.subscription(...)` with dep-driven scope restart and restart-policy escape hatch.
+- [ ] Amend P5 with story/scene test taxonomy and naming conventions (F3).
+- [ ] Amend D2 with the AI docs section: type-checked generation as a feature + MCP runtime half (F4).
+- [ ] Amend P1 design to include a typed behavior out-event axis alongside published state (F5).
+- [ ] Add "when not to use this" section to README/afui.md (F6).
+- [ ] Amend P8/behavior pack with the two-tier taxonomy and catalog roadmap: Dialog, Tooltip, Popover, Tabs, Slider, Calendar/DatePicker, DragAndDrop (F7).
+- [ ] Amend P5 with inline outcome resolution: `resolveAction(...)` / `resolveQuery(...)` driving handle `Result` without mock layers (F8.1).
+- [ ] Amend P11 so operation `name` is load-bearing: timeline, `observe` metrics, diagnostics, docs nudge (F8.2).
+- [ ] Schema-validated action inputs (P13): optional `Atom.action(fn, { inputSchema })` with typed boundary error; prioritize for single-flight-invokable actions (F8.3).
+- [ ] Two-runtimes decision (S1): document the one-composition-root golden path now; DECIDE whether `Component.mount` accepts an `AtomRuntime` for v1.
+- [ ] Write `docs/SERVICES_AND_LAYERS.md` (S2): four-tier decision table; memoization/sharing semantics; layer failure blast radius; capture-at-setup interaction.
+- [ ] Server request-scoping rule (S3): document app-lifetime + per-request layer pattern; add a request-isolation test.
+- [ ] Promote services-as-reactive-participants pattern (S4): canonical in services doc, README, and afui.md.
 - [x] Add `Component.withSlots(...)` as the canonical component slot contract helper.
 - [x] Add `Component.withSlotContract(...)` and primary `SlotContract` metadata.
 - [x] Add `Component.SlotContractOf<T>` as the canonical slot contract extraction helper.
@@ -1030,6 +1556,36 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
   style/behavior attachment is standardized, and declared-vs-rendered
   diagnostics are explicit-only.
 - Next focus areas:
+  - Execute the design-review ergonomics workstream (see "Design Review
+    Findings (2026-07-06)" above), in priority order:
+    1. Golden-path compression + cheap tier for one-off structure (Finding 1)
+    2. Witness-aware JSX authoring for typed trees (Finding 2)
+    3. Attachment API consolidation before release (Finding 3)
+    4. Inference audit — no explicit generics in authored code (Finding 4)
+    5. Result consolidation completion as release-blocking (Finding 5)
+    6. Typed-tree-by-default and type-safety claims sweep (Finding 6)
+  - Start the round-2 improvement proposals (see "Design Improvement
+    Proposals (2026-07-06, round 2)"), beginning with:
+    1. Reactivity key witnesses (P2) — small, high value
+    2. Behavior binding contracts + state-aware styling (P1)
+    - P6 (routing consolidation) and P7 (package boundary) should be decided
+      before v1 even if implementation lands later; P3-P5 can follow.
+  - Round-3 process/DX items (see "Design Improvement Proposals (2026-07-06,
+    round 3)"):
+    - PR1 first: review/ratify `docs/V1_SCOPE.md` and use it to triage
+      everything else.
+    - PR2 (plan-doc archive sweep) and D1 (compile-error engineering) are the
+      next cheapest high-leverage items; P10 needs only a short design note
+      before the renderer contract hardens.
+  - Services & layers (S1-S4): S1's composition-root doc note and S2's
+    `SERVICES_AND_LAYERS.md` are pure docs work and can land immediately;
+    S3 needs one isolation test alongside the docs; the S1 DECIDE
+    (mount-accepts-runtime) should be resolved with V1_SCOPE ratification.
+  - Foldkit takeaways (F1-F7): F6 (honest "when not to use" docs) is cheap
+    and immediate; F3/F4/F5/F7 are amendments to fold in when P5/D2/P1/P8
+    are picked up; P12 (gated subscriptions) is a small standalone API win;
+    P11 (devtools + MCP) stays post-v1 but should be designed against the
+    Registry/Reactivity data model before the runtime surface freezes.
   - Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence):
     - Continue migrating selected examples/guides to the setup builder where it improves readability.
     - Continue migrating consumers toward the new `Atom<A, E, R>` metadata instead of result-wrapper-only extraction.
