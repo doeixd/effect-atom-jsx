@@ -1242,6 +1242,29 @@ A query that reads `users:list` can be invalidated by any mutation that also dec
 - **`Reactivity.tracked(effect, options?)`** — execute an Effect while tracking which reactivity keys it reads; accumulates accessed keys internally. `options.initial` — initial set of tracked keys
 - **`Reactivity.invalidating(effect, keys)`** — execute an Effect that invalidates specified keys on completion
 
+**Key witnesses (authored path):**
+
+Plain string keys have no compile-time connection between the tracked site and the invalidating site — a typo silently means "never refreshes". Witnesses give both sides one shared, literal-typed value. Strings remain the dynamic/generated escape hatch (matching the slot-contract tiering).
+
+```ts
+const Users = Reactivity.Key.make("users");
+const user = Reactivity.Key.family("user");
+
+// service read tracks the witness
+Reactivity.tracked(fetchUsers(), { keys: [Users] });
+// service write invalidates the same value
+Reactivity.invalidating(api.addUser(name), [Users]);
+// parameterized members: user(42) -> "user:42"
+Reactivity.tracked(fetchUser(id), { keys: [user(id)] });
+```
+
+- **`Reactivity.Key.make(name)`** — create a branded key witness with a literal-typed `name`; `.child(sub)` derives hierarchical children (`Users.child(42)` -> `"users:42"`)
+- **`Reactivity.Key.family(name)`** — callable member derivation (`todo(42)` -> the `"todo:42"` witness) with `.key` as the parent witness
+- `Reactivity.Key.is(value)` — witness type guard
+- `Reactivity.KeyNameOf<T>` — extract the literal key name from a witness or family type
+- Witnesses are accepted anywhere `ReactivityKeysInput` is accepted (`tracked`/`invalidating`, `reactivityKeys` options on atoms/actions/components/route loaders, `Route.runMatchedLoaders` filters) and mix freely with strings
+- Hierarchy matches the record-form convention: a child expands to ancestors + self for both tracking and invalidation, so invalidating the parent reaches child observers and vice versa
+
 **Atom helpers:**
 - `Atom.invalidateReactivity(keys)` — invalidate reactivity keys
 - `Atom.trackReactivity(keys)` — track which keys are accessed during a read

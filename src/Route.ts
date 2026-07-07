@@ -23,7 +23,7 @@ import {
   runCachedLoader,
   setLoaderCacheEntry,
 } from "./router-runtime.js";
-import { beginReactivityInvalidationCapture } from "./reactivity-runtime.js";
+import { beginReactivityInvalidationCapture, normalizeReactivityKeys, type ReactivityKeysInput } from "./reactivity-runtime.js";
 import type { Component as ComponentType } from "./Component.js";
 
 export interface NavigateOptions {
@@ -298,7 +298,7 @@ export interface LoaderOptions {
   readonly staleTime?: number | string;
   readonly cacheTime?: number | string;
   readonly staleWhileRevalidate?: boolean;
-  readonly reactivityKeys?: ReadonlyArray<string>;
+  readonly reactivityKeys?: ReactivityKeysInput;
   readonly revalidateOnFocus?: boolean;
   readonly revalidateOnReconnect?: boolean;
   readonly timeout?: number | string;
@@ -366,7 +366,7 @@ export interface SingleFlightMutationHandle<Args extends ReadonlyArray<unknown>,
  */
 export interface SingleFlightOptions<Args extends ReadonlyArray<unknown>, A> {
   readonly app?: AnyRoute | AnyAppRouteNode;
-  readonly reactivityKeys?: ReadonlyArray<string>;
+  readonly reactivityKeys?: ReactivityKeysInput;
   readonly onSuccess?: (result: A, args: Args) => Effect.Effect<void>;
   readonly target?: string | URL | ((result: A, args: Args, currentUrl: URL) => string | URL | undefined);
   readonly revalidate?: "reactivity" | "matched" | "none" | ReadonlyArray<string>;
@@ -1390,25 +1390,26 @@ function prefetchTreeInternal<P, Q>(
 
 function runMatchedLoadersRegistry(
   url: URL,
-  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReadonlyArray<string> },
+  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
 ): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: Result.Result<unknown, unknown> }>, never> {
   return Effect.gen(function* () {
     const matched = [...routeRegistryById.values()]
       .filter((entry) => matchPattern(entry.meta.fullPattern, url.pathname, entry.meta.exact))
       .sort((a, b) => a.meta.fullPattern.length - b.meta.fullPattern.length);
 
+    const invalidatedKeys = options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : undefined;
     const candidates = matched.filter((entry) => {
       const loaderOptions = asRouteComponent(entry.component).__routeLoaderOptions;
       const isDeferred = loaderOptions?.priority === "deferred";
       if (isDeferred && options?.includeDeferred === false) return false;
       if (!asRouteComponent(entry.component).__routeLoader) return false;
-      if (!options?.reactivityKeys || options.reactivityKeys.length === 0) return true;
+      if (!invalidatedKeys || invalidatedKeys.length === 0) return true;
       const routeId = entry.meta.id ?? entry.meta.fullPattern;
       const paramsRaw = extractParams(entry.meta.fullPattern, url.pathname) ?? {};
       const loaderKeys = collectLoaderReactivityKeys(routeId, paramsRaw, {
         fallback: loaderOptions?.reactivityKeys,
       });
-      return matchesLoaderReactivity(loaderKeys, options.reactivityKeys);
+      return matchesLoaderReactivity(loaderKeys, invalidatedKeys);
     });
 
     const remaining = [...candidates];
@@ -1460,11 +1461,12 @@ function runMatchedLoadersRegistry(
 function runMatchedLoadersTreeInternal(
   root: AnyRoute | AnyAppRouteNode,
   url: URL,
-  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReadonlyArray<string> },
+  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
 ): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: Result.Result<unknown, unknown> }>, never> {
   return Effect.gen(function* () {
     const matched = collectMatchedRouteTargets(root, url.pathname);
 
+    const invalidatedKeys = options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : undefined;
     const candidates = matched.filter((entry) => {
       const loaderOptions = routeLoaderOptionsOfTarget(entry);
       const isDeferred = loaderOptions?.priority === "deferred";
@@ -1472,14 +1474,14 @@ function runMatchedLoadersTreeInternal(
       if (!targetHasLoader(entry)) {
         return false;
       }
-      if (!options?.reactivityKeys || options.reactivityKeys.length === 0) return true;
+      if (!invalidatedKeys || invalidatedKeys.length === 0) return true;
       const fullPattern = routePathOfTarget(root, entry);
       const routeId = routeIdOfTarget(entry, fullPattern);
       const paramsRaw = extractParams(fullPattern, url.pathname) ?? {};
       const loaderKeys = collectLoaderReactivityKeys(routeId, paramsRaw, {
         fallback: loaderOptions?.reactivityKeys,
       });
-      return matchesLoaderReactivity(loaderKeys, options.reactivityKeys);
+      return matchesLoaderReactivity(loaderKeys, invalidatedKeys);
     });
 
     const remaining = [...candidates];
@@ -2312,7 +2314,7 @@ export function seedLoaderResult<A>(
 
 export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
   fn: (...args: Args) => Effect.Effect<A, E, R>,
-  options?: { readonly reactivityKeys?: ReadonlyArray<string>; readonly onSuccess?: () => Effect.Effect<void> },
+  options?: { readonly reactivityKeys?: ReactivityKeysInput; readonly onSuccess?: () => Effect.Effect<void> },
 ): Effect.Effect<(...args: Args) => Effect.Effect<A, E, R>, never> {
   return Effect.sync(() =>
     (...args: Args) => fn(...args).pipe(
@@ -2766,22 +2768,22 @@ export function collect(component: unknown): ReadonlyArray<RouteMeta<any, any, a
  */
 export function runMatchedLoaders(
   url: URL,
-  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReadonlyArray<string> },
+  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
 ): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: Result.Result<unknown, unknown> }>, never>;
 
 export function runMatchedLoaders(
   root: AnyRoute | AnyAppRouteNode,
   url: URL,
-  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReadonlyArray<string> },
+  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
 ): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: Result.Result<unknown, unknown> }>, never>;
 export function runMatchedLoaders(
   rootOrUrl: AnyRoute | AnyAppRouteNode | URL,
-  urlOrOptions?: URL | { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReadonlyArray<string> },
-  maybeOptions?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReadonlyArray<string> },
+  urlOrOptions?: URL | { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
+  maybeOptions?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
 ): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: Result.Result<unknown, unknown> }>, never> {
   if (rootOrUrl instanceof URL) {
     const url = rootOrUrl;
-    const options = urlOrOptions as { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReadonlyArray<string> } | undefined;
+    const options = urlOrOptions as { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput } | undefined;
     return runMatchedLoadersRegistry(url, options);
   }
   return runMatchedLoadersTreeInternal(rootOrUrl, urlOrOptions as URL, maybeOptions);

@@ -888,3 +888,25 @@ Extracted from docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md on 2026-07-06 (PR2 plan-d
   new type tests in `src/type-tests/reactivity-keys.ts` (literal name
   preservation, `KeyNameOf`, mixed witness/string inputs, rejection cases).
 - Validation: typecheck clean, 480 tests pass, build clean.
+
+### Reactivity Key Witnesses Slice 2 — Route Integration + Docs (2026-07-06)
+
+- Widened all `Route`/router-runtime key intake sites from
+  `ReadonlyArray<string>` to `ReactivityKeysInput` (witnesses + strings +
+  record form): `LoaderOptions.reactivityKeys`,
+  `SingleFlightOptions.reactivityKeys`, `Route.action(...)` options,
+  `Route.runMatchedLoaders(...)` overload filters, and in router-runtime
+  `runCachedLoader` / `executeAndCache` / `setLoaderCacheEntry` /
+  `invalidateLoaderReactivity` / `collectLoaderReactivityKeys`.
+- Normalization happens once at each boundary; the loader cache and
+  `matchesLoaderReactivity` continue to operate on normalized strings.
+- New integration test in `src/__tests__/route-loader.test.ts`: witness in
+  loader options expands to ancestors + self in the cache entry, a witness
+  matcher filter selects the loader via the parent key, and invalidating the
+  parent marks the child-keyed entry stale.
+- Docs migrated to witnesses as the authored path: `docs/API.md` gained a
+  "Key witnesses (authored path)" reference block; `README.md` main
+  query/action/optimistic examples now share one `Users` witness;
+  `docs/afui.md` and `README.new.md` reactivity/loader examples lead with
+  witnesses and note strings as the dynamic escape hatch.
+- Validation: typecheck clean, 481 tests pass, build clean.

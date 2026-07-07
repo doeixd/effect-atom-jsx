@@ -427,22 +427,26 @@ Slot contracts, styles, and behaviors describe the *body* of an application. AF-
 Most UI frameworks track reactivity via object identity or dependency graphs. AF-UI adds a dedicated `Reactivity` service that provides **semantic, key-based invalidation**. Instead of saying "refresh this specific atom," you invalidate a semantic concept. This allows decoupled services to drive UI updates without direct references.
 
 ```ts
-// 1. A service read method marked as participating in reactivity
+// 1. A key witness: one shared value for the read side and the write side.
+// (Plain strings also work as the dynamic escape hatch.)
+const Users = Reactivity.Key.make("users");
+
+// 2. A service read method marked as participating in reactivity
 class Api extends Effect.Tag("Api")<Api, {
   readonly listUsers: () => Effect.Effect<User[]>
 }>() {
   static live = Layer.succeed(Api, {
-    // track dependency on the "users" key
-    listUsers: () => Reactivity.tracked(fetchUsers(), { keys: ["users"] }),
+    // track dependency on the Users key
+    listUsers: () => Reactivity.tracked(fetchUsers(), { keys: [Users] }),
   });
 }
 
-// 2. A mutation marked as invalidating semantic keys
+// 3. A mutation marked as invalidating semantic keys
 const addUser = (name: string) =>
-  Reactivity.invalidating(api.addUser(name), ["users"]);
+  Reactivity.invalidating(api.addUser(name), [Users]);
 ```
 
-When `addUser` completes, the "users" key is invalidated. Every atom, component, route loader, or behavior across the entire application that has tracked a dependency on that key refreshes automatically.
+When `addUser` completes, the `Users` key is invalidated. Every atom, component, route loader, or behavior across the entire application that has tracked a dependency on that key refreshes automatically. Parameterized keys use families — `const user = Reactivity.Key.family("user")`, then `user(id)` — and a child key participates in its parent's invalidations.
 
 Key properties:
 
@@ -474,7 +478,7 @@ const UserRoute = UserPage.pipe(
   }), {
     staleTime: "30 seconds",
     staleWhileRevalidate: true,
-    reactivityKeys: ["users"],   // semantic binding to the Reactivity service
+    reactivityKeys: [Users],   // key witness — semantic binding to the Reactivity service
   }),
   Route.title((params, data) => `User: ${data.name}`),
   Route.meta((params, data) => ({ description: data.bio })),

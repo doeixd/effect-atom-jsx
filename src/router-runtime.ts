@@ -6,6 +6,8 @@ import {
   onReactivityInvalidation,
   onReactivityServiceChange,
   invalidateReactivityRuntime,
+  normalizeReactivityKeys,
+  type ReactivityKeysInput,
 } from "./reactivity-runtime.js";
 
 export type DurationInput = number | string | undefined;
@@ -119,7 +121,7 @@ export function isFresh(entry: LoaderCacheEntry): boolean {
 export function setLoaderCacheEntry(routeId: string, params: unknown, result: Result.Result<unknown, unknown>, options?: {
   readonly staleTime?: DurationInput;
   readonly cacheTime?: DurationInput;
-  readonly reactivityKeys?: ReadonlyArray<string>;
+  readonly reactivityKeys?: ReactivityKeysInput;
 }): LoaderCacheEntry {
   const now = Date.now();
   const staleTime = durationToMillis(options?.staleTime, 0);
@@ -133,7 +135,7 @@ export function setLoaderCacheEntry(routeId: string, params: unknown, result: Re
     updatedAt: now,
     staleAt: now + staleTime,
     expiresAt: now + cacheTime,
-    reactivityKeys: [...(options?.reactivityKeys ?? [])],
+    reactivityKeys: options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : [],
   };
   cache.set(key, entry);
 
@@ -152,21 +154,22 @@ export function invalidateLoaderCacheByKeys(keys: ReadonlyArray<string>): void {
   }
 }
 
-export function invalidateLoaderReactivity(keys: ReadonlyArray<string>): void {
-  invalidateLoaderCacheByKeys(keys);
-  invalidateReactivityRuntime(keys);
+export function invalidateLoaderReactivity(keys: ReactivityKeysInput): void {
+  const normalized = normalizeReactivityKeys(keys);
+  invalidateLoaderCacheByKeys(normalized);
+  invalidateReactivityRuntime(normalized);
 }
 
 export function collectLoaderReactivityKeys(
   routeId: string,
   params: unknown,
-  options?: { readonly fallback?: ReadonlyArray<string> },
+  options?: { readonly fallback?: ReactivityKeysInput },
 ): ReadonlyArray<string> {
   const existing = getLoaderCacheEntry(routeId, params);
   if (existing?.reactivityKeys.length) {
     return existing.reactivityKeys;
   }
-  return [...(options?.fallback ?? [])];
+  return options?.fallback ? normalizeReactivityKeys(options.fallback) : [];
 }
 
 export function matchesLoaderReactivity(
@@ -197,7 +200,7 @@ export function runCachedLoader<A, E>(
     readonly staleTime?: DurationInput;
     readonly cacheTime?: DurationInput;
     readonly staleWhileRevalidate?: boolean;
-    readonly reactivityKeys?: ReadonlyArray<string>;
+    readonly reactivityKeys?: ReactivityKeysInput;
     readonly timeout?: DurationInput;
   },
 ): Effect.Effect<Result.Result<A, E>, never> {
@@ -224,22 +227,23 @@ function executeAndCache<A, E>(
   options?: {
     readonly staleTime?: DurationInput;
     readonly cacheTime?: DurationInput;
-    readonly reactivityKeys?: ReadonlyArray<string>;
+    readonly reactivityKeys?: ReactivityKeysInput;
     readonly timeout?: DurationInput;
   },
 ): Effect.Effect<Result.Result<A, E>, never> {
+  const optionKeys = options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : [];
   return Effect.sync(() => beginReactivityReadCapture()).pipe(
     Effect.flatMap((capture) => run.pipe(
       Effect.match({
         onSuccess: (data) => {
           const out = Result.success<A, E>(data);
-          const mergedKeys = [...new Set([...(options?.reactivityKeys ?? []), ...capture.end()])];
+          const mergedKeys = [...new Set([...optionKeys, ...capture.end()])];
           setLoaderCacheEntry(routeId, params, out, { ...options, reactivityKeys: mergedKeys });
           return out;
         },
         onFailure: (error) => {
           const out = Result.failure<A, E>(error as E);
-          const mergedKeys = [...new Set([...(options?.reactivityKeys ?? []), ...capture.end()])];
+          const mergedKeys = [...new Set([...optionKeys, ...capture.end()])];
           setLoaderCacheEntry(routeId, params, out, { ...options, reactivityKeys: mergedKeys });
           return out;
         },

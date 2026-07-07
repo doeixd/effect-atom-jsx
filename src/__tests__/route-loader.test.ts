@@ -220,6 +220,49 @@ describe("Route loader", () => {
     }
   });
 
+  it("accepts reactivity key witnesses in loader options and matcher filters", () => {
+    clearLoaderCache();
+    const service = Effect.runSync(
+      Effect.service(Reactivity.ReactivityTag).pipe(Effect.provide(Reactivity.test)) as Effect.Effect<Reactivity.ReactivityService, never, never>,
+    );
+    const restore = installReactivityService(service);
+
+    const Projects = Reactivity.Key.make("projects");
+
+    try {
+      const RouteWithWitness = Component.from<{}>(() => null).pipe(
+        Component.route("/witness/projects/:projectId", { params: Schema.Struct({ projectId: Schema.String }) }),
+        Route.loader<{ readonly projectId: string }, { readonly name: string }, never, never>(
+          (params) => Effect.succeed({ name: params.projectId }),
+          { reactivityKeys: [Projects.child("p1")], staleTime: "5 minutes" },
+        ),
+      );
+      void RouteWithWitness;
+
+      const url = new URL("http://test.local/witness/projects/p1");
+      const results = Effect.runSync(Route.runMatchedLoaders(url));
+      const routeId = results[0]?.routeId;
+      expect(routeId).toBeDefined();
+
+      // witness expanded to ancestors + self in the cache entry
+      const entry = getLoaderCacheEntry(String(routeId), { projectId: "p1" });
+      expect(entry?.reactivityKeys).toContain("projects");
+      expect(entry?.reactivityKeys).toContain("projects:p1");
+
+      // matcher filter accepts a witness and selects the loader via the parent key
+      const matched = Effect.runSync(Route.runMatchedLoaders(url, { reactivityKeys: [Projects] }));
+      expect(matched.map((item) => item.routeId)).toContain(String(routeId));
+
+      // invalidating the parent witness marks the child-keyed cache entry stale
+      Effect.runSync(service.invalidate(["projects"]));
+      Effect.runSync(service.flush());
+      const after = getLoaderCacheEntry(String(routeId), { projectId: "p1" });
+      expect(after ? isFresh(after) : true).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
   it("captures reactivity keys from atoms read inside loaders", () => {
     clearLoaderCache();
     const reactiveName = Atom.value("alice").pipe(Atom.withReactivity(["users"]));

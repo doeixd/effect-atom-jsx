@@ -329,7 +329,7 @@ All Effect helpers (`get`, `set`, `update`, `modify`) support both data-first an
 
 ```tsx
 import { Effect, Layer, ServiceMap } from "effect";
-import { Atom, Async, For, isPending, latest, Show } from "effect-atom-jsx";
+import { Atom, Async, For, isPending, latest, Reactivity, Show } from "effect-atom-jsx";
 
 const Api = ServiceMap.Service<{
   readonly listUsers: () => Effect.Effect<ReadonlyArray<{ id: string; name: string }>>;
@@ -343,6 +343,10 @@ const ApiLive = Layer.succeed(Api, {
 
 const apiRuntime = Atom.runtime(ApiLive);
 
+// One key witness shared by the read side and the write side. A typo'd string
+// would silently never refresh; the witness makes both sides the same value.
+const Users = Reactivity.Key.make("users");
+
 const users = Atom.withReactivity(
   apiRuntime.atom(
     Effect.gen(function* () {
@@ -350,7 +354,7 @@ const users = Atom.withReactivity(
       return yield* api.listUsers();
     }),
   ),
-  ["users"],
+  [Users],
 );
 
 const addUser = apiRuntime.action(
@@ -360,7 +364,7 @@ const addUser = apiRuntime.action(
   }),
   {
     name: "add-user",
-    reactivityKeys: ["users"],
+    reactivityKeys: [Users],
     onTransition: ({ phase }) => {
       if (phase === "failure" || phase === "defect") {
         console.warn("add-user failed");
@@ -612,7 +616,7 @@ const addUser = apiRuntime.optimistic(users).action({
     optimisticUsers.map((user) =>
       user.id === "optimistic" ? savedUser : user
     ),
-  reactivityKeys: ["users"],
+  reactivityKeys: [Users],
 });
 
 addUser.run("Ada");
@@ -631,7 +635,7 @@ const refreshUsers = apiRuntime.action(
     return yield* api.refreshUsers();
   }),
   {
-    reactivityKeys: ["users"],
+    reactivityKeys: [Users],
   },
 );
 ```

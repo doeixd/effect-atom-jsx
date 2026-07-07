@@ -116,17 +116,24 @@ microtask batching.
 ```ts
 import { Reactivity } from "effect-atom-jsx";
 
+// A key witness: the read side and the write side share one literal-typed
+// value, so a typo'd key is a compile error instead of a silent non-refresh.
+const Users = Reactivity.Key.make("users");
+
 class Api extends Effect.Tag("Api")<Api, {
   readonly listUsers: () => Effect.Effect<User[]>
 }>() {
   static live = Layer.succeed(Api, {
-    listUsers: () => Reactivity.tracked(fetchUsers(), { keys: ["users"] }),
+    listUsers: () => Reactivity.tracked(fetchUsers(), { keys: [Users] }),
   });
 }
 
 const addUser = (name: string) =>
-  Reactivity.invalidating(api.addUser(name), ["users"]);
+  Reactivity.invalidating(api.addUser(name), [Users]);
 ```
+
+Parameterized keys use families (`Reactivity.Key.family("user")`, then
+`user(id)`); plain strings remain valid as the dynamic escape hatch.
 
 Swap `Reactivity.live` for `Reactivity.test` in tests and drive invalidation
 manually with `flush()` — no component changes.
@@ -236,7 +243,7 @@ const UserRoute = UserPage.pipe(
   }), {
     staleTime: "30 seconds",
     staleWhileRevalidate: true,
-    reactivityKeys: ["users"],  // invalidate "users" → this loader re-runs
+    reactivityKeys: [Users],  // invalidate the Users key → this loader re-runs
   }),
   Route.title((params, user) => `User: ${user.name}`),
 );
