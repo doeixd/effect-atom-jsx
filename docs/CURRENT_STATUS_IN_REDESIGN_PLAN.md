@@ -780,10 +780,15 @@ library bugs fixed via the test-typecheck gate.
 
 Remaining, in rough priority:
 
-1. **P6 routing consolidation** — pick the unified route model + `RouterRuntime`
-   as canonical, deprecate-and-delete the legacy service-first generation. Now
-   the highest-value structural pass; also clears ~5 of the residual
-   `typecheck:tests` errors (legacy route construction).
+1. **P6 routing consolidation** — **audited + partly done 2026-07-07.** Verdict:
+   routing is a legitimate 3-tier model (history infra / component-first
+   `Component.route` / route-first tree), NOT a legacy-to-delete generation —
+   third "don't delete, reclassify" outcome this session. Reclassified the
+   `Component.route`/`guard` JSDoc. **Remaining (deep, scoped):** dedupe the
+   `Route.page(path,comp)` constructor forms vs piped `Route.path(path)(comp)`
+   (verify redundancy first), and fix the `RouteChildrenEnhancer` dual-overload
+   resolution against `LayoutRoute.pipe` (clears route.test 135/136 + route-loader
+   146). See archive log for the full audit.
 2. **Deep type-helper batch** (clears most of the rest of `typecheck:tests`):
    `Style/Behavior.attachToAllWithCapability` SlotContract over-constraint,
    `SlotMetadataMap` over witness collections, `withRetry` union source,

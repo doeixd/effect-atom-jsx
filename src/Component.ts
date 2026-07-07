@@ -1279,11 +1279,16 @@ function routeErrorTag(error: unknown): string {
 }
 
 /**
- * Transitional routed-component helper.
+ * Component-first routing (Tier 1): attach route context, params/query/hash,
+ * loader, and guards to an **already-composed** component in place. Use this
+ * when the routing decision is local to a component — e.g. retrofitting
+ * routing onto an exported/composed component, or a component-scoped guard.
  *
- * The unified route-first API should prefer `Route.path(...)` and route pipe
- * composition. This helper remains only for the narrower remaining
- * routed-component setup cases still under migration.
+ * The route-first tree API (`Route.page`/`Route.path(...)` + pipe enhancers,
+ * `Route.children`, `Route.define`, driven by `RouterRuntime`) is the other
+ * tier: use it for app-wide route trees, nested layouts, SSR/streaming, and
+ * tree-wide loader coordination. Neither tier is legacy — they are different
+ * abstraction levels over the shared `Route.Router` history service.
  */
 export function route<P = Record<string, string>, Q = Record<string, string | undefined>, H = string>(
   pattern: string,
@@ -1526,9 +1531,10 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
 }
 
 /**
- * Transitional routed-component guard helper.
- *
- * New code should prefer `Route.guard(...)` on unified routes.
+ * Component-scoped guard (Tier 1, pairs with `Component.route`): runs a check
+ * Effect in the component's setup and short-circuits render on failure. Use
+ * for guards local to a component; use `Route.guard(...)` on unified routes
+ * for tree-level guards. Both tiers are supported.
  */
 export function guard<Req, E>(
   check: Effect.Effect<unknown, E, Req>,

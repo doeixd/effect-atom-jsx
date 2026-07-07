@@ -166,7 +166,7 @@ backlog + archive log):
 | 5 | Result consolidation (Finding 5) | ✅ release-blocking core done (loaderResult + title/meta emit unified Result; no defect union on golden path); step-2 internal cache/wire cleanup is a non-blocking follow-up pass |
 | 6 | Typed-tree/claims sweep (Finding 6) | ✅ claims scoped in docs; typed-tree-by-default is v1.x per #2 |
 | 7 | Reactivity key witnesses (P2) | ✅ shipped end-to-end |
-| 8 | Routing consolidation (P6) | ◑ survivors decided + legacy deprecated in docs; **physical delete is a follow-up pass** |
+| 8 | Routing consolidation (P6) | ◑ audited → **3-tier model, not a deletion** (history infra / component-first `Component.route` / route-first tree); reclassified the misleading "transitional" JSDoc. Remaining: dedupe constructor-vs-piped forms + fix `RouteChildrenEnhancer` overloads (deep, scoped) |
 | 9 | Docs/archive alignment (PR2) + green gates | ◑ log + fully-historical docs archived; exploratory-doc sweep remains; gates green |
 | 10 | Services/layers S1/S2/S3 | ✅ mount-with-runtime shipped, guide shipped, isolation test green |
 

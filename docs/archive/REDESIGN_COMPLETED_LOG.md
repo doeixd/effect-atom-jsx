@@ -1065,3 +1065,39 @@ removed" to "low-level/general, intentionally retained"); updated `docs/API.md`
 to the 2-tier framing. No deletion. Finding-3 is resolved by clarifying the
 tiers rather than removing the general forms. Gates green (typecheck + style/
 composables tests).
+
+### P6 Routing Consolidation: Audit + Tier Reclassification (2026-07-07)
+
+Audited the routing subsystem before any deletion (per the Finding-3 lesson).
+Verdict — for the THIRD time this session, "delete the legacy API" was the
+wrong frame. Routing is a legitimate **3-tier model**, none redundant:
+
+- **Tier 0 — history infrastructure:** `Route.Router.{Browser,Hash,Server,
+  Memory}`. Genuinely distinct implementations; used by both construction
+  tiers. Keep unchanged.
+- **Tier 1 — component-first:** `Component.route(pattern, opts)` /
+  `Component.guard(...)`. Attaches route context/params/loader/guards to an
+  **already-composed** component in place. Cannot be expressed by the
+  route-node API (which needs a raw/pre-composed component at declaration).
+  Used across ~11 tests + 4 example projects. **Load-bearing.**
+- **Tier 2 — route-first tree:** `Route.page`/`Route.path(...)` + pipe
+  enhancers, `Route.children`/`define`/`mount`, driven by `RouterRuntime`.
+  App-wide trees, nested layouts, SSR/streaming, tree-wide loader
+  coordination. The dominant modern pattern (~90 test uses). Canonical for
+  new app structure.
+
+Action taken: **reclassified** `Component.route`/`Component.guard` JSDoc from
+"Transitional... remains only for narrower cases under migration" (misleading)
+to "component-first routing tier" with a clear pointer to when to use each
+tier. No deletion.
+
+Genuine consolidation work that remains (scoped, deferred — deep + risky):
+- The route-node **constructor forms** (`Route.page(path, comp)`,
+  `Route.layout(comp)`, `Route.index(comp)`) duplicate the piped forms
+  (`Route.path(path)(comp)` etc.) — candidate for deprecation, but verify
+  redundancy first (kind tags may differ).
+- `RouteChildrenEnhancer` dual overloads (`AppRouteNode` + `LayoutRoute`)
+  don't resolve against `LayoutRoute.pipe`, causing ~3 `typecheck:tests`
+  errors (route.test 135/136, route-loader 146). Fixing needs careful
+  alignment of the pipe signature and the enhancer intersection across the
+  two node representations — focused type surgery, not a rushed change.
