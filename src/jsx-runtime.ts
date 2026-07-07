@@ -43,6 +43,14 @@ export namespace JSX {
   /** The result of a JSX expression (a DOM node or reactive node at runtime). */
   export type Element = unknown;
 
+  /**
+   * What may appear in element position (`<X/>`). Intrinsic host tags are
+   * strings; components are any callable — including the branded callable
+   * `Component` objects `Component.make(...)` returns, which are not plain
+   * functions and would otherwise be rejected.
+   */
+  export type ElementType = string | ((props: any) => unknown) | { (props: any): unknown };
+
   export interface ElementChildrenAttribute {
     readonly children: object;
   }
@@ -52,14 +60,12 @@ export namespace JSX {
     readonly key?: string | number;
   }
 
-  /** A DOM-ish event; permissive until full per-element typing lands. */
-  export interface JSXEvent {
-    readonly target: any;
-    readonly currentTarget: any;
-    preventDefault(): void;
-    stopPropagation(): void;
-    readonly [key: string]: any;
-  }
+  /**
+   * Event-handler type. Permissive (`any` event) so consumer handlers can be
+   * annotated with DOM `Event`/`InputEvent`/etc. without friction until full
+   * per-element event typing lands.
+   */
+  export type EventHandler = (event: any) => unknown;
 
   /** Base attribute bag: known reactive events/refs plus permissive extras. */
   export interface HTMLAttributes {
@@ -70,11 +76,11 @@ export namespace JSX {
     readonly id?: Reactive<string | undefined>;
     readonly style?: Reactive<string | Record<string, unknown> | undefined>;
     readonly slot?: string;
-    readonly onClick?: (event: JSXEvent) => void;
-    readonly onInput?: (event: JSXEvent) => void;
-    readonly onChange?: (event: JSXEvent) => void;
-    readonly onSubmit?: (event: JSXEvent) => void;
-    readonly onKeyDown?: (event: JSXEvent) => void;
+    readonly onClick?: EventHandler;
+    readonly onInput?: EventHandler;
+    readonly onChange?: EventHandler;
+    readonly onSubmit?: EventHandler;
+    readonly onKeyDown?: EventHandler;
     readonly [attr: string]: unknown;
   }
 
