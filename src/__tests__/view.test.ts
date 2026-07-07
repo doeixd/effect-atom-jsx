@@ -682,4 +682,45 @@ describe("View", () => {
       expect(view.slotMetadata?.input?.allowedEvents).toEqual([View.Event.Input]);
     });
   });
+
+  describe("Slots.define", () => {
+    it("derives witnesses and default handles from one declaration", () => {
+      const FieldSlots = View.Slots.define({
+        root: { capability: Element.Capability.Container },
+        input: {
+          capability: Element.Capability.TextInput,
+          allowedEvents: [View.Event.Input, View.Event.Focus],
+        },
+        secret: { capability: Element.Capability.Interactive, hidden: true },
+      });
+
+      // witness names come from record keys
+      expect(FieldSlots.bound.root.slot.name).toBe("root");
+      expect(FieldSlots.bound.input.slot.name).toBe("input");
+      // metadata carried through
+      expect(FieldSlots.bound.input.slot.metadata.allowedEvents).toEqual([View.Event.Input, View.Event.Focus]);
+      expect(FieldSlots.bound.secret.slot.metadata.hidden).toBe(true);
+      // default handles derived from capability
+      expect(FieldSlots.bound.root.handle.kind).toBe("Container");
+      expect(FieldSlots.bound.input.handle.kind).toBe("TextInput");
+      // the text-input handle is a real focusable handle
+      let focused = false;
+      Effect.runSync(FieldSlots.bound.input.handle.on("focus", () => {
+        focused = true;
+      }));
+      FieldSlots.bound.input.handle.focus?.();
+      expect(focused).toBe(true);
+    });
+
+    it("is equivalent to make + bind for fromSlots and metadata derivation", () => {
+      const slots = View.Slots.define({
+        root: { capability: Element.Capability.Container },
+      });
+      const view = View.fromSlots(slots, "node");
+
+      expect(view.slots.root).toBe(slots.bound.root.handle);
+      expect(view.slotMetadata?.root?.capability).toBe(Element.Capability.Container);
+      expect(View.node(view)).toBe("node");
+    });
+  });
 });

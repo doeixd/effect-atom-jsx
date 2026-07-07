@@ -22,6 +22,7 @@ import {
   defineQuery,
   ManagedRuntimeContext,
   mount as mountRuntime,
+  mountWithManagedRuntime,
   type BridgeError,
   type MutationSupersededError,
   type Result,
@@ -1596,11 +1597,27 @@ export interface MountOptions<Props, R, E> {
   readonly supervisor?: unknown;
 }
 
+/**
+ * Mount options for the one-composition-root golden path: reuse the service
+ * world of an existing `Atom.runtime(layer)` instead of building a second one
+ * from a separate layer value. The caller keeps ownership of the runtime —
+ * disposing the mount tears down the tree, not the shared runtime.
+ */
+export interface MountWithRuntimeOptions<Props, R, E> {
+  readonly props: Props;
+  readonly runtime: Atom.AtomRuntime<R, E>;
+  readonly target: Element;
+  readonly onScopeError?: (cause: Cause.Cause<unknown>) => void;
+  readonly supervisor?: unknown;
+}
+
 export function mount<Props, Req, E>(
   component: Component<Props, Req, E, any>,
-  options: MountOptions<Props, Req, any>,
+  options: MountOptions<Props, Req, any> | MountWithRuntimeOptions<Props, Req, any>,
 ): () => void {
-  const dispose = mountRuntime(() => component(options.props), options.target, options.layer as Layer.Layer<Req, any, never>);
+  const dispose = "runtime" in options
+    ? mountWithManagedRuntime(() => component(options.props), options.target, options.runtime.managed)
+    : mountRuntime(() => component(options.props), options.target, options.layer as Layer.Layer<Req, any, never>);
   return () => {
     dispose();
   };

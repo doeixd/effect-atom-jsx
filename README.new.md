@@ -151,32 +151,26 @@ import { Effect } from "effect";
 
 // One contract: the view is built from it, styles and behaviors are checked
 // against it. Rename a slot and every mismatched attachment fails to compile.
-const Root  = View.Slot.make("root",  { capability: Element.Capability.Container });
-const Label = View.Slot.make("label", { capability: Element.Capability.Container });
-const Input = View.Slot.make("input", {
-  capability: Element.Capability.TextInput,
-  allowedEvents: [View.Event.Input, View.Event.Focus],
-});
-
-const FieldSlots = View.Slots.make({
-  root:  View.Slot.bind(Root,  Element.container()),
-  label: View.Slot.bind(Label, Element.container()),
-  input: View.Slot.bind(Input, Element.textInput()),
+const FieldSlots = View.Slots.define({
+  root:  { capability: Element.Capability.Container },
+  label: { capability: Element.Capability.Container },
+  input: {
+    capability: Element.Capability.TextInput,
+    allowedEvents: [View.Event.Input, View.Event.Focus],
+  },
 });
 
 const Field = Component.make(
   Component.props<{ readonly label: string }>(),
   Component.require<never>(),
-  () => Effect.succeed({ slots: View.Slots.handles(FieldSlots) }),
+  () => Effect.succeed({}),
   (props) =>
-    View.fromSlots(FieldSlots, null, {
-      tree: View.element(Root, {
-        children: [
-          View.element(Label, { children: [View.textNode(props.label)] }),
-          View.element(Input),
-        ],
-      }),
-    }),
+    View.fromSlots(FieldSlots, (
+      <label>
+        <span>{props.label}</span>
+        <input />
+      </label>
+    )),
 ).pipe(Component.withSlots(FieldSlots));
 
 // Appearance, from outside — token paths are type-checked against the theme.

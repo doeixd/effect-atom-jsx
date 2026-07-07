@@ -1,7 +1,9 @@
 # V1 Scope
 
-Status: **draft — needs review/ratification** (created 2026-07-06 from the
-design-review round-3 PR1 item in `CURRENT_STATUS_IN_REDESIGN_PLAN.md`).
+Status: **ratified 2026-07-06** (created from the design-review round-3 PR1
+item in `CURRENT_STATUS_IN_REDESIGN_PLAN.md`; all DECIDE markers resolved
+2026-07-06 under the "finish the plan" directive — each resolution is
+recorded inline with its rationale).
 
 Every other plan doc is additive. This one exists to say what v1 does **not**
 include, so the release can converge. When triaging any backlog item, the
@@ -46,10 +48,13 @@ Everything here is implemented today or is tracked release-blocking work.
   `Component.withSlots`, capability hierarchy, hidden slots, remaps
 - Golden-path compression + cheap no-contract tier (Finding 1) —
   release-blocking for DX credibility
-- Witness-aware JSX tree authoring (Finding 2) — DECIDE: v1-blocking or
-  v1.x? Recommendation: v1-blocking; it is the authored surface users judge
-  first, and shipping `View.element(...)` chains as the public face will set
-  the framework's reputation.
+- Witness-aware JSX authoring (Finding 2) — **DECIDED 2026-07-06:** JSX is
+  *already* the authored markup surface — `View.fromSlots(slots, <jsx/>)`
+  accepts a JSX node directly (see the README Counter quick start). V1 ships
+  that as the golden path and demotes `View.element(...)` builder chains to
+  the typed-tree/generated layer. Typed-tree extraction *from* JSX (compiler
+  integration) is v1.x. Finding 2 is satisfied for v1 by correcting the
+  golden-path docs, not by a JSX transform.
 - Style system: slot pieces, compose, variants, recipes, states, responsive,
   nest, vars, tokens/Theme, platform property diagnostics
 - Behavior system: `forSlots`, event requirements, compose, behavior pack
@@ -69,18 +74,23 @@ Everything here is implemented today or is tracked release-blocking work.
   path + loader seeding helpers
 - Hydration: `dehydrate` / `hydrate` with strict validation
 - `ServerRoute` kinds + schema decoding + `dispatch` + document rendering
-- Routing consolidation (P6): the legacy `Route` service generation and
-  superseded route-node helpers get deprecate-and-delete before v1 —
-  release-blocking. DECIDE: exact survivor list (unified model +
-  `RouterRuntime` recommended).
+- Routing consolidation (P6): **DECIDED 2026-07-06** — survivors are the
+  unified route model (route nodes, `Route.path/paramsSchema/loader/...`),
+  `RouterRuntime`, and `ServerRoute`. The legacy service-first generation
+  (`Component.route(...)` as the authored entry, direct `RouterService`
+  golden-path usage) is deprecated in v1 docs; physical deletion happens in
+  a dedicated consolidation pass (examples must migrate first) and remains
+  release-blocking work.
 
 ### Services / layers
 
 - One-composition-root doctrine documented (S1): one `AppLayer` feeds both
-  `Atom.runtime(...)` and `Component.mount(...)`. DECIDE: should
-  `Component.mount` accept an `AtomRuntime` directly so the two worlds are
-  structurally one? Resolve with this doc's ratification — it is an API
-  shape question that gets harder after v1.
+  `Atom.runtime(...)` and `Component.mount(...)`. **DECIDED + IMPLEMENTED
+  2026-07-06:** `Component.mount` now also accepts
+  `{ runtime: Atom.AtomRuntime }` (`MountWithRuntimeOptions`), reusing the
+  runtime's `ManagedRuntime` so the two worlds are structurally one; the
+  caller keeps runtime ownership (mount dispose does not dispose the shared
+  runtime).
 - `docs/SERVICES_AND_LAYERS.md` (S2): provision-tier decision table,
   memoization/sharing semantics, layer failure behavior — ships with v1
   docs.
@@ -108,17 +118,17 @@ Everything here is implemented today or is tracked release-blocking work.
   for v1.
 - **Behavior binding contracts + state-aware styling (P1).** High value, but
   it is new API surface with real design risk; better designed calmly in
-  v1.x than rushed. DECIDE: confirm deferral — this is the one deferred item
-  users will ask for first.
+  v1.x than rushed. **DECIDED 2026-07-06: deferral confirmed** — first
+  design item of v1.x.
 - **Unified diagnostics pipeline / "af-ui doctor" CLI (P3).** V1 keeps
   explicit validators; the dev-mode auto-report layer and CLI come after.
 - **User-declared token schema (P4).** V1 ships the built-in taxonomy;
   module-augmentation/generic theme schema is v1.x.
 - **Test kit package (P5).** `Reactivity.test` and existing harness patterns
   ship; the packaged driver API is v1.x.
-- **Package split (P7).** V1 ships one package. The layering (core →
-  view/style/behavior → router → server) is enforced internally now so a
-  later split is cheap. DECIDE: confirm.
+- **Package split (P7).** **DECIDED 2026-07-06: confirmed** — v1 ships one
+  package. The layering (core → view/style/behavior → router → server) is
+  enforced internally so a later split is cheap; split re-evaluated post-v1.
 - **A11y pattern contracts (P8), Forms vertical (P9).** Both are flagship
   v1.x features; v1 ships the primitives they compose.
 - **Exit-animation deferred unmount (P10).** V1 needs only the design note
@@ -128,14 +138,14 @@ Everything here is implemented today or is tracked release-blocking work.
   Post-v1 implementation, but the design should be validated against the
   Registry/Reactivity data model before the runtime surface freezes.
 - **Schema-validated action inputs (P13)** (optional
-  `Atom.action(fn, { inputSchema })`). v1.x by default. DECIDE: pull the
-  single-flight-invokable subset into v1 — remotely-invokable actions
-  accepting unvalidated input is a boundary-hardening question, not a
-  feature question.
+  `Atom.action(fn, { inputSchema })`). **DECIDED 2026-07-06:** the
+  boundary-hardening subset is pulled into v1 — remotely-invokable actions
+  accepting unvalidated input is a correctness/security question. Local-only
+  ergonomic extensions stay v1.x.
 - **Gated subscription primitive (P12)** (`Atom.Stream.gated(...)` /
-  `Component.subscription(...)`). Small standalone win; v1.x unless it falls
-  out cheaply of existing stream helpers. DECIDE: pull into v1 if the setup
-  helper form needs no new runtime machinery.
+  `Component.subscription(...)`). **DECIDED 2026-07-06: v1.x confirmed** —
+  the dependency-driven scope-restart semantics are real new runtime
+  machinery, not a cheap composition of existing helpers.
 - **`RouterRuntime` cancellation/supersession polish** beyond what exists.
   Current guarded in-flight model ships; deeper Effect-fiber interruption
   integration is v1.x.
@@ -147,7 +157,8 @@ Everything here is implemented today or is tracked release-blocking work.
 From findings/proposals, exactly these gate v1:
 
 1. Golden-path compression + cheap tier (Finding 1)
-2. Witness-aware JSX authoring (Finding 2 — pending DECIDE above)
+2. JSX-as-node golden path documented; builders demoted (Finding 2 — per
+   decision above)
 3. Attachment API consolidation (Finding 3)
 4. Inference audit (Finding 4)
 5. Result consolidation (Finding 5)

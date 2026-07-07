@@ -1241,7 +1241,25 @@ export function mount<R, E>(
   container: Element,
   layer: Layer.Layer<R, E, never>,
 ): () => void {
-  const managed = ManagedRuntime.make(layer);
+  return mountWithManagedRuntime(fn, container, ManagedRuntime.make(layer), { ownsRuntime: true });
+}
+
+/**
+ * Mount using a caller-owned `ManagedRuntime` (e.g. `Atom.runtime(layer).managed`),
+ * so the atom world and the component tree share one service world instead of
+ * building two from separate layer values.
+ *
+ * The caller owns the runtime's lifecycle: disposing the returned function
+ * tears down the render tree and component scope but does not dispose the
+ * shared runtime.
+ */
+export function mountWithManagedRuntime(
+  fn: () => unknown,
+  container: Element,
+  managed: ManagedRuntime.ManagedRuntime<any, any>,
+  options?: { readonly ownsRuntime?: boolean },
+): () => void {
+  const ownsRuntime = options?.ownsRuntime ?? false;
   const maybeReactivity = managed.runSync(
     Effect.match(Effect.service(ReactivityTag), {
       onFailure: () => null,
@@ -1270,9 +1288,11 @@ export function mount<R, E>(
     closeComponentScope(rootScope);
     restoreReactivity();
     restoreSingleFlightTransport();
-    void managed.dispose().catch((err) => {
-      console.error("[effect-atom-jsx] mount: failed to dispose ManagedRuntime:", err);
-    });
+    if (ownsRuntime) {
+      void managed.dispose().catch((err) => {
+        console.error("[effect-atom-jsx] mount: failed to dispose ManagedRuntime:", err);
+      });
+    }
   };
 }
 

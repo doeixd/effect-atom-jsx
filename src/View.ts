@@ -387,6 +387,68 @@ export namespace Slots {
     };
   }
 
+  /** Options for one slot in `Slots.define(...)` — `Slot.make` options minus the name (taken from the record key). */
+  export interface DefineOptions {
+    readonly capability?: SlotCapability;
+    readonly allowedEvents?: readonly (string | EventName)[];
+    readonly allowedAttributes?: readonly (string | AttributeName)[];
+    readonly platformRequirements?: readonly (string | RequirementName)[];
+    readonly hidden?: boolean;
+  }
+
+  type DefinedCapability<O extends DefineOptions> = O["capability"] extends SlotCapability ? O["capability"]
+    : typeof Element.Capability.Base;
+
+  type DefinedSlot<Name extends string, O extends DefineOptions> = Slot.Slot<
+    Name,
+    DefinedCapability<O>,
+    O["allowedEvents"] extends readonly (string | EventName)[] ? O["allowedEvents"] : readonly [],
+    O["allowedAttributes"] extends readonly (string | AttributeName)[] ? O["allowedAttributes"] : readonly [],
+    O["platformRequirements"] extends readonly (string | RequirementName)[] ? O["platformRequirements"] : readonly [],
+    O["hidden"] extends true ? true : false
+  >;
+
+  type DefaultHandleFor<C> = MetadataToken.NameOf<C> extends "TextInput" ? Element.TextInput
+    : MetadataToken.NameOf<C> extends "Focusable" ? Element.Focusable
+    : MetadataToken.NameOf<C> extends "Container" ? Element.Container
+    : MetadataToken.NameOf<C> extends "Draggable" ? Element.Draggable
+    : MetadataToken.NameOf<C> extends "Collection" ? Element.Collection<Element.Handle>
+    : MetadataToken.NameOf<C> extends "Interactive" ? Element.Interactive
+    : Element.Handle;
+
+  export type Defined<T extends Record<string, DefineOptions>> = Slots<{
+    readonly [K in keyof T & string]: Slot.Bound<DefinedSlot<K, T[K]>, DefaultHandleFor<DefinedCapability<T[K]>>>;
+  }>;
+
+  /**
+   * One-step authored slot contract: witness names come from the record keys
+   * and default handles are derived from each slot's capability, collapsing
+   * the `Slot.make` x N + `Slot.bind` map ceremony into a single declaration.
+   *
+   * ```ts
+   * const FieldSlots = View.Slots.define({
+   *   root: { capability: Element.Capability.Container },
+   *   input: {
+   *     capability: Element.Capability.TextInput,
+   *     allowedEvents: [View.Event.Input, View.Event.Focus],
+   *   },
+   * });
+   * ```
+   *
+   * Equivalent to `Slots.make({ root: Slot.bind(Slot.make("root", ...), Element.container()), ... })`.
+   * Use `Slots.make` + `Slot.bind` directly when a slot needs a custom handle.
+   */
+  export function define<const T extends Record<string, DefineOptions>>(
+    definitions: T,
+  ): Defined<T> {
+    const bound: Record<string, Slot.BoundAny> = {};
+    for (const [name, options] of Object.entries(definitions)) {
+      const slot = Slot.make(name, options as never);
+      bound[name] = { slot, handle: Element.handleFor(slot.metadata.capability) };
+    }
+    return make(bound as never) as unknown as Defined<T>;
+  }
+
   export function handles<T extends Any>(slots: T): HandlesOf<T> {
     const out: Record<string, SlotHandle> = {};
     for (const [name, bound] of Object.entries(slots.bound)) {

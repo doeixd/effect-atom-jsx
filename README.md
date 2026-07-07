@@ -127,19 +127,14 @@ those committed bindings reactively:
 ```tsx
 import { Component, View, Element } from "effect-atom-jsx";
 
-const Root = View.Slot.make("root", {
-  capability: Element.Capability.Container,
-});
-
-const CounterSlots = View.Slots.make({
-  root: View.Slot.bind(Root, Element.container()),
+const CounterSlots = View.Slots.define({
+  root: { capability: Element.Capability.Container },
 });
 
 const Counter = Component.make(
   Component.props<{ readonly initial: number }>(),
   Component.require<never>(),
   Component.setup<{ readonly initial: number }>()
-    .value("slots", () => View.Slots.handles(CounterSlots))
     .bind("count", ({ props }) => Component.state(props.initial))
     .value("increment", ({ bindings }) => () => {
       bindings.count.update((count) => count + 1);

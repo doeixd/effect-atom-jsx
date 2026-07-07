@@ -185,6 +185,23 @@ function makeHandle<T extends string>(tag: T): Handle & { readonly kind: T } {
   return base;
 }
 
+/**
+ * Create the default handle for a capability, using the capability hierarchy
+ * to pick the most specific built-in factory (a custom capability extending
+ * `TextInput` gets a text-input handle). Unknown capabilities get a plain
+ * base handle tagged with the capability name.
+ */
+export function handleFor(capability: string | Capability.Any): Handle | Collection<Handle> {
+  const name = nameOfCapability(capability);
+  if (extendsCapability(name, "TextInput")) return textInput();
+  if (extendsCapability(name, "Focusable")) return focusable();
+  if (extendsCapability(name, "Draggable")) return draggable();
+  if (extendsCapability(name, "Container")) return container();
+  if (extendsCapability(name, "Collection")) return collection();
+  if (extendsCapability(name, "Interactive")) return interactive();
+  return makeHandle(name);
+}
+
 export function interactive(): Interactive {
   return makeHandle("Interactive") as Interactive;
 }

@@ -70,43 +70,30 @@ Here is a complete example demonstrating the inside-out workflow, following the 
 import { Behavior, Component, Element, Style, View } from "af-ui";
 import { Effect } from "effect";
 
-// 1. Define the Slot Contract (first-class slot witnesses)
-const Root = View.Slot.make("root", {
-  capability: Element.Capability.Container,
+// 1. Define the Slot Contract (first-class slot witnesses).
+//    Names come from the keys; default handles derive from capabilities.
+const FieldSlots = View.Slots.define({
+  root: { capability: Element.Capability.Container },
+  label: { capability: Element.Capability.Container },
+  input: {
+    capability: Element.Capability.TextInput,
+    allowedEvents: [View.Event.Input, View.Event.Focus],
+    allowedAttributes: [View.Attribute.AriaLabel],
+  },
 });
 
-const Label = View.Slot.make("label", {
-  capability: Element.Capability.Container,
-});
-
-const Input = View.Slot.make("input", {
-  capability: Element.Capability.TextInput,
-  allowedEvents: [View.Event.Input, View.Event.Focus],
-  allowedAttributes: [View.Attribute.AriaLabel],
-});
-
-const FieldSlots = View.Slots.make({
-  root: View.Slot.bind(Root, Element.container()),
-  label: View.Slot.bind(Label, Element.container()),
-  input: View.Slot.bind(Input, Element.textInput()),
-});
-
-// 2. Define the Component (setup logic + structural view)
+// 2. Define the Component (setup for logic, JSX for structure)
 const Field = Component.make(
   Component.props<{ readonly label: string }>(),
   Component.require<never>(),
-  () => Effect.succeed({ slots: View.Slots.handles(FieldSlots) }),
+  () => Effect.succeed({}),
   (props) =>
-    View.fromSlots(FieldSlots, null, {
-      tree: View.element(Root, {
-        children: [
-          View.element(Label, {
-            children: [View.textNode(props.label)],
-          }),
-          View.element(Input),
-        ],
-      }),
-    }),
+    View.fromSlots(FieldSlots, (
+      <label>
+        <span>{props.label}</span>
+        <input />
+      </label>
+    )),
 ).pipe(
   Component.withSlots(FieldSlots),
 );
