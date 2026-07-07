@@ -106,3 +106,27 @@ Style.forSlots(FieldSlots)({
   // @ts-expect-error unknown slot in a contract-keyed style
   missing: Style.slot({ color: "red" }),
 });
+
+// ── D1: compile errors are engineered messages, not structural dumps ──
+const InputWitness = View.Slot.make("input", { capability: Element.Capability.TextInput });
+
+// invalid binding rejects with a readable branded message...
+type BindErr = View.BindableHandle<typeof InputWitness, Element.Container>;
+const bindErrText: BindErr extends View.TypeErrorMessage<infer M> ? M : never =
+  "Handle capability 'Container' does not satisfy slot 'input' capability 'TextInput'";
+void bindErrText;
+
+// ...and the invalid call itself still fails to compile
+// @ts-expect-error a container handle cannot bind to a TextInput slot
+View.Slot.bind(InputWitness, Element.container());
+
+// valid bindings resolve to unknown — no error brand, no constraint noise
+type BindOk = View.BindableHandle<typeof InputWitness, Element.TextInput>;
+const bindOk: BindOk extends View.TypeErrorMessage<string> ? false : true = true;
+void bindOk;
+
+// hierarchy-aware: a TextInput handle satisfies a Focusable slot
+const FocusWitness = View.Slot.make("focus", { capability: Element.Capability.Focusable });
+type BindChildOk = View.BindableHandle<typeof FocusWitness, Element.TextInput>;
+const bindChildOk: BindChildOk extends View.TypeErrorMessage<string> ? false : true = true;
+void bindChildOk;

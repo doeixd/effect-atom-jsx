@@ -137,8 +137,33 @@ type SlotCapabilityName<T> = T extends Slot.Slot<any, infer Capability, any, any
   ? MetadataToken.NameOf<Capability>
   : never;
 
-type BindableHandle<S extends Slot.Any, H extends SlotHandle> =
-  SlotCapabilityName<S> extends HandleCapabilityAssignableNames<H> ? H : never;
+type HandleCapabilityName<T> =
+  T extends Element.Collection<Element.Handle> ? "Collection"
+    : T extends Element.TextInput ? "TextInput"
+      : T extends Element.Draggable ? "Draggable"
+        : T extends Element.Container ? "Container"
+          : T extends Element.Focusable ? "Focusable"
+            : T extends Element.Interactive ? "Interactive"
+              : "Base";
+
+/**
+ * Branded compile-time diagnostic. When an attachment or binding is invalid,
+ * the type error surfaces this readable message instead of an opaque
+ * structural dump of witness internals.
+ */
+export interface TypeErrorMessage<Message extends string> {
+  readonly "~af-ui/error": Message;
+}
+
+/**
+ * The compile-time check behind `Slot.bind(...)`: resolves to `unknown` when
+ * the handle's capability satisfies the slot's capability (hierarchy-aware),
+ * or to a readable `TypeErrorMessage` otherwise. Exported so error-text
+ * expectations can be asserted in type tests.
+ */
+export type BindableHandle<S extends Slot.Any, H extends SlotHandle> =
+  SlotCapabilityName<S> extends HandleCapabilityAssignableNames<H> ? unknown
+    : TypeErrorMessage<`Handle capability '${HandleCapabilityName<H>}' does not satisfy slot '${Slot.NameOf<S>}' capability '${SlotCapabilityName<S>}'`>;
 
 type Pipeable<Self> = {
   pipe(): Self;
