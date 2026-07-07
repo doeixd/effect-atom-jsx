@@ -1039,3 +1039,29 @@ The remaining 16 are two tracked categories, neither cheaply forced green now:
 
 Making `typecheck:tests` a required green gate remains coupled to the
 physical-deletion pass plus a focused batch of the deep-drift helper fixes.
+
+### Finding-3 Correction: Attach Forms Are a Tier, Not Redundant (2026-07-07)
+
+Set out to do the Finding-3/P6 physical deletion of the "deprecated" attach
+forms (`Style.attach`, `Style.attachByView`, `Behavior.attach`). Checking
+capability coverage before deleting revealed the deletion premise was wrong:
+
+- `Behavior.attach(behavior, { select, merge? })` — `select` picks the
+  behavior's elements from ANY bindings, including derived/computed values
+  (`items: () => bindings.filtered()`), not just named slots. The combobox /
+  search / nav / selection tests rely on this. The contract-keyed forms
+  (`attachToSlots`/`attachBySlotContract`/`attachBySlots`) cannot express it.
+- `Style.attach` targets a component's setup `bindings.slots` directly, for
+  components that do NOT publish a `View.Slots` contract. `attachToSlots`
+  requires a contract; `attachBySlots` requires a string slot map.
+
+So the forms are a legitimate **2-tier model** — general low-level
+(`attach`/`attachByView`/`Behavior.attach`) + typed sugar
+(`attach*Slots*`) — not redundancy. The original "too many ways to do one
+thing" critique conflated general-purpose with redundant.
+
+Action: **un-deprecated** all three (JSDoc reframed from "deprecated, will be
+removed" to "low-level/general, intentionally retained"); updated `docs/API.md`
+to the 2-tier framing. No deletion. Finding-3 is resolved by clarifying the
+tiers rather than removing the general forms. Gates green (typecheck + style/
+composables tests).

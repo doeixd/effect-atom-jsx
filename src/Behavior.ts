@@ -170,12 +170,14 @@ export function decorator<Elements, Bindings, Req, E>(
 }
 
 /**
- * @deprecated Legacy attachment form (selector-function based). The
- * consolidated surface is exactly three forms:
- * `Behavior.attachToSlots(behavior, slots)` (authored, contract-keyed),
- * `Behavior.attachBySlotContract(behavior, remap)` (typed remapping), and
- * `Behavior.attachBySlots(behavior, stringMap)` (dynamic/generated). Will be
- * removed from the public surface in the v1 consolidation pass.
+ * Low-level behavior attachment: a `select` function picks the behavior's
+ * elements from **any** bindings — including derived/computed values
+ * (`items: () => bindings.filtered()`), not just named slots — with an
+ * optional `merge`. This is strictly more general than the contract-keyed
+ * forms (`attachToSlots` / `attachBySlotContract` / `attachBySlots`), which
+ * are typed sugar over it for the slot-mapped common case. Prefer those when
+ * a `View.Slots` contract exists; use this when selecting arbitrary bindings.
+ * Intentionally retained as the general form, not deprecated.
  */
 export function attach<Elements, AddedBindings, BR, BE, Props, Req, E, Bindings>(
   behavior: Behavior<Elements, AddedBindings, BR, BE>,

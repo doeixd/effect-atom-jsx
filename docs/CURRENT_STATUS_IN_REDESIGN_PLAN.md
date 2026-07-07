@@ -608,10 +608,10 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Golden-path compression (Finding 1): reduce the authored slot-contract Field example to ~15 lines via contract-inferring sugar (`Component.slots(...)` / `Component.viewFromSlots(...)` or equivalent) without losing the published contract.
 - [ ] Cheap tier for one-off structure (Finding 1): document and, if needed, add a no-contract authoring tier for private/app-local components with zero slot ceremony.
 - [ ] Witness-aware JSX authoring (Finding 2): produce typed `tree` metadata from JSX instead of hand-written `View.element(...)` chains; demote builder calls to the generated/renderer-neutral layer.
-- [ ] Attachment API consolidation (Finding 3): **demotion landed 2026-07-06** — `Style.attach`, `Style.attachByView`, and `Behavior.attach` carry `@deprecated` JSDoc with migration notes to the three canonical forms; internal callers repointed at non-deprecated impls so canonical paths emit no deprecation noise; API.md updated. Remaining: physical removal in the v1 consolidation pass after migrating the tests/behavior-pack call sites that still use the legacy forms.
+- [x] Attachment API consolidation (Finding 3): **resolved 2026-07-07 — with a correction.** Attempting the planned physical deletion revealed the premise was wrong: `Style.attach`/`attachByView` and `Behavior.attach` are **not** redundant legacy forms. They are the **general low-level tier** — `Behavior.attach`'s `select` picks elements from *any* bindings (including derived values like `() => bindings.filtered()`), and `Style.attach` targets setup `bindings.slots` for components with **no published contract** — capabilities the three contract-keyed forms cannot express. So instead of deleting, **un-deprecated and reclassified** them as the general escape hatch the slot-contract forms are typed sugar over (JSDoc + API.md corrected). The real consolidation outcome: a clear 2-tier model (general `attach`/`attachByView`/`Behavior.attach` ← low-level; `attachToSlots`/`attachBySlotContract`/`attachBySlots` ← typed sugar), not a deletion. The "too many ways" critique conflated general-purpose with redundant.
 - [ ] Finish the `View.make` + `slotMetadata` demotion sweep (Finding 3): generated/dynamic escape hatch only; decide public fate of `View.slot(...)` / `View.hidden(...)`.
 - [ ] Inference audit (Finding 4): **authored path verified 2026-07-06** — `src/type-tests/slots-define.ts` proves the golden path (props/require/setup-inferred bindings + `withSlots` contract + `forSlots` attachments) needs zero explicit generics, including precise `SlotContractOf` extraction and unknown-slot rejection; doc/example generic sites corrected (`PROPS_BINDINGS_SLOTS.md`). Remaining, reclassified: the legacy bindings-as-slots convention (tests using `Component.make<{}, never, never, Bindings>` + string-map validation) genuinely requires annotations — that is one more reason it is the deprecated tier, and those sites migrate as part of the Finding-3 demotion rather than being force-de-generic'd.
-- [ ] Test-typecheck gate (hardening): **40 → 16, 2026-07-07** — `npm run typecheck:tests` (`tsconfig.tests.json`) exists and runs. The gate **surfaced and fixed FIVE real library bugs** (`Atom.family` invisible plain overload, `Component.renderEffect` missing `SlotContract` axis, `Component.route` leaking `RouteContext` into `Req`, `ServerRoute.execute*` over-constrained node type, `Behavior.make` requiring all generics) — decisive validation of the gate's worth. Details + the residual-16 categorization in the archive log. **Remaining is coupled work, not a quick burndown:** ~7 are deprecated-API/legacy-construction tests that get rewritten/deleted by the Finding-3/P6 physical deletion; the rest are deep type-helper drift (`attachToAllWithCapability` SlotContract over-constraint, `withRetry` union source, `componentOf` standalone RouteContext). Making `typecheck:tests` a required green gate = physical-deletion pass + a focused deep-helper batch.
+- [ ] Test-typecheck gate (hardening): **40 → 16, 2026-07-07** — `npm run typecheck:tests` (`tsconfig.tests.json`) exists and runs. The gate **surfaced and fixed FIVE real library bugs** (`Atom.family` invisible plain overload, `Component.renderEffect` missing `SlotContract` axis, `Component.route` leaking `RouteContext` into `Req`, `ServerRoute.execute*` over-constrained node type, `Behavior.make` requiring all generics) — decisive validation of the gate's worth. Details + the residual-16 categorization in the archive log. **Remaining is coupled/deep work, not a quick burndown:** ~5 are P6-coupled legacy route construction (route.test `UnifiedRouteSymbol`/overloads, route-loader `RouteChildrenEnhancer`) that resolve with the routing consolidation; the rest are deep type-helper drift (`attachToAllWithCapability` SlotContract over-constraint, `SlotMetadataMap` over witness collections, `withRetry` union source, `componentOf` standalone RouteContext). Making `typecheck:tests` a required green gate = P6 routing consolidation + a focused deep-helper batch. (Note: after the Finding-3 correction the deprecated-attach tests stay valid — those forms are no longer being deleted.)
 - [x] Result consolidation, release-blocking core (Finding 5): **done 2026-07-07** (steps 0-1). Step 0: characterization tests for the SSR wire round-trip (render→serialize→deserialize→hydrate→first render) + a pinned wire-shape test — none existed, silent-failure surface. Step 1: `Route.loaderResult()` and `Route.title`/`meta` loader callbacks now emit unified `Result` (converted at the loader-cache boundary via `FetchResult.toResult`; found + fixed a real divergence where the legacy component path passed raw FetchResult to head callbacks while the tree path didn't). **Acceptance met:** no `E | { defect: string }` union in any `Route.ts`/`Component.ts` public signature; golden-path loader surfaces emit unified `Result`. 487 tests + gates green.
 - [ ] Result consolidation, internal cleanup (Finding 5 step 2, **not release-blocking**): remove remaining `FetchResult` from internal machinery — loader cache, `SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, `Atom.pull`. Changes the SSR wire format (protected by the step-0 characterization tests). Own focused pass; then `FetchResult` becomes compat-subpath-only and the acceptance grep (`FetchResult` in `Route.ts`/`router-runtime.ts` → zero) can close.
 - [ ] Typed-tree-by-default + claims sweep (Finding 6): authored views always carry `tree` metadata; docs scope type-safety claims to enforced boundaries.
@@ -770,24 +770,31 @@ hardened), the following landed in one push (commits `c013264`..`64cf627`+):
 - **D2** — `llms.txt` first slice.
 - **PR2** — completed-work log + fully-historical docs archived.
 
-### What remains (honest state)
+### What remains (honest state, updated 2026-07-07)
 
-Three **dedicated passes** — each too large/risky to fold into feature work,
-all release-blocking:
+Release-blocking items now resolved or reduced: Finding-1/2/4/6, P2, D1,
+S1-S4, F6 (done earlier); **Finding-3 resolved** (2-tier model, no deletion —
+see backlog); **Finding-5 release-blocking core done** (loaderResult +
+title/meta emit unified Result, defect union gone from public API). Five real
+library bugs fixed via the test-typecheck gate.
 
-1. **Finding-5 Result migration** (~60 sites across routing/SSR/single-flight/
-   `Atom.pull`). Blocked on: needs hydration round-trip + serialize/deserialize
-   tests because the model is on the SSR wire (silent-failure mode). Plan in
-   `RESULT_CONSOLIDATION_PROPOSAL.md`.
-2. **Finding-3 + P6 physical deprecate-and-delete** (legacy attach forms,
-   legacy route service generation). Blocked on: migrating the tests and
-   behavior-pack/example call sites that still use them first.
-3. **PR2 exploratory-doc archive sweep** with inbound-link updates
+Remaining, in rough priority:
+
+1. **P6 routing consolidation** — pick the unified route model + `RouterRuntime`
+   as canonical, deprecate-and-delete the legacy service-first generation. Now
+   the highest-value structural pass; also clears ~5 of the residual
+   `typecheck:tests` errors (legacy route construction).
+2. **Deep type-helper batch** (clears most of the rest of `typecheck:tests`):
+   `Style/Behavior.attachToAllWithCapability` SlotContract over-constraint,
+   `SlotMetadataMap` over witness collections, `withRetry` union source,
+   `Route.componentOf` standalone RouteContext. Then make `typecheck:tests`
+   a required gate.
+3. **Finding-5 step 2 (non-blocking)** — remove `FetchResult` from internal
+   machinery (cache/wire/`Atom.pull`); safe now behind the step-0
+   characterization tests.
+4. **PR2 exploratory-doc archive sweep** with inbound-link updates
    (`view.md`, `router.md`, `style.md`, `composables.md`, `renderer.md`,
    `platform.md`).
-
-Plus the **test-typecheck gate** hardening (add the gate, burn down the ~40
-latent errors) — `tsconfig.tests-check.json` is in-repo as the checking config.
 
 ### Then: v1.x proposals (not release-blocking)
 

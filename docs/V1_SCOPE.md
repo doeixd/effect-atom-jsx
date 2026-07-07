@@ -161,7 +161,7 @@ backlog + archive log):
 |---|---|---|
 | 1 | Golden-path compression + cheap tier (Finding 1) | ✅ `View.Slots.define` + cheap tier shipped, golden path ~15 lines |
 | 2 | JSX-as-node golden path; builders demoted (Finding 2) | ✅ decided + docs corrected |
-| 3 | Attachment API consolidation (Finding 3) | ◑ deprecated legacy forms; **physical removal is a follow-up pass** |
+| 3 | Attachment API consolidation (Finding 3) | ✅ resolved as a 2-tier model (general `attach`/`attachByView`/`Behavior.attach` + typed-sugar `attach*Slots*`); deletion was the wrong call — the general forms cover cases the contract forms can't |
 | 4 | Inference audit (Finding 4) | ✅ authored path proven generic-free |
 | 5 | Result consolidation (Finding 5) | ✅ release-blocking core done (loaderResult + title/meta emit unified Result; no defect union on golden path); step-2 internal cache/wire cleanup is a non-blocking follow-up pass |
 | 6 | Typed-tree/claims sweep (Finding 6) | ✅ claims scoped in docs; typed-tree-by-default is v1.x per #2 |
@@ -170,12 +170,14 @@ backlog + archive log):
 | 9 | Docs/archive alignment (PR2) + green gates | ◑ log + fully-historical docs archived; exploratory-doc sweep remains; gates green |
 | 10 | Services/layers S1/S2/S3 | ✅ mount-with-runtime shipped, guide shipped, isolation test green |
 
-Remaining release-blocking work is concentrated in **three dedicated passes**
-(each too large/risky to fold into feature work): (a) Finding-5 Result
-migration across routing/SSR/single-flight with hydration round-trip tests;
-(b) Finding-3 + P6 physical deprecate-and-delete after example/test migration;
-(c) PR2 exploratory-doc archive sweep with link updates. Everything else in
-this list is done. Do not cut by re-adding deferred features.
+Remaining release-blocking work (updated 2026-07-07 — Finding-3 resolved as a
+2-tier model not a deletion; Finding-5 release-blocking core done): (a) **P6
+routing consolidation** (unified model + `RouterRuntime` canonical; delete the
+legacy service-first generation); (b) a **deep type-helper batch** to make
+`typecheck:tests` a required gate; (c) **PR2 exploratory-doc archive sweep**.
+Non-blocking follow-ups: Finding-5 step 2 (internal FetchResult cleanup),
+Finding-5 wire format. Everything else in this list is done. Do not cut by
+re-adding deferred features.
 
 ## Update rule
 

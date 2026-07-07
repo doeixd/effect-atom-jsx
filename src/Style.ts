@@ -578,13 +578,14 @@ function attachToBindingSlotsImpl<S extends string>(
 }
 
 /**
- * @deprecated Legacy attachment form (pre-slot-contract). The consolidated
- * surface is exactly three forms: `Style.attachToSlots(style, slots)`
- * (authored, contract-keyed), `Style.attachBySlotContract(style, remap)`
- * (typed remapping), and `Style.attachBySlots(style, stringMap)`
- * (dynamic/generated). This form relies on the deprecated `bindings.slots`
- * convention and will be removed from the public surface in the v1
- * consolidation pass.
+ * Low-level style attachment: applies directly to a component's setup-created
+ * `bindings.slots`, for components that do **not** publish a `View.Slots`
+ * contract. Prefer the higher-level contract-keyed forms when a contract
+ * exists: `Style.attachToSlots(style, slots)` (authored),
+ * `Style.attachBySlotContract(style, remap)` (typed remap), or
+ * `Style.attachBySlots(style, stringMap)` (dynamic). This form is the general
+ * escape hatch those are sugar over — it is intentionally retained, not
+ * deprecated.
  */
 export const attach = attachToBindingSlotsImpl;
 
@@ -616,12 +617,11 @@ function attachByViewImpl<S extends string>(
 }
 
 /**
- * @deprecated Legacy attachment form (pre-slot-contract). The consolidated
- * surface is exactly three forms: `Style.attachToSlots(style, slots)`
- * (authored, contract-keyed), `Style.attachBySlotContract(style, remap)`
- * (typed remapping), and `Style.attachBySlots(style, stringMap)`
- * (dynamic/generated). Will be removed from the public surface in the v1
- * consolidation pass.
+ * Low-level style attachment that applies after view execution against the
+ * rendered `View<Slots>` (rather than setup `bindings.slots`), for components
+ * without a published `View.Slots` contract. Prefer the contract-keyed forms
+ * (`attachToSlots` / `attachBySlotContract` / `attachBySlots`) when a contract
+ * exists. Intentionally retained as the general escape hatch, not deprecated.
  */
 export const attachByView = attachByViewImpl;
 
