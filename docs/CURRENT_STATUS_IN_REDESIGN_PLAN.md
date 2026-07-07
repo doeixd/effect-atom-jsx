@@ -784,15 +784,17 @@ library bugs fixed via the test-typecheck gate.
 
 Remaining, in rough priority:
 
-1. **P6 routing consolidation** — **audited + partly done 2026-07-07.** Verdict:
+1. **P6 routing consolidation** — **resolved 2026-07-07.** Verdict:
    routing is a legitimate 3-tier model (history infra / component-first
    `Component.route` / route-first tree), NOT a legacy-to-delete generation —
    third "don't delete, reclassify" outcome this session. Reclassified the
-   `Component.route`/`guard` JSDoc. **Remaining (deep, scoped):** dedupe the
-   `Route.page(path,comp)` constructor forms vs piped `Route.path(path)(comp)`
-   (verify redundancy first), and fix the `RouteChildrenEnhancer` dual-overload
-   resolution against `LayoutRoute.pipe` (clears route.test 135/136 + route-loader
-   146). See archive log for the full audit.
+   `Component.route`/`guard` JSDoc. The `RouteChildrenEnhancer`/pipe-overload
+   seam is fixed (Codex, type-only) and `typecheck:tests` is green. The
+   "dedupe constructor-vs-piped" item was investigated and closed: both forms
+   are load-bearing (`Route.path` 101×, `Route.page` 21× across src/tests/
+   examples), so there is nothing to dedupe — the stale "transitional / refactor
+   in progress" JSDoc on `layout()` and the registry hooks was corrected to
+   describe permanent tiers instead of implying removal.
 2. **Deep type-helper batch** (clears most of the rest of `typecheck:tests`):
    `Style/Behavior.attachToAllWithCapability` SlotContract over-constraint,
    `SlotMetadataMap` over witness collections, `withRetry` union source,
