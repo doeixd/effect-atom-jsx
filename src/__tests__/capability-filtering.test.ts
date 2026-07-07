@@ -251,6 +251,8 @@ describe("Capability filtering helpers", () => {
         Component.require<never>(),
         () => Effect.succeed({}),
         () => View.fromSlots(slots, null),
+      ).pipe(
+        Component.withSlots(slots),
       );
 
       const EnhancedComponent = MyComponent.pipe(

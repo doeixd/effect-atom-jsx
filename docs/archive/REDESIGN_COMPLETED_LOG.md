@@ -1101,3 +1101,30 @@ Genuine consolidation work that remains (scoped, deferred — deep + risky):
   errors (route.test 135/136, route-loader 146). Fixing needs careful
   alignment of the pipe signature and the enhancer intersection across the
   two node representations — focused type surgery, not a rushed change.
+
+### SlotContract Witness-vs-Handles Consistency (2026-07-07)
+
+The `SlotContract` axis (`Component<...,SlotContract>`) can hold either the
+default handle map (`SlotsFromBindings<Bindings>`) or, after
+`Component.withSlots(contract)`, a `View.Slots` **witness collection**. Several
+type sites assumed the handle-map form and rejected witness-collection
+contracts. Fixed as one theme (6th + follow-on bugs from the test gate):
+
+- **`Component.setupEffect`** — declared 4 generics, so its 5th `SlotContract`
+  param defaulted to the handle map and rejected witness-collection contracts.
+  Added the free `SlotContract` generic (same fix as `renderEffect`). Cleared
+  capability-filtering 345/373.
+- **`View.NormalizeSlots<S>`** (new) — `S extends Slots.Any ? Slots.HandlesOf<S>
+  : S`. `Component.renderViewEffect` now returns
+  `View<NormalizeSlots<Slots>>`, so `view.slots`/`view.slotMetadata` are keyed
+  by slot name (matching runtime, which is always the handle map from
+  `View.fromSlots`). Cleared component.test 528-530.
+- **Test fix** — a capability-filtering test used contract-keyed
+  `Style.attachToSlots(style, slots)` on a component that never published the
+  contract via `withSlots` → the conditional component param resolved to
+  `never`. Corrected to publish the contract (the general `Style.attach` is the
+  alternative for contract-less components).
+
+Net: test-gate 16 → 9; all remaining errors are non-SlotContract (P6 routing
+overloads, `withRetry` union source, validation strictness, `componentOf`
+standalone RouteContext). Standard gates green (typecheck, 487 tests, build).
