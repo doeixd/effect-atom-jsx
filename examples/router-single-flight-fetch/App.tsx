@@ -75,6 +75,7 @@ const UsersList = Component.make(
   ),
 ).pipe(
   Component.route("/users"),
+).pipe(
   Route.loader(() => Effect.gen(function* () {
     const users = yield* UsersService;
     return yield* users.list();
@@ -110,6 +111,7 @@ const UserPageBase = Component.make(
   Component.route("/users/:userId", {
     params: Schema.Struct({ userId: Schema.String }),
   }),
+).pipe(
   Route.loader((params: { readonly userId: string }) => Effect.gen(function* () {
     const users = yield* UsersService;
     return yield* users.byId(params.userId);

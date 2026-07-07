@@ -161,6 +161,8 @@
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "typecheck:examples": "tsc --noEmit -p tsconfig.examples.json",
+    "typecheck:all": "npm run typecheck && npm run typecheck:tests && npm run typecheck:examples",
+    "check": "npm run typecheck:all && npm run test",
     "prepack": "npm run build"
   },
   "dependencies": {

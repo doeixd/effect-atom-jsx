@@ -247,7 +247,7 @@ type LoaderRouteEnhancer<P, A, E, R> = LoaderEnhancer<P, A, E, R>
 
 export type MaterializedAppRoute<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE> =
   C extends ComponentType<infer Props, infer Req, infer Err, infer B, infer SlotContract>
-    ? ComponentType<Props, Req, Err, B, SlotContract>
+    ? ComponentType<Props, Exclude<Req, RouteContext<any, any, any>>, Err, B, SlotContract>
       & Omit<C, keyof ComponentType<any, any, any, any, any>>
       & RoutedComponent<P, Q, H>
       & LoaderTaggedComponent<A, LE>

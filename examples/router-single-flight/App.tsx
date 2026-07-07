@@ -52,95 +52,91 @@ const UsersLive = Layer.succeed(UsersService, {
   ),
 });
 
-const Home = Route.page(
-  "/",
-  Component.from<{}>(() => (
-    <section>
-      <h2>Single-Flight Demo</h2>
-      <p>
-        This example uses a service-first design: loaders `yield*` a domain service, the service uses `Reactivity.tracked(...)` for reads, and mutations use `Reactivity.invalidating(...)` for writes.
-      </p>
-    </section>
-  )),
-);
+const Home = Component.from<{}>(() => (
+  <section>
+    <h2>Single-Flight Demo</h2>
+    <p>
+      This example uses a service-first design: loaders `yield*` a domain service, the service uses `Reactivity.tracked(...)` for reads, and mutations use `Reactivity.invalidating(...)` for writes.
+    </p>
+  </section>
+)).pipe(Component.route("/"));
 
-const UsersListBase = Route.page(
-  "/users",
-  Component.make(
-    Component.props<{}>(),
-    Component.require<Route.RouteContext<any, any, any>>(),
-    () => Effect.gen(function* () {
-      const users = yield* Route.loaderData<ReadonlyArray<User>>();
-      return { users };
-    }),
-    (_props, b: { readonly users: () => ReadonlyArray<User> }) => (
-      <section>
-        <h2>Users</h2>
-        <ul>
-          {b.users().map((user: User) => (
-            <li>
-              <a href={userLink({ userId: user.id })}>{user.name}</a>
-            </li>
-          ))}
-        </ul>
-      </section>
-    ),
+const UsersList = Component.make(
+  Component.props<{}>(),
+  Component.require<Route.RouteContext<any, any, any>>(),
+  () => Effect.gen(function* () {
+    const users = yield* Route.loaderData<ReadonlyArray<User>>();
+    return { users };
+  }),
+  (_props, b: { readonly users: () => ReadonlyArray<User> }) => (
+    <section>
+      <h2>Users</h2>
+      <ul>
+        {b.users().map((user) => (
+          <li>
+            <a href={userLink({ userId: user.id })}>{user.name}</a>
+          </li>
+        ))}
+      </ul>
+    </section>
   ),
+).pipe(
+  Component.route("/users"),
 ).pipe(
   Route.loader(() => Effect.gen(function* () {
     const users = yield* UsersService;
     return yield* users.list();
   })),
+  Route.title("Users"),
 );
-const UsersList = UsersListBase.pipe(Route.title<typeof UsersListBase>(() => "Users"));
 
 const saveUser = Atom.action(
   (input: SaveUserInput) => Effect.succeed(input),
   { name: "save-user" },
 );
 
-const UserPageBase = Route.page(
-  "/users/:userId",
-  Component.make(
-    Component.props<{}>(),
-    Component.require<Route.RouteContext<any, any, any>>(),
-    () => Effect.gen(function* () {
-      const user = yield* Route.loaderData<User>();
-      return { user, pending: saveUser.pending };
-    }),
-    (_props, b: { readonly user: () => User; readonly pending: () => boolean }) => (
-      <section>
-        <h2>{b.user().name}</h2>
-        <p>{b.user().bio}</p>
-        <p>
-          <button
-            disabled={b.pending()}
-            onClick={() => {
-              const current = b.user();
-              void Effect.runPromise(saveUser.runEffect({
-                id: current.id,
-                name: current.name.endsWith("!") ? current.name.replace(/!+$/, "") : `${current.name}!`,
-              }));
-            }}
-          >
-            {b.pending() ? "Saving..." : "Toggle Exclamation"}
-          </button>
-        </p>
-        <p>
-          Detail data is seeded directly from the mutation result, while list data refreshes through captured Reactivity dependencies.
-        </p>
-      </section>
-    ),
+const UserPageBase = Component.make(
+  Component.props<{}>(),
+  Component.require<Route.RouteContext<any, any, any>>(),
+  () => Effect.gen(function* () {
+    const user = yield* Route.loaderData<User>();
+    return { user, pending: saveUser.pending };
+  }),
+  (_props, b: { readonly user: () => User; readonly pending: () => boolean }) => (
+    <section>
+      <h2>{b.user().name}</h2>
+      <p>{b.user().bio}</p>
+      <p>
+        <button
+          disabled={b.pending()}
+          onClick={() => {
+            const current = b.user();
+            void Effect.runPromise(saveUser.runEffect({
+              id: current.id,
+              name: current.name.endsWith("!") ? current.name.replace(/!+$/, "") : `${current.name}!`,
+            }));
+          }}
+        >
+          {b.pending() ? "Saving..." : "Toggle Exclamation"}
+        </button>
+      </p>
+      <p>
+        Detail data is seeded directly from the mutation result, while list data refreshes through captured Reactivity dependencies.
+      </p>
+    </section>
   ),
 ).pipe(
-  Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
-  Route.loader((params) => Effect.gen(function* () {
+  Component.route("/users/:userId", {
+    params: Schema.Struct({ userId: Schema.String }),
+  }),
+).pipe(
+  Route.loader((params: { readonly userId: string }) => Effect.gen(function* () {
     const users = yield* UsersService;
     return yield* users.byId(params.userId);
   })),
 );
 
-const UserPage = UserPageBase.pipe(Route.title<typeof UserPageBase>(() => "User"));
+const UserPage = UserPageBase.pipe(Route.title("User"));
 
 const saveUserHandler = Route.singleFlight(
   (input: SaveUserInput) => Effect.gen(function* () {
@@ -167,10 +163,6 @@ const homeLink = Route.link(Home);
 const usersLink = Route.link(UsersList);
 const userLink = Route.link(UserPage);
 
-const HomeView = Route.componentOf(Home);
-const UsersListView = Route.componentOf(UsersList);
-const UserPageView = Route.componentOf(UserPage);
-
 export function App() {
   return (
     <WithLayer layer={Layer.mergeAll(Route.Router.Browser, UsersLive, SingleFlightTransportLive)}>
@@ -186,7 +178,7 @@ export function App() {
             {" · "}
             <a href={userLink({ userId: "bob" })}>Bob</a>
           </p>
-          <Route.Switch fallback={<p>No route matched.</p>} children={[HomeView({}), UsersListView({}), UserPageView({})]} />
+          <Route.Switch fallback={<p>No route matched.</p>} children={[Home({}), UsersList({}), UserPage({})]} />
         </main>
       )}
     </WithLayer>

@@ -1,4 +1,4 @@
-import { Atom, Reactivity, Route, WithLayer, Async, Show, For, Loading, Errored } from "effect-atom-jsx";
+import { Atom, Component, Reactivity, Route, WithLayer, Async, Show, For, Loading, Errored, FetchResult } from "effect-atom-jsx";
 import { Effect, Layer, Schema, ServiceMap } from "effect";
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
@@ -115,59 +115,62 @@ const SearchQuery = Schema.Struct({
 
 // ─── Route Nodes ──────────────────────────────────────────────────────────────
 
-const HomePage = Route.index(
-  Route.componentOf(
-    Route.page("/", () => (
-      <section>
-        <h2>Welcome</h2>
-        <p>This example demonstrates the route-node golden path:</p>
-        <ul>
-          <li>First-class route nodes with <code>Route.page</code>, <code>Route.layout</code>, <code>Route.index</code></li>
-          <li>Typed params/query/hash with Effect Schema</li>
-          <li>Loaders that use domain services</li>
-          <li>Typed links with <code>Route.link</code></li>
-          <li>Nested route trees with <code>Route.define</code>, <code>Route.children</code>, <code>Route.mount</code></li>
-          <li>Error handling with <code>Async</code>, <code>Loading</code>, <code>Erored</code></li>
-          <li>Head metadata with <code>Route.title</code> and <code>Route.meta</code></li>
-        </ul>
-      </section>
-    )).pipe(Route.id("home"), Route.title("Home")),
-  ),
-);
+const HomeView = Component.from<{}>(() => (
+  <section>
+    <h2>Welcome</h2>
+    <p>This example demonstrates the route-node golden path:</p>
+    <ul>
+      <li>First-class route nodes with <code>Route.page</code>, <code>Route.layout</code>, <code>Route.index</code></li>
+      <li>Typed params/query/hash with Effect Schema</li>
+      <li>Loaders that use domain services</li>
+      <li>Typed links with <code>Route.link</code></li>
+      <li>Nested route trees with <code>Route.define</code>, <code>Route.children</code>, <code>Route.mount</code></li>
+      <li>Error handling with <code>Async</code>, <code>Loading</code>, <code>Errored</code></li>
+      <li>Head metadata with <code>Route.title</code> and <code>Route.meta</code></li>
+    </ul>
+  </section>
+));
 
-const UsersListPage = Route.page("/users", () => {
-  const users = Route.loaderData<ReadonlyArray<User>>();
-  const searchQuery = Route.queryAtom("q", Schema.String, { default: "" });
+const HomePage = Route.index(HomeView).pipe(Route.id("home"), Route.title("Home"));
 
-  return (
+const UsersListView = Component.make(
+  Component.props<{}>(),
+  Component.require<Route.RouteContext<any, any, any> | Route.RouterService>(),
+  () => Effect.gen(function* () {
+    const users = yield* Route.loaderResult<ReadonlyArray<User>>();
+    const searchQuery = yield* Route.queryAtom("q", Schema.String, { default: "" });
+    return { users, searchQuery };
+  }),
+  (_props, b) => (
     <section>
       <h2>Users</h2>
       <input
         type="text"
-        value={searchQuery()}
-        onInput={(e) => searchQuery.set((e.currentTarget as HTMLInputElement).value)}
+        value={b.searchQuery()}
+        onInput={(e: InputEvent) => b.searchQuery.set((e.currentTarget as HTMLInputElement).value)}
         placeholder="Search users..."
       />
       <Async
-        result={users()}
+        result={b.users()}
         loading={() => <p>Loading users...</p>}
+        error={() => <p>Unable to load users.</p>}
         success={(list) => (
           <ul>
-            <For each={list}>
-              {(user) => (
+            {list.map((user) => (
                 <li>
-                  <a href={userLink({ userId: user().id })}>{user().name}</a>
+                  <a href={userLink({ userId: user.id })}>{user.name}</a>
                   {" — "}
-                  <span>{user().email}</span>
+                  <span>{user.email}</span>
                 </li>
-              )}
-            </For>
+            ))}
           </ul>
         )}
       />
     </section>
-  );
-}).pipe(
+  ),
+);
+
+const UsersListPage = Route.page("/users", UsersListView).pipe(
   Route.id("users.index"),
   Route.querySchema(SearchQuery),
   Route.loader(() => Effect.gen(function* () {
@@ -178,13 +181,17 @@ const UsersListPage = Route.page("/users", () => {
   Route.meta({ description: "List of all users" }),
 );
 
-const UserDetailPage = Route.page("/users/:userId", () => {
-  const userResult = Route.loaderResult<User, UserNotFound>();
-
-  return (
+const UserDetailView = Component.make(
+  Component.props<{}>(),
+  Component.require<Route.RouteContext<any, any, any>>(),
+  () => Effect.gen(function* () {
+    const userResult = yield* Route.loaderResult<User, UserNotFound>();
+    return { userResult };
+  }),
+  (_props, b) => (
     <section>
       <Async
-        result={userResult()}
+        result={b.userResult()}
         loading={() => <p>Loading user...</p>}
         success={(user) => (
           <div>
@@ -197,52 +204,62 @@ const UserDetailPage = Route.page("/users/:userId", () => {
         error={(err) => (
           <div>
             <h2>User Not Found</h2>
-            <p>No user with ID "{err.id}" exists.</p>
+            <p>No user with ID {"id" in err ? err.id : "unknown"} exists.</p>
             <a href={usersLink({})}>← Back to users</a>
           </div>
         )}
       />
     </section>
-  );
-}).pipe(
+  ),
+);
+
+const UserDetailWithLoader = Route.page("/users/:userId", UserDetailView).pipe(
   Route.id("users.detail"),
   Route.paramsSchema(UserParams),
   Route.loader((params: { readonly userId: string }) => Effect.gen(function* () {
     const users = yield* UsersService;
     return yield* users.byId(params.userId);
   })),
-  Route.title((params, user) => user ? user.name : `User ${params.userId}`),
-  Route.meta((params, user) => ({
+);
+
+const UserDetailPage = UserDetailWithLoader.pipe(
+  Route.title<typeof UserDetailWithLoader>((params, user) => user ? user.name : `User ${params.userId}`),
+  Route.meta<typeof UserDetailWithLoader>((params, user) => ({
     description: user ? `Profile for ${user.name}` : `User ${params.userId}`,
   })),
 );
 
-const TeamsListPage = Route.page("/teams", () => {
-  const teams = Route.loaderData<ReadonlyArray<Team>>();
-
-  return (
+const TeamsListView = Component.make(
+  Component.props<{}>(),
+  Component.require<Route.RouteContext<any, any, any>>(),
+  () => Effect.gen(function* () {
+    const teams = yield* Route.loaderResult<ReadonlyArray<Team>>();
+    return { teams };
+  }),
+  (_props, b) => (
     <section>
       <h2>Teams</h2>
       <Async
-        result={teams()}
+        result={b.teams()}
         loading={() => <p>Loading teams...</p>}
+        error={() => <p>Unable to load teams.</p>}
         success={(list) => (
           <ul>
-            <For each={list}>
-              {(team) => (
+            {list.map((team) => (
                 <li>
-                  <a href={teamLink({ teamId: team().id })}>{team().name}</a>
+                  <a href={teamLink({ teamId: team.id })}>{team.name}</a>
                   {" — "}
-                  <span>{team().memberCount} members</span>
+                  <span>{team.memberCount} members</span>
                 </li>
-              )}
-            </For>
+            ))}
           </ul>
         )}
       />
     </section>
-  );
-}).pipe(
+  ),
+);
+
+const TeamsListPage = Route.page("/teams", TeamsListView).pipe(
   Route.id("teams.index"),
   Route.loader(() => Effect.gen(function* () {
     const teams = yield* TeamsService;
@@ -252,13 +269,17 @@ const TeamsListPage = Route.page("/teams", () => {
   Route.meta({ description: "List of all teams" }),
 );
 
-const TeamDetailPage = Route.page("/teams/:teamId", () => {
-  const teamResult = Route.loaderResult<Team, TeamNotFound>();
-
-  return (
+const TeamDetailView = Component.make(
+  Component.props<{}>(),
+  Component.require<Route.RouteContext<any, any, any>>(),
+  () => Effect.gen(function* () {
+    const teamResult = yield* Route.loaderResult<Team, TeamNotFound>();
+    return { teamResult };
+  }),
+  (_props, b) => (
     <section>
       <Async
-        result={teamResult()}
+        result={b.teamResult()}
         loading={() => <p>Loading team...</p>}
         success={(team) => (
           <div>
@@ -270,27 +291,31 @@ const TeamDetailPage = Route.page("/teams/:teamId", () => {
         error={(err) => (
           <div>
             <h2>Team Not Found</h2>
-            <p>No team with ID "{err.id}" exists.</p>
+            <p>No team with ID {"id" in err ? err.id : "unknown"} exists.</p>
             <a href={teamsLink({})}>← Back to teams</a>
           </div>
         )}
       />
     </section>
-  );
-}).pipe(
+  ),
+);
+
+const TeamDetailWithLoader = Route.page("/teams/:teamId", TeamDetailView).pipe(
   Route.id("teams.detail"),
   Route.paramsSchema(TeamParams),
   Route.loader((params: { readonly teamId: string }) => Effect.gen(function* () {
     const teams = yield* TeamsService;
     return yield* teams.byId(params.teamId);
   })),
-  Route.title((params, team) => team ? team.name : `Team ${params.teamId}`),
+);
+
+const TeamDetailPage = TeamDetailWithLoader.pipe(
+  Route.title<typeof TeamDetailWithLoader>((params, team) => team ? team.name : `Team ${params.teamId}`),
 );
 
 // ─── Route Tree ───────────────────────────────────────────────────────────────
 
-const RootLayout = Route.layout(() => {
-  return (
+const RootLayoutView = Component.from<{}>(() => (
     <div style="font-family: ui-sans-serif, system-ui; margin: 0 auto; max-width: 960px; padding: 24px;">
       <header style="border-bottom: 1px solid #ccc; margin-bottom: 24px; padding-bottom: 12px;">
         <h1 style="margin: 0;">Router Golden Path</h1>
@@ -300,12 +325,10 @@ const RootLayout = Route.layout(() => {
           <a href={teamsLink({})}>Teams</a>
         </nav>
       </header>
-      <main>
-        <Route.Outlet />
-      </main>
     </div>
-  );
-}).pipe(Route.id("root"));
+));
+
+const RootLayout = Route.layout(RootLayoutView).pipe(Route.id("root"));
 
 export const appRoutes = Route.define(
   RootLayout.pipe(
@@ -336,11 +359,11 @@ export function App() {
         <Route.Switch
           fallback={<p>404 — Page not found</p>}
           children={[
-            HomePage({}),
-            UsersListPage({}),
-            UserDetailPage({}),
-            TeamsListPage({}),
-            TeamDetailPage({}),
+            Route.componentOf(HomePage)({}),
+            Route.componentOf(UsersListPage)({}),
+            Route.componentOf(UserDetailPage)({}),
+            Route.componentOf(TeamsListPage)({}),
+            Route.componentOf(TeamDetailPage)({}),
           ]}
         />
       )}
