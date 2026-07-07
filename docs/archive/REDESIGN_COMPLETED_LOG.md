@@ -1001,3 +1001,41 @@ Steps 0-1 of the RESULT_CONSOLIDATION_PROPOSAL migration.
   FetchResult now survives only in internal machinery (cache, wire payloads,
   orchestration, Atom.pull) = step-2 non-blocking cleanup.
 - 487 tests + typecheck + build green.
+
+### Test-Typecheck Gate Burndown, Round 2 (Finding-3/P6) (2026-07-07)
+
+Continued burning down `typecheck:tests` errors. The gate proved its worth
+decisively — it surfaced **five real library bugs**, all now fixed (runtime
+was unaffected; types only, which is why the tests-excluded standard gate
+stayed green throughout):
+
+1. `Atom.family` — plain overload was invisible (schema-only), so
+   `family(fn)` / `family(fn, { equals })` never typechecked.
+2. `Component.renderEffect` — dropped the 5th `SlotContract` type param, so
+   components with a published contract failed to pass.
+3. `Component.route` — leaked `RouteContext` into `Req` instead of
+   discharging it (the wrapper provides it to the inner setup).
+4. `ServerRoute.execute` / `executeWithServices` / `executeFromServices` —
+   constrained to `ServerRouteNode<any,any,any,any>` (params 5-7 default to
+   `unknown`); the contravariant handler position rejected nodes with
+   specific query/header/cookie types. Broadened to `AnyServerRouteNode`.
+5. (Round 1) `Behavior.make` required all four generics; added defaults.
+
+Plus test-side fixes (View narrowing guards, Result re-read, `Style.slot`
+value vs slot-keyed `Style.make`). Net: 40 -> 16 errors.
+
+The remaining 16 are two tracked categories, neither cheaply forced green now:
+- **Coupled to Finding-3/P6 physical deletion**: tests exercising deprecated
+  `Style.attachByView` + bindings-as-slots (component.test 528-530) and legacy
+  route construction (route.test 135/136/234/239, route-loader 146). These get
+  rewritten/removed when the deprecated APIs are physically deleted; fixing
+  them now is throwaway work.
+- **Deep type-helper drift** (real, non-trivial): `Style/Behavior
+  .attachToAllWithCapability` over-constrain SlotContract to a handle-map shape
+  (capability-filtering 257/260/345/373); `withRetry` on a hand-built result
+  union (effect-atom-api 1018); `validateComponentAttachmentBySlots` strictness
+  (composables 125); `Route.componentOf` standalone-render RouteContext
+  (server-render 207/276).
+
+Making `typecheck:tests` a required green gate remains coupled to the
+physical-deletion pass plus a focused batch of the deep-drift helper fixes.
