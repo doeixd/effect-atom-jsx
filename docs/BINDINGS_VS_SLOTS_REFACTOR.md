@@ -1,5 +1,13 @@
 # Architectural Vision: Separating Bindings and Slots
 
+> **Historical note:** this document captured the original motivation for
+> separating setup bindings from structural slots. The current public design is
+> `Component<Props, Req, E, Bindings, SlotContract>` with authored slot
+> contracts expressed as `View.Slots` and published through
+> `Component.withSlots(...)`. Older examples below may refer to an intermediate
+> `Slots` component axis or to `bindings.slots`; treat those as background, not
+> current guidance.
+
 ## The Current Compromise
 
 In the pursuit of strict type safety and a fully composable "Inside-Out" architecture, AF-UI's current implementation makes a pragmatic but flawed compromise in its core type signature. 

@@ -1,14 +1,14 @@
 # Slot Contract Unification Plan
 
-This plan defines the next AF-UI design step after typed view trees,
-metadata-rich slots, and slot-targeted style/behavior attachment.
+This plan records the AF-UI slot contract unification that replaced the earlier
+slot witness split. It is now the current authored slot model.
 
 For the component ownership model behind this plan, see
 [`PROPS_BINDINGS_SLOTS.md`](PROPS_BINDINGS_SLOTS.md).
 
 ## Thesis
 
-`View.Slots` should become the single canonical authored slot contract object.
+`View.Slots` is the single canonical authored slot contract object.
 Runtime handle maps, static component slot metadata, slot metadata records, and
 style/behavior attachment types should all be projections of that one contract.
 
@@ -74,7 +74,8 @@ const slots = View.Slots.make({
 const Field = Component.make(
   Component.props<{}>(),
   Component.require<never>(),
-  () => Effect.succeed({ slots: View.Slots.handles(slots) }),
+  Component.setup<{}>()
+    .value("slots", () => View.Slots.handles(slots)),
   () => View.fromSlots(slots, null, {
     tree: View.element(Root, {
       children: [View.element(Input)],

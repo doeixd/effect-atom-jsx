@@ -69,7 +69,8 @@ rt.action(fn)      // same requirement safety
 
 - `Atom.ReadonlyAtom<A>` (alias of `Atom.Atom<A>`)
 - `Atom.WritableAtom<A, W = A>` (alias of `Atom.Writable<A, W>`)
-- `Atom.AsyncAtom<A, E>` (alias of `Atom.Atom<Result<A, E>>`)
+- `Atom.ResultAtom<A, E, R = never>` (`Atom<Result<A, E>, E, R>`)
+- `Atom.AsyncAtom<A, E, R = never>` compatibility alias for `ResultAtom`
 
 <br />
 
@@ -304,14 +305,21 @@ This is the right place for observability infrastructure that spans multiple fea
 const UserCard = Component.make(
   Component.props<{ id: string }>(),
   Component.require(UserApi, AnalyticsService),  // ← declares requirements
-  ({ id }) => Effect.gen(function* () {
-    const api = yield* UserApi;                  // ← resolved at runtime
-    const analytics = yield* AnalyticsService;
-    const user = yield* Component.query(api.getUser(id));
-    yield* analytics.track("user:view", { id });
-    return { user };
-  }),
-  (_, { user }) => <div>{user.result().pipe(...)}</div>,
+  Component.setup<{ id: string }>()
+    .bind("user", ({ props }) =>
+      Component.query(
+        () => UserApi.pipe(Effect.flatMap((api) => api.getUser(props.id))),
+        { name: "user" },
+      )
+    )
+    .doEffect(({ props }) =>
+      AnalyticsService.pipe(
+        Effect.flatMap((analytics) =>
+          analytics.track("user:view", { id: props.id })
+        ),
+      )
+    ),
+  (_, { user }) => <Async result={user()} success={(u) => <div>{u.name}</div>} />,
 );
 ```
 
@@ -439,17 +447,19 @@ The key insight is that `Component.make` separates *setup* (an Effect that runs 
   - `Component.use(fragment)` — merge a reusable setup fragment
   - extractors: `Component.SetupPropsOf<T>`, `Component.SetupBindingsOf<T>`, `Component.SetupErrorsOf<T>`, `Component.SetupRequirementsOf<T>`
 - **setup helpers** (yield inside setup Effect):
-  - `Component.signal(initial)` — local live accessor and setter for setup-owned state
-  - `Component.effect(fn)` — setup-scoped reactive effect with cleanup support
-  - `Component.state(initial)` — local writable atom
+  - `Component.signal(initial)` — local live accessor and setter for setup-owned state; scoped setters throw after setup scope close
+  - `Component.effect(fn)` — setup-scoped reactive effect with cleanup support; its reactive owner is disposed with the setup scope
+  - `Component.state(initial)` — component-instance-local writable atom; when a
+    setup scope is present, writes after scope close throw instead of mutating
+    stale local state
   - `Component.derived(fn)` — local derived atom
-  - `Component.query(effect, options?)` — local async query, auto-managed lifetime. Queries capture the setup service map so async work can use services supplied by component layers.
-  - `Component.action(fn, options?)` — local action, auto-managed lifetime. Returned handles are callable and expose `run(...)`, `runEffect(...)`, `effect(...)`, `result`, and `pending`; action handles capture the setup service map so later runs can use services supplied by component layers.
-  - `Component.optimistic(source).action(spec)` — component-local optimistic action over setup-owned state; captures the setup service map like `Component.action(...)`.
-  - `Component.ref<T>()` — DOM or imperative ref
-  - `Component.fromDequeue(dequeue, handler)` — wire an Effect Queue into component lifetime
-  - `Component.schedule(schedule, run)` — run on an Effect Schedule
-  - `Component.scheduleEffect(schedule, effect)` — Effect variant
+  - `Component.query(effect, options?)` — local async query, auto-managed lifetime. Queries capture the setup service map so async work can use services supplied by component layers, and query owners are disposed with the setup scope.
+  - `Component.action(fn, options?)` — local action, auto-managed lifetime. Returned handles are callable and expose `run(...)`, `runEffect(...)`, `effect(...)`, `result`, and `pending`; action handles capture the setup service map so later runs can use services supplied by component layers, and reject runs after setup scope close.
+  - `Component.optimistic(source).action(spec)` — component-local optimistic action over setup-owned state; captures the setup service map like `Component.action(...)` and rejects mutating operations after setup scope close.
+  - `Component.ref<T>()` — DOM or imperative ref; `.current` is cleared when the setup scope closes
+  - `Component.fromDequeue(dequeue, handler)` — wire an Effect Queue into component lifetime through `Scope.Scope`
+  - `Component.schedule(schedule, run)` — run on an Effect Schedule through `Scope.Scope`
+  - `Component.scheduleEffect(schedule, effect)` — Effect variant through `Scope.Scope`
 - **transforms** (pipeable on a Component):
   - `Component.withLayer(layer)` — provide additional services to this component subtree
   - `Component.withErrorBoundary(handlers)` — catch typed setup/render errors
@@ -568,7 +578,7 @@ type Slots = {
 };
 
 const view = View.tree(
-  bindings.slots,
+  View.Slots.handles(slots),
   View.element<Slots>(Element.Capability.Container, {
     slot: "root",
     children: [
@@ -619,10 +629,10 @@ The `Element.*` constructors define what capability a slot needs (is it interact
 - `Behavior.forSlots(slots)(run)` — define authored behavior over a `View.Slots` contract
 - `Behavior.compose(a, b, ...)` — merge multiple behaviors into one
 - `Behavior.decorator(behavior)` — behavior that wraps another
-- `Behavior.attach(behavior, { select, merge? })` — attach behavior to elements by slot name
+- `Behavior.attach(behavior, { select, merge? })` — low-level attach using a selector function
 - `Behavior.attachToSlots(behavior, slots)` — attach authored behavior to the same slot contract
 - `Behavior.attachBySlotContract(behavior, elementMap, merge?)` — typed remapping through slot contracts
-- `Behavior.attachBySlots(behavior, elementMap, merge?)` — explicit slot → element wiring
+- `Behavior.attachBySlots(behavior, elementMap, merge?)` — dynamic/generated string-map wiring
 - `Behavior.events(eventMap)` / `Behavior.withMetadata(behavior, metadata)` — declare event requirements for attachment diagnostics
 - `Behavior.validateAttachmentBySlots(behavior, elementMap, view)` — validate slot targets and required behavior events against `View.slot(...)` metadata
 - `Behavior.validateComponentAttachmentBySlots(behavior, elementMap, component, props)` — render a component View and validate mapped behavior attachment metadata
@@ -696,8 +706,9 @@ Typed style composition that treats CSS as data. Styles are assembled as structu
 - `Style.forSlots(slots)` — create an authored style map over a `View.Slots` contract
 - `Style.attachToSlots(style, slots)` — attach authored styles to the same slot contract
 - `Style.attachBySlotContract(style, map)` — typed remapping through slot contracts
-- `Style.attach`, `Style.attachBySlots` — attach style maps to element slots
-- `Style.attachBySlotsFor<Bindings>()` — type-safe attach that validates slot names against component bindings
+- `Style.attach` — low-level attach using explicit selection
+- `Style.attachBySlots` — dynamic/generated string-map wiring
+- `Style.attachBySlotsFor<Bindings>()` — compatibility helper for binding-slot maps
 - `Style.validateComponentAttachment(style, component, props)` — render a component View and validate style slot targets against its metadata
 - `Style.validatePlatform(style, metadata)` — runtime diagnostics for renderer-supported style properties
 - `Style.platform(metadata, { onDiagnostic? })` — Effect layer for runtime style platform diagnostics during `Style.attach(...)`

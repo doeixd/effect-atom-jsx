@@ -1,3 +1,12 @@
+# Router Notes
+
+Current status: this is an exploratory router design note. The current
+route-node/server-route direction is tracked in
+[`ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md`](ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md),
+[`RUNTIME_ROUTING_REACTIVITY_SYSTEM.md`](RUNTIME_ROUTING_REACTIVITY_SYSTEM.md),
+and the runnable `examples/router-golden-path/` example. Older examples below
+may use raw component setup `Effect.gen(...)` or earlier route helper shapes.
+
 A router should be simple to add to the components? All you need is a URL (fragment) that must match for the component (and it's parents?) you could throw that in the component pipe? Asking with any other route metadata/options? Or maybe you could have a higher lel Route which wrap components ( if needed?) and you could create typesafe links from the component refs? It's not traditional. But it should seamlessly integrate, and get the job done? Also effect schema v4  has strong string parsing and url param encoding, and we could  use that. That's basically all we need? Flesh this out?Yes. A route is just a component with a URL pattern attached. The pattern has typed parameters parsed by Schema. Links are derived from route definitions so they're type-safe. The router itself is a service. Everything composes through the existing primitives.
 
 **A route is a component with a pattern:**

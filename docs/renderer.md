@@ -1,3 +1,13 @@
+# Renderer Notes
+
+Current status: this is an exploratory renderer design note. The implemented
+runtime today supports JSX-like render output plus runtime-native `View<Slots>`
+metadata. Current authored structure should use `View.Slots`,
+`View.fromSlots(...)`, typed tree metadata, and `Component.withSlots(...)`; see
+[`AF_UI_CONTRACT.md`](AF_UI_CONTRACT.md) and
+[`SLOT_CONTRACT_GOLDEN_PATH.md`](SLOT_CONTRACT_GOLDEN_PATH.md). Older renderer
+service examples below are design exploration, not the current public API.
+
 Yes. This is the logical conclusion of the entire design. If setup is an Effect, and context is services, and lifecycle is scopes, then rendering should be an Effect too. And if rendering is an Effect that depends on a `Renderer` service, then swapping the renderer is just swapping a layer.
 
 **The Renderer as a service:**

@@ -135,44 +135,31 @@ satisfy a more specific child requirement. The same rule is reflected in
 const Submit = View.Event.make("submit");
 const Shadow = Style.Property.make("boxShadow");
 
-const SearchBox = Component.make<
-  {},
-  never,
-  never,
-  { readonly slots: { readonly input: Element.TextInput } }
->(
+const Input = View.Slot.make("input", {
+  capability: Element.Capability.TextInput,
+  allowedEvents: [View.Event.Input, Submit],
+  allowedAttributes: [View.Attribute.AriaLabel],
+  platformRequirements: [View.Requirement.Keyboard],
+});
+
+const SearchSlots = View.Slots.make({
+  input: View.Slot.bind(Input, Element.textInput()),
+});
+
+const SearchBox = Component.make(
   Component.props<{}>(),
   Component.require<never>(),
-  () => Effect.succeed({ slots: { input: Element.textInput() } }),
-  (_props, bindings) => View.make(
-    bindings.slots,
-    "search-box",
-    {
-      name: "SearchBox",
-      slotMetadata: {
-        input: View.slot("input", {
-          capability: Element.Capability.TextInput,
-          allowedEvents: [View.Event.Input, Submit],
-          allowedAttributes: [View.Attribute.AriaLabel],
-          platformRequirements: [View.Requirement.Keyboard],
-        }),
-      },
-    },
-  ),
-);
+  Component.setup<{}>().value("slots", () => View.Slots.handles(SearchSlots)),
+  () => View.fromSlots(SearchSlots, "search-box", { name: "SearchBox" }),
+).pipe(Component.withSlots(SearchSlots));
 
 const NeedsInput = Behavior.events({
   input: [View.Event.Input, Submit],
 })(
-  Behavior.make<
-    { readonly input: Element.TextInput },
-    {},
-    never,
-    never
-  >(() => Effect.succeed({})),
+  Behavior.forSlots(SearchSlots)(() => Effect.succeed({})),
 );
 
-const searchStyle = Style.make({
+const searchStyle = Style.forSlots(SearchSlots)({
   input: Style.slot({
     color: "red",
     boxShadow: "0 0 0 1px red",

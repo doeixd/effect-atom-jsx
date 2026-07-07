@@ -1,3 +1,11 @@
+# Platform Notes
+
+Current status: this is an exploratory platform design note. The implemented
+platform-facing metadata today is capability/event/attribute/requirement
+metadata on `View.Slot` / `View.Slots`, plus `View.platform(...)` and
+`Style.platform(...)` diagnostics. Older examples below may describe a future
+renderer service model rather than the current public API.
+
 Yes. If the renderer is a service, then the tags it provides are also from that service. Different platforms have different elements with different attributes and different event types. A `Button` on web has `onClick` with `MouseEvent`. A `Button` in a terminal has `onKeypress` with `KeyEvent`. A `Button` on mobile has `onPress` with `NativePressEvent`. The platform layer defines the element vocabulary, and every attribute, property, and event on every element is typed by the platform.
 
 **The platform defines its element vocabulary:**

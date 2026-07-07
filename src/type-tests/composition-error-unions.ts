@@ -20,5 +20,5 @@ const profile = runtime.atom((get) =>
   }),
 );
 
-type ProfileError = typeof profile extends Atom.AsyncAtom<any, infer E> ? E : never;
+type ProfileError = Atom.ErrorOf<typeof profile>;
 type _ProfileErrorCheck = Expect<Equal<ProfileError, BridgeError | { readonly _tag: "AuthError" } | { readonly _tag: "HttpError" }>>;

@@ -155,12 +155,13 @@ The view can now render without branching over loading wrappers:
 const UserPanel = Component.make(
   Component.props<{ readonly id: string }>(),
   Component.require<Api>(),
-  (props) => Effect.gen(function* () {
-    const api = yield* Api;
-    const user = yield* api.user(props.id);
-    const permissions = yield* api.permissions(props.id);
-    return { user, permissions };
-  }),
+  Component.setup<{ readonly id: string }>()
+    .bind("user", ({ props }) =>
+      Api.pipe(Effect.flatMap((api) => api.user(props.id)))
+    )
+    .bind("permissions", ({ props }) =>
+      Api.pipe(Effect.flatMap((api) => api.permissions(props.id)))
+    ),
   (_props, bindings) =>
     View.fromSlots(UserPanelSlots, null, {
       tree: View.element(Root, {

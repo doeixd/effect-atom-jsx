@@ -59,6 +59,13 @@ const fetchResultEffect = Atom.result(fetchResultAtom);
 type _FetchResultSuccess = Expect<Equal<EffectSuccess<typeof fetchResultEffect>, string>>;
 type _FetchResultError = Expect<Equal<EffectError<typeof fetchResultEffect>, HttpError | BridgeError>>;
 
+const metadataResultAtom = Atom.readable<import("../effect-ts.js").Result<string, unknown>, HttpError>(
+  () => ({ _tag: "Success", value: "ok" } as import("../effect-ts.js").Result<string, unknown>),
+);
+const metadataResultEffect = Atom.result(metadataResultAtom);
+type _MetadataResultSuccess = Expect<Equal<EffectSuccess<typeof metadataResultEffect>, string>>;
+type _MetadataResultError = Expect<Equal<EffectError<typeof metadataResultEffect>, HttpError | BridgeError>>;
+
 const count = Atom.value(0);
 const label = count.pipe(Atom.map((n) => String(n)));
 

@@ -1,3 +1,13 @@
+# Composables Notes
+
+Current status: this is an exploratory composables design note. For current
+component authoring, prefer `Component.setup(...)` for named setup bindings and
+`View.Slots` / `Component.withSlots(...)` for public structure. For authored
+style and behavior attachment, prefer `Style.forSlots(...)`,
+`Style.attachToSlots(...)`, `Behavior.forSlots(...)`, and
+`Behavior.attachToSlots(...)`. Older examples below may use raw `Effect.gen`
+setup fragments or pre-slot-contract wording.
+
 Yes. shadcn's model is "copy this React component into your project and modify it." That exists because React can't cleanly separate behavior from rendering, so you need the full component to customize it. With our system, behavior is an Effect, rendering is a view function, and they compose independently. You don't copy components — you compose behaviors and attach your own rendering.
 
 **The behavioral building blocks:**

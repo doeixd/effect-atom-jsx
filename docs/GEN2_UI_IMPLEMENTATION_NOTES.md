@@ -430,15 +430,21 @@ Then `Component.make` can gradually support view returns:
 view: (props, bindings) => unknown | View<Slots>
 ```
 
-Migration path:
+Current migration path:
 
 1. Keep existing JSX output valid.
-2. Allow `View.make(bindings.slots, jsx)` as an opt-in.
-3. Teach `Component` to preserve explicit `Slots` from `View<Slots>`.
-4. Later, replace `node: unknown` with a richer view tree or typed holes.
+2. Use `View.Slots` plus `View.fromSlots(slots, jsx)` for authored
+   slot-bearing views.
+3. Keep `View.make(slots, jsx)` as the lower-level/dynamic constructor.
+4. Preserve authored component contracts with `Component.withSlots(slots)` and
+   `Component.SlotContractOf<T>`.
+5. Keep evolving the optional typed tree / hole model without breaking
+   `node: unknown` compatibility.
 
 ## Conclusion
 
 `gen2` confirms the AF-UI direction and gives us several concrete design pieces, especially around slot metadata, static diagnostics, platform phantom typing, hidden slots, safe HTML, and attachment validation.
 
-It does not remove the need to implement runtime `View<Slots>` in this repo. The correct next step is a small runtime-native `View` module inspired by `gen2`, not a direct transplant of `gen2`'s generator IR.
+It does not remove the need to keep adapting runtime `View<Slots>` in this
+repo. The correct path is the small runtime-native `View` module already
+started here, not a direct transplant of `gen2`'s generator IR.

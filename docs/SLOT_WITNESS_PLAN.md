@@ -6,16 +6,16 @@ carry runtime metadata and type information together.
 
 This plan is historical and is now paired with
 [`SLOT_CONTRACT_UNIFICATION_PLAN.md`](SLOT_CONTRACT_UNIFICATION_PLAN.md), which
-defines the next step: `View.Slots` becomes the single canonical authored slot
+records the current result: `View.Slots` is the single canonical authored slot
 contract object for components, styles, behaviors, diagnostics, and future
 renderer integration.
 
 This is a prerelease redesign path, not a compatibility patch. The canonical
 authored component model is now the `View.Slots` slot contract. Breaking changes
 are acceptable when they remove string drift, improve inference, or make the
-public API more coherent. Historical references below to
-`Component.withSlotWitnesses(...)`, `Component.SlotWitnessesOf<T>`, or a
-separate `SlotWitnesses` component axis are not current API guidance.
+public API more coherent. Historical references below to legacy
+witness-named component helpers or to a separate witness component axis are not
+current API guidance.
 Raw `{ slots }` plus `{ slotMetadata }` records are low-level generated/dynamic
 inputs, not the primary authored design.
 
@@ -476,12 +476,11 @@ available and structured.
 
 ### Component
 
-`Component<Props, Req, E, Bindings, Slots, SlotWitnesses>` currently treats
-`Slots` as the runtime handle map and `SlotWitnesses` as the authored metadata
-implementation axis.
+The historical implementation briefly separated the runtime handle map from a
+second authored witness metadata axis.
 
-The long-term target is a single slot contract axis, where `View.Slots` is the
-component contract and handle maps are derived:
+The current implementation uses a single slot contract axis, where `View.Slots`
+is the component contract and handle maps are derived:
 
 ```ts
 Component<Props, Req, E, Bindings, SlotContract>
@@ -495,23 +494,23 @@ const Field = Component.make(...).pipe(
 );
 ```
 
-`Component.withSlotWitnesses(...)` should be renamed or hidden before release;
-`Component.withSlots(...)` is the right public API.
+`Component.withSlots(...)` is the release-facing public API.
 
 `Component.SlotsOf<T>` should continue returning the handle map projection,
 while `Component.SlotContractOf<T>` should expose the canonical authored slot
-contract. `Component.SlotWitnessesOf<T>` is the current implementation
-extraction helper and should not be the primary documented concept.
+contract.
 
 ```ts
-const FieldSlots = View.Slots.define({
-  root: Root,
-  input: Input,
+const FieldSlots = View.Slots.make({
+  root: View.Slot.bind(Root, root),
+  input: View.Slot.bind(Input, input),
 });
 
 type FieldHandles = View.Slots.HandlesOf<typeof FieldSlots>;
 
-const Field = Component.make<..., { readonly slots: FieldHandles }>(...);
+const Field = Component.make(...).pipe(
+  Component.withSlots(FieldSlots),
+);
 ```
 
 Potential component helpers:
@@ -723,20 +722,16 @@ the canonical model:
    - Type coverage verifies witness-authored trees can be passed to `View.fromSlots(...)`
 5. Consider de-emphasizing direct `slotMetadata` in docs once witnesses cover
    the common path.
-6. Add component slot witness metadata: **Initial slice complete**
-   - `Component.Component` now carries a sixth `SlotWitnesses` implementation axis.
-   - `Component.SlotWitnessesOf<T>` extracts the authored witness metadata.
-   - `Component.withSlotWitnesses(...)` publishes witness metadata on a component.
-   - Component wrappers and route metadata helpers preserve the witness axis.
-   - Next design slice: replace the public naming with `Component.withSlots(...)` and `Component.SlotContractOf<T>`.
+6. Add component slot contract metadata: **Complete, naming unified**
+   - `Component.Component` now carries the single `SlotContract` axis.
+   - `Component.SlotContractOf<T>` extracts the authored slot contract.
+   - `Component.withSlots(...)` publishes `View.Slots` metadata on a component.
+   - Component wrappers and route metadata helpers preserve the contract axis.
 7. Add behavior/style witness-targeted APIs: **Historical slice complete, naming superseded**
    - `Style.forSlots(...)` builds composed styles from a slot witness record
    - `Style.attachToSlots(...)` attaches a style to a `View.Slots` collection by witness-derived names
-   - Historical name: `Style.attachBySlotWitnesses(...)` and
-     `Behavior.attachBySlotWitnesses(...)` mapped style/behavior element keys
-     through slot witnesses instead of duplicated string slot maps.
-   - Current release-facing name:
-     `Style.attachBySlotContract(...)` and
+   - The old witness-remap naming was superseded before release.
+   - Current release-facing names are `Style.attachBySlotContract(...)` and
      `Behavior.attachBySlotContract(...)`.
    - Runtime coverage verifies witness-targeted style and behavior attachment
    - Example/docs update is still pending
@@ -755,14 +750,13 @@ the canonical model:
    - `View.children(...)` remains the dynamic children hole helper.
    - Type coverage proves transforms preserve `View.SlotsOf<T>`.
    - Runtime coverage proves transforms do not change `View.node(...)` unwrapping.
-9. Execute slot contract unification: **Planned**
-   - `View.Slots` becomes the single canonical authored slot contract object.
-   - `Component.withSlots(...)` becomes the component helper.
-   - `Component.SlotContractOf<T>` becomes the extraction helper.
-   - Add diagnostics for drift between declared contract, rendered view slots,
-     and setup/runtime `bindings.slots`.
-   - Collapse the two-axis `Slots` / `SlotWitnesses` implementation into one
-     `SlotContract` axis before release.
+9. Execute slot contract unification: **Complete for current contract path**
+   - `View.Slots` is the single canonical authored slot contract object.
+   - `Component.withSlots(...)` is the component helper.
+   - `Component.SlotContractOf<T>` is the extraction helper.
+   - Declared-vs-rendered diagnostics are available as explicit validation
+     helpers.
+   - The implementation uses one `SlotContract` axis.
 
 ## Open Questions
 

@@ -68,7 +68,6 @@ There is no ref workaround because there is no stale render snapshot of
 A compact current-version example:
 
 ```tsx
-import { Effect } from "effect";
 import { Component, Element, View } from "effect-atom-jsx";
 
 const TICK_INTERVAL_MS = 1000;
@@ -85,40 +84,28 @@ export const Counter = Component.make(
   Component.props<{}>(),
   Component.require<never>(),
 
-  () =>
-    Effect.gen(function* () {
-      const [count, setCount] = yield* Component.signal(0);
-      const [step, setStep] = yield* Component.signal(1);
-      const [isAutoCounting, setIsAutoCounting] = yield* Component.signal(false);
-
-      const increment = () => {
-        setCount((count) => count + step());
-      };
-
-      const toggleAutoCount = () => {
-        setIsAutoCounting((isAutoCounting) => !isAutoCounting);
-      };
-
-      yield* Component.effect(() => {
-        if (!isAutoCounting()) return;
+  Component.setup<{}>()
+    .value("slots", () => View.Slots.handles(CounterSlots))
+    .bind("count", () => Component.state(0))
+    .bind("step", () => Component.state(1))
+    .bind("isAutoCounting", () => Component.state(false))
+    .value("increment", ({ bindings }) => () => {
+      bindings.count.update((count) => count + bindings.step());
+    })
+    .value("toggleAutoCount", ({ bindings }) => () => {
+      bindings.isAutoCounting.update((isAutoCounting) => !isAutoCounting);
+    })
+    .doEffect(({ bindings }) =>
+      Component.effect(() => {
+        if (!bindings.isAutoCounting()) return;
 
         const interval = setInterval(() => {
-          setCount((count) => count + step());
+          bindings.count.update((count) => count + bindings.step());
         }, TICK_INTERVAL_MS);
 
         return () => clearInterval(interval);
-      });
-
-      return {
-        slots: View.Slots.handles(CounterSlots),
-        count,
-        step,
-        setStep,
-        isAutoCounting,
-        increment,
-        toggleAutoCount,
-      };
-    }),
+      })
+    ),
 
   (_props, b) =>
     View.fromSlots(
@@ -135,7 +122,7 @@ export const Counter = Component.make(
             value={b.step()}
             onInput={(event) => {
               const input = event.currentTarget as HTMLInputElement;
-              b.setStep(Number(input.value));
+              b.step.set(Number(input.value));
             }}
           />
         </label>

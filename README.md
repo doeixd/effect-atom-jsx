@@ -17,17 +17,19 @@ npm i effect-atom-jsx effect@^4.0.0-beta.29
 ## Overview
 
 ```
-effect-atom-jsx = Effect v4 services + Atom/Registry state + dom-expressions JSX
+effect-atom-jsx = Effect v4 services + Atom state + AF-UI components + dom-expressions JSX
 ```
 
-- **Local state** via `Atom` / `AtomRef` — reactive graph primitives (`Registry` available for advanced/manual control)
-- **Async state** via `defineQuery` / `atomEffect` / `Atom.fromResource` — Effect fibers with automatic cancellation
+- **Shared/general state** via `Atom` / `AtomRef` — reactive graph primitives (`Registry` available for advanced/manual control)
+- **Async state** via `Atom.runtime(layer).atom(...)`, `Atom.effect(...)`, `defineQuery(...)`, and `atomEffect(...)` — Effect fibers with typed `Result` values
 - **Mutations** via `Atom.optimistic(...).action(...)`, `Atom.runtime(...).action(...)`, and `defineMutation` — optimistic UI with rollback
 - **Routing** via first-class `Route.page` / `Route.layout` / `Route.index` nodes — typed route trees, loaders, links, and metadata
 - **Testing** via `renderWithLayer` / `withTestLayer` / `mockService` — DOM-free test harness
 - **Form validation** via `AtomSchema` — Schema-driven reactive fields with touched/dirty tracking
 - **SSR** via `renderToString` / `hydrateRoot` — server-side rendering with hydration
 - **Debug** via `AtomLogger` — structured logging for atom reads/writes
+- **AF-UI components** via `Component.setup(...)`, `View.Slots`, `Component.withSlots(...)`, `Style.forSlots(...)`, and `Behavior.forSlots(...)` — the current inside-out component model
+- **Component setup ownership** via `Component.state(...)`, `Component.query(...)`, `Component.action(...)`, and related setup helpers — local handles are tied to the component setup scope when one is present
 
 ## Quick Start
 
@@ -100,11 +102,61 @@ const mountApp = createMount(ApiLive);
 mountApp(() => <App />, document.getElementById("root")!);
 ```
 
+### 4. Use the AF-UI component path
+
+For component-authored UI, setup creates named bindings once and the view reads
+those committed bindings reactively:
+
+```tsx
+import { Component, View, Element } from "effect-atom-jsx";
+
+const Root = View.Slot.make("root", {
+  capability: Element.Capability.Container,
+});
+
+const CounterSlots = View.Slots.make({
+  root: View.Slot.bind(Root, Element.container()),
+});
+
+const Counter = Component.make(
+  Component.props<{ readonly initial: number }>(),
+  Component.require<never>(),
+  Component.setup<{ readonly initial: number }>()
+    .value("slots", () => View.Slots.handles(CounterSlots))
+    .bind("count", ({ props }) => Component.state(props.initial))
+    .value("increment", ({ bindings }) => () => {
+      bindings.count.update((count) => count + 1);
+    }),
+  (_props, bindings) =>
+    View.fromSlots(CounterSlots, (
+      <button onClick={bindings.increment}>
+        {bindings.count()}
+      </button>
+    )),
+).pipe(Component.withSlots(CounterSlots));
+```
+
+`Component.setup(...)` is the component-instance ownership boundary. The setup
+helpers are local to that instance:
+
+- `Component.state(...)` and `Component.signal(...)` reject writes after the
+  setup `Scope` closes.
+- `Component.effect(...)` and `Component.query(...)` create reactive owners that
+  are disposed with the setup scope.
+- `Component.action(...)` and `Component.optimistic(...).action(...)` capture
+  the setup service map and reject later runs after scope close.
+- `Component.ref<T>()` clears `.current` on scope close.
+
+Use `Component.state(...)` for component-owned implementation state. Use
+`Atom.*` for shared, reusable, service-backed, family-keyed, or externally
+owned state.
+
 ## Core Concepts
 
 ### Term Map (In Context)
 
 - `Atom`: core reactive unit; callable read (`count()`) plus write methods on writable atoms (`set`/`update`/`modify`).
+- `Component.state`: component-instance-local writable atom created during setup; scoped writes fail after component setup disposal.
 - `derived atom`: read-only atom computed from other atoms (`Atom.make((get) => ...)` or `Atom.derived(...)`).
 - `Query`: reactive async read (`defineQuery`), returns a `QueryRef` with `result`, `pending`, `latest`, `effect`, `invalidate`.
 - `Mutation`: async write handle from `Atom.optimistic(...).action(...)`, `Atom.runtime(...).action(...)`, or callback-style `defineMutation(...)`.
@@ -142,7 +194,7 @@ const apiRuntime = Atom.runtime(ApiLive);
 const users = apiRuntime.atom(usersEffect);
 
 // You can annotate with public aliases when you want explicitness:
-// const users: Atom.AsyncAtom<User[], HttpError> = apiRuntime.atom(usersEffect);
+// const users: Atom.ResultAtom<User[], HttpError> = apiRuntime.atom(usersEffect);
 
 // users() -> Result<User[], HttpError>
 // users.effect() -> Effect<User[], HttpError | BridgeError>
@@ -177,7 +229,8 @@ Writable vs read-only state:
 
 For most apps, start with this stack:
 
-- Local state: `Atom.make` / `Atom.value` / `Atom.derived`
+- Component-owned local state: `Component.state(...)` inside `Component.setup(...)`
+- Shared/general local state: `Atom.make` / `Atom.value` / `Atom.derived`
 - Service/runtime wiring: `Atom.runtime(layer)` for service-bound atoms/actions (preferred)
 - Ambient runtime alternative: `createMount(layer)` + `useService(Tag)`
 - Async reads: `defineQuery(...)`
@@ -235,9 +288,12 @@ Use `Route.componentOf(User)` when an API needs the materialized routed componen
 
 See `examples/router-golden-path/` for a complete end-to-end demonstration of the route-node API, including nested layouts, typed params/query, loaders with domain services, typed links, error handling, and head metadata.
 
-### Atom & Registry — Local State
+### Atom & Registry — Shared/General State
 
-Atoms are reactive values. Most component code uses callable atoms directly. `Registry` is for advanced/manual control.
+Atoms are reactive values for shared, reusable, service-backed, or explicitly
+caller-owned state. Component-owned local implementation state should usually
+come from `Component.state(...)` inside `Component.setup(...)`. `Registry` is
+for advanced/manual control.
 
 ```ts
 import { Effect } from "effect";
@@ -814,7 +870,19 @@ Primary modules are available as top-level namespace imports; advanced modules l
 
 ```ts
 // Namespace import
-import { Atom, AtomRef, Result, Hydration } from "effect-atom-jsx";
+import {
+  Atom,
+  AtomRef,
+  Behavior,
+  Component,
+  Element,
+  Result,
+  Route,
+  ServerRoute,
+  Style,
+  View,
+  Hydration,
+} from "effect-atom-jsx";
 import { FetchResult } from "effect-atom-jsx"; // optional advanced compatibility
 import { AtomSchema, AtomLogger, AtomRpc, AtomHttpApi } from "effect-atom-jsx";
 
@@ -829,6 +897,13 @@ import * as Registry from "effect-atom-jsx/Registry";
 | `Atom` | `make`, `readable`, `writable`, `family`, `map`, `withFallback`, `projection`, `projectionAsync`, `withReactivity`, `invalidateReactivity`, `keepAlive`, `runtime`, `action`, `effect`, `pull`, `Stream.*` (advanced OOO helpers), `searchParam`, `kvs`, `flush`, `get`, `set`, `update`, `modify`, `refresh`, `subscribe`, `fromStream`, `fromQueue`, `query` |
 | `AtomRef` | `make`, `collection` |
 | `Registry` | `make` (returns instance with `get`, `set`, `update`, `modify`, `mount`, `refresh`, `subscribe`, `reset`, `dispose`) |
+| `Component` | `make`, `setup`, `bind`, `value`, `doEffect`, `use`, `state`, `signal`, `effect`, `derived`, `query`, `action`, `optimistic`, `ref`, `withSlots`, `withLayer`, `withErrorBoundary`, `setupEffect`, `renderEffect` |
+| `View` | `make`, `fromSlots`, `tree`, `element`, `Slot.*`, `Slots.*`, `withTree`, `withChildren`, `appendChildren`, `validateTree`, `validatePlatform` |
+| `Element` | `interactive`, `container`, `focusable`, `textInput`, `collection`, `Capability.*` |
+| `Style` | `make`, `slot`, `forSlots`, `attachToSlots`, `attachBySlotContract`, `attachBySlots`, `Property.*`, `validatePlatform` |
+| `Behavior` | `make`, `forSlots`, `attachToSlots`, `attachBySlotContract`, `attachBySlots`, `events`, `validateAttachmentBySlots` |
+| `Route` | `page`, `layout`, `index`, `define`, `children`, `mount`, `ref`, `loader`, `title`, `link`, `componentOf` |
+| `ServerRoute` | server route definitions and runtime helpers |
 | `Result` | `loading`, `refreshing`, `success`, `failure`, `defect`, `match`, `map`, `flatMap`, `getOrElse`, `getOrThrow` |
 | `FetchResult` | `initial`, `success`, `failure`, `isInitial`, `isSuccess`, `isFailure`, `isWaiting`, `fromResult`, `toResult`, `map`, `flatMap`, `match`, `all` |
 | `Hydration` | `dehydrate`, `hydrate`, `toValues` |
@@ -885,11 +960,14 @@ Architecture decisions (in progress): `docs/adr/`
 | Example | Location | What it shows |
 |---------|----------|---------------|
 | Counter | `examples/counter/` | Signals, atoms, Registry, async data with `atomEffect` |
+| Auto Counter | `examples/auto-counter/` | `Component.setup(...)`, setup-owned state, and scoped auto-counting behavior |
 | Projection | `examples/projection/` | `Atom.projection` + `Atom.projectionAsync` with `Async` rendering |
 | OOO Async | `examples/ooo-async/` | `Atom.pull` + OOO chunk merge, rendered via `Async`, `Loading`, and `Errored` |
 | TodoMVC | `examples/todomvc/` | Full app with `defineQuery`, callback mutations, optimistic UI, service injection |
 | RPC & HTTP API | `examples/rpc-httpapi/` | `AtomRpc.Tag()`, `AtomHttpApi.Tag()`, `MatchTag` component |
 | Schema Form | `examples/schema-form/` | `AtomSchema` validation, touched/dirty/reset, `AtomLogger.snapshot` |
+| Styled Card | `examples/styled-card/` | Unified `Style` API and slot-based styling |
+| Styled Combobox | `examples/styled-combobox/` | Slot-aware style/behavior composition |
 | SSR | `examples/ssr/` | `renderToString`, `hydrateRoot`, `Hydration.dehydrate/hydrate` |
 | Router Golden Path | `examples/router-golden-path/` | Route-node API: nested layouts, typed params/query, loaders, typed links, error handling, head metadata |
 
@@ -900,10 +978,12 @@ Architecture decisions (in progress): `docs/adr/`
 3. **`defineQuery()` / `atomEffect()`** run async effects reactively, exposing `Result` state
 4. **`Atom.optimistic(source).action(...)`** owns optimistic value, rollback, pending, result, commit, and reconciliation
 5. **`defineMutation()`** remains the callback-style mutation alternative
-6. Component lifetimes are scope-backed: mount/root and component boundaries map to Effect scopes so parent disposal interrupts descendant fibers transitively
-7. **`createMount(layer)` + `useService(Tag)`** remain the ambient-runtime alternative for simpler trees
-8. **`scopedRootEffect()` / `scopedQueryEffect()` / `scopedMutationEffect()`** are advanced Effect-first lifetime constructors
-9. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
+6. **`Component.setup(...)`** creates named setup bindings; setup helpers are scoped ownership helpers for component-instance state, effects, queries, actions, optimistic handles, and refs
+7. **`View.Slots` + `Component.withSlots(...)`** publish the public structural contract that `Style.forSlots(...)` and `Behavior.forSlots(...)` attach to from outside
+8. Component lifetimes are scope-backed: mount/root and component boundaries map to Effect scopes so parent disposal interrupts descendant fibers transitively
+9. **`createMount(layer)` + `useService(Tag)`** remain the ambient-runtime alternative for simpler trees
+10. **`scopedRootEffect()` / `scopedQueryEffect()` / `scopedMutationEffect()`** are advanced Effect-first lifetime constructors
+11. Babel compiles JSX to **dom-expressions** helpers — reactivity updates only the affected DOM nodes
 
 ## Testing
 
@@ -950,6 +1030,14 @@ await harness2.dispose();
 ```
 
 > See [`docs/TESTING.md`](docs/TESTING.md) for the full testing guide.
+
+## Design Docs
+
+- [`AF_UI_CONTRACT.md`](docs/AF_UI_CONTRACT.md) — canonical architecture contract.
+- [`SLOT_CONTRACT_GOLDEN_PATH.md`](docs/SLOT_CONTRACT_GOLDEN_PATH.md) — current slot contract authoring path.
+- [`COMPONENT_STATE_OWNERSHIP.md`](docs/COMPONENT_STATE_OWNERSHIP.md) — component setup ownership and `Component.*` helper lifetimes.
+- [`PROPS_BINDINGS_SLOTS.md`](docs/PROPS_BINDINGS_SLOTS.md) — props, setup bindings, and slot contract ownership.
+- [`CURRENT_STATUS_IN_REDESIGN_PLAN.md`](docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md) — current implementation status and next work.
 
 ## `flush()` Escape Hatch
 

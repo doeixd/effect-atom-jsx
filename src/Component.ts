@@ -11,6 +11,7 @@ import {
   type ServiceMap,
 } from "effect";
 import { createEffect, createSignal, onCleanup, useContext, type Accessor, type Setter } from "./api.js";
+import { Owner, getOwner, runWithOwner } from "./owner.js";
 import * as Atom from "./Atom.js";
 import type * as Behavior from "./Behavior.js";
 import * as Element from "./Element.js";
@@ -739,15 +740,69 @@ export interface ActionOptions {
   readonly detached?: boolean;
 }
 
+type SetupLifetime = {
+  readonly hasScope: boolean;
+  readonly isDisposed: () => boolean;
+  readonly assertLive: () => void;
+};
+
+function setupLifetime(label: string): Effect.Effect<SetupLifetime> {
+  return Effect.gen(function* () {
+    const scope = yield* Effect.serviceOption(Scope.Scope);
+    let disposed = false;
+    if (scope._tag === "Some") {
+      yield* Scope.addFinalizer(scope.value, Effect.sync(() => {
+        disposed = true;
+      }));
+    }
+    return {
+      hasScope: scope._tag === "Some",
+      isDisposed: () => disposed,
+      assertLive: () => {
+        if (disposed) {
+          throw new Error(`[effect-atom-jsx/${label}] cannot write component-local state after its setup scope has closed.`);
+        }
+      },
+    };
+  });
+}
+
+function setupReactiveOwner<A>(make: () => A): Effect.Effect<A> {
+  return Effect.gen(function* () {
+    const scope = yield* Effect.serviceOption(Scope.Scope);
+    let owner: Owner | null = null;
+    if (scope._tag === "Some") {
+      yield* Scope.addFinalizer(scope.value, Effect.sync(() => {
+        owner?.dispose();
+        owner = null;
+      }));
+    }
+    return yield* Effect.sync(() => {
+      owner = new Owner(getOwner());
+      return runWithOwner(owner, make);
+    });
+  });
+}
+
 export function signal<A>(initial: A): Effect.Effect<readonly [Accessor<A>, Setter<A>]> {
-  return Effect.sync(() => createSignal(initial));
+  return Effect.gen(function* () {
+    const lifetime = yield* setupLifetime("Component.signal");
+    return yield* Effect.sync(() => {
+      const [get, set] = createSignal(initial);
+      const guardedSet: Setter<A> = (value) => {
+        lifetime.assertLive();
+        set(value);
+      };
+      return [get, guardedSet] as const;
+    });
+  });
 }
 
 export function effect<T>(
   fn: (prev: T | undefined) => T | void | (() => void),
   initialValue?: T,
 ): Effect.Effect<void> {
-  return Effect.sync(() => {
+  return setupReactiveOwner(() => {
     createEffect<T | void>((prev) => {
       const result = fn(prev as T | undefined);
       if (typeof result === "function") {
@@ -760,11 +815,15 @@ export function effect<T>(
 }
 
 export function state<A>(initial: A): Effect.Effect<Atom.WritableAtom<A>> {
-  return Effect.sync(() => {
+  return Effect.gen(function* () {
+    const lifetime = yield* setupLifetime("Component.state");
     const [getValue, setValue] = createSignal(initial);
     return Atom.writable(
       () => getValue(),
-      (_ctx, value: A) => setValue(() => value),
+      (_ctx, value: A) => {
+        lifetime.assertLive();
+        setValue(() => value);
+      },
     );
   });
 }
@@ -783,7 +842,7 @@ export function query<A, E, R>(
 ): Effect.Effect<Atom.ReadonlyAtom<Result<A, E>, E>, never, R> {
   return Effect.gen(function* () {
     const runtimeContext = yield* Effect.services<R>();
-    return yield* Effect.sync(() =>
+    return yield* setupReactiveOwner(() =>
       defineQuery(effect, {
         ...options,
         runtime: runtimeContext as RuntimeLike<R, unknown>,
@@ -797,8 +856,9 @@ export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
   options?: ActionOptions,
 ): Effect.Effect<ComponentAction<Args, A, E>, never, R> {
   return Effect.gen(function* () {
+    const lifetime = yield* setupLifetime("Component.action");
     const runtimeContext = yield* Effect.services<R>();
-    return yield* Effect.sync(() => {
+    return yield* setupReactiveOwner(() => {
     const handle = defineMutation<Args, E, R>(
       (args) => fn(...args),
       {
@@ -814,24 +874,31 @@ export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
     );
 
     const out = ((...args: Args) => {
+      lifetime.assertLive();
       if (options?.concurrency === "drop" && handle.pending()) return;
       handle.run(args);
     }) as ComponentAction<Args, A, E>;
     out.run = (...args: Args) => {
+      lifetime.assertLive();
       if (options?.concurrency === "drop" && handle.pending()) return;
       handle.run(args);
     };
     out.runEffect = (...args: Args) =>
-      Effect.tryPromise({
-        try: async () => {
+      Effect.sync(() => lifetime.assertLive()).pipe(
+        Effect.flatMap(() => Effect.tryPromise({
+          try: async () => {
           if (options?.concurrency === "drop" && handle.pending()) {
             return undefined as unknown as A;
           }
           return await Effect.runPromiseWith(runtimeContext as any)(fn(...args));
         },
-        catch: (error) => error as E,
-      });
-    out.effect = (...args: Args) => handle.effect(args) as Effect.Effect<void, E | BridgeError | MutationSupersededError>;
+          catch: (error) => error as E,
+        })),
+      );
+    out.effect = (...args: Args) =>
+      Effect.sync(() => lifetime.assertLive()).pipe(
+        Effect.flatMap(() => handle.effect(args) as Effect.Effect<void, E | BridgeError | MutationSupersededError>),
+      );
     out.result = handle.result;
     out.pending = handle.pending;
     return out;
@@ -848,12 +915,39 @@ export interface OptimisticBuilder<A> {
 export function optimistic<A>(source: Atom.WritableAtom<A>): OptimisticBuilder<A> {
   return {
     action: <Success = A, E = never, R = never, Input = void>(
-      spec: Atom.OptimisticActionSpec<A, Input, Success, E, R>,
+    spec: Atom.OptimisticActionSpec<A, Input, Success, E, R>,
     ) => Effect.gen(function* () {
+      const lifetime = yield* setupLifetime("Component.optimistic");
       const runtimeContext = yield* Effect.services<R>();
-      return yield* Effect.sync(() =>
-        Atom.optimistic(source, runtimeContext as RuntimeLike<R, unknown>).action(spec)
-      );
+      return yield* setupReactiveOwner(() => {
+        const handle = Atom.optimistic(source, runtimeContext as RuntimeLike<R, unknown>).action(spec);
+        const out = ((input: Input) => {
+          lifetime.assertLive();
+          handle(input);
+        }) as Atom.OptimisticActionHandle<Input, A, Success, E>;
+        Object.assign(out, handle);
+        out.run = (input: Input) => {
+          lifetime.assertLive();
+          handle.run(input);
+        };
+        out.runEffect = (input: Input) =>
+          Effect.sync(() => lifetime.assertLive()).pipe(
+            Effect.flatMap(() => handle.runEffect(input)),
+          );
+        out.effect = (input: Input) =>
+          Effect.sync(() => lifetime.assertLive()).pipe(
+            Effect.flatMap(() => handle.effect(input)),
+          );
+        out.rollback = () => {
+          lifetime.assertLive();
+          handle.rollback();
+        };
+        out.clear = () => {
+          lifetime.assertLive();
+          handle.clear();
+        };
+        return out;
+      });
     }) as Effect.Effect<Atom.OptimisticActionHandle<Input, A, Success, E>, never, R>,
   };
 }
@@ -861,7 +955,16 @@ export function optimistic<A>(source: Atom.WritableAtom<A>): OptimisticBuilder<A
 export type ComponentRef<T> = { current: T | null };
 
 export function ref<T>(): Effect.Effect<ComponentRef<T>> {
-  return Effect.sync(() => ({ current: null }));
+  return Effect.gen(function* () {
+    const ref: ComponentRef<T> = { current: null };
+    const scope = yield* Effect.serviceOption(Scope.Scope);
+    if (scope._tag === "Some") {
+      yield* Scope.addFinalizer(scope.value, Effect.sync(() => {
+        ref.current = null;
+      }));
+    }
+    return ref;
+  });
 }
 
 export function fromDequeue<A>(

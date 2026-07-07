@@ -8,10 +8,10 @@ Use these documents first:
 
 - [`docs/AF_UI_CONTRACT.md`](docs/AF_UI_CONTRACT.md) — canonical AF-UI architecture contract.
 - [`docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md`](docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md) — current implementation status and backlog.
-- [`docs/SLOT_CONTRACT_UNIFICATION_PLAN.md`](docs/SLOT_CONTRACT_UNIFICATION_PLAN.md) — next slot design plan; `View.Slots` becomes the canonical authored slot contract.
+- [`docs/SLOT_CONTRACT_UNIFICATION_PLAN.md`](docs/SLOT_CONTRACT_UNIFICATION_PLAN.md) — current slot unification record; `View.Slots` is the canonical authored slot contract.
 - [`docs/PROPS_BINDINGS_SLOTS.md`](docs/PROPS_BINDINGS_SLOTS.md) — ownership model for caller props, setup bindings, and public slots.
 - [`docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md`](docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md) — bindings as the component-level async commit boundary.
-- [`docs/SLOT_WITNESS_PLAN.md`](docs/SLOT_WITNESS_PLAN.md) — first-class slot witness design and implementation plan.
+- [`docs/SLOT_WITNESS_PLAN.md`](docs/SLOT_WITNESS_PLAN.md) — historical slot witness plan; useful background, but `View.Slots` / slot contracts are the current authored API.
 - [`docs/TYPED_VIEW_TREE_PLAN.md`](docs/TYPED_VIEW_TREE_PLAN.md) — typed renderer-neutral tree plan.
 - [`docs/GEN2_UI_IMPLEMENTATION_NOTES.md`](docs/GEN2_UI_IMPLEMENTATION_NOTES.md) — notes from `../gen2` UI IR implementation and what can be adapted here.
 - [`docs/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md`](docs/ROUTER_ARCHITECTURE_IMPLEMENTATION_PLAN.md) — route-node, server-route, and runtime architecture notes.
@@ -38,10 +38,10 @@ Important boundaries:
   style/behavior effects attach.
 - `View.Slots` is the canonical authored slot contract.
 - `Component.SlotsOf<T>` is the runtime handle-map projection.
-- `Component.SlotWitnessesOf<T>` is the current static witness metadata implementation detail.
-- The next public naming slice should add `Component.withSlots(...)` and `Component.SlotContractOf<T>`.
+- `Component.SlotContractOf<T>` is the authored slot contract metadata axis.
+- `Component.withSlots(...)` publishes a `View.Slots` contract on a component.
 - Styles and behaviors attach from outside the component.
-- Witness APIs are the authored path: `Style.forSlots(...)`, `Style.attachToSlots(...)`, `Behavior.forSlots(...)`, `Behavior.attachToSlots(...)`.
+- Slot-contract APIs are the authored path: `Style.forSlots(...)`, `Style.attachToSlots(...)`, `Behavior.forSlots(...)`, `Behavior.attachToSlots(...)`.
 - String slot maps are dynamic/generated APIs.
 - Requirement and error types should bubble through components, behaviors, routes, and local layers.
 - Web is the concrete runtime today, but component/style/behavior types should avoid DOM-only coupling.
@@ -50,21 +50,24 @@ Important boundaries:
 
 Current AF-UI implementation state:
 
-- `Component.Component` has an explicit fifth `Slots` type axis.
-- `Component.SlotsOf<T>` extracts component slot metadata.
-- `Component.Component` also has a sixth `SlotWitnesses` implementation axis.
-- `Component.SlotWitnessesOf<T>` extracts static witness metadata.
-- `Component.withSlotWitnesses(...)` publishes witness metadata on a component.
-- Behavior/style slot attachment paths preserve component slot and witness metadata.
+- `Component.Component` has an explicit fifth `SlotContract` type axis.
+- `Component.SlotContractOf<T>` extracts authored slot contract metadata.
+- `Component.SlotsOf<T>` extracts the runtime handle-map projection.
+- `Component.withSlots(...)` publishes `View.Slots` metadata on a component.
+- Behavior/style slot attachment paths preserve component slot contract metadata.
 - Runtime views can return JSX-like `unknown` or explicit `View<Slots>`.
 - `View.Slot`, `View.Slots`, `View.fromSlots(...)`, typed tree helpers, hidden slots, remaps, diagnostics, and pipeable `View<Slots>` transforms are implemented.
-- Existing slots are still commonly stored in `bindings.slots`; new authored APIs should move away from that convention.
+- `Component.setup<Props>()`, `Component.bind(...)`, `Component.value(...)`,
+  `Component.doEffect(...)`, and `Component.use(...)` provide the preferred
+  named setup-builder authoring path when it improves readability.
+- `Atom.ResultAtom<A, E, R>` is the canonical named alias for result-valued
+  atoms. `Atom.AsyncAtom` remains only as a compatibility alias.
+- Existing slots may still appear in `bindings.slots`; new authored APIs should
+  prefer explicit `View.Slots` contracts and `Component.withSlots(...)`.
 
-The next major implementation slice should execute
-`docs/SLOT_CONTRACT_UNIFICATION_PLAN.md`: add `Component.withSlots(...)`, add
-`Component.SlotContractOf<T>`, migrate examples to the canonical `View.Slots`
-contract path, and add diagnostics for drift between declared component
-contracts, rendered `View` slots, and setup/runtime `bindings.slots`.
+The current implementation follow-up is documentation/example modernization and
+remaining type metadata propagation. Slot contract unification is closed for
+now; declared-vs-rendered slot diagnostics are explicit-only.
 
 ## Gen2 Notes
 
@@ -143,23 +146,22 @@ For narrow doc-only changes, typecheck/build are usually unnecessary unless sour
 
 ## UI/Slot Migration Guidance
 
-When adding `View<Slots>`:
+When working with `View<Slots>`:
 
 - Keep current JSX authoring valid.
-- Make `View.make(slots, node)` or equivalent an opt-in first.
+- Prefer `View.Slots` plus `View.fromSlots(...)` for authored slot-bearing
+  views; keep `View.make(slots, node)` as the lower-level/dynamic constructor.
 - Do not require a JSX compiler rewrite in the first slice.
 - Preserve `Component.SlotsOf<T>`.
 - Move authored APIs away from `bindings.slots` conventions while introducing
   explicit view metadata.
 - Add type coverage showing style/behavior attachments can target `Component.SlotsOf<T>`.
 
-When working on slot contract unification:
+When working on slot contract APIs:
 
 - Prefer `View.Slots` as the single authored slot contract object.
-- Add `Component.withSlots(...)` as the canonical public helper; rename or hide
-  `withSlotWitnesses(...)` before release.
-- Add `Component.SlotContractOf<T>` as the canonical extraction helper while
-  keeping `SlotWitnessesOf<T>`.
+- Use `Component.withSlots(...)` as the canonical public helper.
+- Use `Component.SlotContractOf<T>` as the canonical extraction helper.
 - Preserve both `Component.SlotsOf<T>` and slot contract metadata across
   wrappers.
 - Add diagnostics for declared-vs-rendered slot drift.

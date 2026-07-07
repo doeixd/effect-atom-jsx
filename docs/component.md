@@ -1,9 +1,9 @@
 # Component System
 
-Current status: the implemented component API uses setup-as-Effect, not the
-older `ctx` setup API shown in the historical notes below. For current authoring,
-start with the **Current API: Setup As Effect** section and the helper signature
-summary near the end of this document.
+Current status: the implemented component API uses setup-as-Effect with an
+optional pipeable setup builder, not the older `ctx` setup API shown in the
+historical notes below. For current authoring, start with the setup builder
+shape here, then read **Current API: Setup As Effect** for the underlying model.
 
 The current model is:
 
@@ -11,13 +11,18 @@ The current model is:
 Component.make(
   Component.props<Props>(),
   Component.require<Req>(...tags),
-  (props) => Effect.gen(function* () {
-    const service = yield* SomeService;
-    const state = yield* Component.state(initial);
-    const query = yield* Component.query(() => service.load(props.id));
-    const save = yield* Component.action((input: Input) => service.save(input));
-    return { state, query, save };
-  }),
+  Component.setup<Props>()
+    .bind("state", () => Component.state(initial))
+    .bind("query", ({ props }) =>
+      Component.query(() =>
+        SomeService.pipe(Effect.flatMap((service) => service.load(props.id)))
+      )
+    )
+    .bind("save", () =>
+      Component.action((input: Input) =>
+        SomeService.pipe(Effect.flatMap((service) => service.save(input)))
+      )
+    ),
   (props, bindings) => ViewOrJsx,
 );
 ```

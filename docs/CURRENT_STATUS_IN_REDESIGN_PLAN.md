@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-06 (component setup builder implementation)
+Last updated: 2026-07-06 (docs modernization continuation)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 Current AF-UI source of truth: `docs/AF_UI_CONTRACT.md`
@@ -12,6 +12,8 @@ Slot contract golden path: `docs/SLOT_CONTRACT_GOLDEN_PATH.md`
 Current optimistic/action design plan: `docs/OPTIMISTIC_ACTION_DESIGN_PLAN.md`
 
 Component ownership model: `docs/PROPS_BINDINGS_SLOTS.md`
+
+Component state ownership: `docs/COMPONENT_STATE_OWNERSHIP.md`
 
 Async binding boundary: `docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md`
 
@@ -475,6 +477,102 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
 
 ## Recently Completed Work
 
+### Docs Modernization Pass (2026-07-06)
+
+- Added `docs/COMPONENT_STATE_OWNERSHIP.md`:
+  - explains `Component.state()` as a component-instance-local ownership helper,
+    not a separate state model or replacement for `Atom`.
+  - clarifies when state belongs in props, setup bindings, shared atoms, or
+    slots.
+  - links the note from `docs/PROPS_BINDINGS_SLOTS.md`.
+- Implemented setup-helper ownership boundaries:
+  - scoped `Component.state(...)` and `Component.signal(...)` writes now throw
+    after the setup `Scope` closes.
+  - `Component.effect(...)`, `Component.query(...)`,
+    `Component.action(...)`, and `Component.optimistic(...).action(...)` create
+    their reactive/mutation owners under the setup scope.
+  - component actions and optimistic actions reject mutating operations after
+    setup scope close.
+  - `Component.ref(...)` clears `.current` on setup scope close.
+  - direct unscoped `setupEffect(...)` callers keep explicit caller-owned
+    handles for tests, SSR inspection, and low-level tooling.
+- Continued README/current guide alignment:
+  - Added an AF-UI component quick-start section to README using
+    `Component.setup(...)`, `View.Slots`, `View.fromSlots(...)`, and
+    `Component.withSlots(...)`.
+  - Updated `docs/BINDINGS_ASYNC_COMMIT_BOUNDARY.md` current example to use the
+    setup builder.
+  - Updated `docs/METADATA_WITNESS_IMPLEMENTATION_PLAN.md` golden path to use
+    `View.Slot`, `View.Slots`, `View.fromSlots(...)`,
+    `Component.withSlots(...)`, `Style.forSlots(...)`, and
+    `Behavior.forSlots(...)` instead of manual `bindings.slots` plus separate
+    `slotMetadata`.
+  - Marked `docs/BINDINGS_VS_SLOTS_REFACTOR.md` as historical background and
+    pointed readers to the current `SlotContract` / `View.Slots` model.
+  - Updated the typed-tree API example to derive handles from `View.Slots`
+    instead of manually threading `bindings.slots`.
+  - Updated `docs/GEN2_UI_IMPLEMENTATION_NOTES.md` so the migration path points
+    at `View.fromSlots(...)`, `Component.withSlots(...)`, and the existing
+    runtime-native `View` module.
+  - Updated `docs/SLOT_WITNESS_PLAN.md` to mark slot contract unification as
+    complete for the current contract path and to remove the old
+    witness-named component helper guidance.
+  - Added current-status notes to older exploratory `docs/composables.md`,
+    `docs/renderer.md`, and `docs/platform.md`.
+- Updated `AGENTS.md` to reflect the current slot-contract model:
+  - `View.Slots` / `Component.withSlots(...)` are current authored APIs.
+  - `Component.SlotContractOf<T>` is the authored contract extractor.
+  - old `SlotWitnesses` component-axis language is no longer described as
+    current.
+- Updated `docs/API.md` examples and attachment descriptions:
+  - service-backed component example now uses `Component.setup(...)`.
+  - `Component.query(...)` examples use the current thunked Effect shape.
+  - `Behavior.attachBySlots(...)` and `Style.attachBySlots(...)` are described
+    as dynamic/generated string-map APIs.
+- Updated `docs/AF_UI_CONTRACT.md` and
+  `docs/SLOT_CONTRACT_UNIFICATION_PLAN.md` to describe `View.Slots` as the
+  current canonical authored slot contract rather than a future step.
+- Updated current examples in `docs/component.md`,
+  `docs/SETUP_VIEW_COMPARISON.md`, and
+  `docs/OPTIMISTIC_ACTION_DESIGN_PLAN.md` to show setup-builder authoring.
+- Added current-status notes to older exploratory `docs/view.md`,
+  `docs/router.md`, and `docs/style.md` so historical examples do not compete
+  with the current API docs.
+- Validation status: typecheck clean, 477 tests pass, build clean.
+
+### Result Atom Alias Cleanup (2026-07-06)
+
+- Added `Atom.ResultAtom<A, E, R>` as the canonical named alias for
+  `Atom<Result<A, E>, E, R>`.
+- Kept `Atom.AsyncAtom<A, E, R>` as a compatibility alias only.
+- Updated result-valued atom helper signatures to use `ResultAtom` instead of
+  `AsyncAtom`:
+  - `Atom.withRetry(...)`
+  - `Atom.withPolling(...)`
+  - `Atom.withStaleTime(...)`
+  - `Atom.runtime(...).atom(...)`
+  - `Atom.projectionAsync(...)`
+  - `Atom.query(...)`
+  - `Atom.effect(...)`
+- Updated type tests to use `Atom.ErrorOf<T>` metadata extraction instead of
+  pattern matching against `AsyncAtom`.
+- Updated README/API docs to show `ResultAtom` as the visible alias and
+  `AsyncAtom` as compatibility.
+- Validation status: typecheck clean, 471 tests pass, build clean.
+
+### Atom Result Bridge Metadata Cleanup (2026-07-06)
+
+- Updated `Context.result(...)`, `WriteContext.result(...)`, and
+  `Atom.result(...)` signatures to infer the Effect error channel from atom
+  `E` metadata when present.
+- Kept compatibility with plain result-valued atoms by falling back to the inner
+  `Result` / `FetchResult` failure type when the atom metadata error is `never`.
+- Tightened result success/error extraction to use tagged `Success` / `Failure`
+  members instead of broad `Result<A, E>` inference.
+- Added type coverage showing metadata error typing is authoritative even when
+  the result value type carries a broad inner error.
+- Validation status: typecheck clean, 471 tests pass, build clean.
+
 ### Component Setup Builder Dogfood Pass (2026-07-06)
 
 - Migrated `examples/auto-counter/App.tsx` to `Component.setup(...)` with named
@@ -686,10 +784,11 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
   - `Behavior.attachToSlots(behavior, slots)`
 - Renamed the typed remapping helper to `attachBySlotContract(...)` and
   documented `attachBySlots(...)` as the dynamic/generated string-map path.
-- Added `docs/SLOT_CONTRACT_UNIFICATION_PLAN.md` as the next design plan:
-  - `View.Slots` becomes the single canonical authored slot contract.
-  - `Component.withSlots(...)` becomes the component contract helper.
-  - `Component.SlotContractOf<T>` becomes the canonical extraction name.
+- Added `docs/SLOT_CONTRACT_UNIFICATION_PLAN.md` as the current slot
+  unification record:
+  - `View.Slots` is the single canonical authored slot contract.
+  - `Component.withSlots(...)` is the component contract helper.
+  - `Component.SlotContractOf<T>` is the canonical extraction name.
   - The component type surface now uses the single `SlotContract` axis.
 - Slot contract unification is closed for now:
   - implementation slices are complete or explicitly decided.
@@ -934,8 +1033,6 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
   - Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence):
     - Continue migrating selected examples/guides to the setup builder where it improves readability.
     - Continue migrating consumers toward the new `Atom<A, E, R>` metadata instead of result-wrapper-only extraction.
-    - Update `Context.result` signature to work with `Atom<A, E>` instead of `Atom<Result<A, E>>`.
-    - Remove `AsyncAtom` alias once `Atom<A, E>` is the unified shape.
     - Continue propagating the new type metadata through remaining downstream consumers and docs.
     - Continue auditing route-node/server-route integration for requirement metadata preservation as new helpers land.
   - Keep `AF_UI_CONTRACT.md`, `GEN2_UI_IMPLEMENTATION_NOTES.md`, `AGENTS.md`, README, and API docs aligned as the public model changes.

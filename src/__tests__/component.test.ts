@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Exit, Layer, Scope, ServiceMap } from "effect";
 import { createRoot, flush } from "../api.js";
 import * as Behavior from "../Behavior.js";
 import * as Component from "../Component.js";
@@ -96,6 +96,179 @@ describe("Component", () => {
     bindings.increment();
 
     expect(bindings.count()).toBe(6);
+  });
+
+  it("ties Component.state writes to the provided setup scope", () => {
+    const Counter = Component.make(
+      Component.props<{ readonly start: number }>(),
+      Component.require<never>(),
+      ({ start }) => Effect.gen(function* () {
+        const count = yield* Component.state(start);
+        return { count };
+      }),
+      (_props, bindings) => bindings.count(),
+    );
+
+    const scope = Scope.makeUnsafe();
+    const bindings = Effect.runSync(
+      Component.setupEffect(Counter, { start: 1 }).pipe(Scope.provide(scope)),
+    );
+
+    bindings.count.set(2);
+    expect(bindings.count()).toBe(2);
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+
+    expect(bindings.count()).toBe(2);
+    expect(() => bindings.count.set(3)).toThrow(
+      "[effect-atom-jsx/Component.state] cannot write component-local state after its setup scope has closed.",
+    );
+  });
+
+  it("ties Component.signal setters and Component.effect cleanup to the provided setup scope", () => {
+    const effectLog: number[] = [];
+    const cleanupLog: number[] = [];
+    const Counter = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const [step, setStep] = yield* Component.signal(1);
+        yield* Component.effect(() => {
+          effectLog.push(step());
+          return () => cleanupLog.push(step());
+        });
+        return { step, setStep };
+      }),
+      (_props, bindings) => bindings.step(),
+    );
+
+    const scope = Scope.makeUnsafe();
+    const bindings = Effect.runSync(
+      Component.setupEffect(Counter, {}).pipe(Scope.provide(scope)),
+    );
+
+    expect(effectLog).toEqual([1]);
+    bindings.setStep(2);
+    flush();
+    expect(effectLog).toEqual([1, 2]);
+    expect(cleanupLog).toEqual([2]);
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+
+    expect(cleanupLog).toEqual([2, 2]);
+    expect(() => bindings.setStep(3)).toThrow(
+      "[effect-atom-jsx/Component.signal] cannot write component-local state after its setup scope has closed.",
+    );
+  });
+
+  it("ties Component.action handles to the provided setup scope", async () => {
+    const log: number[] = [];
+    const Counter = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const save = yield* Component.action((n: number) =>
+          Effect.sync(() => {
+            log.push(n);
+            return n + 1;
+          })
+        );
+        return { save };
+      }),
+      () => null,
+    );
+
+    const scope = Scope.makeUnsafe();
+    const bindings = Effect.runSync(
+      Component.setupEffect(Counter, {}).pipe(Scope.provide(scope)),
+    );
+
+    bindings.save.run(1);
+    await Effect.runPromise(Effect.sleep("5 millis"));
+    expect(log).toEqual([1]);
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+
+    expect(() => bindings.save.run(2)).toThrow(
+      "[effect-atom-jsx/Component.action] cannot write component-local state after its setup scope has closed.",
+    );
+    await expect(Effect.runPromise(bindings.save.runEffect(3))).rejects.toThrow(
+      "[effect-atom-jsx/Component.action] cannot write component-local state after its setup scope has closed.",
+    );
+  });
+
+  it("ties Component.optimistic handles to the provided setup scope", () => {
+    const Counter = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const count = yield* Component.state(0);
+        const save = yield* Component.optimistic(count).action({
+          update: (current, delta: number) => current + delta,
+          effect: (next) => Effect.succeed(next),
+        });
+        return { count, save };
+      }),
+      () => null,
+    );
+
+    const scope = Scope.makeUnsafe();
+    const bindings = Effect.runSync(
+      Component.setupEffect(Counter, {}).pipe(Scope.provide(scope)),
+    );
+
+    bindings.save.run(1);
+    expect(bindings.save.value()).toBe(1);
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+
+    expect(() => bindings.save.run(2)).toThrow(
+      "[effect-atom-jsx/Component.optimistic] cannot write component-local state after its setup scope has closed.",
+    );
+    expect(() => bindings.save.clear()).toThrow(
+      "[effect-atom-jsx/Component.optimistic] cannot write component-local state after its setup scope has closed.",
+    );
+  });
+
+  it("clears Component.ref values when the provided setup scope closes", () => {
+    const Widget = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const node = yield* Component.ref<{ readonly id: string }>();
+        node.current = { id: "node" };
+        return { node };
+      }),
+      () => null,
+    );
+
+    const scope = Scope.makeUnsafe();
+    const bindings = Effect.runSync(
+      Component.setupEffect(Widget, {}).pipe(Scope.provide(scope)),
+    );
+
+    expect(bindings.node.current).toEqual({ id: "node" });
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+
+    expect(bindings.node.current).toBeNull();
+  });
+
+  it("keeps unscoped Component.state usable for explicit setupEffect callers", () => {
+    const Counter = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.gen(function* () {
+        const count = yield* Component.state(0);
+        return { count };
+      }),
+      (_props, bindings) => bindings.count(),
+    );
+
+    const bindings = Effect.runSync(Component.setupEffect(Counter, {}));
+
+    bindings.count.set(1);
+    expect(bindings.count()).toBe(1);
   });
 
   it("supports headless render-prop components", () => {

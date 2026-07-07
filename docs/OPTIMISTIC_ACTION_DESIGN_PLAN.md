@@ -135,20 +135,17 @@ Component-local state should have the same authored model:
 const Counter = Component.make(
   Component.props<{ readonly initial: number }>(),
   Component.require<CounterApi>(CounterApi),
-  ({ initial }) =>
-    Effect.gen(function* () {
-      const api = yield* CounterApi;
-      const count = yield* Component.state(initial);
-
-      const saveCount = yield* Component.optimistic(count).action({
+  Component.setup<{ readonly initial: number }>()
+    .bind("count", ({ props }) => Component.state(props.initial))
+    .bind("saveCount", ({ bindings }) =>
+      Component.optimistic(bindings.count).action({
         name: "counter.save",
         update: (current, delta: number) => current + delta,
-        effect: (next) => api.saveCount(next),
-        commit: (next) => count.set(next),
-      });
-
-      return { count, saveCount };
-    }),
+        effect: (next) =>
+          CounterApi.pipe(Effect.flatMap((api) => api.saveCount(next))),
+        commit: (next) => bindings.count.set(next),
+      })
+    ),
   (_props, bindings) => (
     <button onClick={() => bindings.saveCount.run(1)}>
       {bindings.saveCount.value()}

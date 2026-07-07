@@ -126,14 +126,28 @@ export interface Writable<R, W = R, E = never, Req = never> extends Atom<R, E, R
 
 /** Alias for writable atoms in documentation and type signatures. */
 export type WritableAtom<A, W = A, E = never, R = never> = Writable<A, W, E, R>;
-/** Async atom shape carrying typed `Result<A, E>` states. */
-export type AsyncAtom<A, E, R = never> = Atom<Result<A, E>, E, R>;
+/** Atom shape carrying typed `Result<A, E>` states. */
+export type ResultAtom<A, E, R = never> = Atom<Result<A, E>, E, R>;
+/** Compatibility alias for result-valued atoms. Prefer `ResultAtom<A, E, R>` or `Atom<Result<A, E>, E, R>`. */
+export type AsyncAtom<A, E, R = never> = ResultAtom<A, E, R>;
 export type ValueOf<T> = T extends ReadonlyAtom<infer A, any, any> ? A : never;
 export type ErrorOf<T> = T extends ReadonlyAtom<any, infer E, any> ? E : never;
 export type RequirementsOf<T> = T extends ReadonlyAtom<any, any, infer R> ? R : never;
+type ResultLikeValue = Result<any, any> | FetchResult.Result<any, any>;
+type ResultSuccessOf<T> =
+  Extract<T, { readonly _tag: "Success" }> extends { readonly value: infer A } ? A : never;
+type ResultErrorOf<T> =
+  Extract<T, { readonly _tag: "Failure" }> extends { readonly error: infer E }
+    ? Exclude<E, { readonly defect: string }>
+    : never;
+type ResultAtomSuccessOf<T extends ReadonlyAtom<ResultLikeValue, any, any>> = ResultSuccessOf<ValueOf<T>>;
+type ResultAtomErrorOf<T extends ReadonlyAtom<ResultLikeValue, any, any>> =
+  [ErrorOf<T>] extends [never]
+    ? ResultErrorOf<ValueOf<T>>
+    : ErrorOf<T>;
 
 export interface ResultBridge {
-  <A, E>(self: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>): Effect.Effect<A, E | BridgeError>;
+  <T extends ReadonlyAtom<ResultLikeValue, any, any>>(self: T): Effect.Effect<ResultAtomSuccessOf<T>, ResultAtomErrorOf<T> | BridgeError>;
 }
 
 /** Read context passed to atom `read` functions. Callable as a shorthand for `get`. */
@@ -147,7 +161,7 @@ export interface Context {
   /** Write a value to a writable atom. */
   set<R, W>(atom: Writable<R, W, any, any>, value: W): void;
   /** Read an async/result atom as an Effect value. */
-  result<A, E>(atom: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>): Effect.Effect<A, E | BridgeError>;
+  result<T extends ReadonlyAtom<ResultLikeValue, any, any>>(atom: T): Effect.Effect<ResultAtomSuccessOf<T>, ResultAtomErrorOf<T> | BridgeError>;
   /** Register cleanup for the current owner scope. */
   addFinalizer(finalizer: () => void): void;
 }
@@ -163,7 +177,7 @@ export interface WriteContext<A> {
   /** Directly set the current atom's underlying signal value. */
   setSelf(value: A): void;
   /** Read an async/result atom as an Effect value. */
-  result<T, E>(atom: ReadonlyAtom<Result<T, E> | FetchResult.Result<T, E>, any, any>): Effect.Effect<T, E | BridgeError>;
+  result<T extends ReadonlyAtom<ResultLikeValue, any, any>>(atom: T): Effect.Effect<ResultAtomSuccessOf<T>, ResultAtomErrorOf<T> | BridgeError>;
   /** Register cleanup for the current owner scope. */
   addFinalizer(finalizer: () => void): void;
 }
@@ -405,7 +419,7 @@ const defaultContext: Context = Object.assign(
     set<R, W>(atom: Writable<R, W>, value: W): void {
       atom.write(makeWriteContext(atom), value);
     },
-    result<A, E>(atom: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>) {
+    result<T extends ReadonlyAtom<ResultLikeValue, any, any>>(atom: T) {
       return toEffectResult(defaultContext.get(atom));
     },
     addFinalizer(finalizer: () => void): void {
@@ -803,18 +817,18 @@ export function optimistic<A, R>(
  *
  * On typed `Failure`, schedules refreshes according to the provided schedule.
  */
-export function withRetry<A, E>(schedule: Schedule.Schedule<unknown, any, any>): (self: AsyncAtom<A, E>) => AsyncAtom<A, E>;
-export function withRetry<A, E>(self: AsyncAtom<A, E>, schedule: Schedule.Schedule<unknown, any, any>): AsyncAtom<A, E>;
-export function withRetry<A, E>(
-  arg1: AsyncAtom<A, E> | Schedule.Schedule<unknown, any, any>,
+export function withRetry<A, E, R = never>(schedule: Schedule.Schedule<unknown, any, any>): (self: ResultAtom<A, E, R>) => ResultAtom<A, E, R>;
+export function withRetry<A, E, R = never>(self: ResultAtom<A, E, R>, schedule: Schedule.Schedule<unknown, any, any>): ResultAtom<A, E, R>;
+export function withRetry<A, E, R = never>(
+  arg1: ResultAtom<A, E, R> | Schedule.Schedule<unknown, any, any>,
   arg2?: Schedule.Schedule<unknown, any, any>,
-): AsyncAtom<A, E> | ((self: AsyncAtom<A, E>) => AsyncAtom<A, E>) {
+): ResultAtom<A, E, R> | ((self: ResultAtom<A, E, R>) => ResultAtom<A, E, R>) {
   if (arg2 === undefined) {
     const schedule = arg1 as Schedule.Schedule<unknown, any, any>;
     return (self) => withRetry(self, schedule);
   }
 
-  const self = arg1 as AsyncAtom<A, E>;
+  const self = arg1 as ResultAtom<A, E, R>;
   const schedule = arg2;
   let retryFiber: Fiber.Fiber<void, never> | null = null;
   let retryFailure: unknown = undefined;
@@ -854,18 +868,18 @@ export function withRetry<A, E>(
  *
  * Refreshes the atom whenever the schedule emits.
  */
-export function withPolling<A, E>(schedule: Schedule.Schedule<unknown, any, any>): (self: AsyncAtom<A, E>) => AsyncAtom<A, E>;
-export function withPolling<A, E>(self: AsyncAtom<A, E>, schedule: Schedule.Schedule<unknown, any, any>): AsyncAtom<A, E>;
-export function withPolling<A, E>(
-  arg1: AsyncAtom<A, E> | Schedule.Schedule<unknown, any, any>,
+export function withPolling<A, E, R = never>(schedule: Schedule.Schedule<unknown, any, any>): (self: ResultAtom<A, E, R>) => ResultAtom<A, E, R>;
+export function withPolling<A, E, R = never>(self: ResultAtom<A, E, R>, schedule: Schedule.Schedule<unknown, any, any>): ResultAtom<A, E, R>;
+export function withPolling<A, E, R = never>(
+  arg1: ResultAtom<A, E, R> | Schedule.Schedule<unknown, any, any>,
   arg2?: Schedule.Schedule<unknown, any, any>,
-): AsyncAtom<A, E> | ((self: AsyncAtom<A, E>) => AsyncAtom<A, E>) {
+): ResultAtom<A, E, R> | ((self: ResultAtom<A, E, R>) => ResultAtom<A, E, R>) {
   if (arg2 === undefined) {
     const schedule = arg1 as Schedule.Schedule<unknown, any, any>;
     return (self) => withPolling(self, schedule);
   }
 
-  const self = arg1 as AsyncAtom<A, E>;
+  const self = arg1 as ResultAtom<A, E, R>;
   const schedule = arg2;
   let pollFiber: Fiber.Fiber<void, never> | null = null;
 
@@ -898,18 +912,18 @@ export function withPolling<A, E>(
  *
  * Once data is settled, schedules a one-shot refresh after `duration`.
  */
-export function withStaleTime<A, E>(duration: string | number): (self: AsyncAtom<A, E>) => AsyncAtom<A, E>;
-export function withStaleTime<A, E>(self: AsyncAtom<A, E>, duration: string | number): AsyncAtom<A, E>;
-export function withStaleTime<A, E>(
-  arg1: AsyncAtom<A, E> | string | number,
+export function withStaleTime<A, E, R = never>(duration: string | number): (self: ResultAtom<A, E, R>) => ResultAtom<A, E, R>;
+export function withStaleTime<A, E, R = never>(self: ResultAtom<A, E, R>, duration: string | number): ResultAtom<A, E, R>;
+export function withStaleTime<A, E, R = never>(
+  arg1: ResultAtom<A, E, R> | string | number,
   arg2?: string | number,
-): AsyncAtom<A, E> | ((self: AsyncAtom<A, E>) => AsyncAtom<A, E>) {
+): ResultAtom<A, E, R> | ((self: ResultAtom<A, E, R>) => ResultAtom<A, E, R>) {
   if (arg2 === undefined) {
     const duration = arg1 as string | number;
     return (self) => withStaleTime(self, duration);
   }
 
-  const self = arg1 as AsyncAtom<A, E>;
+  const self = arg1 as ResultAtom<A, E, R>;
   const duration = arg2;
   let staleFiber: Fiber.Fiber<unknown, never> | null = null;
 
@@ -987,8 +1001,8 @@ export interface SingleFlightClientOptions<Input> {
 
 export interface AtomRuntime<R, E = unknown> {
   readonly managed: ManagedRuntime.ManagedRuntime<R, E>;
-  atom<A, E2, RReq extends R = R>(effect: Effect.Effect<A, E2, RReq>): AsyncAtom<A, E2>;
-  atom<A, E2, RReq extends R = R>(factory: (get: Context) => Effect.Effect<A, E2, RReq>): AsyncAtom<A, E2>;
+  atom<A, E2, RReq extends R = R>(effect: Effect.Effect<A, E2, RReq>): ResultAtom<A, E2>;
+  atom<A, E2, RReq extends R = R>(factory: (get: Context) => Effect.Effect<A, E2, RReq>): ResultAtom<A, E2>;
   action<A, E2, RReq extends R = R, Input = void>(
     effect: (input: Input) => Effect.Effect<A, E2, RReq>,
     options?: {
@@ -1128,7 +1142,7 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
     managed,
     atom<A, E2, RReq extends R = R>(
       input: Effect.Effect<A, E2, RReq> | ((get: Context) => Effect.Effect<A, E2, RReq>),
-    ): AsyncAtom<A, E2> {
+    ): ResultAtom<A, E2> {
       const run = (): Effect.Effect<A, E2, RReq> =>
         typeof input === "function"
           ? (input as (get: Context) => Effect.Effect<A, E2, RReq>)(defaultContext)
@@ -1879,17 +1893,17 @@ export function projectionAsync<T, E, R = never>(
   derive: (draft: T, get: Context) => Effect.Effect<void | T, E, R>,
   initial: T,
   options?: ProjectionAsyncOptions<T, R> & { readonly runtime?: undefined },
-): AsyncAtom<T, E, R>;
+): ResultAtom<T, E, R>;
 export function projectionAsync<T, E, R = never>(
   derive: (draft: T, get: Context) => Effect.Effect<void | T, E, R>,
   initial: T,
   options: ProjectionAsyncOptions<T, R> & { readonly runtime: RuntimeLike<R, unknown> },
-): AsyncAtom<T, E>;
+): ResultAtom<T, E>;
 export function projectionAsync<T, E, R = never>(
   derive: (draft: T, get: Context) => Effect.Effect<void | T, E, R>,
   initial: T,
   options?: ProjectionAsyncOptions<T, R>,
-): AsyncAtom<T, E, R> {
+): ResultAtom<T, E, R> {
   let current = initial;
   const key = options?.key ?? "id";
 
@@ -1910,7 +1924,7 @@ export function projectionAsync<T, E, R = never>(
 
   return (options?.runtime === undefined
     ? query(run)
-    : query(options.runtime, run)) as AsyncAtom<T, E, R>;
+    : query(options.runtime, run)) as ResultAtom<T, E, R>;
 }
 
 export function map<A, B>(f: (a: A) => B): <E = never, R = never>(self: ReadonlyAtom<A, E, R>) => ReadonlyAtom<B, E, R>;
@@ -1994,21 +2008,21 @@ export const get = <A, E = never, R = never>(self: ReadonlyAtom<A, E, R>): Effec
   Effect.sync(() => defaultContext.get(self));
 
 export function result(): ResultBridge;
-export function result<A, E>(
-  self: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>,
-): Effect.Effect<A, E | BridgeError>;
+export function result<T extends ReadonlyAtom<ResultLikeValue, any, any>>(
+  self: T,
+): Effect.Effect<ResultAtomSuccessOf<T>, ResultAtomErrorOf<T> | BridgeError>;
 /**
  * Read a result-like atom as an `Effect` value.
  *
  * Supports both core `Result` and compatibility `FetchResult` atoms.
  */
-export function result<A, E>(
-  self?: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>,
+export function result<T extends ReadonlyAtom<ResultLikeValue, any, any>>(
+  self?: T,
 ): 
-  | Effect.Effect<A, E | BridgeError>
+  | Effect.Effect<ResultAtomSuccessOf<T>, ResultAtomErrorOf<T> | BridgeError>
   | ResultBridge {
   if (self === undefined) {
-    return ((nextSelf: ReadonlyAtom<Result<A, E> | FetchResult.Result<A, E>, any, any>) =>
+    return ((nextSelf: T) =>
       Effect.suspend(() => toEffectResult(defaultContext.get(nextSelf)))
     ) as ResultBridge;
   }
@@ -2247,11 +2261,11 @@ export function fromSchedule<A>(
 
 export function query<A, E, R>(
   fn: () => Effect.Effect<A, E, R>,
-): AsyncAtom<A, E, R>;
+): ResultAtom<A, E, R>;
 export function query<A, E, R>(
   runtime: RuntimeLike<R, unknown>,
   fn: () => Effect.Effect<A, E, R>,
-): AsyncAtom<A, E>;
+): ResultAtom<A, E>;
 /**
  * Create an atom backed by `defineQuery(...).result` semantics.
  *
@@ -2271,7 +2285,7 @@ export function query<A, E, R>(
 export function query<A, E, R>(
   arg1: RuntimeLike<R, unknown> | (() => Effect.Effect<A, E, R>),
   arg2?: () => Effect.Effect<A, E, R>,
-): AsyncAtom<A, E, R> {
+): ResultAtom<A, E, R> {
   let accessor: Accessor<Result<A, E>> | null = null;
 
   const getAccessor = (): Accessor<Result<A, E>> => {
@@ -2295,7 +2309,7 @@ export function query<A, E, R>(
  */
 export const effect = <A, E>(
   fn: () => Effect.Effect<A, E, never>,
-): AsyncAtom<A, E> => {
+): ResultAtom<A, E> => {
   let accessor: Accessor<Result<A, E>> | null = null;
   const getAccessor = (): Accessor<Result<A, E>> => {
     if (accessor !== null) return accessor;

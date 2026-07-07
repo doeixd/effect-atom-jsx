@@ -11,6 +11,9 @@ boundaries.
 
 For the async consistency role of bindings, see
 [`BINDINGS_ASYNC_COMMIT_BOUNDARY.md`](BINDINGS_ASYNC_COMMIT_BOUNDARY.md).
+For why `Component.state()` exists as a local ownership helper rather than a
+separate state model, see
+[`COMPONENT_STATE_OWNERSHIP.md`](COMPONENT_STATE_OWNERSHIP.md).
 For the practical setup/view comparison with React, Solid, and Foldkit, see
 [`SETUP_VIEW_COMPARISON.md`](SETUP_VIEW_COMPARISON.md).
 

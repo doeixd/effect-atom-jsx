@@ -1,3 +1,12 @@
+# View Notes
+
+Current status: this is an exploratory design note. For current authored view
+APIs, use `View.Slot`, `View.Slots`, `View.fromSlots(...)`, typed tree helpers,
+and `Component.withSlots(...)`; see [`AF_UI_CONTRACT.md`](AF_UI_CONTRACT.md),
+[`SLOT_CONTRACT_GOLDEN_PATH.md`](SLOT_CONTRACT_GOLDEN_PATH.md), and
+[`API.md`](API.md). Older examples below may use raw setup `Effect.gen(...)`
+or proposed view-effect APIs that are not the primary current authoring path.
+
 You're onto something important. The view function is where type safety currently breaks. The setup is an Effect with full `R` and `E` tracking. But the view is a plain function that returns JSX, and the moment you render a child component inside that JSX, the child's requirements and errors become invisible.
 
 **The problem concretely:**

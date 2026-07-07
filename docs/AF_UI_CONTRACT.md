@@ -80,14 +80,13 @@ the domain-specific witness APIs (`Element.Capability.*`, `View.Event.*`,
 `View.Attribute.*`, `View.Requirement.*`, `Style.Property.*`) rather than raw
 magic strings in new authored code.
 
-Slot identity should use first-class witnesses rather than duplicated string
-keys and separate metadata records. The witness design is tracked in
-[`SLOT_WITNESS_PLAN.md`](SLOT_WITNESS_PLAN.md).
+Slot identity should use `View.Slot` and `View.Slots` rather than duplicated
+string keys and separate metadata records. The historical witness design is
+tracked in [`SLOT_WITNESS_PLAN.md`](SLOT_WITNESS_PLAN.md); the current
+unification plan is [`SLOT_CONTRACT_UNIFICATION_PLAN.md`](SLOT_CONTRACT_UNIFICATION_PLAN.md).
 
-The next design step is tracked in
-[`SLOT_CONTRACT_UNIFICATION_PLAN.md`](SLOT_CONTRACT_UNIFICATION_PLAN.md):
-`View.Slots` should become the single canonical authored slot contract object.
-`Component.SlotsOf<T>` should remain the runtime handle-map projection, while
+`View.Slots` is the single canonical authored slot contract object.
+`Component.SlotsOf<T>` remains the runtime handle-map projection, while
 `Component.SlotContractOf<T>` exposes the authored contract metadata.
 
 ### View
@@ -339,7 +338,8 @@ Completed in the current checkpoint:
   - `Style.attachToSlots(...)`
   - `Behavior.forSlots(...)`
   - `Behavior.attachToSlots(...)`
-- Added `docs/SLOT_CONTRACT_UNIFICATION_PLAN.md` as the next slot design plan.
+- Added `docs/SLOT_CONTRACT_UNIFICATION_PLAN.md` as the current slot
+  unification record.
 - Verified the code with:
   - `npm run typecheck`
   - `npm test`
@@ -348,11 +348,15 @@ Completed in the current checkpoint:
 Current state:
 
 - Components now carry runtime slot handle metadata and static slot contract metadata at the type level.
-- Existing components still generally expose runtime handles through `bindings.slots`.
+- Existing compatibility components may still expose runtime handles through
+  `bindings.slots`; new authored examples should use `View.Slots` plus
+  `Component.withSlots(...)`.
 - Runtime view functions can return JSX-like `unknown` or an opt-in `View<Slots>`.
 - `View<Slots>` can carry slot metadata, hidden slots, remaps, typed tree metadata, and pipeable transforms.
 - `Style` and `Behavior` expose slot-contract-first authored APIs plus dynamic validation helpers.
-- The next design gap is making `View.Slots` the single component slot contract and adding diagnostics for drift between declared contract, rendered `View`, and setup/runtime slots.
+- `View.Slots` is now the single authored component slot contract. The
+  remaining gap is broader use of explicit diagnostics for drift between the
+  declared contract, rendered `View`, and setup/runtime slots.
 
 ### Primary Goal
 
@@ -404,21 +408,25 @@ When porting from `gen2`, preserve the **contract idea** and redesign the **runt
 
 ### Milestone 1: Slot Metadata Foundation
 
-Status: mostly complete.
+Status: complete for the current slot-contract path.
 
 Done:
 
-- `Component.Component` carries `Slots`.
+- `Component.Component` carries a `SlotContract` axis.
 - `Component.SlotsOf<T>` exists.
-- `Behavior.attachBySlots` preserves slots.
-- `Style.attach` / `Style.attachBySlots` preserve slots.
+- `Component.SlotContractOf<T>` exists.
+- `Component.withSlots(...)` publishes `View.Slots` contracts.
+- `Behavior.attachToSlots(...)` and `Style.attachToSlots(...)` are the
+  authored slot-contract attachment helpers.
+- `Behavior.attachBySlots(...)` and `Style.attachBySlots(...)` remain the
+  dynamic/generated string-map helpers.
 - Type tests exercise `SlotsOf`.
 
 Remaining:
 
-- Add a direct component-slot attach helper where useful so callers do not need to thread `Bindings` generics manually in strict cases.
-- Add negative type tests for `Component.SlotsOf<T>` on styles, not only behavior mappings.
-- Audit all component transforms to make sure they preserve `SlotsOf<C>`.
+- Continue adding negative type tests as new attachment helpers land.
+- Keep auditing transforms so `Component.SlotsOf<T>` and
+  `Component.SlotContractOf<T>` stay precise.
 
 ### Milestone 2: Minimal Runtime View
 
@@ -687,20 +695,24 @@ The repo already has broad coverage for atoms, components, behaviors, styles, ro
 
 ### Gap 1: Component Slots Are Not First-Class Enough
 
-Status: partially addressed.
+Status: complete for the current `View.Slots` contract path.
 
-Current `Component.Component` now tracks `Props`, `Req`, `E`, `Bindings`, and `Slots`, but runtime slots still mostly live inside `Bindings` conventions such as `{ slots }`.
+Current `Component.Component` tracks `Props`, `Req`, `E`, `Bindings`, and
+`SlotContract`. Runtime slots may still appear in `bindings.slots` for
+compatibility, but authored components publish `View.Slots` contracts through
+`Component.withSlots(...)`.
 
 Target:
 
-- add `Slots` to the component type model
-- make view/slot metadata explicit
-- replace binding-shape conventions with explicit slot contracts
+- keep `View.Slots` as the authored slot contract
+- keep runtime handle maps as projections through `Component.SlotsOf<T>`
+- keep binding-shape conventions as compatibility/dynamic paths only
 
 Acceptance:
 
-- a component exposes a typed `Slots` parameter — done
-- `Behavior.attachBySlots` and `Style.attachBySlots` preserve component slot metadata — done
+- a component exposes a typed slot contract — done
+- `Behavior.attachToSlots(...)` and `Style.attachToSlots(...)` preserve
+  component slot metadata — done
 - view-backed components can expose slots without relying only on
   author-written `bindings.slots` — done via `Component.withSlots(View.Slots)`
 
@@ -736,7 +748,7 @@ Acceptance:
 
 ### Gap 4: Style Surface Needs Consolidation
 
-`Style` and the advanced `Style2` descriptors have mostly landed, but the public story should be one coherent style API.
+`Style` and the advanced descriptor surface have landed as one coherent style API.
 
 Target:
 

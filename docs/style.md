@@ -1,3 +1,11 @@
+# Style Notes
+
+Current status: the public style system is the unified `Style` API in
+`src/Style.ts`. For authored slot-based styles, prefer `View.Slots`,
+`Style.forSlots(slots)(...)`, and `Style.attachToSlots(style, slots)`.
+`Style.attachBySlots(...)` remains the dynamic/generated string-map path. Older
+examples below may predate the slot-contract terminology.
+
 The insight is the same one that made behaviors work. The view exposes named element slots. Behaviors attach interaction to those slots. Styles attach appearance to those slots. Both compose from outside the view. Both are type-safe. Both are small composable pieces.
 
 **The parallel:**
