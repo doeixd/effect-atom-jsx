@@ -139,12 +139,15 @@ findings. Status:
 - Two coexisting Result models (Finding-5 step 2); routing overload seam +
   "type instantiation excessively deep" warnings in `Route.ts`; cast density
   (`as any`/`as unknown as`); CHANGELOG/versioning for breaking changes.
-- **Done 2026-07-07:** README consolidated (deleted the redundant
-  `README.new.md`; kept the comprehensive `README.md`) and two real README
-  setup bugs fixed — the `render` import (now top-level) and the babel
-  `moduleName` (was `effect-atom-jsx`, corrected to `effect-atom-jsx/runtime`,
-  which would otherwise break the JSX transform). Dist import smoke-test
-  passed (59 exports incl. `render`; `jsx-runtime` resolves).
+- **Done 2026-07-07:** README consolidated to one file — kept the concise,
+  current rewrite (former `README.new.md`) as `README.md`, folding in the
+  essential setup section (babel + tsconfig) the old comprehensive README had;
+  deep reference stays in `docs/` (API, testing, services, golden path). Two
+  real README setup bugs fixed — the `render` import (now top-level) and the
+  babel `moduleName` (was `effect-atom-jsx`, corrected to
+  `effect-atom-jsx/runtime`, which would otherwise break the JSX transform).
+  Dist import smoke-test passed (59 exports incl. `render`; `jsx-runtime`
+  resolves).
 
 Verdict: architecturally strong, **not release-ready** — solid beta. A stable
 core dep, two green type gates (with the example migration), and a security-
