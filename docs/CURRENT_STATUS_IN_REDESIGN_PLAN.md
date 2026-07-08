@@ -634,7 +634,7 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Package boundary decision (P7): split vs single package before v1; enforce internal layering either way.
 - [ ] Review and ratify `docs/V1_SCOPE.md` (PR1): resolve the marked decisions; use it to triage all other backlog items.
 - [x] Plan-doc consolidation sweep (PR2): **done 2026-07-07** — completed-work log (~860 lines) extracted to `docs/archive/REDESIGN_COMPLETED_LOG.md` with a high-level summary left in place; the full exploratory/plan/proposal/audit set (47 files) archived into `docs/archive/` with inbound-link rewrites in the stay-put files (`AGENTS.md`, `docs/API.md`, `docs/view.md`, `docs/router.md`). Live set is now 13 reference docs (`afui.md`, `API.md`, `component.md`, `view.md`, `style.md`, `reactivity.md`, `router.md`, `SERVICES_AND_LAYERS.md`, `TESTING.md`, `RELEASE_CHECKLIST.md`, `V1_SCOPE.md`, `SLOT_CONTRACT_GOLDEN_PATH.md`, this doc) + `adr/` + `af-ui-json-render/`. Broken-link check across all live docs + root files: zero. `npm run check` green.
-- [ ] Perf benchmark harness in CI (PR3): **first slice landed 2026-07-07** — `npm run bench` (vitest bench) with `src/__bench__/reactive-hot-paths.bench.ts` characterizing the core hot paths that back the README/afui perf claims (atom read/write, 3-level derived propagation, family trie vs equals-scan lookup, reactivity key normalization/derivation). `__bench__` excluded from typecheck/build/dist. Remaining: wire into CI with regression thresholds, and add a style-application + a component-mount benchmark.
+- [x] Perf benchmark harness in CI (PR3): **landed 2026-07-07/08.** `npm run bench` (vitest bench) with `src/__bench__/reactive-hot-paths.bench.ts` (atom read/write, 3-level derived propagation, family trie vs equals-scan lookup, reactivity key normalization/derivation) **+ `ui-hot-paths.bench.ts`** (style construction/resolution + per-mount component setup, backing the "styles are data / no CSS-in-JS runtime" and granular-component claims). `__bench__` excluded from typecheck/build/dist (but included in `typecheck:tests`, so bench files stay type-safe). **CI wired 2026-07-08** (`.github/workflows/ci.yml`): a `gates` job runs `typecheck:all` + `test` + `build` on push/PR; a **non-blocking `bench` job** runs `bench:ci` and uploads `bench-results.json` as an artifact. **Deliberate call:** perf thresholds on shared CI runners are noise-prone, so benchmarks are tracked-visible (artifact + log) rather than a hard gate — promote to a threshold gate once a stable runner + committed baseline exist.
 - [ ] Compile-error engineering (D1): **first slice landed 2026-07-06** — `View.TypeErrorMessage<Message>` branded diagnostic; `View.BindableHandle<S, H>` (now exported) resolves invalid bindings to a readable message (`Handle capability 'Container' does not satisfy slot 'input' capability 'TextInput'`) instead of `never`; compile-time error-text snapshots in `src/type-tests/slots-define.ts` assert the exact message plus hierarchy-aware acceptance. Remaining: apply the same `TypeErrorMessage` treatment to attachment (`attachToSlots` capability/event mismatches) and remap boundaries.
 - [x] AI-assistant guidance artifact (D2): **first slice landed 2026-07-07** — `llms.txt` at repo root with the core mental model, correct golden-path snippets, and a renamed/removed "do not emit" table (the type-checked-generation-as-a-feature framing from F4). Remaining: publish/package as an agent skill and keep versioned with the API.
 - [ ] Scaffolding (D3): `create-af-ui` starter + slot-contract component generator.
@@ -805,10 +805,10 @@ What is left is non-blocking cleanup and v1.x proposals, in rough priority:
    wire schema. Next: `Result` ↔ `ResultWire` transform, flip the cache +
    `Atom.pull` to core `Result`, bump the wire version, demote `FetchResult`
    to compat-subpath-only (closes the acceptance grep).
-2. **PR3 — CI perf gate.** First slice landed (`npm run bench`,
-   `src/__bench__/reactive-hot-paths.bench.ts`). Remaining: wire into CI with
-   regression thresholds, add a style-application and a component-mount
-   benchmark.
+2. **PR3 — CI perf harness. Done 2026-07-08.** `.github/workflows/ci.yml` runs
+   the gates on push/PR plus a non-blocking bench job (artifact upload);
+   `ui-hot-paths.bench.ts` adds the style + component-mount benchmarks.
+   Threshold-based hard gating deferred until a stable runner/baseline exists.
 3. **PR2 residual doc sweep** — any remaining inbound-link updates in the live
    reference docs (`view.md`, `router.md`, `style.md`) after the archive move.
 
