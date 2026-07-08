@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-07 ("finish the plan" execution pass)
+Last updated: 2026-07-08 (gate-closure sweep — all five gates green)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`
@@ -27,22 +27,28 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
 
 - Redesign is actively in progress; breaking-change-first to reduce API
   overlap and legacy aliases.
-- **`V1_SCOPE.md` is ratified** and is the triage authority. Of the 10
-  release-blocking items, the ergonomics/typesafety set (Findings 1/2/4/6,
-  P2, D1, S1–S4, F6) is **done**; three items remain as **dedicated passes**
-  (each too large/risky to fold into feature work) plus the test-gate
-  burndown — see "What remains" under **In Progress / Next**.
-- Standard quality gates are green: `npm run typecheck`, `npm test` (488
-  passing), `npm run build`. Two more gates exist: `npm run typecheck:tests`
-  (`src/__tests__`, 9 residual) and `npm run typecheck:examples`
-  (`examples/`, ~61 residual, all in the routing examples — see below).
+- **`V1_SCOPE.md` is ratified** and is the triage authority. All 10
+  release-blocking items are now **done**: the ergonomics/typesafety set
+  (Findings 1/2/4/6, P2, D1, S1–S4, F6), Finding-3 (2-tier attach model),
+  Finding-5 release-blocking core (unified `Result` on loader surfaces), and
+  **P6 routing consolidation** (the `Route`-vs-`AppRouteNode` overload seam
+  landed on `main` via commit `2e53de0`). What remains is non-blocking
+  cleanup + v1.x proposals — see "What remains" under **In Progress / Next**.
+- **All five quality gates are green** (verified 2026-07-08):
+  `npm run typecheck`, `npm test` (**488 passing**, 26 files),
+  `npm run build`, `npm run typecheck:tests` (`src/__tests__` /
+  `tsconfig.tests.json` — **0 errors**, down from 40→9→0), and
+  `npm run typecheck:examples` (`examples/` — **0 errors**, down from ~61→0).
+  `npm run typecheck:all` runs all three tsc gates; `npm run check` adds the
+  test run. The test and example gates are now enforced (commits `beac192`,
+  `dd657bf`).
 - The "finish the plan" + readiness passes fixed a genuine SSR XSS, **six**
   real library bugs surfaced by the test gate, and several DX/setup bugs
   (no JSX types shipped; `render` not top-level; wrong babel `moduleName`) —
-  all detailed in `docs/archive/REDESIGN_COMPLETED_LOG.md`. Remaining example
-  + test-gate + P6 errors converge on ONE routing dual-representation seam
-  (`Route` vs `AppRouteNode`); a Codex agent is attempting it on branch
-  `codex/routing-unify`.
+  all detailed in `docs/archive/REDESIGN_COMPLETED_LOG.md`. The routing
+  dual-representation seam (`Route` vs `AppRouteNode`) that previously blocked
+  the test/example gates was the last convergence point; it is resolved and
+  the branch work is merged.
 
 ## Current Goals
 
@@ -615,7 +621,7 @@ compile-time teeth when P2 key witnesses land.)
 - [x] Attachment API consolidation (Finding 3): **resolved 2026-07-07 — with a correction.** Attempting the planned physical deletion revealed the premise was wrong: `Style.attach`/`attachByView` and `Behavior.attach` are **not** redundant legacy forms. They are the **general low-level tier** — `Behavior.attach`'s `select` picks elements from *any* bindings (including derived values like `() => bindings.filtered()`), and `Style.attach` targets setup `bindings.slots` for components with **no published contract** — capabilities the three contract-keyed forms cannot express. So instead of deleting, **un-deprecated and reclassified** them as the general escape hatch the slot-contract forms are typed sugar over (JSDoc + API.md corrected). The real consolidation outcome: a clear 2-tier model (general `attach`/`attachByView`/`Behavior.attach` ← low-level; `attachToSlots`/`attachBySlotContract`/`attachBySlots` ← typed sugar), not a deletion. The "too many ways" critique conflated general-purpose with redundant.
 - [ ] Finish the `View.make` + `slotMetadata` demotion sweep (Finding 3): generated/dynamic escape hatch only; decide public fate of `View.slot(...)` / `View.hidden(...)`.
 - [ ] Inference audit (Finding 4): **authored path verified 2026-07-06** — `src/type-tests/slots-define.ts` proves the golden path (props/require/setup-inferred bindings + `withSlots` contract + `forSlots` attachments) needs zero explicit generics, including precise `SlotContractOf` extraction and unknown-slot rejection; doc/example generic sites corrected (`PROPS_BINDINGS_SLOTS.md`). Remaining, reclassified: the legacy bindings-as-slots convention (tests using `Component.make<{}, never, never, Bindings>` + string-map validation) genuinely requires annotations — that is one more reason it is the deprecated tier, and those sites migrate as part of the Finding-3 demotion rather than being force-de-generic'd.
-- [ ] Test-typecheck gate (hardening): **40 → 9, 2026-07-07** — `npm run typecheck:tests` (`tsconfig.tests.json`) exists and runs. The gate **surfaced and fixed SIX real library bugs** (`Atom.family` invisible plain overload, `Component.renderEffect` missing `SlotContract` axis, `Component.route` leaking `RouteContext` into `Req`, `ServerRoute.execute*` over-constrained node type, `Behavior.make` requiring all generics, `Component.setupEffect` missing `SlotContract` axis) plus the `SlotContract` witness-vs-handles normalization (`View.NormalizeSlots` at `renderViewEffect`) — decisive validation of the gate's worth. The remaining 9 are non-SlotContract: P6 routing overloads (~5), `withRetry` union source, validation strictness, `componentOf` standalone RouteContext. Details + the residual-16 categorization in the archive log. **Remaining is coupled/deep work, not a quick burndown:** ~5 are P6-coupled legacy route construction (route.test `UnifiedRouteSymbol`/overloads, route-loader `RouteChildrenEnhancer`) that resolve with the routing consolidation; the rest are deep type-helper drift (`attachToAllWithCapability` SlotContract over-constraint, `SlotMetadataMap` over witness collections, `withRetry` union source, `componentOf` standalone RouteContext). Making `typecheck:tests` a required green gate = P6 routing consolidation + a focused deep-helper batch. (Note: after the Finding-3 correction the deprecated-attach tests stay valid — those forms are no longer being deleted.)
+- [x] Test-typecheck gate (hardening): **40 → 9 → 0, closed 2026-07-08.** `npm run typecheck:tests` (`tsconfig.tests.json`) is **green and enforced** (part of `typecheck:all` / `check`). En route the gate **surfaced and fixed SIX real library bugs** (`Atom.family` invisible plain overload, `Component.renderEffect` missing `SlotContract` axis, `Component.route` leaking `RouteContext` into `Req`, `ServerRoute.execute*` over-constrained node type, `Behavior.make` requiring all generics, `Component.setupEffect` missing `SlotContract` axis) plus the `SlotContract` witness-vs-handles normalization (`View.NormalizeSlots` at `renderViewEffect`). The residual 9 closed in two batches: the ~5 P6-coupled route-construction errors (route.test `UnifiedRouteSymbol`/overloads, route-loader `RouteChildrenEnhancer`) resolved with the routing overload unification (commit `2e53de0`), and the deep type-helper drift (`attachToAllWithCapability` SlotContract over-constraint, `SlotMetadataMap` over witness collections, `withRetry` union source, `componentOf` standalone RouteContext) resolved in the deep-helper batch. (Note: after the Finding-3 correction the deprecated-attach tests stay valid — those forms are no longer being deleted.)
 - [x] Result consolidation, release-blocking core (Finding 5): **done 2026-07-07** (steps 0-1). Step 0: characterization tests for the SSR wire round-trip (render→serialize→deserialize→hydrate→first render) + a pinned wire-shape test — none existed, silent-failure surface. Step 1: `Route.loaderResult()` and `Route.title`/`meta` loader callbacks now emit unified `Result` (converted at the loader-cache boundary via `FetchResult.toResult`; found + fixed a real divergence where the legacy component path passed raw FetchResult to head callbacks while the tree path didn't). **Acceptance met:** no `E | { defect: string }` union in any `Route.ts`/`Component.ts` public signature; golden-path loader surfaces emit unified `Result`. 487 tests + gates green.
 - [ ] Result consolidation, internal cleanup (Finding 5 step 2, **not release-blocking**): remove remaining `FetchResult` from internal machinery — loader cache, `SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, `Atom.pull`. Changes the SSR wire format (protected by the step-0 characterization tests). Own focused pass; then `FetchResult` becomes compat-subpath-only and the acceptance grep (`FetchResult` in `Route.ts`/`router-runtime.ts` → zero) can close.
 - [ ] Typed-tree-by-default + claims sweep (Finding 6): authored views always carry `tree` metadata; docs scope type-safety claims to enforced boundaries.
@@ -624,7 +630,7 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Unified diagnostics pipeline (P3): shared `Diagnostic` type + dev-mode auto-report layer + static CLI/CI check entry point.
 - [ ] User-declared token schema (P4): theme taxonomy as user schema with `ThemeLight` as default instance.
 - [ ] Test kit (P5): component render driver, DOM-free behavior driver, style data assertions.
-- [ ] Routing consolidation (P6): unified route model + `RouterRuntime` canonical; deprecate-and-delete the earlier generations.
+- [x] Routing consolidation (P6): **resolved 2026-07-07/08.** Verdict was "3 legitimate tiers, not a legacy-to-delete generation" (history infra / component-first `Component.route` / route-first tree). The `Route`-vs-`AppRouteNode` overload seam that blocked the test/example gates was unified (commit `2e53de0`); stale "transitional/refactor-in-progress" JSDoc corrected to describe permanent tiers. `typecheck:tests` + `typecheck:examples` now green.
 - [ ] Package boundary decision (P7): split vs single package before v1; enforce internal layering either way.
 - [ ] Review and ratify `docs/V1_SCOPE.md` (PR1): resolve the marked decisions; use it to triage all other backlog items.
 - [x] Plan-doc consolidation sweep (PR2): **done 2026-07-07** — completed-work log (~860 lines) extracted to `docs/archive/REDESIGN_COMPLETED_LOG.md` with a high-level summary left in place; the full exploratory/plan/proposal/audit set (47 files) archived into `docs/archive/` with inbound-link rewrites in the stay-put files (`AGENTS.md`, `docs/API.md`, `docs/view.md`, `docs/router.md`). Live set is now 13 reference docs (`afui.md`, `API.md`, `component.md`, `view.md`, `style.md`, `reactivity.md`, `router.md`, `SERVICES_AND_LAYERS.md`, `TESTING.md`, `RELEASE_CHECKLIST.md`, `V1_SCOPE.md`, `SLOT_CONTRACT_GOLDEN_PATH.md`, this doc) + `adr/` + `af-ui-json-render/`. Broken-link check across all live docs + root files: zero. `npm run check` green.
@@ -774,38 +780,31 @@ hardened), the following landed in one push (commits `c013264`..`64cf627`+):
 - **D2** — `llms.txt` first slice.
 - **PR2** — completed-work log + fully-historical docs archived.
 
-### What remains (honest state, updated 2026-07-07)
+### What remains (honest state, updated 2026-07-08)
 
-Release-blocking items now resolved or reduced: Finding-1/2/4/6, P2, D1,
-S1-S4, F6 (done earlier); **Finding-3 resolved** (2-tier model, no deletion —
-see backlog); **Finding-5 release-blocking core done** (loaderResult +
-title/meta emit unified Result, defect union gone from public API). Five real
-library bugs fixed via the test-typecheck gate.
+**All release-blocking items are done.** Finding-1/2/4/6, P2, D1, S1-S4, F6
+(done earlier); Finding-3 resolved (2-tier attach model, no deletion);
+Finding-5 release-blocking core done (loaderResult + title/meta emit unified
+Result, defect union gone from public API); **P6 routing consolidation
+resolved** (overload seam unified, commit `2e53de0`); **the deep type-helper
+batch and both the test and example typecheck gates are closed** — all five
+gates green and enforced. Along the way the test gate surfaced and fixed six
+real library bugs (see the hardening item in the backlog).
 
-Remaining, in rough priority:
+What is left is non-blocking cleanup and v1.x proposals, in rough priority:
 
-1. **P6 routing consolidation** — **resolved 2026-07-07.** Verdict:
-   routing is a legitimate 3-tier model (history infra / component-first
-   `Component.route` / route-first tree), NOT a legacy-to-delete generation —
-   third "don't delete, reclassify" outcome this session. Reclassified the
-   `Component.route`/`guard` JSDoc. The `RouteChildrenEnhancer`/pipe-overload
-   seam is fixed (Codex, type-only) and `typecheck:tests` is green. The
-   "dedupe constructor-vs-piped" item was investigated and closed: both forms
-   are load-bearing (`Route.path` 101×, `Route.page` 21× across src/tests/
-   examples), so there is nothing to dedupe — the stale "transitional / refactor
-   in progress" JSDoc on `layout()` and the registry hooks was corrected to
-   describe permanent tiers instead of implying removal.
-2. **Deep type-helper batch** (clears most of the rest of `typecheck:tests`):
-   `Style/Behavior.attachToAllWithCapability` SlotContract over-constraint,
-   `SlotMetadataMap` over witness collections, `withRetry` union source,
-   `Route.componentOf` standalone RouteContext. Then make `typecheck:tests`
-   a required gate.
-3. **Finding-5 step 2 (non-blocking)** — remove `FetchResult` from internal
-   machinery (cache/wire/`Atom.pull`); safe now behind the step-0
-   characterization tests.
-4. **PR2 exploratory-doc archive sweep** with inbound-link updates
-   (`view.md`, `router.md`, `style.md`, `composables.md`, `renderer.md`,
-   `platform.md`).
+1. **Finding-5 step 2 (non-blocking)** — remove `FetchResult` from internal
+   machinery (loader cache, `SingleFlightPayload`/`loaderPayload` wire types,
+   loader orchestration, `Atom.pull`). Changes the SSR wire format, safe now
+   behind the step-0 characterization tests. Closing it lets the acceptance
+   grep (`FetchResult` in `Route.ts`/`router-runtime.ts` → zero) close and
+   demotes `FetchResult` to compat-subpath-only.
+2. **PR3 — CI perf gate.** First slice landed (`npm run bench`,
+   `src/__bench__/reactive-hot-paths.bench.ts`). Remaining: wire into CI with
+   regression thresholds, add a style-application and a component-mount
+   benchmark.
+3. **PR2 residual doc sweep** — any remaining inbound-link updates in the live
+   reference docs (`view.md`, `router.md`, `style.md`) after the archive move.
 
 ### Then: v1.x proposals (not release-blocking)
 
