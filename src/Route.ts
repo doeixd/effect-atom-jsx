@@ -13,6 +13,7 @@ import {
   type MutationSupersededError,
 } from "./effect-ts.js";
 import * as FetchResult from "./Result.js";
+import * as Serialization from "./Serialization.js";
 import { SingleFlightTransportTag, type SingleFlightTransportService } from "./SingleFlightTransport.js";
 import * as ComponentRuntime from "./Component.js";
 import * as RouterRuntimeModule from "./RouterRuntime.js";
@@ -2911,51 +2912,27 @@ export function runRouteLoader(
   );
 }
 
-/**
- * Escape a JSON string for safe embedding inside an HTML `<script>` element.
- *
- * `JSON.stringify` does not escape `<`, `>`, `&`, or the JS line separators
- * U+2028/U+2029, so loader data containing e.g. the literal `</script>` (any
- * user-generated content) would break out of the script tag → XSS. These
- * characters only occur inside JSON string values, and `\uXXXX` is a valid
- * JSON escape, so the result is both script-safe AND still parses back to the
- * original value via `JSON.parse` (see `deserializeLoaderData`).
- */
-function escapeJsonForHtml(json: string): string {
-  // `<`, `>`, `&` and the JS line separators U+2028/U+2029 can break out of a
-  // <script> or be invalid JS. Each maps to a valid JSON unicode escape, so the
-  // output is script-safe AND still parses via JSON.parse (deserializeLoaderData).
-  return json.replace(/[<>&\u2028\u2029]/g, (c) => {
-    switch (c) {
-      case "<": return "\\u003c";
-      case ">": return "\\u003e";
-      case "&": return "\\u0026";
-      case " ": return "\\u2028";
-      case " ": return "\\u2029";
-      default: return c;
-    }
-  });
-}
-
 export function serializeLoaderData(results: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>): string {
-  const object: Record<string, unknown> = {};
+  const object: Record<string, FetchResult.Result<unknown, unknown>> = {};
   for (const item of results) {
     object[item.routeId] = item.result;
   }
-  return escapeJsonForHtml(JSON.stringify(object));
+  return Serialization.encodeSync(Serialization.ResultWireRecord, object);
 }
 
 export function deserializeLoaderData(serialized: string): Record<string, FetchResult.Result<unknown, unknown>> {
-  const parsed = JSON.parse(serialized) as Record<string, FetchResult.Result<unknown, unknown>>;
-  return parsed;
+  return Serialization.decodeSync(Serialization.ResultWireRecord, serialized) as Record<
+    string,
+    FetchResult.Result<unknown, unknown>
+  >;
 }
 
 export function streamDeferredLoaderScripts(
   results: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>,
 ): ReadonlyArray<string> {
   return results.map((item) => {
-    const routeId = escapeJsonForHtml(JSON.stringify(item.routeId));
-    const result = escapeJsonForHtml(JSON.stringify(item.result));
+    const routeId = Serialization.encodeSync(Schema.String, item.routeId);
+    const result = Serialization.encodeSync(Serialization.ResultWire, item.result);
     return `<script>window.__LOADER_DATA__=window.__LOADER_DATA__||{};window.__LOADER_DATA__[${routeId}]=${result};window.__HYDRATE_ROUTE__&&window.__HYDRATE_ROUTE__(${routeId});</script>`;
   });
 }
