@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-08 (Serialization service landed; all five gates green)
+Last updated: 2026-07-08 (Finding-5 step 2 + PR2/PR3 done; P14 typed-intrinsics proposed)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`
@@ -530,6 +530,52 @@ ideas are worth taking:
    schema-validates. Keep it optional; compile-time typing remains the
    default for purely local actions.
 
+## Typed Intrinsic Elements (2026-07-08)
+
+### P14 — Per-tag typed JSX host elements + attributes (correctness headline)
+
+The "amazing TypeScript / correctness story" has a hole at the most-used
+surface: **intrinsic JSX host tags are effectively untyped.** Today
+`JSX.IntrinsicElements` is `{ [elemName: string]: HTMLAttributes }` and
+`HTMLAttributes` ends in `[attr: string]: unknown`, so `<input value={5}
+onBogus={...} />`, `<div href="...">`, and `<xyz>` all type-check. Slot
+contracts, tokens, capabilities, and reactivity keys are all witness-typed —
+the raw markup between them is not. This is the same "one step ahead of `node:
+unknown`" gap as Finding 6, but at the element/attribute layer rather than the
+view-body layer, and it is the first thing an LLM or a human hits.
+
+Direction:
+
+- Replace the catch-all `IntrinsicElements` with a **per-tag attribute map**
+  (`input` → input attributes, `a` → anchor, `img`, `label`, `form`, `option`,
+  `html`/`head`/`body`/`meta`/`link`, …), over a shared typed base of common
+  attributes with **real event types** (`onInput`/`onChange`/`onClick` carrying
+  the correct `Event`/`InputEvent`) instead of the current permissive
+  `EventHandler = (event: any) => unknown`.
+- Keep the `[elemName: string]` / `[attr: string]` fallbacks during migration
+  so nothing breaks; tighten tag-by-tag behind the `typecheck` gate. Decide at
+  the end whether to drop the string fallback (full closed-world safety) or
+  keep it as the `data-*`/custom-element escape hatch.
+- Pairs with **D1** (readable compile errors — a bad attribute should resolve
+  to a legible message, not a structural dump) and complements **Finding 2/6**
+  (witness-aware JSX + typed `tree`): P14 types the *host* leaves, Finding 2
+  types the *slot* structure between them.
+
+**Naming decision (resolved): do NOT add a runtime `Tag.*` element module.**
+Three reasons: (1) "Tag" is already the service-tag vocabulary across the
+library (`Serialization.Tag`, `Route.RouterTag`, `ServiceMap.Service`,
+Effect `Context.Tag`) — a second meaning would confuse; (2) a runtime
+hyperscript builder contradicts the Finding-2 decision that JSX is the authored
+surface, and would bypass the `babel-plugin-jsx-dom-expressions` template
+optimization (slower than the JSX it replaces); (3) **bundle/tree-shaking** — a
+`Tag = { input, div, … }` object of ~110 element closures is the
+anti-pattern (namespace objects are not reliably property-shaken, and
+`index.ts` re-exports via `export * as`, dragging them all in). The
+tree-shakeable programmatic escape hatch already exists as the single generic
+`View.element(tag, opts)`. **P14 is types only — erased at build, zero runtime,
+zero bundle cost** — which is exactly why it is the right shape for the
+correctness win.
+
 ## Services & Layers Review (2026-07-06)
 
 Reviewed how services/layers work across the library. The mechanics are
@@ -625,6 +671,7 @@ compile-time teeth when P2 key witnesses land.)
 - [x] Result consolidation, release-blocking core (Finding 5): **done 2026-07-07** (steps 0-1). Step 0: characterization tests for the SSR wire round-trip (render→serialize→deserialize→hydrate→first render) + a pinned wire-shape test — none existed, silent-failure surface. Step 1: `Route.loaderResult()` and `Route.title`/`meta` loader callbacks now emit unified `Result` (converted at the loader-cache boundary via `FetchResult.toResult`; found + fixed a real divergence where the legacy component path passed raw FetchResult to head callbacks while the tree path didn't). **Acceptance met:** no `E | { defect: string }` union in any `Route.ts`/`Component.ts` public signature; golden-path loader surfaces emit unified `Result`. 487 tests + gates green.
 - [x] Result consolidation, internal cleanup (Finding 5 step 2): **DONE 2026-07-08.** Removed remaining `FetchResult` from internal machinery — loader cache, `SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, `Atom.pull`. **Foundation landed 2026-07-08: `Serialization` service (`src/Serialization.ts`).** A design realization scoped this pass: core `Result` carries `Cause`/`Exit` and is **not JSON-safe**, so `FetchResult` cannot simply be deleted from the wire — the wire boundary always needs a flat, serializable DTO. Rather than hand-roll that DTO, introduced an injectable `Serialization` service (schema-driven; `Tag` + default Effect-`Schema` layer + pure `encodeSync`/`decodeSync`) with `ResultWire`/`ResultWireRecord` as the canonical flat loader-result wire schema. `Route.serializeLoaderData`/`deserializeLoaderData`/`streamDeferredLoaderScripts` now route through it (byte-compatible; validates on decode). Default codec is Effect Schema (zero new deps); `seroval` can slot in as an alternate layer later without touching call sites. **`Atom.pull` migrated 2026-07-08** (isolated, no wire impact): `PullResult` is now core `Result<PullChunk<A>, E>`; test + ooo-async example updated. **Loader cache + orchestration + wire types now hold core `Result`** (landed via the codex `codex/result-wire-migration` branch, merged `3c1d14e`; wire kept backward-compatible — flat DTO unchanged, no version bump). Post-merge cleanup (`7fb31d0`) replaced the merged reference-equality codec dispatch with dedicated `Serialization` functions (`resultToWire`/`resultFromWire` + `encodeResult`/`decodeResult`/`encodeResultRecord`/`decodeResultRecord`), made `ResultWire`/`ResultWireRecord` honest flat-DTO schemas (dropped a lying cast), and restored typed-`SchemaError` failures on the service (strengthened test via `Effect.flip`). **Acceptance met:** `FetchResult` in `router-runtime.ts` = zero; in `Route.ts` = only the deprecated `loaderFetchResult()` compat accessor + JSDoc (zero primary signatures). `FetchResult` is compat-only. All five gates green (496 tests).
 - [ ] Typed-tree-by-default + claims sweep (Finding 6): authored views always carry `tree` metadata; docs scope type-safety claims to enforced boundaries.
+- [ ] Typed intrinsic elements (P14): replace the catch-all `JSX.IntrinsicElements` (`[elemName: string]: HTMLAttributes` with an `[attr: string]: unknown` base) with per-tag attribute maps + real event types, tightened tag-by-tag behind the `typecheck` gate; keep the string fallback during migration. Types only — zero bundle. **Decided: no runtime `Tag.*` module** (naming clash with service tags + contradicts Finding 2 + bundle anti-pattern; `View.element` stays the generic escape hatch). Pairs with D1 (readable errors).
 - [ ] Behavior binding contracts + state-aware styling (P1): `Behavior.provides(...)` witness and `Style.whenBinding(...)`-style composition.
 - [x] Reactivity key witnesses (P2): **complete 2026-07-06** (see archive log, slices 1-2) — `Reactivity.Key.make/family/is`, `KeyNameOf<T>`, hierarchical `child(...)` with record-form parity; witnesses accepted across `tracked`/`invalidating`, atom/action/component options, and all Route/loader-cache intake sites; README/API/afui docs lead with witnesses, strings remain the dynamic escape hatch; runtime + type + loader integration coverage, gates green.
 - [ ] Unified diagnostics pipeline (P3): shared `Diagnostic` type + dev-mode auto-report layer + static CLI/CI check entry point.
@@ -814,8 +861,10 @@ complete; what is left is the v1.x proposals.
 
 ### Then: v1.x proposals (not release-blocking)
 
-  - Round-2/3 proposals P1, P3–P5, P8–P13 and Foldkit F1–F7 amendments — see
-    their sections above. Suggested first: P2 is done, so P1 (behavior
+  - Round-2/3 proposals P1, P3–P5, P8–P14 and Foldkit F1–F7 amendments — see
+    their sections above. Suggested first: **P14 (typed intrinsic elements)** —
+    highest correctness-per-effort, types-only/zero-bundle, and it closes the
+    most-hit gap in the "everything is type-checked" story; then P1 (behavior
     binding contracts + state-aware styling, now with F5's out-event axis)
     and P11 (devtools + MCP, design against Registry/Reactivity before the
     runtime surface freezes).
