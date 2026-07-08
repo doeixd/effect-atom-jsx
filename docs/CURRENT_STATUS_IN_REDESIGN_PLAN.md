@@ -623,7 +623,7 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Inference audit (Finding 4): **authored path verified 2026-07-06** — `src/type-tests/slots-define.ts` proves the golden path (props/require/setup-inferred bindings + `withSlots` contract + `forSlots` attachments) needs zero explicit generics, including precise `SlotContractOf` extraction and unknown-slot rejection; doc/example generic sites corrected (`PROPS_BINDINGS_SLOTS.md`). Remaining, reclassified: the legacy bindings-as-slots convention (tests using `Component.make<{}, never, never, Bindings>` + string-map validation) genuinely requires annotations — that is one more reason it is the deprecated tier, and those sites migrate as part of the Finding-3 demotion rather than being force-de-generic'd.
 - [x] Test-typecheck gate (hardening): **40 → 9 → 0, closed 2026-07-08.** `npm run typecheck:tests` (`tsconfig.tests.json`) is **green and enforced** (part of `typecheck:all` / `check`). En route the gate **surfaced and fixed SIX real library bugs** (`Atom.family` invisible plain overload, `Component.renderEffect` missing `SlotContract` axis, `Component.route` leaking `RouteContext` into `Req`, `ServerRoute.execute*` over-constrained node type, `Behavior.make` requiring all generics, `Component.setupEffect` missing `SlotContract` axis) plus the `SlotContract` witness-vs-handles normalization (`View.NormalizeSlots` at `renderViewEffect`). The residual 9 closed in two batches: the ~5 P6-coupled route-construction errors (route.test `UnifiedRouteSymbol`/overloads, route-loader `RouteChildrenEnhancer`) resolved with the routing overload unification (commit `2e53de0`), and the deep type-helper drift (`attachToAllWithCapability` SlotContract over-constraint, `SlotMetadataMap` over witness collections, `withRetry` union source, `componentOf` standalone RouteContext) resolved in the deep-helper batch. (Note: after the Finding-3 correction the deprecated-attach tests stay valid — those forms are no longer being deleted.)
 - [x] Result consolidation, release-blocking core (Finding 5): **done 2026-07-07** (steps 0-1). Step 0: characterization tests for the SSR wire round-trip (render→serialize→deserialize→hydrate→first render) + a pinned wire-shape test — none existed, silent-failure surface. Step 1: `Route.loaderResult()` and `Route.title`/`meta` loader callbacks now emit unified `Result` (converted at the loader-cache boundary via `FetchResult.toResult`; found + fixed a real divergence where the legacy component path passed raw FetchResult to head callbacks while the tree path didn't). **Acceptance met:** no `E | { defect: string }` union in any `Route.ts`/`Component.ts` public signature; golden-path loader surfaces emit unified `Result`. 487 tests + gates green.
-- [ ] Result consolidation, internal cleanup (Finding 5 step 2, **not release-blocking**): remove remaining `FetchResult` from internal machinery — loader cache, `SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, `Atom.pull`. **Foundation landed 2026-07-08: `Serialization` service (`src/Serialization.ts`).** A design realization scoped this pass: core `Result` carries `Cause`/`Exit` and is **not JSON-safe**, so `FetchResult` cannot simply be deleted from the wire — the wire boundary always needs a flat, serializable DTO. Rather than hand-roll that DTO, introduced an injectable `Serialization` service (schema-driven; `Tag` + default Effect-`Schema` layer + pure `encodeSync`/`decodeSync`) with `ResultWire`/`ResultWireRecord` as the canonical flat loader-result wire schema. `Route.serializeLoaderData`/`deserializeLoaderData`/`streamDeferredLoaderScripts` now route through it (byte-compatible; validates on decode). Default codec is Effect Schema (zero new deps); `seroval` can slot in as an alternate layer later without touching call sites. **`Atom.pull` migrated 2026-07-08** (isolated, no wire impact): `PullResult` is now core `Result<PullChunk<A>, E>`; test + ooo-async example updated. **Remaining (handed to a codex agent on branch `codex/result-wire-migration`, 2026-07-08):** define the `Result` ↔ `ResultWire` transform (encode via `FetchResult.fromResult`, decode via `toResult`), flip the loader cache + orchestration to hold core `Result`, bump the wire-format version, and demote `FetchResult` the *type* to compat-subpath-only. Then the acceptance grep (`FetchResult` in `Route.ts`/`router-runtime.ts` → zero) can close.
+- [x] Result consolidation, internal cleanup (Finding 5 step 2): **DONE 2026-07-08.** Removed remaining `FetchResult` from internal machinery — loader cache, `SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, `Atom.pull`. **Foundation landed 2026-07-08: `Serialization` service (`src/Serialization.ts`).** A design realization scoped this pass: core `Result` carries `Cause`/`Exit` and is **not JSON-safe**, so `FetchResult` cannot simply be deleted from the wire — the wire boundary always needs a flat, serializable DTO. Rather than hand-roll that DTO, introduced an injectable `Serialization` service (schema-driven; `Tag` + default Effect-`Schema` layer + pure `encodeSync`/`decodeSync`) with `ResultWire`/`ResultWireRecord` as the canonical flat loader-result wire schema. `Route.serializeLoaderData`/`deserializeLoaderData`/`streamDeferredLoaderScripts` now route through it (byte-compatible; validates on decode). Default codec is Effect Schema (zero new deps); `seroval` can slot in as an alternate layer later without touching call sites. **`Atom.pull` migrated 2026-07-08** (isolated, no wire impact): `PullResult` is now core `Result<PullChunk<A>, E>`; test + ooo-async example updated. **Loader cache + orchestration + wire types now hold core `Result`** (landed via the codex `codex/result-wire-migration` branch, merged `3c1d14e`; wire kept backward-compatible — flat DTO unchanged, no version bump). Post-merge cleanup (`7fb31d0`) replaced the merged reference-equality codec dispatch with dedicated `Serialization` functions (`resultToWire`/`resultFromWire` + `encodeResult`/`decodeResult`/`encodeResultRecord`/`decodeResultRecord`), made `ResultWire`/`ResultWireRecord` honest flat-DTO schemas (dropped a lying cast), and restored typed-`SchemaError` failures on the service (strengthened test via `Effect.flip`). **Acceptance met:** `FetchResult` in `router-runtime.ts` = zero; in `Route.ts` = only the deprecated `loaderFetchResult()` compat accessor + JSDoc (zero primary signatures). `FetchResult` is compat-only. All five gates green (496 tests).
 - [ ] Typed-tree-by-default + claims sweep (Finding 6): authored views always carry `tree` metadata; docs scope type-safety claims to enforced boundaries.
 - [ ] Behavior binding contracts + state-aware styling (P1): `Behavior.provides(...)` witness and `Style.whenBinding(...)`-style composition.
 - [x] Reactivity key witnesses (P2): **complete 2026-07-06** (see archive log, slices 1-2) — `Reactivity.Key.make/family/is`, `KeyNameOf<T>`, hierarchical `child(...)` with record-form parity; witnesses accepted across `tracked`/`invalidating`, atom/action/component options, and all Route/loader-cache intake sites; README/API/afui docs lead with witnesses, strings remain the dynamic escape hatch; runtime + type + loader integration coverage, gates green.
@@ -791,26 +791,26 @@ batch and both the test and example typecheck gates are closed** — all five
 gates green and enforced. Along the way the test gate surfaced and fixed six
 real library bugs (see the hardening item in the backlog).
 
-What is left is non-blocking cleanup and v1.x proposals, in rough priority:
+The release-blocking work is done. The three tracked cleanups below are
+complete; what is left is the v1.x proposals.
 
-1. **Finding-5 step 2 (non-blocking)** — remove `FetchResult` from internal
-   machinery (loader cache, `SingleFlightPayload`/`loaderPayload` wire types,
-   loader orchestration, `Atom.pull`). **Foundation landed 2026-07-08:** the
-   `Serialization` service (`src/Serialization.ts`) is the wire seam — a
-   schema-driven, injectable codec with `ResultWire` as the flat JSON-safe
-   loader-result wire schema; the router's serialize/deserialize now route
-   through it (byte-compatible). Design note captured en route: core `Result`
-   is not JSON-safe (carries `Cause`/`Exit`), so the wire needs a flat DTO —
-   `FetchResult` the *type* goes away, but its *shape* survives as the private
-   wire schema. Next: `Result` ↔ `ResultWire` transform, flip the cache +
-   `Atom.pull` to core `Result`, bump the wire version, demote `FetchResult`
-   to compat-subpath-only (closes the acceptance grep).
+1. **Finding-5 step 2 — DONE 2026-07-08.** Introduced the `Serialization`
+   service (schema-driven, injectable, `seroval`-swappable), migrated `Atom.pull`
+   and then the loader cache + orchestration + wire types to core `Result`
+   (codex branch, merged `3c1d14e`; post-merge cleanup `7fb31d0` to dedicated
+   codec functions + typed-failure service). Wire kept backward-compatible.
+   `FetchResult` is now compat-only (only the deprecated `loaderFetchResult()`
+   accessor). Design note that shaped it: core `Result` carries `Cause`/`Exit`
+   and is not JSON-safe, so the wire keeps a flat DTO — `FetchResult` the *type*
+   is gone, its *shape* survives as the private `ResultWire` schema.
 2. **PR3 — CI perf harness. Done 2026-07-08.** `.github/workflows/ci.yml` runs
    the gates on push/PR plus a non-blocking bench job (artifact upload);
    `ui-hot-paths.bench.ts` adds the style + component-mount benchmarks.
    Threshold-based hard gating deferred until a stable runner/baseline exists.
-3. **PR2 residual doc sweep** — any remaining inbound-link updates in the live
-   reference docs (`view.md`, `router.md`, `style.md`) after the archive move.
+3. **PR2 residual doc sweep — DONE 2026-07-08.** Live reference docs carry no
+   broken markdown links to archived docs; fixed remaining bare-path pointers
+   in `API.md` (SINGLE_FLIGHT* guides) and `AGENTS.md` (AF_UI_CONTRACT) to
+   point into `docs/archive/`.
 
 ### Then: v1.x proposals (not release-blocking)
 

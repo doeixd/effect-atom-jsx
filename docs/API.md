@@ -1157,7 +1157,7 @@ router.revalidate();
 | Transport via custom RPC | Custom `Layer.succeed(Route.SingleFlightTransportTag, ...)` |
 | Force single-flight (fail if no transport) | `singleFlight: { mode: "force", ... }` |
 
-Full guides: `docs/SINGLE_FLIGHT.md`, `docs/SINGLE_FLIGHT_COMPARISON.md`, `docs/SINGLE_FLIGHT_TRANSPORT.md`
+Full guides (archived deep-dives): `docs/archive/SINGLE_FLIGHT.md`, `docs/archive/SINGLE_FLIGHT_COMPARISON.md`, `docs/archive/SINGLE_FLIGHT_TRANSPORT.md`
 
 **Async rendering contract:**
 - Prefer `Route.loaderResult` (returns `Result` union) with `Async`, `Loading`, `Errored`, `MatchTag` rather than route-specific loading components. This keeps the async control-flow consistent with the rest of the library.

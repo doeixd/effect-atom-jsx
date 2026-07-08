@@ -18,7 +18,7 @@ Use these documents first:
 - [`docs/DESIGN_STYLING_BEHAVIOR_SYSTEM.md`](docs/archive/DESIGN_STYLING_BEHAVIOR_SYSTEM.md) — broader design narrative.
 - [`docs/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md`](docs/archive/RUNTIME_ROUTING_REACTIVITY_SYSTEM.md) — runtime, routing, reactivity, single-flight, hydration vision.
 
-When older exploratory docs conflict with `docs/AF_UI_CONTRACT.md`, the contract wins.
+When older exploratory docs conflict with `docs/archive/AF_UI_CONTRACT.md`, the contract wins.
 
 ## Current Architecture Direction
 
