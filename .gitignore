@@ -4,4 +4,4 @@ dist/
 *.tgz
 npm-debug.log*
 smoke-test-temp/
-reactively-upstream/
+reactively-upstream/bench-results.json
