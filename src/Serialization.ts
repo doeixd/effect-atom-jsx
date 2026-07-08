@@ -71,7 +71,7 @@ const SuccessWire = Schema.Struct({
  * `Cause`/`Exit` — which is why the wire holds this rather than a core
  * `Result` directly.
  */
-const ResultWireShape = Schema.Union([
+export const ResultWire = Schema.Union([
   Schema.Struct({
     _tag: Schema.Literal("Initial"),
     waiting: Schema.Boolean,
@@ -85,85 +85,46 @@ const ResultWireShape = Schema.Union([
   }),
 ]);
 
-/**
- * Loader-result wire codec.
- *
- * The decoded/runtime type is core `Result`; the encoded wire shape remains the
- * flat JSON-safe stale-result DTO so `Cause`/`Exit` never cross the HTML/JSON
- * boundary.
- */
-export const ResultWire = ResultWireShape as unknown as Schema.Codec<CoreResultType<unknown, unknown>, typeof ResultWireShape.Encoded>;
-
-const ResultWireRecordShape = Schema.Record(Schema.String, ResultWireShape);
-
 /** Wire schema for a full loader-data payload keyed by route id. */
-export const ResultWireRecord = ResultWireRecordShape as unknown as Schema.Codec<Record<string, CoreResultType<unknown, unknown>>, typeof ResultWireRecordShape.Encoded>;
+export const ResultWireRecord = Schema.Record(Schema.String, ResultWire);
 
-function encodeResultWire(value: CoreResultType<unknown, unknown>): typeof ResultWireShape.Encoded {
-  const fetchResult = (() => {
-    switch (value._tag) {
-      case "Loading":
-        return FetchResult.initial(true);
-      case "Refreshing":
-        switch (value.previous._tag) {
-          case "Success":
-            return FetchResult.success(value.previous.value, { waiting: true });
-          case "Failure":
-            return FetchResult.failure(value.previous.error, { waiting: true });
-          case "Defect":
-            return FetchResult.failure({ defect: value.previous.cause }, { waiting: true });
-        }
-        break;
-      case "Success":
-        return FetchResult.success(value.value);
-      case "Failure":
-        return FetchResult.failure(value.error);
-      case "Defect":
-        return FetchResult.failure({ defect: value.cause });
-    }
-  })();
-  return Schema.encodeSync(ResultWireShape)(fetchResult);
+/** The flat, JSON-safe wire shape a loader `Result` is projected to. */
+export type ResultWireValue = typeof ResultWire.Type;
+
+// ─── Core `Result` ↔ flat wire projection ───────────────────────────────────
+//
+// The loader cache and orchestration hold core `Result` (which carries
+// `Cause`/`Exit`, not JSON-safe). At the wire boundary it is projected to the
+// flat DTO above and back. The mapping is exactly `FetchResult.fromResult` /
+// `toResult`, kept explicit here rather than special-casing the generic codec.
+
+/** Project a core `Result` to its flat, JSON-safe wire shape. */
+export function resultToWire(result: CoreResultType<unknown, unknown>): ResultWireValue {
+  switch (result._tag) {
+    case "Loading":
+      return FetchResult.initial(true);
+    case "Refreshing":
+      switch (result.previous._tag) {
+        case "Success":
+          return FetchResult.success(result.previous.value, { waiting: true });
+        case "Failure":
+          return FetchResult.failure(result.previous.error, { waiting: true });
+        case "Defect":
+          return FetchResult.failure({ defect: result.previous.cause }, { waiting: true });
+      }
+    // eslint-disable-next-line no-fallthrough
+    case "Success":
+      return FetchResult.success(result.value);
+    case "Failure":
+      return FetchResult.failure(result.error);
+    case "Defect":
+      return FetchResult.failure({ defect: result.cause });
+  }
 }
 
-function decodeResultWire(value: unknown): CoreResultType<unknown, unknown> {
-  return FetchResult.toResult(Schema.decodeUnknownSync(ResultWireShape)(value));
-}
-
-function encodeResultWireRecord(value: Record<string, CoreResultType<unknown, unknown>>): typeof ResultWireRecordShape.Encoded {
-  const out: Record<string, typeof ResultWireShape.Encoded> = {};
-  for (const [key, result] of Object.entries(value)) {
-    out[key] = encodeResultWire(result);
-  }
-  return out;
-}
-
-function decodeResultWireRecord(value: unknown): Record<string, CoreResultType<unknown, unknown>> {
-  const decoded = Schema.decodeUnknownSync(ResultWireRecordShape)(value);
-  const out: Record<string, CoreResultType<unknown, unknown>> = {};
-  for (const [key, result] of Object.entries(decoded)) {
-    out[key] = FetchResult.toResult(result);
-  }
-  return out;
-}
-
-function encodeWithSchema<T, E>(schema: Schema.Codec<T, E>, value: T): unknown {
-  if (schema === ResultWire) {
-    return encodeResultWire(value as CoreResultType<unknown, unknown>);
-  }
-  if (schema === ResultWireRecord) {
-    return encodeResultWireRecord(value as Record<string, CoreResultType<unknown, unknown>>);
-  }
-  return Schema.encodeSync(schema)(value);
-}
-
-function decodeWithSchema<T, E>(schema: Schema.Codec<T, E>, value: unknown): T {
-  if (schema === ResultWire) {
-    return decodeResultWire(value) as T;
-  }
-  if (schema === ResultWireRecord) {
-    return decodeResultWireRecord(value) as T;
-  }
-  return Schema.decodeUnknownSync(schema)(value);
+/** Rehydrate a core `Result` from its flat wire shape. */
+export function resultFromWire(wire: ResultWireValue): CoreResultType<unknown, unknown> {
+  return FetchResult.toResult(wire);
 }
 
 // ─── Pure synchronous codec ─────────────────────────────────────────────────
@@ -174,7 +135,7 @@ function decodeWithSchema<T, E>(schema: Schema.Codec<T, E>, value: unknown): T {
  * Throws `Schema.SchemaError` if the value does not conform to the schema.
  */
 export function encodeSync<T, E>(schema: Schema.Codec<T, E>, value: T): string {
-  return escapeJsonForHtml(JSON.stringify(encodeWithSchema(schema, value)));
+  return escapeJsonForHtml(JSON.stringify(Schema.encodeSync(schema)(value)));
 }
 
 /**
@@ -183,7 +144,38 @@ export function encodeSync<T, E>(schema: Schema.Codec<T, E>, value: T): string {
  * Throws on malformed JSON or a schema mismatch.
  */
 export function decodeSync<T, E>(schema: Schema.Codec<T, E>, wire: string): T {
-  return decodeWithSchema(schema, JSON.parse(wire));
+  return Schema.decodeUnknownSync(schema)(JSON.parse(wire));
+}
+
+// ─── Loader-result convenience codec ────────────────────────────────────────
+
+/** Encode a single core loader `Result` to an HTML-safe wire string. */
+export function encodeResult(result: CoreResultType<unknown, unknown>): string {
+  return encodeSync(ResultWire, resultToWire(result));
+}
+
+/** Decode a single core loader `Result` from an HTML-safe wire string. */
+export function decodeResult(wire: string): CoreResultType<unknown, unknown> {
+  return resultFromWire(decodeSync(ResultWire, wire));
+}
+
+/** Encode a keyed loader-data payload of core `Result`s to a wire string. */
+export function encodeResultRecord(record: Record<string, CoreResultType<unknown, unknown>>): string {
+  const wire: Record<string, ResultWireValue> = {};
+  for (const [key, result] of Object.entries(record)) {
+    wire[key] = resultToWire(result);
+  }
+  return encodeSync(ResultWireRecord, wire);
+}
+
+/** Decode a keyed loader-data payload of core `Result`s from a wire string. */
+export function decodeResultRecord(wire: string): Record<string, CoreResultType<unknown, unknown>> {
+  const decoded = decodeSync(ResultWireRecord, wire);
+  const out: Record<string, CoreResultType<unknown, unknown>> = {};
+  for (const [key, value] of Object.entries(decoded)) {
+    out[key] = resultFromWire(value as ResultWireValue);
+  }
+  return out;
 }
 
 // ─── Injectable service ─────────────────────────────────────────────────────
@@ -205,9 +197,11 @@ export const Tag = ServiceMap.Service<SerializationService>("Serialization");
 
 const schemaCodec: SerializationService = {
   serialize: (schema, value) =>
-    Effect.sync(() => escapeJsonForHtml(JSON.stringify(encodeWithSchema(schema, value)))),
+    Schema.encodeEffect(schema)(value).pipe(
+      Effect.map((encoded) => escapeJsonForHtml(JSON.stringify(encoded))),
+    ),
   deserialize: (schema, wire) =>
-    Effect.suspend(() => Effect.sync(() => decodeWithSchema(schema, JSON.parse(wire) as unknown))),
+    Effect.suspend(() => Schema.decodeUnknownEffect(schema)(JSON.parse(wire) as unknown)),
 };
 
 /**

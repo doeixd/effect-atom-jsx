@@ -2921,11 +2921,11 @@ export function serializeLoaderData(results: ReadonlyArray<{ readonly routeId: s
   for (const item of results) {
     object[item.routeId] = item.result;
   }
-  return Serialization.encodeSync(Serialization.ResultWireRecord, object);
+  return Serialization.encodeResultRecord(object);
 }
 
 export function deserializeLoaderData(serialized: string): Record<string, UnknownRouteResult> {
-  return Serialization.decodeSync(Serialization.ResultWireRecord, serialized);
+  return Serialization.decodeResultRecord(serialized);
 }
 
 export function streamDeferredLoaderScripts(
@@ -2933,7 +2933,7 @@ export function streamDeferredLoaderScripts(
 ): ReadonlyArray<string> {
   return results.map((item) => {
     const routeId = Serialization.encodeSync(Schema.String, item.routeId);
-    const result = Serialization.encodeSync(Serialization.ResultWire, item.result);
+    const result = Serialization.encodeResult(item.result);
     return `<script>window.__LOADER_DATA__=window.__LOADER_DATA__||{};window.__LOADER_DATA__[${routeId}]=${result};window.__HYDRATE_ROUTE__&&window.__HYDRATE_ROUTE__(${routeId});</script>`;
   });
 }

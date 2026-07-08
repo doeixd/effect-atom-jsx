@@ -48,8 +48,8 @@ describe("Serialization", () => {
         Result.refreshing(Result.success("prev")),
       ];
       for (const value of cases) {
-        const wire = Serialization.encodeSync(Serialization.ResultWire, value);
-        expect(Serialization.decodeSync(Serialization.ResultWire, wire)).toEqual(value);
+        const wire = Serialization.encodeResult(value);
+        expect(Serialization.decodeResult(wire)).toEqual(value);
       }
     });
 
@@ -58,8 +58,8 @@ describe("Serialization", () => {
         "/users": Result.success([{ id: 1 }]),
         "/posts": Result.failure("nope"),
       };
-      const wire = Serialization.encodeSync(Serialization.ResultWireRecord, payload);
-      expect(Serialization.decodeSync(Serialization.ResultWireRecord, wire)).toEqual(payload);
+      const wire = Serialization.encodeResultRecord(payload);
+      expect(Serialization.decodeResultRecord(wire)).toEqual(payload);
     });
   });
 
@@ -81,8 +81,13 @@ describe("Serialization", () => {
         const svc = yield* Serialization.Tag;
         return yield* svc.deserialize(schema, `{"n":"x"}`);
       });
-      const exit = Effect.runSyncExit(program.pipe(Effect.provide(Serialization.layer)));
-      expect(exit._tag).toBe("Failure");
+      // flip moves the typed E channel into success; a defect would escape and
+      // make runSync throw, so reaching this value proves the mismatch is a
+      // typed failure, and isSchemaError proves it is the schema error itself.
+      const error = Effect.runSync(
+        program.pipe(Effect.flip, Effect.provide(Serialization.layer)),
+      );
+      expect(Schema.isSchemaError(error)).toBe(true);
     });
   });
 });
