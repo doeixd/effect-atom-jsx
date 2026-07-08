@@ -52,7 +52,7 @@ export interface RouteContext<P = unknown, Q = unknown, H = unknown> {
   readonly pattern: string;
   readonly routeId?: string;
   readonly loaderData?: Atom.ReadonlyAtom<unknown>;
-  readonly loaderResult?: Atom.ReadonlyAtom<FetchResult.Result<unknown, unknown>>;
+  readonly loaderResult?: Atom.ReadonlyAtom<CoreResultType<unknown, unknown>>;
 }
 
 export const RouteContextTag = ServiceMap.Service<RouteContext<any, any, any>>("RouteContext");
@@ -91,8 +91,7 @@ type Pipeable<Self> = {
 };
 
 type UnifiedRouteKind = "path" | "layout" | "index";
-// Internal loader-result flow (cache/wire) stays FetchResult (step 2 migrates it).
-type UnknownRouteResult = FetchResult.Result<unknown, unknown>;
+type UnknownRouteResult = CoreResultType<unknown, unknown>;
 // Head callbacks receive the unified Result model (matching loaderResult()).
 type RouteTitleValue<P, LD, LE> = string | ((params: P, loaderData: LD | undefined, loaderResult: CoreResultType<LD, LE> | undefined) => string);
 type RouteMetaExtraValue<P, LD, LE> = RouteMetaRecord | ((params: P, loaderData: LD | undefined, loaderResult: CoreResultType<LD, LE> | undefined) => RouteMetaRecord);
@@ -173,7 +172,7 @@ export interface RenderRequestResult {
   readonly headers: ReadonlyMap<string, ReadonlyArray<string>>;
   readonly head: RouteHead;
   readonly html: string;
-  readonly loaderPayload: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>;
+  readonly loaderPayload: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
   readonly deferred: ReadonlyArray<string>;
 }
 
@@ -323,13 +322,13 @@ export interface LoaderOptions {
 export interface SingleFlightPayload<A> {
   readonly mutation: A;
   readonly url: string;
-  readonly loaders: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>;
+  readonly loaders: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
 }
 
 /** A single loader snapshot carried inside a single-flight payload. */
 export type SingleFlightLoaderEntry = {
   readonly routeId: string;
-  readonly result: FetchResult.Result<unknown, unknown>;
+  readonly result: UnknownRouteResult;
 };
 
 /**
@@ -507,6 +506,13 @@ function makeWritableUrlAtom(initial: URL): Atom.WritableAtom<URL> {
 
 function hasTag(error: unknown, tag: string): error is { readonly _tag: string } {
   return typeof error === "object" && error !== null && "_tag" in error && (error as { readonly _tag: string })._tag === tag;
+}
+
+function loaderSuccess(result: UnknownRouteResult | undefined): { readonly value: unknown } | undefined {
+  if (!result) return undefined;
+  if (result._tag === "Success") return { value: result.value };
+  if (result._tag === "Refreshing" && result.previous._tag === "Success") return { value: result.previous.value };
+  return undefined;
 }
 
 function toComponentRouteOptions<P, Q, H>(node: AppRouteNode<P, Q, H, any, any, any>) {
@@ -1404,7 +1410,7 @@ function prefetchTreeInternal<P, Q>(
 function runMatchedLoadersRegistry(
   url: URL,
   options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
-): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>, never> {
+): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never> {
   return Effect.gen(function* () {
     const matched = [...routeRegistryById.values()]
       .filter((entry) => matchPattern(entry.meta.fullPattern, url.pathname, entry.meta.exact))
@@ -1426,7 +1432,7 @@ function runMatchedLoadersRegistry(
     });
 
     const remaining = [...candidates];
-    const outputs: Array<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }> = [];
+    const outputs: Array<{ readonly routeId: string; readonly result: UnknownRouteResult }> = [];
     const successByPattern = new Map<string, unknown>();
 
     while (remaining.length > 0) {
@@ -1456,8 +1462,9 @@ function runMatchedLoadersRegistry(
 
       for (const item of batchResults) {
         outputs.push({ routeId: item.routeId, result: item.result });
-        if (item.result._tag === "Success") {
-          successByPattern.set(item.pattern, item.result.value);
+        const success = loaderSuccess(item.result);
+        if (success !== undefined) {
+          successByPattern.set(item.pattern, success.value);
         }
       }
 
@@ -1475,7 +1482,7 @@ function runMatchedLoadersTreeInternal(
   root: AnyRoute | AnyAppRouteNode,
   url: URL,
   options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
-): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>, never> {
+): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never> {
   return Effect.gen(function* () {
     const matched = collectMatchedRouteTargets(root, url.pathname);
 
@@ -1498,7 +1505,7 @@ function runMatchedLoadersTreeInternal(
     });
 
     const remaining = [...candidates];
-    const outputs: Array<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }> = [];
+    const outputs: Array<{ readonly routeId: string; readonly result: UnknownRouteResult }> = [];
     const successByPattern = new Map<string, unknown>();
 
     while (remaining.length > 0) {
@@ -1525,7 +1532,7 @@ function runMatchedLoadersTreeInternal(
           : (() => {
             const component = routeComponentOfTarget(entry);
             const meta = component ? routeMetaOf(component) : undefined;
-            if (!component || !meta) return Effect.succeed(FetchResult.initial(false));
+            if (!component || !meta) return Effect.succeed(CoreResult.loading);
             return runRouteLoader(component, meta, url, parentData);
           })()).pipe(
             Effect.map((result) => ({ routeId, result, pattern: fullPattern })),
@@ -1534,8 +1541,9 @@ function runMatchedLoadersTreeInternal(
 
       for (const item of batchResults) {
         outputs.push({ routeId: item.routeId, result: item.result });
-        if (item.result._tag === "Success") {
-          successByPattern.set(item.pattern, item.result.value);
+        const success = loaderSuccess(item.result);
+        if (success !== undefined) {
+          successByPattern.set(item.pattern, success.value);
         }
       }
 
@@ -1552,7 +1560,7 @@ function runMatchedLoadersTreeInternal(
 function runStreamingNavigationRegistry(
   url: URL,
 ): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>;
+  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
   readonly deferredScripts: ReadonlyArray<string>;
 }, never> {
   return Effect.gen(function* () {
@@ -1569,7 +1577,7 @@ function runStreamingNavigationTreeInternal(
   root: AnyRoute | AnyAppRouteNode,
   url: URL,
 ): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>;
+  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
   readonly deferredScripts: ReadonlyArray<string>;
 }, never> {
   return Effect.gen(function* () {
@@ -1606,18 +1614,16 @@ function setResolvedTreeHeadEntries(
 
     const params = extractParams(fullPattern, url.pathname) ?? {};
     const loaderResult = resultByRouteId.get(routeId);
-    const loaderData = loaderResult?._tag === "Success" ? loaderResult.value : undefined;
-    // Callbacks receive the unified Result model; the cache stores FetchResult.
-    const unifiedResult = toUnifiedLoaderResult(loaderResult);
+    const loaderData = loaderSuccess(loaderResult)?.value;
     const resolvedTitle = title === undefined
       ? undefined
       : typeof title === "function"
-        ? title(params, loaderData, unifiedResult)
+        ? title(params, loaderData, loaderResult)
         : title;
     const resolvedMeta = metaExtra === undefined
       ? undefined
       : typeof metaExtra === "function"
-        ? metaExtra(params, loaderData, unifiedResult)
+        ? metaExtra(params, loaderData, loaderResult)
         : metaExtra;
 
     routeHeadEntries.set(routeId, {
@@ -1952,7 +1958,8 @@ export function loaderData<A>(): Effect.Effect<Atom.ReadonlyAtom<A>, never, Rout
     if (result) {
       return Atom.derived(() => {
         const current = result();
-        if (current._tag === "Success") return current.value as A;
+        const success = loaderSuccess(current);
+        if (success !== undefined) return success.value as A;
         throw new Error("[effect-atom-jsx/Route] loader data not available yet.");
       }) as Atom.ReadonlyAtom<A>;
     }
@@ -1966,17 +1973,14 @@ export function loaderData<A>(): Effect.Effect<Atom.ReadonlyAtom<A>, never, Rout
  * model queries and actions emit. Use this with `Async` / `Result`
  * control-flow components.
  *
- * The internal loader cache still stores the stale-while-revalidate
- * `FetchResult` shape; this accessor converts at the boundary via
- * `FetchResult.toResult`. Callers that need the raw `FetchResult` (waiting /
- * previousSuccess metadata) can use `loaderFetchResult()`.
+ * Callers that need the deprecated stale-while-revalidate `FetchResult`
+ * compatibility shape can use `loaderFetchResult()`.
  */
 export function loaderResult<A, E = unknown>(): Effect.Effect<Atom.ReadonlyAtom<CoreResultType<A, E>>, never, RouteContext<any, any, any>> {
   return Effect.gen(function* () {
     const ctx = yield* RouteContextTag;
     if (ctx.loaderResult) {
-      const source = ctx.loaderResult as Atom.ReadonlyAtom<FetchResult.Result<A, E>>;
-      return Atom.derived(() => FetchResult.toResult(source())) as Atom.ReadonlyAtom<CoreResultType<A, E>>;
+      return ctx.loaderResult as Atom.ReadonlyAtom<CoreResultType<A, E>>;
     }
     if (ctx.loaderData) {
       return Atom.derived(() => CoreResult.success(ctx.loaderData!() as A)) as Atom.ReadonlyAtom<CoreResultType<A, E>>;
@@ -1986,14 +1990,13 @@ export function loaderResult<A, E = unknown>(): Effect.Effect<Atom.ReadonlyAtom<
 }
 
 /**
- * Convert an internal loader `FetchResult` (or `undefined`) to the unified
- * `Result` model that head callbacks and `loaderResult()` expose. Shared by the
- * tree-render and legacy-component head-resolution paths so both are identical.
+ * Normalize an optional loader `Result` for callbacks that accept absent loader
+ * state.
  */
 export function toUnifiedLoaderResult<A, E>(
-  result: FetchResult.Result<A, E> | undefined,
+  result: CoreResultType<A, E> | undefined,
 ): CoreResultType<A, E> | undefined {
-  return result ? FetchResult.toResult(result) : undefined;
+  return result;
 }
 
 /**
@@ -2007,7 +2010,8 @@ export function loaderFetchResult<A, E = unknown>(): Effect.Effect<Atom.Readonly
   return Effect.gen(function* () {
     const ctx = yield* RouteContextTag;
     if (ctx.loaderResult) {
-      return ctx.loaderResult as Atom.ReadonlyAtom<FetchResult.Result<A, E>>;
+      const source = ctx.loaderResult as Atom.ReadonlyAtom<CoreResultType<A, E>>;
+      return Atom.derived(() => FetchResult.fromResult(source())) as Atom.ReadonlyAtom<FetchResult.Result<A, E>>;
     }
     if (ctx.loaderData) {
       return Atom.derived(() => FetchResult.success(ctx.loaderData!() as A)) as Atom.ReadonlyAtom<FetchResult.Result<A, E>>;
@@ -2280,7 +2284,7 @@ export function setLoaderData(
 ): SingleFlightLoaderEntry {
   return {
     routeId: resolveSingleFlightRouteId(route),
-    result: FetchResult.success(data),
+    result: CoreResult.success(data),
   };
 }
 
@@ -2291,19 +2295,19 @@ export function setLoaderData(
  */
 export function setLoaderResult<C extends ComponentType<any, any, any, any, any> & LoaderTaggedComponent<any, any>>(
   route: C,
-  result: FetchResult.Result<RouteLoaderDataOf<C>, RouteLoaderErrorOf<C>>,
+  result: CoreResultType<RouteLoaderDataOf<C>, RouteLoaderErrorOf<C>>,
 ): SingleFlightLoaderEntry;
 export function setLoaderResult<C extends AnyRoute>(
   route: C,
-  result: FetchResult.Result<LoaderDataOf<C>, LoaderErrorOf<C>>,
+  result: CoreResultType<LoaderDataOf<C>, LoaderErrorOf<C>>,
 ): SingleFlightLoaderEntry;
 export function setLoaderResult(
   routeId: string,
-  result: FetchResult.Result<unknown, unknown>,
+  result: UnknownRouteResult,
 ): SingleFlightLoaderEntry;
 export function setLoaderResult(
   route: LoaderTarget,
-  result: FetchResult.Result<unknown, unknown>,
+  result: UnknownRouteResult,
 ): SingleFlightLoaderEntry {
   return {
     routeId: resolveSingleFlightRouteId(route),
@@ -2329,7 +2333,7 @@ export function seedLoader<A>(
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry> {
   return (result) => [{
     routeId: resolveSingleFlightRouteId(route),
-    result: FetchResult.success(select ? select(result) : result),
+    result: CoreResult.success(select ? select(result) : result),
   }];
 }
 
@@ -2339,15 +2343,15 @@ export function seedLoader<A>(
  */
 export function seedLoaderResult<A, C extends ComponentType<any, any, any, any, any> & LoaderTaggedComponent<any, any>>(
   route: C,
-  select: (result: A) => FetchResult.Result<RouteLoaderDataOf<C>, RouteLoaderErrorOf<C>>,
+  select: (result: A) => CoreResultType<RouteLoaderDataOf<C>, RouteLoaderErrorOf<C>>,
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry>;
 export function seedLoaderResult<A, C extends AnyRoute>(
   route: C,
-  select: (result: A) => FetchResult.Result<LoaderDataOf<C>, LoaderErrorOf<C>>,
+  select: (result: A) => CoreResultType<LoaderDataOf<C>, LoaderErrorOf<C>>,
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry>;
 export function seedLoaderResult<A>(
   route: LoaderTarget,
-  select: (result: A) => FetchResult.Result<unknown, unknown>,
+  select: (result: A) => UnknownRouteResult,
 ): <Args extends ReadonlyArray<unknown>>(result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry> {
   return (result) => [{
     routeId: resolveSingleFlightRouteId(route),
@@ -2812,18 +2816,18 @@ export function collect(component: unknown): ReadonlyArray<RouteMeta<any, any, a
 export function runMatchedLoaders(
   url: URL,
   options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
-): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>, never>;
+): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never>;
 
 export function runMatchedLoaders(
   root: AnyRoute | AnyAppRouteNode,
   url: URL,
   options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
-): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>, never>;
+): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never>;
 export function runMatchedLoaders(
   rootOrUrl: AnyRoute | AnyAppRouteNode | URL,
   urlOrOptions?: URL | { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
   maybeOptions?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
-): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>, never> {
+): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never> {
   if (rootOrUrl instanceof URL) {
     const url = rootOrUrl;
     const options = urlOrOptions as { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput } | undefined;
@@ -2834,21 +2838,21 @@ export function runMatchedLoaders(
 export function runStreamingNavigation(
   url: URL,
 ): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>;
+  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
   readonly deferredScripts: ReadonlyArray<string>;
 }, never>;
 export function runStreamingNavigation(
   root: AnyRoute | AnyAppRouteNode,
   url: URL,
 ): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>;
+  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
   readonly deferredScripts: ReadonlyArray<string>;
 }, never>;
 export function runStreamingNavigation(
   rootOrUrl: AnyRoute | AnyAppRouteNode | URL,
   maybeUrl?: URL,
 ): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>;
+  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
   readonly deferredScripts: ReadonlyArray<string>;
 }, never> {
   if (rootOrUrl instanceof URL) {
@@ -2886,7 +2890,7 @@ export function runRouteLoader(
     const url = metaOrUrl as URL;
     const parentData = urlOrParent;
     const loaderFn = component[UnifiedRouteSymbol].loaderFn;
-    if (!loaderFn) return Effect.succeed(FetchResult.initial(false));
+    if (!loaderFn) return Effect.succeed(CoreResult.loading);
     const meta = component[UnifiedRouteSymbol].meta;
     const paramsRaw = extractParams(meta.fullPattern, url.pathname) ?? {};
     return runCachedLoader(
@@ -2900,7 +2904,7 @@ export function runRouteLoader(
   const url = urlOrParent as URL;
   const parentData = parentDataArg;
   const loaderFn = asRouteComponent(component).__routeLoader;
-  if (!loaderFn) return Effect.succeed(FetchResult.initial(false));
+  if (!loaderFn) return Effect.succeed(CoreResult.loading);
   const paramsRaw = extractParams(meta.fullPattern, url.pathname) ?? {};
   const routeId = meta.id ?? meta.fullPattern;
   const loaderOptions = asRouteComponent(component).__routeLoaderOptions;
@@ -2912,23 +2916,20 @@ export function runRouteLoader(
   );
 }
 
-export function serializeLoaderData(results: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>): string {
-  const object: Record<string, FetchResult.Result<unknown, unknown>> = {};
+export function serializeLoaderData(results: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>): string {
+  const object: Record<string, UnknownRouteResult> = {};
   for (const item of results) {
     object[item.routeId] = item.result;
   }
   return Serialization.encodeSync(Serialization.ResultWireRecord, object);
 }
 
-export function deserializeLoaderData(serialized: string): Record<string, FetchResult.Result<unknown, unknown>> {
-  return Serialization.decodeSync(Serialization.ResultWireRecord, serialized) as Record<
-    string,
-    FetchResult.Result<unknown, unknown>
-  >;
+export function deserializeLoaderData(serialized: string): Record<string, UnknownRouteResult> {
+  return Serialization.decodeSync(Serialization.ResultWireRecord, serialized);
 }
 
 export function streamDeferredLoaderScripts(
-  results: ReadonlyArray<{ readonly routeId: string; readonly result: FetchResult.Result<unknown, unknown> }>,
+  results: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>,
 ): ReadonlyArray<string> {
   return results.map((item) => {
     const routeId = Serialization.encodeSync(Schema.String, item.routeId);

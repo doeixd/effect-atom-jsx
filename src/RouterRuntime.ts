@@ -1,6 +1,6 @@
 import { Effect, Fiber, Layer, ServiceMap } from "effect";
 import * as Route from "./Route.js";
-import * as RouteResult from "./Result.js";
+import type { Result as CoreResultType } from "./effect-ts.js";
 import * as ServerRoute from "./ServerRoute.js";
 import type { AnyRoute, AppRouteNode } from "./Route.js";
 import type { ServerRouteNode } from "./ServerRoute.js";
@@ -287,7 +287,7 @@ function matchedAppNodes(
 }
 
 function routeResultEntriesToMaps(
-  results: ReadonlyArray<{ readonly routeId: string; readonly result: RouteResult.Result<unknown, unknown> }>,
+  results: ReadonlyArray<{ readonly routeId: string; readonly result: CoreResultType<unknown, unknown> }>,
 ): {
   readonly loaderData: Map<string, unknown>;
   readonly errors: Map<string, unknown> | null;
@@ -297,9 +297,14 @@ function routeResultEntriesToMaps(
   for (const item of results) {
     if (item.result._tag === "Success") {
       nextLoaderData.set(item.routeId, item.result.value);
+    } else if (item.result._tag === "Refreshing" && item.result.previous._tag === "Success") {
+      nextLoaderData.set(item.routeId, item.result.previous.value);
     } else if (item.result._tag === "Failure") {
       if (nextErrors === null) nextErrors = new Map();
       nextErrors.set(item.routeId, item.result.error);
+    } else if (item.result._tag === "Defect") {
+      if (nextErrors === null) nextErrors = new Map();
+      nextErrors.set(item.routeId, { defect: item.result.cause });
     }
   }
   return { loaderData: nextLoaderData, errors: nextErrors };
@@ -409,7 +414,7 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
   const serverRoutes = config.server ?? [];
   let unsubscribeHistory: (() => void) | null = null;
 
-  const loadMatchedRouteResultsAt = (nextLocation: URL): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: RouteResult.Result<unknown, unknown> }>> => {
+  const loadMatchedRouteResultsAt = (nextLocation: URL): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: CoreResultType<unknown, unknown> }>> => {
     return Route.runMatchedLoaders(config.app, nextLocation, { includeDeferred: true });
   };
 
