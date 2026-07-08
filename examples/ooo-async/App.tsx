@@ -1,5 +1,5 @@
-import { Atom, Async, Result, FetchResult, Loading, Errored } from "effect-atom-jsx";
-import { Effect, Stream } from "effect";
+import { Atom, Async, Result, Loading, Errored } from "effect-atom-jsx";
+import { Effect, Stream, Option } from "effect";
 
 type Chunk = Atom.StreamChunk<number>;
 
@@ -20,15 +20,22 @@ export function createOOOAsyncDemo() {
 
     const pulled = get(pullChunks);
 
-    if (FetchResult.isInitial(pulled)) {
+    if (Result.isFailure(pulled)) {
+      return Result.failure(String(pulled.error));
+    }
+    if (Result.isDefect(pulled)) {
+      return Result.failure(pulled.cause);
+    }
+
+    // Loading (first pull) and Refreshing (revalidating over a prior chunk)
+    // both resolve to "no settled value yet" here; toOption unwraps a
+    // refreshing-success to its previous chunk.
+    const chunkResult = Result.toOption(pulled);
+    if (Option.isNone(chunkResult)) {
       return Result.loading;
     }
 
-    if (FetchResult.isFailure(pulled)) {
-      return Result.failure(String(pulled.error));
-    }
-
-    const chunks = pulled.value.items as ReadonlyArray<Chunk>;
+    const chunks = chunkResult.value.items as ReadonlyArray<Chunk>;
     const state = chunks.reduce(
       (acc, chunk) => Atom.Stream.applyChunk(acc, chunk),
       Atom.Stream.emptyState<number>(),

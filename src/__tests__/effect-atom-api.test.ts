@@ -715,21 +715,21 @@ describe("effect-atom style API", () => {
   it("supports Atom.pull for incremental stream pagination", async () => {
     const pullAtom = Atom.pull(Stream.make(1, 2, 3), { chunkSize: 2 });
 
-    expect(Result.isInitial(Effect.runSync(Atom.get(pullAtom)))).toBe(true);
+    expect(AsyncResult.isLoading(Effect.runSync(Atom.get(pullAtom)))).toBe(true);
     Effect.runSync(Atom.set(undefined)(pullAtom));
     await Effect.runPromise(Effect.sleep("10 millis"));
 
     const first = Effect.runSync(Atom.get(pullAtom));
-    expect(Result.isSuccess(first)).toBe(true);
-    if (Result.isSuccess(first)) {
+    expect(AsyncResult.isSuccess(first)).toBe(true);
+    if (AsyncResult.isSuccess(first)) {
       expect(first.value.items).toEqual([1, 2]);
       expect(first.value.done).toBe(false);
     }
 
     Effect.runSync(Atom.set(undefined)(pullAtom));
     const second = Effect.runSync(Atom.get(pullAtom));
-    expect(Result.isSuccess(second)).toBe(true);
-    if (Result.isSuccess(second)) {
+    expect(AsyncResult.isSuccess(second)).toBe(true);
+    if (AsyncResult.isSuccess(second)) {
       expect(second.value.items).toEqual([1, 2, 3]);
       expect(second.value.done).toBe(true);
     }

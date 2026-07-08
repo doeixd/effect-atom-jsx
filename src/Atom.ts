@@ -12,6 +12,7 @@ import {
   defineQuery,
   defineMutation,
   createOptimistic,
+  Result as CoreResult,
   type Result,
   type Refreshing,
   type Success,
@@ -1466,7 +1467,7 @@ export interface PullChunk<A> {
   readonly done: boolean;
 }
 
-export type PullResult<A, E = never> = FetchResult.Result<PullChunk<A>, E>;
+export type PullResult<A, E = never> = Result<PullChunk<A>, E>;
 
 /**
  * Out-of-order stream chunk payload.
@@ -1658,7 +1659,7 @@ export function pull<A, E, R>(
   },
 ): Writable<PullResult<A, E>, void> {
   const chunkSize = Math.max(1, options?.chunkSize ?? 1);
-  const [state, setState] = createSignal<PullResult<A, E>>(FetchResult.initial(false));
+  const [state, setState] = createSignal<PullResult<A, E>>(CoreResult.loading);
 
   let loaded: ReadonlyArray<A> | null = null;
   let cursor = 0;
@@ -1668,16 +1669,20 @@ export function pull<A, E, R>(
     if (loaded === null) return;
     const nextItems = loaded.slice(cursor, cursor + chunkSize);
     cursor += nextItems.length;
-    const previous = state();
-    const previousItems = previous._tag === "Success" ? previous.value.items : [];
+    const settled = CoreResult.settled(state());
+    const previousItems =
+      Option.isSome(settled) && settled.value._tag === "Success"
+        ? (settled.value.value.items as ReadonlyArray<A>)
+        : [];
     const merged = [...previousItems, ...nextItems];
-    setState(FetchResult.success({ items: merged, done: cursor >= loaded.length }));
+    setState(CoreResult.success({ items: merged, done: cursor >= loaded.length }));
   };
 
   const startLoad = (): void => {
     if (running) return;
     running = true;
-    setState(FetchResult.waiting(state()));
+    const settled = CoreResult.settled(state());
+    setState(Option.isSome(settled) ? CoreResult.refreshing(settled.value) : CoreResult.loading);
     const collect = FxStream.runCollect(stream).pipe(
       Effect.map((chunk) => Array.from(chunk as Iterable<A>)),
     );
@@ -1691,13 +1696,13 @@ export function pull<A, E, R>(
         if (Cause.isCause(error)) {
           const typed = Cause.findErrorOption(error);
           if (Option.isSome(typed)) {
-            setState(FetchResult.failure(typed.value as E));
+            setState(CoreResult.failure(typed.value as E));
           } else {
-            setState(FetchResult.failure({ defect: Cause.pretty(error) } as unknown as E));
+            setState(CoreResult.defect(Cause.pretty(error), error));
           }
           return;
         }
-        setState(FetchResult.failure(error as E));
+        setState(CoreResult.failure(error as E));
       })
       .finally(() => {
         running = false;
