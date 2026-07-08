@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-08 (Finding-5 step 2 + PR2/PR3 done; P14 typed-intrinsics proposed)
+Last updated: 2026-07-08 (Finding-5 step 2 + PR2/PR3 done; P14 typed-intrinsics + P15 richer-Result proposed)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`
@@ -576,6 +576,53 @@ tree-shakeable programmatic escape hatch already exists as the single generic
 zero bundle cost** — which is exactly why it is the right shape for the
 correctness win.
 
+## Result State Model (2026-07-08)
+
+### P15 — Richer `Result` states: `Stale` (and `Idle`) — restores a regressed capability
+
+An external six-state result model (axes: *data presence* × *request status*)
+surfaced two states our unified core `Result` cannot express, one of which we
+**regressed during the Finding-5 migration**:
+
+| Six-state model | core `Result` today | Gap |
+| --- | --- | --- |
+| Idle (no data, nothing requested) | — (starts at `Loading`) | missing (minor) |
+| Loading (no data, first request) | `Loading` | ok |
+| Refreshing `{ data }` | `Refreshing<A,E>{ previous }` | ok (more general) |
+| Failure `{ error }` | `Failure<E>{ error }` | ok |
+| **Stale `{ error, data }`** | — | **missing (regression)** |
+| Success `{ data }` | `Success<A>{ value }` | ok |
+
+**The regression (record this):** `FetchResult.Failure` carried
+`previousSuccess: Success | null`, so a *failed refresh* kept the last-good
+data. Core `Result.Failure` is only `{ error, exit }` — **no data field** — so
+today a failed refresh blanks to a bare `Failure` and the previous good data is
+lost. "Show stale while revalidating" still works (`Refreshing.previous` can be
+a `Success`); it is specifically **keep-stale-on-failure** that now has no
+home. `Stale` is the principled fix — the failed-refresh mirror of `Refreshing`
+— making both SWR behaviors compiler-tracked states rather than per-screen
+conventions (`getData`/`getError` and a `matchData` handler give a view both
+for free).
+
+Direction (v1.x, carefully scoped — not immediate; we just churned every
+`Result` surface):
+
+- Add **`Stale<A, E>{ error, data }`** to core `Result`; extend every
+  combinator (`match`, `settled`, `map`, `getData`/`getError`) and the
+  `Effect.result` boundary. High value: restores keep-stale-on-failure.
+- Evaluate **`Idle`** (nothing-requested), distinct from `Loading`. Nice-to-have.
+- **Guardrail 1 — keep the typed-error vs `Defect` split.** The six-state model
+  has a single `error`; ours separates typed `Failure<E>` from `Defect`
+  (bugs/interrupts), and removing the untagged `E | { defect }` union was the
+  Finding-5 win. So this is effectively 7 states (their 6 + `Defect`), or
+  `error: E` with `Defect` kept separate — do not collapse it back.
+- **Guardrail 2 — extend, don't re-fork.** We own this `Result`, but it is the
+  substrate for atoms, `<Loading>`/`<Errored>`, reactivity, loaders, and
+  `Effect.result`. Add variants by extension; do not swap in a bespoke union
+  that reopens the divergence Finding-5 closed.
+- Pairs with the P5 test kit (assert stale-on-failure without a DOM) and the
+  correctness-story goal — compiler-tracked keep-stale-on-failure is a headline.
+
 ## Services & Layers Review (2026-07-06)
 
 Reviewed how services/layers work across the library. The mechanics are
@@ -669,8 +716,9 @@ compile-time teeth when P2 key witnesses land.)
 - [ ] Inference audit (Finding 4): **authored path verified 2026-07-06** — `src/type-tests/slots-define.ts` proves the golden path (props/require/setup-inferred bindings + `withSlots` contract + `forSlots` attachments) needs zero explicit generics, including precise `SlotContractOf` extraction and unknown-slot rejection; doc/example generic sites corrected (`PROPS_BINDINGS_SLOTS.md`). Remaining, reclassified: the legacy bindings-as-slots convention (tests using `Component.make<{}, never, never, Bindings>` + string-map validation) genuinely requires annotations — that is one more reason it is the deprecated tier, and those sites migrate as part of the Finding-3 demotion rather than being force-de-generic'd.
 - [x] Test-typecheck gate (hardening): **40 → 9 → 0, closed 2026-07-08.** `npm run typecheck:tests` (`tsconfig.tests.json`) is **green and enforced** (part of `typecheck:all` / `check`). En route the gate **surfaced and fixed SIX real library bugs** (`Atom.family` invisible plain overload, `Component.renderEffect` missing `SlotContract` axis, `Component.route` leaking `RouteContext` into `Req`, `ServerRoute.execute*` over-constrained node type, `Behavior.make` requiring all generics, `Component.setupEffect` missing `SlotContract` axis) plus the `SlotContract` witness-vs-handles normalization (`View.NormalizeSlots` at `renderViewEffect`). The residual 9 closed in two batches: the ~5 P6-coupled route-construction errors (route.test `UnifiedRouteSymbol`/overloads, route-loader `RouteChildrenEnhancer`) resolved with the routing overload unification (commit `2e53de0`), and the deep type-helper drift (`attachToAllWithCapability` SlotContract over-constraint, `SlotMetadataMap` over witness collections, `withRetry` union source, `componentOf` standalone RouteContext) resolved in the deep-helper batch. (Note: after the Finding-3 correction the deprecated-attach tests stay valid — those forms are no longer being deleted.)
 - [x] Result consolidation, release-blocking core (Finding 5): **done 2026-07-07** (steps 0-1). Step 0: characterization tests for the SSR wire round-trip (render→serialize→deserialize→hydrate→first render) + a pinned wire-shape test — none existed, silent-failure surface. Step 1: `Route.loaderResult()` and `Route.title`/`meta` loader callbacks now emit unified `Result` (converted at the loader-cache boundary via `FetchResult.toResult`; found + fixed a real divergence where the legacy component path passed raw FetchResult to head callbacks while the tree path didn't). **Acceptance met:** no `E | { defect: string }` union in any `Route.ts`/`Component.ts` public signature; golden-path loader surfaces emit unified `Result`. 487 tests + gates green.
-- [x] Result consolidation, internal cleanup (Finding 5 step 2): **DONE 2026-07-08.** Removed remaining `FetchResult` from internal machinery — loader cache, `SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, `Atom.pull`. **Foundation landed 2026-07-08: `Serialization` service (`src/Serialization.ts`).** A design realization scoped this pass: core `Result` carries `Cause`/`Exit` and is **not JSON-safe**, so `FetchResult` cannot simply be deleted from the wire — the wire boundary always needs a flat, serializable DTO. Rather than hand-roll that DTO, introduced an injectable `Serialization` service (schema-driven; `Tag` + default Effect-`Schema` layer + pure `encodeSync`/`decodeSync`) with `ResultWire`/`ResultWireRecord` as the canonical flat loader-result wire schema. `Route.serializeLoaderData`/`deserializeLoaderData`/`streamDeferredLoaderScripts` now route through it (byte-compatible; validates on decode). Default codec is Effect Schema (zero new deps); `seroval` can slot in as an alternate layer later without touching call sites. **`Atom.pull` migrated 2026-07-08** (isolated, no wire impact): `PullResult` is now core `Result<PullChunk<A>, E>`; test + ooo-async example updated. **Loader cache + orchestration + wire types now hold core `Result`** (landed via the codex `codex/result-wire-migration` branch, merged `3c1d14e`; wire kept backward-compatible — flat DTO unchanged, no version bump). Post-merge cleanup (`7fb31d0`) replaced the merged reference-equality codec dispatch with dedicated `Serialization` functions (`resultToWire`/`resultFromWire` + `encodeResult`/`decodeResult`/`encodeResultRecord`/`decodeResultRecord`), made `ResultWire`/`ResultWireRecord` honest flat-DTO schemas (dropped a lying cast), and restored typed-`SchemaError` failures on the service (strengthened test via `Effect.flip`). **Acceptance met:** `FetchResult` in `router-runtime.ts` = zero; in `Route.ts` = only the deprecated `loaderFetchResult()` compat accessor + JSDoc (zero primary signatures). `FetchResult` is compat-only. All five gates green (496 tests).
+- [x] Result consolidation, internal cleanup (Finding 5 step 2): **DONE 2026-07-08.** Removed remaining `FetchResult` from internal machinery — loader cache, `SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, `Atom.pull`. **Foundation landed 2026-07-08: `Serialization` service (`src/Serialization.ts`).** A design realization scoped this pass: core `Result` carries `Cause`/`Exit` and is **not JSON-safe**, so `FetchResult` cannot simply be deleted from the wire — the wire boundary always needs a flat, serializable DTO. Rather than hand-roll that DTO, introduced an injectable `Serialization` service (schema-driven; `Tag` + default Effect-`Schema` layer + pure `encodeSync`/`decodeSync`) with `ResultWire`/`ResultWireRecord` as the canonical flat loader-result wire schema. `Route.serializeLoaderData`/`deserializeLoaderData`/`streamDeferredLoaderScripts` now route through it (byte-compatible; validates on decode). Default codec is Effect Schema (zero new deps); `seroval` can slot in as an alternate layer later without touching call sites. **`Atom.pull` migrated 2026-07-08** (isolated, no wire impact): `PullResult` is now core `Result<PullChunk<A>, E>`; test + ooo-async example updated. **Loader cache + orchestration + wire types now hold core `Result`** (landed via the codex `codex/result-wire-migration` branch, merged `3c1d14e`; wire kept backward-compatible — flat DTO unchanged, no version bump). Post-merge cleanup (`7fb31d0`) replaced the merged reference-equality codec dispatch with dedicated `Serialization` functions (`resultToWire`/`resultFromWire` + `encodeResult`/`decodeResult`/`encodeResultRecord`/`decodeResultRecord`), made `ResultWire`/`ResultWireRecord` honest flat-DTO schemas (dropped a lying cast), and restored typed-`SchemaError` failures on the service (strengthened test via `Effect.flip`). **Acceptance met:** `FetchResult` in `router-runtime.ts` = zero; in `Route.ts` = only the deprecated `loaderFetchResult()` compat accessor + JSDoc (zero primary signatures). `FetchResult` is compat-only. All five gates green (496 tests). **Known regression from this migration:** core `Result.Failure` has no data field, so **keep-stale-on-failure was lost** — `FetchResult.Failure` carried `previousSuccess`, core `Result` does not. Tracked as **P15** (add a `Stale{error,data}` state) — see the Result State Model section.
 - [ ] Typed-tree-by-default + claims sweep (Finding 6): authored views always carry `tree` metadata; docs scope type-safety claims to enforced boundaries.
+- [ ] Richer `Result` states (P15): add `Stale<A,E>{ error, data }` (restores keep-stale-on-failure lost in the Finding-5 migration — `FetchResult.Failure.previousSuccess` had no core-`Result` equivalent) and evaluate `Idle`; extend `match`/`settled`/`map`/`getData`/`getError` + the `Effect.result` boundary. Guardrails: keep the typed-`Failure`-vs-`Defect` split (no untagged error union); extend the owned `Result`, don't re-fork. v1.x, carefully scoped — see the Result State Model section.
 - [ ] Typed intrinsic elements (P14): replace the catch-all `JSX.IntrinsicElements` (`[elemName: string]: HTMLAttributes` with an `[attr: string]: unknown` base) with per-tag attribute maps + real event types, tightened tag-by-tag behind the `typecheck` gate; keep the string fallback during migration. Types only — zero bundle. **Decided: no runtime `Tag.*` module** (naming clash with service tags + contradicts Finding 2 + bundle anti-pattern; `View.element` stays the generic escape hatch). Pairs with D1 (readable errors).
 - [ ] Behavior binding contracts + state-aware styling (P1): `Behavior.provides(...)` witness and `Style.whenBinding(...)`-style composition.
 - [x] Reactivity key witnesses (P2): **complete 2026-07-06** (see archive log, slices 1-2) — `Reactivity.Key.make/family/is`, `KeyNameOf<T>`, hierarchical `child(...)` with record-form parity; witnesses accepted across `tracked`/`invalidating`, atom/action/component options, and all Route/loader-cache intake sites; README/API/afui docs lead with witnesses, strings remain the dynamic escape hatch; runtime + type + loader integration coverage, gates green.
@@ -861,10 +909,12 @@ complete; what is left is the v1.x proposals.
 
 ### Then: v1.x proposals (not release-blocking)
 
-  - Round-2/3 proposals P1, P3–P5, P8–P14 and Foldkit F1–F7 amendments — see
+  - Round-2/3 proposals P1, P3–P5, P8–P15 and Foldkit F1–F7 amendments — see
     their sections above. Suggested first: **P14 (typed intrinsic elements)** —
     highest correctness-per-effort, types-only/zero-bundle, and it closes the
-    most-hit gap in the "everything is type-checked" story; then P1 (behavior
+    most-hit gap in the "everything is type-checked" story; then **P15
+    (`Stale`/`Idle` result states)** — restores keep-stale-on-failure regressed
+    in the Finding-5 migration; then P1 (behavior
     binding contracts + state-aware styling, now with F5's out-event axis)
     and P11 (devtools + MCP, design against Registry/Reactivity before the
     runtime surface freezes).
