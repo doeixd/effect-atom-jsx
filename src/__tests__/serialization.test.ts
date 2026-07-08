@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Effect, Schema } from "effect";
 import * as Serialization from "../Serialization.js";
-import * as Result from "../Result.js";
+import { Result } from "../effect-ts.js";
+import type { Result as CoreResultType } from "../effect-ts.js";
 
 describe("Serialization", () => {
   describe("pure codec", () => {
@@ -39,13 +40,12 @@ describe("Serialization", () => {
 
   describe("ResultWire schema", () => {
     it("validates and round-trips each result variant", () => {
-      const cases: ReadonlyArray<Result.Result<unknown, unknown>> = [
-        Result.initial(true),
-        Result.success({ x: 1 }, { timestamp: 42 }),
+      const cases: ReadonlyArray<CoreResultType<unknown, unknown>> = [
+        Result.loading,
+        Result.success({ x: 1 }),
         Result.failure("boom"),
-        Result.failure({ defect: "kaboom" }, {
-          previousSuccess: Result.success("prev", { timestamp: 7 }),
-        }),
+        Result.defect("kaboom"),
+        Result.refreshing(Result.success("prev")),
       ];
       for (const value of cases) {
         const wire = Serialization.encodeSync(Serialization.ResultWire, value);
@@ -55,7 +55,7 @@ describe("Serialization", () => {
 
     it("round-trips a keyed loader-data payload", () => {
       const payload = {
-        "/users": Result.success([{ id: 1 }], { timestamp: 1 }),
+        "/users": Result.success([{ id: 1 }]),
         "/posts": Result.failure("nope"),
       };
       const wire = Serialization.encodeSync(Serialization.ResultWireRecord, payload);

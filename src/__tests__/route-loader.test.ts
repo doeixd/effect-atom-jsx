@@ -3,7 +3,7 @@ import { Effect, Layer, Schema, ServiceMap } from "effect";
 import * as Atom from "../Atom.js";
 import * as Component from "../Component.js";
 import * as Route from "../Route.js";
-import * as Result from "../Result.js";
+import { Result } from "../effect-ts.js";
 import { clearLoaderCache, getLoaderCacheEntry, isFresh } from "../router-runtime.js";
 import * as Reactivity from "../Reactivity.js";
 import { installReactivityService } from "../reactivity-runtime.js";
@@ -85,45 +85,45 @@ describe("Route loader", () => {
     expect(Array.isArray(entries)).toBe(true);
 
     const serialized = Route.serializeLoaderData([
-      { routeId: "r1", result: { _tag: "Success", value: { ok: true }, waiting: false, timestamp: Date.now() } as any },
+      { routeId: "r1", result: Result.success({ ok: true }) },
     ]);
     const parsed = Route.deserializeLoaderData(serialized);
     expect(parsed.r1).toBeDefined();
 
     const scripts = Route.streamDeferredLoaderScripts([
-      { routeId: "r1", result: { _tag: "Success", value: 1, waiting: false, timestamp: Date.now() } as any },
+      { routeId: "r1", result: Result.success(1) },
     ]);
     expect(scripts[0]).toContain("__LOADER_DATA__");
   });
 
   // ── Finding-5 characterization: pin the CURRENT on-the-wire loader-result
-  // shape. This is the FetchResult JSON shape. The migration to unified Result
-  // will change these fields intentionally; when it does, update this test
-  // deliberately (and bump the wire-format version) rather than letting the
-  // shape drift silently. See docs/RESULT_CONSOLIDATION_PROPOSAL.md.
-  it("pins the current loader-result wire shape (FetchResult; changes with the Result migration)", () => {
+  // shape. Runtime loader state is core Result, but the wire remains the flat
+  // JSON-safe DTO at the Serialization seam.
+  it("pins the current loader-result wire shape for core Result", () => {
     const successWire = JSON.parse(Route.serializeLoaderData([
-      { routeId: "r1", result: { _tag: "Success", value: { n: 1 }, waiting: false, timestamp: 1234 } as any },
+      { routeId: "r1", result: Result.success({ n: 1 }) },
     ]));
-    expect(successWire.r1).toEqual({ _tag: "Success", value: { n: 1 }, waiting: false, timestamp: 1234 });
+    expect(successWire.r1).toMatchObject({ _tag: "Success", value: { n: 1 }, waiting: false });
+    expect(typeof successWire.r1.timestamp).toBe("number");
 
     const failureWire = JSON.parse(Route.serializeLoaderData([
-      { routeId: "r2", result: { _tag: "Failure", error: { _tag: "Boom" }, waiting: false, previousSuccess: null } as any },
+      { routeId: "r2", result: Result.failure({ _tag: "Boom" }) },
     ]));
     expect(failureWire.r2).toEqual({ _tag: "Failure", error: { _tag: "Boom" }, waiting: false, previousSuccess: null });
 
-    // deserialize is a structural inverse of serialize for settled results
+    // deserialize returns core Result, not the flat DTO.
     const roundTrip = Route.deserializeLoaderData(Route.serializeLoaderData([
-      { routeId: "r3", result: { _tag: "Success", value: [1, 2, 3], waiting: false, timestamp: 5 } as any },
+      { routeId: "r3", result: Result.success([1, 2, 3]) },
     ]));
-    expect(roundTrip.r3).toEqual({ _tag: "Success", value: [1, 2, 3], waiting: false, timestamp: 5 });
+    expect(roundTrip.r3?._tag).toBe("Success");
+    expect(roundTrip.r3?._tag === "Success" ? roundTrip.r3.value : undefined).toEqual([1, 2, 3]);
   });
 
   // ── Security: SSR loader data must not break out of a <script> tag (XSS).
   it("escapes HTML-unsafe chars in serialized loader data (script-injection safety)", () => {
     const hostile = "</script><script>alert(1)</script>";
     const payload = [
-      { routeId: "r1", result: { _tag: "Success", value: { html: hostile, amp: "a&b", lt: "1<2>0" }, waiting: false, timestamp: 1 } as any },
+      { routeId: "r1", result: Result.success({ html: hostile, amp: "a&b", lt: "1<2>0" }) },
     ];
 
     // serializeLoaderData: no literal `</script>` (or raw < > &) survives...
@@ -146,11 +146,12 @@ describe("Route loader", () => {
     const u2029 = String.fromCharCode(0x2029);
     const sepValue = `a${u2028}b${u2029}c`;
     const sepWire = Route.serializeLoaderData([
-      { routeId: "r2", result: { _tag: "Success", value: sepValue, waiting: false, timestamp: 1 } as any },
+      { routeId: "r2", result: Result.success(sepValue) },
     ]);
     expect(sepWire).not.toContain(u2028);
     expect(sepWire).not.toContain(u2029);
-    expect((Route.deserializeLoaderData(sepWire).r2 as any).value).toBe(sepValue);
+    const sepResult = Route.deserializeLoaderData(sepWire).r2;
+    expect(sepResult?._tag === "Success" ? sepResult.value : undefined).toBe(sepValue);
   });
 
   it("supports critical/deferred streaming navigation batches", () => {

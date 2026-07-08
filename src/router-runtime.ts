@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import * as FetchResult from "./Result.js";
+import { Result as CoreResult, type Result as CoreResultType } from "./effect-ts.js";
 import {
   beginReactivityReadCapture,
   getInstalledReactivityService,
@@ -16,7 +16,7 @@ export interface LoaderCacheEntry {
   readonly key: string;
   readonly routeId: string;
   readonly paramsKey: string;
-  readonly result: FetchResult.Result<unknown, unknown>;
+  readonly result: CoreResultType<unknown, unknown>;
   readonly updatedAt: number;
   readonly staleAt: number;
   readonly expiresAt: number;
@@ -118,7 +118,7 @@ export function isFresh(entry: LoaderCacheEntry): boolean {
   return Date.now() <= entry.staleAt;
 }
 
-export function setLoaderCacheEntry(routeId: string, params: unknown, result: FetchResult.Result<unknown, unknown>, options?: {
+export function setLoaderCacheEntry(routeId: string, params: unknown, result: CoreResultType<unknown, unknown>, options?: {
   readonly staleTime?: DurationInput;
   readonly cacheTime?: DurationInput;
   readonly reactivityKeys?: ReactivityKeysInput;
@@ -203,18 +203,18 @@ export function runCachedLoader<A, E>(
     readonly reactivityKeys?: ReactivityKeysInput;
     readonly timeout?: DurationInput;
   },
-): Effect.Effect<FetchResult.Result<A, E>, never> {
+): Effect.Effect<CoreResultType<A, E>, never> {
   const existing = getLoaderCacheEntry(routeId, params);
   if (existing && isFresh(existing)) {
-    return Effect.succeed(existing.result as FetchResult.Result<A, E>);
+    return Effect.succeed(existing.result as CoreResultType<A, E>);
   }
 
   if (existing && options?.staleWhileRevalidate && existing.result._tag === "Success") {
-    const stale = FetchResult.waiting(existing.result as FetchResult.Result<A, E>);
+    const stale = CoreResult.refreshing(existing.result as CoreResultType<A, E> & { readonly _tag: "Success" });
     Effect.runFork(
       executeAndCache(routeId, params, run, options).pipe(Effect.asVoid),
     );
-    return Effect.succeed(stale as FetchResult.Result<A, E>);
+    return Effect.succeed(stale as CoreResultType<A, E>);
   }
 
   return executeAndCache(routeId, params, run, options);
@@ -230,23 +230,16 @@ function executeAndCache<A, E>(
     readonly reactivityKeys?: ReactivityKeysInput;
     readonly timeout?: DurationInput;
   },
-): Effect.Effect<FetchResult.Result<A, E>, never> {
+): Effect.Effect<CoreResultType<A, E>, never> {
   const optionKeys = options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : [];
   return Effect.sync(() => beginReactivityReadCapture()).pipe(
     Effect.flatMap((capture) => run.pipe(
-      Effect.match({
-        onSuccess: (data) => {
-          const out = FetchResult.success<A, E>(data);
-          const mergedKeys = [...new Set([...optionKeys, ...capture.end()])];
-          setLoaderCacheEntry(routeId, params, out, { ...options, reactivityKeys: mergedKeys });
-          return out;
-        },
-        onFailure: (error) => {
-          const out = FetchResult.failure<A, E>(error as E);
-          const mergedKeys = [...new Set([...optionKeys, ...capture.end()])];
-          setLoaderCacheEntry(routeId, params, out, { ...options, reactivityKeys: mergedKeys });
-          return out;
-        },
+      Effect.exit,
+      Effect.map((exit) => {
+        const out = CoreResult.fromExit(exit) as CoreResultType<A, E>;
+        const mergedKeys = [...new Set([...optionKeys, ...capture.end()])];
+        setLoaderCacheEntry(routeId, params, out, { ...options, reactivityKeys: mergedKeys });
+        return out;
       }),
       Effect.ensuring(Effect.sync(() => {
         capture.end();
