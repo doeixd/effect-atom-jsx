@@ -1,0 +1,23 @@
+---
+pid: 47668
+cwd: "C:\Users\Patrick\effect-atom-jsx"
+command: "npm run typecheck:all"
+started_at: 2026-07-09T12:55:47.865Z
+running_for_ms: 119996   
+---
+
+> effect-atom-jsx@0.5.0 typecheck:all
+> npm run typecheck && npm run typecheck:tests && npm run typecheck:examples
+
+
+> effect-atom-jsx@0.5.0 typecheck
+> tsc --noEmit
+
+
+> effect-atom-jsx@0.5.0 typecheck:tests
+> tsc --noEmit -p tsconfig.tests.json
+
+
+> effect-atom-jsx@0.5.0 typecheck:examples
+> tsc --noEmit -p tsconfig.examples.json
+

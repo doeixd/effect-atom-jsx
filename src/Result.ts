@@ -10,12 +10,14 @@
 import { Result as ResultState, type Defect } from "./effect-ts.js";
 import { Cause, Exit, Option, pipe } from "effect";
 
+/** No successful value has been produced yet. */
 export type Initial<A, E = never> = {
   readonly _tag: "Initial";
   /** Whether a fetch is currently in progress (first-load). */
   readonly waiting: boolean;
 };
 
+/** Successful result with timestamp and optional revalidation state. */
 export type Success<A, E = never> = {
   readonly _tag: "Success";
   readonly value: A;
@@ -25,6 +27,7 @@ export type Success<A, E = never> = {
   readonly timestamp: number;
 };
 
+/** Failed result, optionally carrying the last successful value. */
 export type Failure<A, E = never> = {
   readonly _tag: "Failure";
   readonly error: E | { readonly defect: string };
@@ -34,14 +37,23 @@ export type Failure<A, E = never> = {
   readonly previousSuccess: Success<A, E> | null;
 };
 
+/**
+ * Synchronous stale-while-revalidate result model.
+ *
+ * This compatibility result is used by fetch-style helpers. New async UI APIs
+ * generally use the unified `Result` exported from `effect-ts`, but this shape
+ * remains useful where `waiting` and `previousSuccess` need to be explicit.
+ */
 export type Result<A, E = never> = Initial<A, E> | Success<A, E> | Failure<A, E>;
 
+/** Optional handlers used by `Result.builder(...)`. */
 export interface BuilderHandlers<A, E, R> {
   onInitial?: () => R;
   onSuccess?: (value: A, meta: { readonly waiting: boolean; readonly timestamp: number }) => R;
   onFailure?: (error: E | { readonly defect: string }, meta: { readonly waiting: boolean; readonly previousSuccess: Success<A, E> | null }) => R;
 }
 
+/** Fluent matcher returned by `Result.builder(...)`. */
 export interface Builder<A, E, R> {
   onInitial<R2>(f: () => R2): Builder<A, E, R | R2>;
   onSuccess<R2>(f: (value: A, meta: { readonly waiting: boolean; readonly timestamp: number }) => R2): Builder<A, E, R | R2>;
@@ -91,10 +103,15 @@ export const failure = <A, E = never>(
   previousSuccess: options?.previousSuccess ?? null,
 });
 
+/** Narrow a result to `Initial`. */
 export const isInitial = <A, E>(r: Result<A, E>): r is Initial<A, E> => r._tag === "Initial";
+/** Narrow a result to `Success | Failure`. */
 export const isNotInitial = <A, E>(r: Result<A, E>): r is Success<A, E> | Failure<A, E> => r._tag !== "Initial";
+/** Narrow a result to `Success`. */
 export const isSuccess = <A, E>(r: Result<A, E>): r is Success<A, E> => r._tag === "Success";
+/** Narrow a result to `Failure`. */
 export const isFailure = <A, E>(r: Result<A, E>): r is Failure<A, E> => r._tag === "Failure";
+/** Return the result's `waiting` flag. */
 export const isWaiting = <A, E>(r: Result<A, E>): boolean => r.waiting;
 
 /**
@@ -135,6 +152,7 @@ export function fromResult<A, E>(
   }
   if (value._tag === "Success") return success(value.value);
   if (value._tag === "Failure") return failure(value.error, { previousSuccess: null });
+  if (value._tag === "Stale") return failure(value.error, { previousSuccess: success(value.data) });
   // Instead of creating defect from cause string, use the rawCause from the exit field
   // if available.
   const raw = ResultState.rawCause(value);

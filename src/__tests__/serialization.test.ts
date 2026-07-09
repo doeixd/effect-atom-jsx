@@ -44,6 +44,7 @@ describe("Serialization", () => {
         Result.loading,
         Result.success({ x: 1 }),
         Result.failure("boom"),
+        Result.stale("stale-boom", { x: 2 }),
         Result.defect("kaboom"),
         Result.refreshing(Result.success("prev")),
       ];
@@ -51,6 +52,63 @@ describe("Serialization", () => {
         const wire = Serialization.encodeResult(value);
         expect(Serialization.decodeResult(wire)).toEqual(value);
       }
+    });
+
+    it("projects Stale to the flat failure wire shape with previousSuccess", () => {
+      const wire = Serialization.resultToWire(Result.stale("boom", { id: 1 }));
+      expect(wire).toMatchObject({
+        _tag: "Failure",
+        error: "boom",
+        waiting: false,
+        previousSuccess: {
+          _tag: "Success",
+          value: { id: 1 },
+        },
+      });
+      const decoded = Serialization.resultFromWire(wire);
+      expect(decoded._tag).toBe("Stale");
+      if (decoded._tag === "Stale") {
+        expect(decoded.error).toBe("boom");
+        expect(decoded.data).toEqual({ id: 1 });
+      }
+    });
+
+    it("decodes legacy waiting failure with previousSuccess as Refreshing(previous success), not Stale", () => {
+      const decoded = Serialization.resultFromWire({
+        _tag: "Failure",
+        error: "still-loading",
+        waiting: true,
+        previousSuccess: {
+          _tag: "Success",
+          value: { id: 1 },
+          waiting: false,
+          timestamp: 123,
+        },
+      });
+
+      expect(decoded._tag).toBe("Refreshing");
+      if (decoded._tag === "Refreshing") {
+        expect(decoded.previous._tag).toBe("Success");
+        if (decoded.previous._tag === "Success") {
+          expect(decoded.previous.value).toEqual({ id: 1 });
+        }
+      }
+    });
+
+    it("does not decode defect failures with previousSuccess as Stale", () => {
+      const decoded = Serialization.resultFromWire({
+        _tag: "Failure",
+        error: { defect: "boom" },
+        waiting: false,
+        previousSuccess: {
+          _tag: "Success",
+          value: { id: 1 },
+          waiting: false,
+          timestamp: 123,
+        },
+      });
+
+      expect(decoded._tag).toBe("Defect");
     });
 
     it("round-trips a keyed loader-data payload", () => {

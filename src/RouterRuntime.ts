@@ -5,8 +5,11 @@ import * as ServerRoute from "./ServerRoute.js";
 import type { AnyRoute, AppRouteNode } from "./Route.js";
 import type { ServerRouteNode } from "./ServerRoute.js";
 
+/** Last history operation observed by the router runtime. */
 export type RouterHistoryAction = "push" | "replace" | "pop" | "none";
+/** Coarse async phase for navigation, requests, submissions, and fetchers. */
 export type RouterTaskPhase = "idle" | "loading" | "submitting" | "rendering" | "dispatching" | "cancelled";
+/** Snapshot of one router task. */
 export interface RouterTaskState {
   readonly phase: RouterTaskPhase;
   readonly target?: string;
@@ -17,6 +20,7 @@ export interface RouterTaskState {
 export type RouterNavigationState = RouterTaskState;
 export type RouterRevalidationState = RouterTaskState;
 
+/** Adapter-neutral outcome recorded after an action, fetch, render, or dispatch. */
 export interface RouterRuntimeOutcome {
   readonly kind: "action" | "fetch" | "document" | "dispatch";
   readonly status?: number;
@@ -98,6 +102,7 @@ function fetcherState(key: string, route: string, state: RouterTaskState, outcom
   };
 }
 
+/** State of a named fetcher, similar to route-resource fetchers in routers. */
 export interface RouterRuntimeFetcherState {
   readonly key: string;
   readonly state: RouterTaskState;
@@ -105,6 +110,13 @@ export interface RouterRuntimeFetcherState {
   readonly outcome?: RouterRuntimeOutcome;
 }
 
+/**
+ * Immutable router runtime snapshot.
+ *
+ * Snapshots are emitted to subscribers after navigation, loader refresh,
+ * submission, fetcher, request-render, and dispatch transitions. Map fields are
+ * copied so consumers can inspect without mutating runtime state.
+ */
 export interface RouterRuntimeSnapshot {
   readonly initialized: boolean;
   readonly historyAction: RouterHistoryAction;
@@ -136,11 +148,18 @@ export interface RouterRuntimeSnapshot {
   readonly preventScrollReset: boolean;
 }
 
+/** Event emitted by a history adapter. */
 export interface HistoryEvent {
   readonly action: RouterHistoryAction;
   readonly location: URL;
 }
 
+/**
+ * Minimal history adapter consumed by `RouterRuntime.create`.
+ *
+ * Browser, hash, memory, and native-shell integrations can implement this
+ * shape without depending on DOM globals.
+ */
 export interface HistoryAdapter {
   readonly location: () => URL;
   readonly push: (to: string) => void;
@@ -149,6 +168,7 @@ export interface HistoryAdapter {
   readonly subscribe: (listener: (event: HistoryEvent) => void) => () => void;
 }
 
+/** Effect service facade over the active history adapter. */
 export interface HistoryService {
   readonly location: () => URL;
   readonly push: (to: string) => Effect.Effect<void>;
@@ -156,6 +176,7 @@ export interface HistoryService {
   readonly go: (delta: number) => Effect.Effect<void>;
 }
 
+/** Effect service facade over imperative router operations. */
 export interface NavigationService {
   readonly navigate: RouterRuntimeInstance["navigate"];
   readonly navigateApp: RouterRuntimeInstance["navigateApp"];
@@ -169,6 +190,7 @@ export const HistoryTag = ServiceMap.Service<HistoryService>("History");
 export const NavigationTag = ServiceMap.Service<NavigationService>("Navigation");
 export const RouterRuntimeTag = ServiceMap.Service<RouterRuntimeInstance>("RouterRuntime");
 
+/** Configuration for a router runtime instance. */
 export interface RouterRuntimeConfig {
   /**
    * The application route tree.
@@ -181,6 +203,14 @@ export interface RouterRuntimeConfig {
   readonly history: HistoryAdapter;
 }
 
+/**
+ * Stateful router runtime.
+ *
+ * The runtime coordinates history, route loader refresh, server-route
+ * dispatch, request rendering, named fetchers, cancellation, and snapshots.
+ * All operations return `Effect` values so callers can compose them with app
+ * services or run them under tests.
+ */
 export interface RouterRuntimeInstance {
   readonly initialize: () => Effect.Effect<void>;
   readonly snapshot: () => Effect.Effect<RouterRuntimeSnapshot>;
@@ -378,6 +408,13 @@ function createSnapshot(state: {
   };
 }
 
+/**
+ * Create a router runtime instance.
+ *
+ * Call `initialize()` before reading snapshots in an app shell. Tests can use
+ * `createMemoryHistory(...)` and run operations synchronously with
+ * `Effect.runSync`.
+ */
 export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
   let initialized = false;
   let historyAction: RouterHistoryAction = "none";
@@ -918,6 +955,11 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
   };
 }
 
+/**
+ * Create an in-memory history adapter.
+ *
+ * Useful for tests, SSR request simulations, and non-browser demos.
+ */
 export function createMemoryHistory(initial: string): HistoryAdapter {
   const stack = [new URL(initial, "http://memory.local")];
   let index = 0;

@@ -1092,6 +1092,73 @@ describe("effect-atom style API", () => {
     expect(phases.includes("failure") || phases.includes("defect")).toBe(true);
   });
 
+  it("validates Atom.action inputSchema before running the effect (P13)", async () => {
+    let ran = 0;
+    const SaveInput = Schema.Struct({ title: Schema.String });
+    const save = Atom.action(
+      (_input: { readonly title: string }) => {
+        ran += 1;
+        return Effect.void;
+      },
+      {
+        name: "save-todo",
+        inputSchema: SaveInput,
+      },
+    );
+
+    save({ title: "ok" } as any);
+    await Effect.runPromise(Effect.sleep("15 millis"));
+    expect(ran).toBe(1);
+    expect(save.result()._tag).toBe("Success");
+
+    save({ title: 123 } as any);
+    await Effect.runPromise(Effect.sleep("15 millis"));
+    expect(ran).toBe(1); // effect must not run on schema failure
+    const failed = save.result();
+    expect(failed._tag).toBe("Failure");
+    if (failed._tag === "Failure") {
+      expect(failed.error).toMatchObject({
+        _tag: "ActionInputSchemaError",
+        message: "Action input failed schema validation",
+      });
+    }
+  });
+
+  it("rejects invalid inputSchema before single-flight transport runs (P13)", async () => {
+    let transportCalls = 0;
+    let effectRuns = 0;
+    const SaveInput = Schema.Struct({ id: Schema.Number });
+    const save = Atom.action(
+      (_input: { readonly id: number }) => {
+        effectRuns += 1;
+        return Effect.void;
+      },
+      {
+        name: "remote-save",
+        inputSchema: SaveInput,
+        // force would error if validation passed without transport; validation must fail first
+        singleFlight: {
+          mode: "force",
+          endpoint: "/sf",
+          fetch: async () => {
+            transportCalls += 1;
+            return { json: async () => ({ data: null, loaders: {} }) };
+          },
+        },
+      },
+    );
+
+    save({ id: "not-a-number" } as any);
+    await Effect.runPromise(Effect.sleep("15 millis"));
+    expect(effectRuns).toBe(0);
+    expect(transportCalls).toBe(0);
+    const failed = save.result();
+    expect(failed._tag).toBe("Failure");
+    if (failed._tag === "Failure") {
+      expect((failed.error as { readonly _tag?: string })._tag).toBe("ActionInputSchemaError");
+    }
+  });
+
   it("supports runtime.action onTransition hooks", async () => {
     const runtime = Atom.runtime(Layer.empty);
     const phases: string[] = [];

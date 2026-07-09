@@ -102,6 +102,18 @@ describe("Route", () => {
     Effect.runSync(eff);
   });
 
+  it("lazy route components load on demand and expose preload", async () => {
+    const Lazy = Route.lazy(async () => ({
+      default: (props: { readonly name: string }) => `hello ${props.name}`,
+    }), {
+      loading: () => "loading",
+    });
+
+    expect(Lazy({ name: "Ada" })).toBe("loading");
+    await Lazy.preload();
+    expect(Lazy({ name: "Ada" })).toBe("hello Ada");
+  });
+
   it("collects and validates route metadata", () => {
     const One = Route.path("/one")(Component.from<{}>(() => null));
     const Two = Route.path("/one")(Component.from<{}>(() => null));

@@ -136,8 +136,73 @@ const TestLayer = Layer.mergeAll(
 const harness = withTestLayer(TestLayer);
 ```
 
+### Component render + behavior driver
+
+```ts
+import { render, expectStyle, step, scene, resolveQuery, Result } from "effect-atom-jsx/testing";
+
+const rendered = await render(Field, { props: { label: "Name" } });
+rendered.driver.press("submit");
+rendered.driver.keydown("input", "Enter");
+expectStyle(rendered.slots.root, "display", "grid");
+```
+
+### Story vs scene (F3 taxonomy)
+
+- **Story** (`story(...)`, prefer `*.story.test.ts`): drive bindings/actions/results directly.
+- **Scene** (`scene(...)`, prefer `*.scene.test.ts`): simulate users against slot handles via the production path (DOM-free with `behaviorDriver`).
+
+```ts
+await story("load todos", { query }, [
+  step("seed success", ({ query }) => {
+    resolveQuery(query, Result.success([{ id: 1 }]));
+  }),
+  step("assert", ({ query }) => {
+    expect(query.result()._tag).toBe("Success");
+  }),
+]);
+
+await scene("open combobox", { driver }, [
+  step("open", ({ driver }) => driver.press("trigger")),
+  step("arrow", ({ driver }) => driver.keydown("listbox", "ArrowDown")),
+  step("choose", ({ driver }) => driver.pressItem("options", 0)),
+]);
+```
+
+### Inline outcome resolution (no mock layers)
+
+```ts
+// Unit path: short-circuit Result without running Effects.
+resolveQuery(todos, Result.success([...]));
+resolveAction(save, Result.failure(new ValidationError()));
+// Integration path still uses mockService / withTestLayer.
+```
+
+## Dev-mode diagnostics
+
+Opt in at the composition root so mount/render auto-runs slot-contract and view validators:
+
+```ts
+import { Diagnostics, Component } from "effect-atom-jsx";
+
+const AppLayer = Layer.mergeAll(
+  Diagnostics.devLayer(), // console + dedupe; omit in production
+  // ...
+);
+Component.mount(App, { props: {}, layer: AppLayer, target });
+```
+
+Production default remains explicit-only (`Diagnostics.collect*` / `af-ui doctor`).
+
 ## Notes
 
 - `Effect.succeed` resolves synchronously — the result is immediately `Success` (no `Loading` state).
 - For async effects (e.g., `Effect.sleep`), call `await harness.tick()` to let microtasks flush.
 - Always call `await harness.dispose()` at the end of each test to clean up resources.
+
+## Event Channels
+
+Test `Event` channels with a real `Event.layer(...)`, not a fake global bus.
+Subscribe before publishing, use `Deferred` or Effect synchronization instead
+of sleeps, and let the surrounding scope close to prove subscription cleanup.
+Direct `PubSub` remains appropriate for service-private channel tests.

@@ -14,7 +14,10 @@
     "jsxImportSource": "effect-atom-jsx",
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    // TS7 no longer auto-includes all @types/* for ambient globals; CLI +
+    // Node entrypoints need node, while browser types still come from "lib".
+    "types": ["node"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "examples", "src/__tests__/**/*", "src/__bench__/**/*"]

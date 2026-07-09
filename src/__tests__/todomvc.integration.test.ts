@@ -35,6 +35,26 @@ type TodoApi = {
 const TodoApi = ServiceMap.Service<TodoApi>("TodoApi:Integration");
 const tick = (ms = 0) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** Poll until `predicate` holds or timeout — avoids fixed-tick flake on Refreshing. */
+async function waitFor(
+  predicate: () => boolean,
+  options?: { readonly timeoutMs?: number; readonly intervalMs?: number },
+): Promise<void> {
+  const timeoutMs = options?.timeoutMs ?? 1000;
+  const intervalMs = options?.intervalMs ?? 5;
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+    }
+    await tick(intervalMs);
+  }
+}
+
+function isSettledSuccess<A, E>(state: AsyncState<A, E>): state is Extract<AsyncState<A, E>, { readonly _tag: "Success" }> {
+  return state._tag === "Success";
+}
+
 function makeApi(initial: ReadonlyArray<Todo>): TodoApi {
   let todos = [...initial];
   let nextId = todos.length + 1;
@@ -110,7 +130,7 @@ describe("TodoMVC integration", () => {
       return d;
     });
 
-    await tick(30);
+    await waitFor(() => isSettledSuccess(readTodos()));
     const firstLoad = readTodos();
     expect(firstLoad._tag).toBe("Success");
     expect(optimistic.get().length).toBe(1);
@@ -119,7 +139,11 @@ describe("TodoMVC integration", () => {
     expect(optimistic.get()[0]?.title).toBe("second");
     expect(add.pending()).toBe(true);
 
-    await tick(50);
+    await waitFor(() => {
+      if (add.pending()) return false;
+      const state = readTodos();
+      return isSettledSuccess(state) && state.value.some((todo) => todo.title === "second");
+    });
     expect(add.pending()).toBe(false);
     const refreshed = readTodos();
     expect(refreshed._tag).toBe("Success");
@@ -168,9 +192,9 @@ describe("TodoMVC integration", () => {
       return d;
     });
 
-    await tick(30);
+    await waitFor(() => optimistic.get().some((todo) => todo.title === "stable"));
     add.run("boom");
-    await tick(40);
+    await waitFor(() => add.result()._tag === "Failure");
     expect(optimistic.get()[0]?.title).toBe("stable");
     expect(add.result()).toEqual(Result.failure({ _tag: "ApiError", message: "cannot add boom" }));
 

@@ -1,0 +1,70 @@
+---
+pid: 54228
+cwd: "C:\Users\Patrick\effect-atom-jsx"
+command: "npm run check"
+started_at: 2026-07-09T12:57:05.412Z
+running_for_ms: 39999    
+---
+
+> effect-atom-jsx@0.5.0 check
+> npm run typecheck:all && npm run test
+
+
+> effect-atom-jsx@0.5.0 typecheck:all
+> npm run typecheck && npm run typecheck:tests && npm run typecheck:examples
+
+
+> effect-atom-jsx@0.5.0 typecheck
+> tsc --noEmit
+
+
+> effect-atom-jsx@0.5.0 typecheck:tests
+> tsc --noEmit -p tsconfig.tests.json
+
+
+> effect-atom-jsx@0.5.0 typecheck:examples
+> tsc --noEmit -p tsconfig.examples.json
+
+
+> effect-atom-jsx@0.5.0 test
+> vitest run
+
+
+ RUN  v4.0.18 C:/Users/Patrick/effect-atom-jsx
+
+ ✓ src/__tests__/view.test.ts (30 tests) 34ms
+ ✓ src/__tests__/route.test.ts (16 tests) 52ms
+ ✓ src/__tests__/route-loader.test.ts (30 tests) 82ms
+ ✓ src/__tests__/atom-rpc-httpapi.test.ts (4 tests) 268ms
+ ✓ src/__tests__/atom-stream.test.ts (8 tests) 365ms
+ ✓ src/__tests__/server-route.test.ts (14 tests) 52ms
+ ✓ src/__tests__/phase3.test.ts (43 tests) 369ms
+ ✓ src/__tests__/server-render.test.ts (8 tests) 68ms
+ ✓ src/__tests__/router-runtime.test.ts (19 tests) 94ms
+ ✓ src/__tests__/composables.test.ts (11 tests) 36ms
+ ✓ src/__tests__/testing.test.ts (11 tests) 57ms
+ ✓ src/__tests__/reactive.test.ts (48 tests) 32ms
+ ✓ src/__tests__/component.test.ts (27 tests) 162ms
+ ✓ src/__tests__/effect-atom-api.test.ts (65 tests) 891ms
+ ✓ src/__tests__/todomvc.integration.test.ts (2 tests) 122ms
+ ✓ src/__tests__/atom-schema.test.ts (15 tests) 37ms
+ ✓ src/__tests__/style.test.ts (14 tests) 35ms
+ ✓ src/__tests__/diagnostics.test.ts (11 tests) 35ms
+ ✓ src/__tests__/serialization.test.ts (11 tests) 32ms
+ ✓ src/__tests__/reactivity-service.test.ts (9 tests) 25ms
+ ✓ src/__tests__/atom-logger.test.ts (7 tests) 27ms
+ ✓ src/__tests__/ssr.test.ts (7 tests) 9ms
+ ✓ src/__tests__/effect.test.ts (105 tests) 1890ms
+ ✓ src/__tests__/capability-filtering.test.ts (13 tests) 31ms
+ ✓ src/__tests__/a11y.test.ts (2 tests) 8ms
+ ✓ src/__tests__/behavior.test.ts (5 tests) 12ms
+ ✓ src/__tests__/hmr.test.ts (2 tests) 6ms
+ ✓ src/__tests__/element.test.ts (1 test) 6ms
+ ✓ src/__tests__/style2.test.ts (3 tests) 4ms
+ ✓ src/__tests__/ooo-async-example.test.ts (3 tests) 24ms
+
+ Test Files  30 passed (30)
+      Tests  544 passed (544)
+   Start at  08:57:29
+   Duration  4.95s (transform 11.44s, setup 0ms, import 39.17s, tests 4.86s, environment 8ms)
+

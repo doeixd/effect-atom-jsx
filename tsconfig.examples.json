@@ -4,9 +4,9 @@
   "compilerOptions": {
     "noEmit": true,
     "rootDir": ".",
-    "baseUrl": ".",
     "jsx": "preserve",
     "jsxImportSource": "effect-atom-jsx",
+    // TS7 removed baseUrl; keep path mappings relative to this config file.
     "paths": {
       "effect-atom-jsx": ["./src/index.ts"],
       "effect-atom-jsx/jsx-runtime": ["./src/jsx-runtime.ts"],

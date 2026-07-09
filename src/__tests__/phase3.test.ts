@@ -11,6 +11,8 @@ import { Effect, Exit, Scope, Layer, ManagedRuntime, Option } from "effect";
 import {
   defineQuery,
   defineMutation,
+  atomEffect,
+  latest,
   Result as AsyncResult,
   scopedQueryEffect,
   scopedMutationEffect,
@@ -19,7 +21,7 @@ import {
   type Failure,
   type Defect,
 } from "../effect-ts.js";
-import { createRoot } from "../api.js";
+import { createRoot, createSignal } from "../api.js";
 
 const tick = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -67,6 +69,7 @@ describe("AsyncResult combinators", () => {
       onRefreshing: () => "refreshing",
       onSuccess: (v: number) => `ok:${v}`,
       onFailure: (e: string) => `err:${e}`,
+      onStale: (e: string, v: number) => `stale:${v}:${e}`,
       onDefect: (c: string) => `defect:${c}`,
     };
 
@@ -86,6 +89,10 @@ describe("AsyncResult combinators", () => {
       const r = AsyncResult.refreshing<number, string>(AsyncResult.success(1));
       expect(AsyncResult.match(r, handlers)).toBe("refreshing");
     });
+    it("dispatches Stale", () => {
+      const r = AsyncResult.stale("oops", 1);
+      expect(AsyncResult.match(r, handlers)).toBe("stale:1:oops");
+    });
   });
 
   describe("map", () => {
@@ -101,6 +108,24 @@ describe("AsyncResult combinators", () => {
     it("passes through Failure unchanged", () => {
       const r = AsyncResult.map(AsyncResult.failure("err") as AsyncResultType<number, string>, (x) => x * 10);
       expect(r._tag).toBe("Failure");
+    });
+    it("transforms stale data while preserving the error", () => {
+      const r = AsyncResult.map(AsyncResult.stale("err", 2), (x) => x * 10);
+      expect(r._tag).toBe("Stale");
+      if (r._tag === "Stale") {
+        expect(r.error).toBe("err");
+        expect(r.data).toBe(20);
+      }
+    });
+    it("transforms refreshing success previous values", () => {
+      const r = AsyncResult.map(AsyncResult.refreshing(AsyncResult.success(2)), (x) => x * 10);
+      expect(r._tag).toBe("Refreshing");
+      if (r._tag === "Refreshing") {
+        expect(r.previous._tag).toBe("Success");
+        if (r.previous._tag === "Success") {
+          expect(r.previous.value).toBe(20);
+        }
+      }
     });
   });
 
@@ -134,6 +159,32 @@ describe("AsyncResult combinators", () => {
     it("returns fallback on Failure", () => {
       expect(AsyncResult.getOrElse(AsyncResult.failure("err") as AsyncResultType<number, string>, () => -1)).toBe(-1);
     });
+    it("returns stale data on Stale", () => {
+      expect(AsyncResult.getOrElse(AsyncResult.stale("err", 42), () => -1)).toBe(42);
+    });
+  });
+
+  describe("getData/getError", () => {
+    it("extracts data and error from Stale", () => {
+      const r = AsyncResult.stale("err", 42);
+      const data = AsyncResult.getData(r);
+      const error = AsyncResult.getError(r);
+      expect(Option.isSome(data) ? data.value : undefined).toBe(42);
+      expect(Option.isSome(error) ? error.value : undefined).toBe("err");
+    });
+    it("extracts data from Refreshing(Success) and error from Refreshing(Failure)", () => {
+      const refreshingSuccess = AsyncResult.refreshing(AsyncResult.success(7));
+      const refreshingFailure = AsyncResult.refreshing(AsyncResult.failure("retrying"));
+      const successData = AsyncResult.getData(refreshingSuccess);
+      const successError = AsyncResult.getError(refreshingSuccess);
+      const failureData = AsyncResult.getData(refreshingFailure);
+      const failureError = AsyncResult.getError(refreshingFailure);
+
+      expect(Option.isSome(successData) ? successData.value : undefined).toBe(7);
+      expect(Option.isNone(successError)).toBe(true);
+      expect(Option.isNone(failureData)).toBe(true);
+      expect(Option.isSome(failureError) ? failureError.value : undefined).toBe("retrying");
+    });
   });
 
   describe("getOrThrow", () => {
@@ -145,6 +196,12 @@ describe("AsyncResult combinators", () => {
     });
     it("throws the error on Failure", () => {
       expect(() => AsyncResult.getOrThrow(AsyncResult.failure("oops") as AsyncResultType<number, string>)).toThrow();
+    });
+    it("throws the typed stale error instead of returning stale data", () => {
+      expect(() => AsyncResult.getOrThrow(AsyncResult.stale("stale-oops", 1))).toThrow("stale-oops");
+    });
+    it("throws the previous typed error while refreshing a failure", () => {
+      expect(() => AsyncResult.getOrThrow(AsyncResult.refreshing(AsyncResult.failure("still-bad")))).toThrow("still-bad");
     });
   });
 });
@@ -164,6 +221,19 @@ describe("Exit-first internals", () => {
     expect(r).toHaveProperty("exit");
     expect(Exit.isExit(r.exit)).toBe(true);
     expect(Exit.isFailure(r.exit)).toBe(true);
+  });
+
+  it("Stale carries a failure .exit field and converts to an Exit", () => {
+    const r = AsyncResult.stale("err", 42);
+    expect(r).toHaveProperty("exit");
+    expect(Exit.isExit(r.exit)).toBe(true);
+    expect(Exit.isFailure(r.exit)).toBe(true);
+
+    const backOpt = AsyncResult.toExit(r);
+    expect(Option.isSome(backOpt)).toBe(true);
+    if (Option.isSome(backOpt)) {
+      expect(Exit.isFailure(backOpt.value)).toBe(true);
+    }
   });
 
   it("Defect carries a .exit field", () => {
@@ -197,6 +267,107 @@ describe("Exit-first internals", () => {
   it("toExit returns None for Loading", () => {
     const r = AsyncResult.toExit(AsyncResult.loading);
     expect(Option.isNone(r)).toBe(true);
+  });
+});
+
+describe("Stale result state", () => {
+  it("preserves last successful data when a refresh fails with a typed error", async () => {
+    let setId!: (value: number) => void;
+    let result!: () => AsyncResultType<number, string>;
+
+    const dispose = createRoot((d) => {
+      const [id, set] = createSignal(1);
+      setId = set;
+      result = atomEffect(() => id() === 1
+        ? Effect.succeed(10)
+        : Effect.sleep("5 millis").pipe(Effect.flatMap(() => Effect.fail("nope"))));
+      return d;
+    });
+
+    await tick(20);
+    expect(result()._tag).toBe("Success");
+
+    setId(2);
+    await tick(20);
+
+    const state = result();
+    expect(state._tag).toBe("Stale");
+    if (state._tag === "Stale") {
+      expect(state.data).toBe(10);
+      expect(state.error).toBe("nope");
+    }
+
+    dispose();
+  });
+
+  it("recovers from Stale to Success when a later refresh succeeds", async () => {
+    let setId!: (value: number) => void;
+    let result!: () => AsyncResultType<number, string>;
+
+    const dispose = createRoot((d) => {
+      const [id, set] = createSignal(1);
+      setId = set;
+      result = atomEffect(() => {
+        const current = id();
+        if (current === 1) return Effect.succeed(10);
+        if (current === 2) return Effect.sleep("5 millis").pipe(Effect.flatMap(() => Effect.fail("nope")));
+        return Effect.sleep("5 millis").pipe(Effect.as(30));
+      });
+      return d;
+    });
+
+    await tick(20);
+    setId(2);
+    await tick(20);
+    expect(result()._tag).toBe("Stale");
+
+    setId(3);
+    await tick(20);
+    const state = result();
+    expect(state._tag).toBe("Success");
+    if (state._tag === "Success") {
+      expect(state.value).toBe(30);
+    }
+
+    dispose();
+  });
+
+  it("keeps stale data across repeated failed refreshes", async () => {
+    let setId!: (value: number) => void;
+    let result!: () => AsyncResultType<number, string>;
+
+    const dispose = createRoot((d) => {
+      const [id, set] = createSignal(1);
+      setId = set;
+      result = atomEffect(() => id() === 1
+        ? Effect.succeed(10)
+        : Effect.sleep("5 millis").pipe(Effect.flatMap(() => Effect.fail(`nope-${id()}`))));
+      return d;
+    });
+
+    await tick(20);
+    setId(2);
+    await tick(20);
+    setId(3);
+    await tick(20);
+
+    const state = result();
+    expect(state._tag).toBe("Stale");
+    if (state._tag === "Stale") {
+      expect(state.data).toBe(10);
+      expect(state.error).toBe("nope-3");
+    }
+
+    dispose();
+  });
+
+  it("latest returns stale data while getError exposes the refresh failure", () => {
+    const result = () => AsyncResult.stale("nope", 10) as AsyncResultType<number, string>;
+    const readLatest = latest(result);
+
+    expect(readLatest()).toBe(10);
+    const error = AsyncResult.getError(result());
+    expect(Option.isSome(error) ? error.value : undefined).toBe("nope");
   });
 });
 

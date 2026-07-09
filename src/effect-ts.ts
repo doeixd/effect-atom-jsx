@@ -49,7 +49,7 @@ import {
 import { Signal } from "./signal.js";
 import { Computation } from "./computation.js";
 import { Owner, getOwner, runWithOwner } from "./owner.js";
-import { createSignal, createEffect, onCleanup, type Accessor, createContext, useContext, untrack } from "./api.js";
+import { createSignal, createEffect, onCleanup, type Accessor, createContext, useContext, untrack, flush } from "./api.js";
 import { createMemo } from "./api.js";
 import { render } from "./dom.js";
 import {
@@ -79,6 +79,20 @@ export type Failure<E> = {
   /** The canonical Effect Exit backing this result. */
   readonly exit: Exit.Exit<never, E>;
 };
+/**
+ * A failed refresh that still has last-known-good data.
+ *
+ * `Stale` is the failed-refresh mirror of `Refreshing`: the request has
+ * settled to a typed failure, but the previous success remains available for
+ * UI continuity.
+ */
+export type Stale<A, E> = {
+  readonly _tag: "Stale";
+  readonly error: E;
+  readonly data: A;
+  /** The canonical Effect Exit backing the failed refresh. */
+  readonly exit: Exit.Exit<never, E>;
+};
 /** Defect wraps unexpected errors (bugs, interrupts) that aren't typed E. */
 export type Defect = {
   readonly _tag: "Defect";
@@ -92,7 +106,7 @@ export type Refreshing<A, E> = {
   readonly previous: Success<A> | Failure<E> | Defect;
 };
 
-export type Result<A, E> = Loading | Refreshing<A, E> | Success<A> | Failure<E> | Defect;
+export type Result<A, E> = Loading | Refreshing<A, E> | Success<A> | Failure<E> | Stale<A, E> | Defect;
 
 export type ResultLoadingError = {
   readonly _tag: "ResultLoadingError";
@@ -125,6 +139,9 @@ export const Result = {
   /** Create a Failure result from a typed error, backed by `Exit.fail(error)`. */
   failure: <E>(error: E): Failure<E> => ({ _tag: "Failure", error, exit: Exit.fail(error) }),
 
+  /** Create a data-bearing failed refresh result, backed by `Exit.fail(error)`. */
+  stale: <A, E>(error: E, data: A): Stale<A, E> => ({ _tag: "Stale", error, data, exit: Exit.fail(error) }),
+
   /**
    * Create a Defect result from an unexpected error, backed by `Exit.failCause(...)`.
    * @param cause    - Human-readable cause description.
@@ -136,7 +153,7 @@ export const Result = {
   },
 
   /** Extract the settled value (skipping Loading, unwrapping Refreshing). */
-  settled: <A, E>(r: Result<A, E>): Option.Option<Success<A> | Failure<E> | Defect> => {
+  settled: <A, E>(r: Result<A, E>): Option.Option<Success<A> | Failure<E> | Stale<A, E> | Defect> => {
     if (r._tag === "Loading") return Option.none();
     if (r._tag === "Refreshing") return Option.some(r.previous);
     return Option.some(r);
@@ -171,7 +188,25 @@ export const Result = {
   toOption: <A, E>(r: Result<A, E>): Option.Option<A> => {
     const settled = Result.settled(r);
     if (Option.isNone(settled)) return Option.none();
-    return settled.value._tag === "Success" ? Option.some(settled.value.value) : Option.none();
+    if (settled.value._tag === "Success") return Option.some(settled.value.value);
+    if (settled.value._tag === "Stale") return Option.some(settled.value.data);
+    return Option.none();
+  },
+
+  /** Extract the latest available data from Success, Refreshing(Success), or Stale. */
+  getData: <A, E>(r: Result<A, E>): Option.Option<A> => {
+    if (r._tag === "Success") return Option.some(r.value);
+    if (r._tag === "Stale") return Option.some(r.data);
+    if (r._tag === "Refreshing" && r.previous._tag === "Success") return Option.some(r.previous.value);
+    return Option.none();
+  },
+
+  /** Extract the typed error from Failure, Refreshing(Failure), or Stale. */
+  getError: <A, E>(r: Result<A, E>): Option.Option<E> => {
+    if (r._tag === "Failure") return Option.some(r.error);
+    if (r._tag === "Stale") return Option.some(r.error);
+    if (r._tag === "Refreshing" && r.previous._tag === "Failure") return Option.some(r.previous.error);
+    return Option.none();
   },
 
   /** Extract the raw Cause from a Defect result. */
@@ -189,6 +224,7 @@ export const Result = {
   isRefreshing: <A, E>(r: Result<A, E>): r is Refreshing<A, E> => r._tag === "Refreshing",
   isSuccess: <A, E>(r: Result<A, E>): r is Success<A> => r._tag === "Success",
   isFailure: <A, E>(r: Result<A, E>): r is Failure<E> => r._tag === "Failure",
+  isStale: <A, E>(r: Result<A, E>): r is Stale<A, E> => r._tag === "Stale",
   isDefect: <A, E>(r: Result<A, E>): r is Defect => r._tag === "Defect",
 
   // ─── Combinators ────────────────────────────────────────────────────────
@@ -203,6 +239,7 @@ export const Result = {
       readonly onRefreshing: (previous: Success<A> | Failure<E> | Defect) => R;
       readonly onSuccess: (value: A) => R;
       readonly onFailure: (error: E) => R;
+      readonly onStale: (error: E, data: A) => R;
       readonly onDefect: (cause: string, rawCause: Cause.Cause<unknown>) => R;
     },
   ): R => {
@@ -211,6 +248,7 @@ export const Result = {
       case "Refreshing": return handlers.onRefreshing(r.previous);
       case "Success": return handlers.onSuccess(r.value);
       case "Failure": return handlers.onFailure(r.error);
+      case "Stale": return handlers.onStale(r.error, r.data);
       case "Defect": return handlers.onDefect(r.cause, r.rawCause);
     }
   },
@@ -223,6 +261,7 @@ export const Result = {
     if (r._tag === "Refreshing" && r.previous._tag === "Success") {
       return Result.refreshing(Result.success(f(r.previous.value)));
     }
+    if (r._tag === "Stale") return Result.stale(r.error, f(r.data));
     return r as unknown as Result<B, E>;
   },
 
@@ -240,6 +279,7 @@ export const Result = {
    */
   getOrElse: <A, E>(r: Result<A, E>, fallback: () => A): A => {
     if (r._tag === "Success") return r.value;
+    if (r._tag === "Stale") return r.data;
     if (r._tag === "Refreshing" && r.previous._tag === "Success") return r.previous.value;
     return fallback();
   },
@@ -251,6 +291,7 @@ export const Result = {
   getOrThrow: <A, E>(r: Result<A, E>): A => {
     if (r._tag === "Success") return r.value;
     if (r._tag === "Refreshing" && r.previous._tag === "Success") return r.previous.value;
+    if (r._tag === "Stale") throw r.error;
     if (r._tag === "Failure") throw r.error;
     if (r._tag === "Defect") throw new Error(r.cause);
     if (r._tag === "Refreshing") {
@@ -266,7 +307,14 @@ function previousFromResult<A, E>(
 ): Success<A> | Failure<E> | Defect | null {
   if (result._tag === "Refreshing") return result.previous;
   if (result._tag === "Success" || result._tag === "Failure" || result._tag === "Defect") return result;
+  if (result._tag === "Stale") return Result.success(result.data);
   return null;
+}
+
+function staleDataFromPrevious<A, E>(
+  previous: Success<A> | Failure<E> | Defect | null,
+): Option.Option<A> {
+  return previous?._tag === "Success" ? Option.some(previous.value) : Option.none();
 }
 
 // ─── Ambient ManagedRuntime context ───────────────────────────────────────────
@@ -431,6 +479,36 @@ export function useServices<T extends Record<string, ServiceMap.Key<any, any>>>(
  *   return HttpClient.get(`/users/${id}`).pipe(Effect.map(r => r.json));
  * });
  */
+/**
+ * Testing seam: short-circuit an async result accessor without running the
+ * underlying Effect. Used by `testing.resolveQuery` / `resolveAction`.
+ */
+const resultControllers = new WeakMap<
+  Accessor<Result<any, any>>,
+  {
+    readonly set: (result: Result<any, any>) => void;
+    readonly interrupt: () => void;
+  }
+>();
+
+/** @internal Drive a query/action/mutation result for tests. */
+export function setResultForTest<A, E>(
+  result: Accessor<Result<A, E>>,
+  next: Result<A, E>,
+): void {
+  const controller = resultControllers.get(result as Accessor<Result<any, any>>);
+  if (controller === undefined) {
+    throw new Error(
+      "[effect-atom-jsx] setResultForTest: result is not a controllable query/action accessor.",
+    );
+  }
+  controller.interrupt();
+  controller.set(next);
+  // Flush microtask-batched memo invalidations (e.g. action.pending) so
+  // resolveQuery/resolveAction observations are immediately consistent.
+  flush();
+}
+
 export function atomEffect<A, E, R>(
   fn: () => Effect.Effect<A, E, R>,
   ...runtime: [R] extends [never]
@@ -452,10 +530,16 @@ export function atomEffect<A, E, R>(
     }
   };
 
+  resultControllers.set(result as Accessor<Result<any, any>>, {
+    set: (next) => setResult(next as Result<A, E>),
+    interrupt: interruptFiber,
+  });
+
   new Computation(() => {
     // Cancel any in-flight fiber from the previous run.
     interruptFiber();
     const previous = previousFromResult(untrack(result));
+    const staleData = staleDataFromPrevious(previous);
     if (previous === null) {
       setResult(Result.loading);
     } else {
@@ -478,7 +562,7 @@ export function atomEffect<A, E, R>(
           const typed = Cause.findErrorOption(cause);
           if (Option.isSome(typed)) {
             // Typed error from the Effect's error channel (E).
-            setResult(Result.failure(typed.value));
+            setResult(Option.isSome(staleData) ? Result.stale(typed.value, staleData.value) : Result.failure(typed.value));
           } else {
             // Defect (unexpected exception) or fiber interrupt.
             setResult(Result.defect(Cause.pretty(cause), cause));
@@ -549,6 +633,7 @@ function resultAccessorToEffect<A, E>(
       return Effect.fail<E | BridgeError>({ _tag: "ResultDefectError", defect: prev.cause });
   }
   if (state._tag === "Success") return Effect.succeed(state.value);
+    if (state._tag === "Stale") return Effect.fail<E | BridgeError>(state.error);
     if (state._tag === "Failure") return Effect.fail<E | BridgeError>(state.error);
     return Effect.fail<E | BridgeError>({ _tag: "ResultDefectError", defect: state.cause });
 }
@@ -719,6 +804,7 @@ export function isPending<A, E>(result: Accessor<Result<A, E>>): Accessor<boolea
  *
  * - `Success(value)` => `value`
  * - `Refreshing(Success(previous))` => `previous.value`
+ * - `Stale(error, data)` => `data`
  * - otherwise => `undefined`
  *
  * @example
@@ -729,6 +815,7 @@ export function latest<A, E>(result: Accessor<Result<A, E>>): Accessor<A | undef
   return createMemo(() => {
     const current = result();
     if (current._tag === "Success") return current.value;
+    if (current._tag === "Stale") return current.data;
     if (current._tag === "Refreshing" && current.previous._tag === "Success") {
       return current.previous.value;
     }
@@ -885,6 +972,11 @@ function mutationEffect<A, E, R>(
     }
   };
 
+  resultControllers.set(result as Accessor<Result<any, any>>, {
+    set: (next) => setResult(next as Result<void, E>),
+    interrupt,
+  });
+
   const run = (input: A): void => {
     runVersion += 1;
     const version = runVersion;
@@ -975,6 +1067,10 @@ function mutationEffect<A, E, R>(
                 return;
               }
               if (state._tag === "Failure") {
+                reject(state.error);
+                return;
+              }
+              if (state._tag === "Stale") {
                 reject(state.error);
                 return;
               }
@@ -1314,6 +1410,7 @@ export function Async<A, E>(props: {
   result: Result<A, E>;
   loading?: () => unknown;
   refreshing?: (previous: Success<A> | Failure<E> | Defect) => unknown;
+  stale?: (error: E, data: A) => unknown;
   error?: (err: E) => unknown;
   defect?: (cause: string) => unknown;
   success: (value: A) => unknown;
@@ -1327,6 +1424,7 @@ export function Async<A, E>(props: {
   const r = props.result;
   if (r._tag === "Loading") return props.loading?.() ?? null;
   if (r._tag === "Refreshing") return props.refreshing?.(r.previous) ?? renderSettled(r.previous);
+  if (r._tag === "Stale") return props.stale?.(r.error, r.data) ?? props.error?.(r.error) ?? props.success(r.data);
   return renderSettled(r);
 }
 
@@ -1398,6 +1496,7 @@ export function Errored<A, E>(props: {
     : props.result;
 
   if (result._tag === "Failure") return props.children(result.error);
+  if (result._tag === "Stale") return props.children(result.error);
   if (result._tag === "Defect") return props.children({ _tag: "ResultDefectError", defect: result.cause });
   return props.fallback?.() ?? null;
 }
@@ -1421,6 +1520,8 @@ export function TypedBoundary<E>(props: {
   const candidate: unknown =
     state._tag === "Failure"
       ? state.error
+      : state._tag === "Stale"
+        ? state.error
       : state._tag === "Defect"
         ? { defect: state.cause }
         : undefined;

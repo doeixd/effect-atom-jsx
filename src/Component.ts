@@ -8,7 +8,7 @@ import {
   Scope,
   Schema,
   Stream as FxStream,
-  type ServiceMap,
+  ServiceMap,
 } from "effect";
 import { createEffect, createSignal, onCleanup, useContext, type Accessor, type Setter } from "./api.js";
 import { Owner, getOwner, runWithOwner } from "./owner.js";
@@ -35,6 +35,13 @@ export const ComponentTypeId: unique symbol = Symbol.for("effect-atom-jsx/Compon
 const ComponentImplTypeId: unique symbol = Symbol.for("effect-atom-jsx/ComponentImpl");
 const ComponentSetupTypeId: unique symbol = Symbol.for("effect-atom-jsx/ComponentSetup");
 
+/**
+ * Runtime slot handle map exposed by legacy bindings-based components.
+ *
+ * New authored APIs should prefer `View.Slots` plus `Component.withSlots(...)`,
+ * but existing dynamic/generated integrations can still expose slots through
+ * `bindings.slots`.
+ */
 export interface SlotMap {
   readonly [name: string]: Element.Handle | Element.Collection<Element.Handle>;
 }
@@ -78,11 +85,26 @@ type SetupStep<Props> = (
   input: { readonly props: Props; readonly bindings: Readonly<Record<string, unknown>> },
 ) => Effect.Effect<Readonly<Record<string, unknown>>, unknown, unknown>;
 
+/** Input passed to each step of the named setup builder. */
 export interface SetupInput<Props, Bindings> {
   readonly props: Props;
   readonly bindings: Bindings;
 }
 
+/**
+ * Named setup builder for component-local state, resources, and services.
+ *
+ * `Bindings` is the committed setup snapshot consumed by the view. `E` and
+ * `R` are normal Effect typed errors and requirements and bubble into the
+ * final `Component<Props, Req, E, Bindings, SlotContract>`.
+ *
+ * @example
+ * const setup = Component.setup<{ readonly id: string }>()
+ *   .pipe(
+ *     Component.bind("user", ({ props }) => UserRepo.get(props.id)),
+ *     Component.value("expanded", () => Atom.make(false)),
+ *   )
+ */
 export interface Setup<Props, Bindings, E = never, R = never> extends Pipeable<Setup<Props, Bindings, E, R>> {
   readonly [ComponentSetupTypeId]: {
     readonly Props: Props;
@@ -115,11 +137,23 @@ type SetupSource<Props, Bindings, E, R> =
   | ((props: Props) => Effect.Effect<Bindings, E, R>)
   | Setup<Props, Bindings, E, R>;
 
+/** Any authored slot contract accepted by component/style/behavior APIs. */
 export type AnySlotContract = View.Slots.Any | Record<string, View.Slot.Any>;
+/** Project an authored slot contract to the runtime handle-map type. */
 export type SlotsFromSlotContract<SlotContract, Fallback> = SlotContract extends View.Slots.Any
   ? View.Slots.HandlesOf<SlotContract>
   : Fallback;
 
+/**
+ * Runtime component value.
+ *
+ * Type axes:
+ * - `Props`: caller-owned configuration
+ * - `Req`: Effect services required to set up/render
+ * - `E`: typed errors that setup/render may fail with
+ * - `Bindings`: setup-created committed state
+ * - `SlotContract`: authored structural slot contract metadata
+ */
 export interface Component<Props, Req, E, Bindings = unknown, SlotContract = SlotsFromBindings<Bindings>> {
   (props: Props): unknown;
   readonly [ComponentTypeId]: {
@@ -137,6 +171,7 @@ export interface Component<Props, Req, E, Bindings = unknown, SlotContract = Slo
   pipe<A, B, C, D>(ab: (self: this) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D): D;
 }
 
+/** Component that exposes setup bindings through a render-prop child. */
 export interface HeadlessComponent<Props, Req, E, Bindings>
   extends Component<Props & { readonly children?: (bindings: Bindings) => unknown }, Req, E, Bindings> {}
 
@@ -267,12 +302,20 @@ function toComponent<Props, Req, E, Bindings, SlotContract = SlotsFromBindings<B
     const props = internal.props.parse(unsafeProps);
     const [bindings, setBindings] = createSignal<Bindings | null>(null);
     const [error, setError] = createSignal<unknown | null>(null);
+    const [platform, setPlatform] = createSignal<View.PlatformService | undefined>(undefined);
+    const [diagnosticsReporter, setDiagnosticsReporter] = createSignal<DiagnosticsReporterService | undefined>(undefined);
 
     const fiber = runForkWithAmbient(
-      internal.setup(props).pipe(
+      Effect.all({
+        bindings: internal.setup(props),
+        platform: Effect.serviceOption(View.PlatformTag),
+        diagnostics: Effect.serviceOption(DiagnosticsReporterTag),
+      }).pipe(
         Effect.matchCause({
           onSuccess: (value): void => {
-            setBindings(value);
+            setBindings(value.bindings);
+            setPlatform(value.platform._tag === "Some" ? value.platform.value : undefined);
+            setDiagnosticsReporter(value.diagnostics._tag === "Some" ? value.diagnostics.value : undefined);
           },
           onFailure: (cause): void => {
             const typed = Cause.findErrorOption(cause);
@@ -304,13 +347,12 @@ function toComponent<Props, Req, E, Bindings, SlotContract = SlotsFromBindings<B
 
       if (internal.view === undefined) {
         const renderProp = (props as RenderPropChildren<Bindings>).children;
-        return typeof renderProp === "function" ? View.node(renderProp(ready)) : null;
+        return typeof renderProp === "function"
+          ? renderViewResult(out, renderProp(ready), ready, platform(), diagnosticsReporter())
+          : null;
       }
       const result = internal.view(props, ready);
-      if (View.isView(result)) {
-        registerViewSlots(result.slots as unknown as ViewSlotRecord, out);
-      }
-      return View.node(result);
+      return renderViewResult(out, result, ready, platform(), diagnosticsReporter());
     };
   }) as Component<Props, Req, E, Bindings, SlotContract>;
 
@@ -359,12 +401,19 @@ function provideLayerToSetup<Props, Req, E, Bindings, SlotContract, ROut, E2, RI
 
 type HeadlessChildren<Bindings> = { readonly children?: (bindings: Bindings) => unknown };
 
+/**
+ * Declare a component's props type without runtime validation.
+ *
+ * Use `propsSchema` when crossing untrusted boundaries or when runtime decode
+ * errors should be surfaced during setup.
+ */
 export function props<Props>(): PropsSpec<Props> {
   return {
     parse: (value) => value as Props,
   };
 }
 
+/** Declare and runtime-validate component props with an Effect Schema. */
 export function propsSchema<SchemaProps>(schema: Schema.Schema<SchemaProps>): PropsSpec<SchemaProps> {
   const decode = Schema.decodeUnknownSync(schema as any);
   return {
@@ -372,14 +421,22 @@ export function propsSchema<SchemaProps>(schema: Schema.Schema<SchemaProps>): Pr
   };
 }
 
+/**
+ * Declare service requirements for a component.
+ *
+ * Tags are metadata for authoring and tooling; the Effect requirement type is
+ * still the source of truth and is preserved through setup and wrappers.
+ */
 export function require<Req = never>(...tags: ReadonlyArray<ServiceMap.Key<any, any>>): RequirementSpec<Req> {
   return { tags };
 }
 
+/** Start a named setup builder for a component. */
 export function setup<Props = {}>(): Setup<Props, {}, never, never> {
   return makeSetup<Props, {}, never, never>([]);
 }
 
+/** Add an Effect-created binding to a setup builder. */
 export function bind<const Name extends string, Props = any, Bindings = any, A = unknown, E = never, R = never>(
   name: Name,
   f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E, R>,
@@ -389,6 +446,7 @@ export function bind<const Name extends string, Props = any, Bindings = any, A =
   return (source) => source.bind(name as any, f as any) as any;
 }
 
+/** Add a synchronous binding to a setup builder. */
 export function value<const Name extends string, Props = any, Bindings = any, A = unknown>(
   name: Name,
   f: (input: SetupInput<Props, Bindings>) => A,
@@ -398,12 +456,14 @@ export function value<const Name extends string, Props = any, Bindings = any, A 
   return (source) => source.value(name as any, f as any) as any;
 }
 
+/** Run an Effect for setup side effects without adding a binding. */
 export function doEffect<Props = any, Bindings = any, E = never, R = never>(
   f: (input: SetupInput<Props, Bindings>) => Effect.Effect<void, E, R>,
 ): <E0, R0>(source: Setup<Props, Bindings, E0, R0>) => Setup<Props, Bindings, E0 | E, R0 | R> {
   return (source) => source.doEffect(f as any) as any;
 }
 
+/** Compose a reusable setup fragment into another setup builder. */
 export function use<Props = any, Added = any, E = never, R = never>(
   fragment: Setup<Props, Added, E, R>,
 ): <Bindings, E0, R0>(
@@ -424,6 +484,22 @@ export function make<Props, Req, E, Bindings, Slots>(
   setup: SetupSource<Props, Bindings, E, Req>,
   view: (props: Props, bindings: Bindings) => View.View<Slots>,
 ): Component<Props, Req, E, Bindings, Slots>;
+/**
+ * Create a component from props, requirements, setup, and view functions.
+ *
+ * The view receives committed setup bindings. It may return JSX-like runtime
+ * output or an explicit `View<Slots>`. When returning a slot-bearing view,
+ * publish the authored contract with `Component.withSlots(Slots)`.
+ *
+ * @example
+ * const Counter = Component.make(
+ *   Component.props<{ readonly initial: number }>(),
+ *   Component.require<never>(),
+ *   Component.setup<{ readonly initial: number }>()
+ *     .pipe(Component.value("count", ({ props }) => Atom.make(props.initial))),
+ *   (_props, bindings) => <button>{bindings.count()}</button>,
+ * )
+ */
 export function make<Props, Req, SetupReq, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
@@ -456,6 +532,11 @@ export function headless<Props, Req, E, Bindings>(
   req: RequirementSpec<Req>,
   setup: SetupSource<Props, Bindings, E, Req>,
 ): HeadlessComponent<Props, Req, E, Bindings>;
+/**
+ * Create a headless component that exposes bindings through `children`.
+ *
+ * Use this for state/resource ownership without committing to markup.
+ */
 export function headless<Props, Req, SetupReq, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
@@ -470,6 +551,7 @@ export function headless<Props, Req, SetupReq, E, Bindings>(
   }) as HeadlessComponent<Props, Req | SetupReq, E, Bindings>;
 }
 
+/** Lift a plain props-to-node function into a no-requirement component. */
 export function from<Props>(
   fn: (props: Props) => unknown,
 ): Component<Props, never, never, {}> {
@@ -481,11 +563,17 @@ export function from<Props>(
   );
 }
 
+/** Extract the Effect requirements from a component. */
 export type Requirements<T> = T extends Component<any, infer Req, any, any, any> ? Req : never;
+/** Extract typed errors from a component. */
 export type Errors<T> = T extends Component<any, any, infer E, any, any> ? E : never;
+/** Extract props from a component. */
 export type PropsOf<T> = T extends Component<infer Props, any, any, any, any> ? Props : never;
+/** Extract setup bindings from a component. */
 export type BindingsOf<T> = T extends Component<any, any, any, infer Bindings, any> ? Bindings : never;
+/** Extract the authored slot contract metadata axis from a component. */
 export type SlotContractOf<T> = T extends { readonly [ComponentTypeId]: { readonly SlotContract: infer SlotContract } } ? SlotContract : never;
+/** Extract the runtime slot handle map projected from a component's slot contract. */
 export type SlotsOf<T> = SlotContractOf<T> extends never ? never : SlotsFromSlotContract<SlotContractOf<T>, SlotContractOf<T>>;
 export type PublicSlotsOf<T> = SlotContractOf<T> extends View.Slots.Any
   ? Pick<SlotsOf<T>, View.Slots.PublicNamesOf<SlotContractOf<T>> & keyof SlotsOf<T>>
@@ -643,20 +731,95 @@ export function validateRenderedSlotContract<Props, Req, E, Bindings, Slots>(
   );
 }
 
+type DiagnosticsReporterService = {
+  readonly reporter: {
+    reportAll(diagnostics: ReadonlyArray<{
+      readonly source: string;
+      readonly severity: string;
+      readonly code: string;
+      readonly message: string;
+      readonly slot?: string;
+      readonly component?: string;
+    }>): void;
+  };
+};
+
+/**
+ * Well-known service id shared with `Diagnostics.ReporterTag`. Effect
+ * ServiceMap resolves by string id, so Component can auto-report without
+ * importing Diagnostics (avoids a Component ↔ Diagnostics cycle).
+ */
+const DiagnosticsReporterTag = ServiceMap.Service<DiagnosticsReporterService>("DiagnosticsReporter");
+
+function toAutoReportDiagnostics(
+  component: Component<any, any, any, any, any>,
+  view: View.View<any>,
+  bindings: unknown,
+): ReadonlyArray<{
+  readonly source: string;
+  readonly severity: "error";
+  readonly code: string;
+  readonly message: string;
+  readonly slot?: string;
+  readonly component?: string;
+}> {
+  const contractDiagnostics = validateSlotContract(component, view, bindings as any).map((diagnostic) => ({
+    source: "component" as const,
+    severity: "error" as const,
+    code: diagnostic.code,
+    message: diagnostic.message,
+    slot: diagnostic.slot,
+    component: diagnostic.component,
+  }));
+  const viewDiagnostics = [
+    ...View.validateRemaps(view),
+    ...View.validateTree(view),
+  ].map((diagnostic) => ({
+    source: "view" as const,
+    severity: "error" as const,
+    code: diagnostic.code,
+    message: diagnostic.message,
+    slot: "slot" in diagnostic && typeof diagnostic.slot === "string" ? diagnostic.slot : undefined,
+    component: view.name,
+  }));
+  return [...contractDiagnostics, ...viewDiagnostics];
+}
+
+function reportDevDiagnostics(
+  component: Component<any, any, any, any, any>,
+  view: View.View<any>,
+  bindings: unknown,
+  reporterService: DiagnosticsReporterService | undefined,
+): void {
+  if (reporterService === undefined) return;
+  const diagnostics = toAutoReportDiagnostics(component, view, bindings);
+  if (diagnostics.length === 0) return;
+  reporterService.reporter.reportAll(diagnostics);
+}
+
 function renderViewResult(
   component: Component<any, any, any, any, any>,
   result: unknown,
+  bindings: unknown,
   platform: View.PlatformService | undefined,
+  diagnosticsReporter: DiagnosticsReporterService | undefined,
 ): unknown {
   if (View.isView(result)) {
     registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
     if (platform) {
       View.reportPlatformDiagnostics(result, platform);
     }
+    reportDevDiagnostics(component, result, bindings, diagnosticsReporter);
   }
   return View.node(result);
 }
 
+/**
+ * Run a component's setup effect without rendering its view.
+ *
+ * This is primarily for tests, diagnostics, SSR preparation, and integration
+ * helpers that need committed bindings directly.
+ */
 export function setupEffect<Props, Req, E, Bindings, SlotContract>(
   component: Component<Props, Req, E, Bindings, SlotContract>,
   propsValue: Props,
@@ -673,20 +836,33 @@ export function renderEffect<Props, Req, E, Bindings, SlotContract>(
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
   return i.setup(parsed).pipe(
-    Effect.flatMap((bindings) => Effect.serviceOption(View.PlatformTag).pipe(Effect.map((maybePlatform) => {
-      const platform = maybePlatform._tag === "Some" ? maybePlatform.value : undefined;
-      if (i.view === undefined) {
-        const renderProp = (parsed as RenderPropChildren<Bindings>).children;
-        return typeof renderProp === "function"
-          ? renderViewResult(component, renderProp(bindings), platform)
-          : null;
-      }
-      const result = i.view(parsed, bindings);
-      return renderViewResult(component, result, platform);
-    }))),
+    Effect.flatMap((bindings) =>
+      Effect.all({
+        platform: Effect.serviceOption(View.PlatformTag),
+        diagnostics: Effect.serviceOption(DiagnosticsReporterTag),
+      }).pipe(Effect.map(({ platform: maybePlatform, diagnostics: maybeDiagnostics }) => {
+        const platform = maybePlatform._tag === "Some" ? maybePlatform.value : undefined;
+        const diagnosticsReporter = maybeDiagnostics._tag === "Some" ? maybeDiagnostics.value : undefined;
+        if (i.view === undefined) {
+          const renderProp = (parsed as RenderPropChildren<Bindings>).children;
+          return typeof renderProp === "function"
+            ? renderViewResult(component, renderProp(bindings), bindings, platform, diagnosticsReporter)
+            : null;
+        }
+        const result = i.view(parsed, bindings);
+        return renderViewResult(component, result, bindings, platform, diagnosticsReporter);
+      })),
+    ),
   );
 }
 
+/**
+ * Run setup and render, returning a `View` when the component produces one.
+ *
+ * JSX-only components return `undefined`; components authored with
+ * `View.fromSlots(...)` return their explicit view for diagnostics,
+ * style/behavior attachment, and renderer-neutral tests.
+ */
 export function renderViewEffect<Props, Req, E, Bindings, Slots>(
   component: Component<Props, Req, E, Bindings, Slots>,
   propsValue: Props,
@@ -786,6 +962,12 @@ function setupReactiveOwner<A>(make: () => A): Effect.Effect<A> {
   });
 }
 
+/**
+ * Allocate a component-scoped signal during setup.
+ *
+ * The signal is tied to the component setup scope and should be created inside
+ * `Component.setup().bind(...)`, not during view execution.
+ */
 export function signal<A>(initial: A): Effect.Effect<readonly [Accessor<A>, Setter<A>]> {
   return Effect.gen(function* () {
     const lifetime = yield* setupLifetime("Component.signal");
@@ -816,6 +998,7 @@ export function effect<T>(
   });
 }
 
+/** Allocate a component-scoped writable atom during setup. */
 export function state<A>(initial: A): Effect.Effect<Atom.WritableAtom<A>> {
   return Effect.gen(function* () {
     const lifetime = yield* setupLifetime("Component.state");
@@ -834,6 +1017,12 @@ export function derived<A>(fn: () => A): Effect.Effect<Atom.ReadonlyAtom<A>> {
   return Effect.sync(() => Atom.derived(() => fn()));
 }
 
+/**
+ * Allocate a component-scoped async result atom during setup.
+ *
+ * The returned atom has `Atom.ResultAtom<A, E>` semantics and participates in
+ * the component's runtime/layer context.
+ */
 export function query<A, E, R>(
   effect: () => Effect.Effect<A, E, R>,
   options?: {
@@ -853,6 +1042,13 @@ export function query<A, E, R>(
   });
 }
 
+/**
+ * Allocate a component-scoped mutation/action handle during setup.
+ *
+ * Requirements and typed errors from the Effect are preserved. Use
+ * `reactivityKeys` to invalidate queries after successful mutations and
+ * `singleFlight` to route the call through a server transport.
+ */
 export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
   fn: (...args: Args) => Effect.Effect<A, E, R>,
   options?: ActionOptions,
@@ -998,6 +1194,12 @@ export function scheduleEffect<A, E, R>(
   ) as Effect.Effect<void, never, Scope.Scope | R>;
 }
 
+/**
+ * Locally provide an Effect layer to a component's setup.
+ *
+ * This removes the layer's output services from the component's requirements
+ * and adds any layer input requirements/errors.
+ */
 export function withLayer<ROut, E2, RIn>(
   layer: Layer.Layer<ROut, E2, RIn>,
 ): <C extends Component<any, any, any, any, any>>(
@@ -1018,6 +1220,13 @@ export function withSlotContract<const SlotContract extends AnySlotContract>(
   };
 }
 
+/**
+ * Publish an authored `View.Slots` contract on a component.
+ *
+ * This is the canonical slot-contract API. Styles and behaviors should target
+ * the same contract with `Style.attachToSlots(...)` and
+ * `Behavior.attachToSlots(...)`.
+ */
 export function withSlots<const SlotContract extends View.Slots.Any>(
   slots: SlotContract,
 ): <C extends Component<any, any, any, any, any>>(
@@ -1062,6 +1271,7 @@ export function withSlots<const SlotContract extends AnySlotContract>(
   };
 }
 
+/** Attach typed error renderers keyed by `_tag`. */
 export function withErrorBoundary<Handled extends string>(
   handlers: Record<Handled, (error: any) => unknown>,
 ): <C extends Component<any, any, any, any, any>>(
@@ -1079,6 +1289,7 @@ export function withErrorBoundary<Handled extends string>(
   };
 }
 
+/** Render fallback content while setup is still running. */
 export function withLoading(
   fallback: () => unknown,
 ): <C extends Component<any, any, any, any, any>>(
@@ -1128,6 +1339,12 @@ export function tapSetup<Props, Req, E, Bindings, E2, R2>(
   };
 }
 
+/**
+ * Transform a rendered view/node after setup and view execution.
+ *
+ * Style and behavior attachment use this internally. Prefer the public
+ * attachment helpers unless you are building a new component wrapper API.
+ */
 export function withViewTransform<Props, Req, E, Bindings, SlotContract = {}>(
   transform: (result: unknown, props: Props, bindings: Bindings) => unknown,
 ): <C extends Component<Props, Req, E, Bindings, SlotContract>>(component: C) => PreserveRouteMetadata<C, Component<Props, Req, E, Bindings, SlotContractOf<C>>> {
@@ -1620,6 +1837,13 @@ export interface MountWithRuntimeOptions<Props, R, E> {
   readonly supervisor?: unknown;
 }
 
+/**
+ * Mount a component into a DOM target with either a layer or shared atom runtime.
+ *
+ * Returns a dispose function. Disposing tears down the component tree and
+ * associated scopes; when mounting with a shared runtime, the runtime itself
+ * remains owned by the caller.
+ */
 export function mount<Props, Req, E>(
   component: Component<Props, Req, E, any>,
   options: MountOptions<Props, Req, any> | MountWithRuntimeOptions<Props, Req, any>,
@@ -1630,6 +1854,69 @@ export function mount<Props, Req, E>(
   return () => {
     dispose();
   };
+}
+
+/**
+ * Setup helper (P12): gated subscription with dep-driven scope restart.
+ *
+ * While `isActive(deps)` holds, runs `create({ deps })` as a stream. When deps
+ * change (unless `keepAliveEquivalence` says they match), the previous stream
+ * is interrupted (finalizers run) and a new generation starts.
+ *
+ * Prefer calling from component setup under a live Scope.
+ */
+export function subscription<Deps, A, E, R>(
+  deps: Accessor<Deps>,
+  create: (context: { readonly deps: Deps }) => FxStream.Stream<A, E, R>,
+  options?: {
+    readonly isActive?: (deps: Deps) => boolean;
+    readonly restartOnDepsChange?: boolean;
+    readonly keepAliveEquivalence?: (a: Deps, b: Deps) => boolean;
+    readonly onEvent?: (value: A) => void;
+  },
+): Effect.Effect<void, E, R | Scope.Scope>;
+/**
+ * Setup helper: run a pre-built stream (e.g. already gated) until it ends.
+ */
+export function subscription<A, E, R>(
+  stream: FxStream.Stream<A, E, R>,
+  options?: {
+    readonly onEvent?: (value: A) => void;
+  },
+): Effect.Effect<void, E, R | Scope.Scope>;
+export function subscription<Deps, A, E, R>(
+  depsOrStream: Accessor<Deps> | FxStream.Stream<A, E, R>,
+  createOrOptions?:
+    | ((context: { readonly deps: Deps }) => FxStream.Stream<A, E, R>)
+    | {
+      readonly onEvent?: (value: A) => void;
+      readonly isActive?: (deps: Deps) => boolean;
+      readonly restartOnDepsChange?: boolean;
+      readonly keepAliveEquivalence?: (a: Deps, b: Deps) => boolean;
+    },
+  maybeOptions?: {
+    readonly isActive?: (deps: Deps) => boolean;
+    readonly restartOnDepsChange?: boolean;
+    readonly keepAliveEquivalence?: (a: Deps, b: Deps) => boolean;
+    readonly onEvent?: (value: A) => void;
+  },
+): Effect.Effect<void, E, R | Scope.Scope> {
+  const isStream = typeof depsOrStream !== "function";
+  const stream: FxStream.Stream<A, E, R> = isStream
+    ? depsOrStream as FxStream.Stream<A, E, R>
+    : Atom.Stream.gated(
+      depsOrStream as Accessor<Deps>,
+      createOrOptions as (context: { readonly deps: Deps }) => FxStream.Stream<A, E, R>,
+      maybeOptions,
+    );
+  const onEvent = isStream
+    ? (createOrOptions as { readonly onEvent?: (value: A) => void } | undefined)?.onEvent
+    : maybeOptions?.onEvent;
+  return FxStream.runForEach(stream, (value) =>
+    Effect.sync(() => {
+      onEvent?.(value);
+    }),
+  );
 }
 
 export const Component = {
@@ -1685,8 +1972,7 @@ export const Component = {
   slotTextInput,
   slotDraggable,
   slotCollection,
+  subscription,
 } as const;
-
-
 
 

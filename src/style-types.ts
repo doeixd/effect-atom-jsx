@@ -88,14 +88,21 @@ export interface ThemeTokens {
 }
 
 type Join<K extends string, P extends string> = P extends "" ? K : `${K}.${P}`;
+type PrevDepth = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8];
+type Dec<Depth extends number> = Depth extends keyof PrevDepth ? PrevDepth[Depth] : never;
 
-type LeafPaths<T> = T extends Primitive
+type LeafPaths<T, Depth extends number = 6> = [Depth] extends [never]
+  ? never
+  : T extends Primitive
   ? ""
   : {
-      [K in keyof T & string]: T[K] extends Primitive ? K : Join<K, LeafPaths<T[K]>>;
+      [K in keyof T & string]: T[K] extends Primitive ? K : Join<K, LeafPaths<T[K], Dec<Depth>>>;
     }[keyof T & string];
 
-export type TokenPath<K extends keyof ThemeTokens> = LeafPaths<ThemeTokens[K]>;
+export type ThemeTokenSchema = object;
+export type TokenPathOf<Tokens, K extends keyof Tokens> = LeafPaths<Tokens[K]>;
+export type TokenCategoryOf<Tokens> = keyof Tokens & string;
+export type TokenPath<K extends keyof ThemeTokens> = TokenPathOf<ThemeTokens, K>;
 
 export type Reactive<T> = T | (() => T);
 

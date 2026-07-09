@@ -9,6 +9,11 @@
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "af-ui": "./dist/cli.js",
+    "af-ui-doctor": "./dist/cli.js",
+    "create-af-ui": "./scripts/create-af-ui.mjs"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -118,19 +123,56 @@
       "import": "./dist/Route.js",
       "types": "./dist/Route.d.ts"
     },
+    "./ServerRoute": {
+      "import": "./dist/ServerRoute.js",
+      "types": "./dist/ServerRoute.d.ts"
+    },
+    "./RouterRuntime": {
+      "import": "./dist/RouterRuntime.js",
+      "types": "./dist/RouterRuntime.d.ts"
+    },
     "./Result": {
       "import": "./dist/Result.js",
       "types": "./dist/Result.d.ts"
     },
+    "./Serialization": {
+      "import": "./dist/Serialization.js",
+      "types": "./dist/Serialization.d.ts"
+    },
+    "./Diagnostics": {
+      "import": "./dist/Diagnostics.js",
+      "types": "./dist/Diagnostics.d.ts"
+    },
+    "./A11y": {
+      "import": "./dist/A11y.js",
+      "types": "./dist/A11y.d.ts"
+    },
+    "./Form": {
+      "import": "./dist/Form.js",
+      "types": "./dist/Form.d.ts"
+    },
+    "./Devtools": {
+      "import": "./dist/Devtools.js",
+      "types": "./dist/Devtools.d.ts"
+    },
+    "./Event": {
+      "import": "./dist/Event.js",
+      "types": "./dist/Event.d.ts"
+    },
     "./Registry": {
       "import": "./dist/Registry.js",
       "types": "./dist/Registry.d.ts"
+    },
+    "./package.json": {
+      "default": "./package.json"
     }
   },
   "files": [
     "dist",
+    "scripts/create-af-ui.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "llms.txt"
   ],
   "keywords": [
     "effect",
@@ -176,7 +218,7 @@
     "@types/node": "^20.0.0",
     "babel-plugin-jsx-dom-expressions": "^0.39.0",
     "jest": "^30.2.0",
-    "typescript": "^5.4.0",
+    "typescript": "^7.0.2",
     "vitest": "^4.0.18"
   },
   "peerDependencies": {

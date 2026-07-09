@@ -18,7 +18,7 @@ For authored slot-based components, use the slot-contract path in
 - **`QueryRef`** — Async read handle from `defineQuery`. Bundles `result`, `pending`, `latest`, `effect`, and invalidation APIs into one ergonomic object.
 - **`Mutation handle`** — Async write handle from `Atom.optimistic(...).action(...)`, `Atom.runtime(...).action(...)`, or callback-style `defineMutation(...)`. Exposes `run`, `effect`, `runEffect`, `result`, and `pending`; optimistic handles also expose `value`, `committed`, `optimistic`, `hasOptimistic`, `rollback`, and `clear`.
 - **`Action handle`** — Runtime-bound mutation handle from `Atom.action` / `Atom.runtime(...).action`. The preferred way to express mutations when you have Effect-native code.
-- **`Result`** — The five-state async type (`Loading`, `Refreshing`, `Success`, `Failure`, `Defect`). Distinguishing *initial load* from *revalidation* and *typed failures* from *defects* makes UI states explicit rather than derived.
+- **`Result`** — The six-state async type (`Loading`, `Refreshing`, `Success`, `Failure`, `Stale`, `Defect`). Distinguishing *initial load*, *revalidation*, *failed refresh with data*, typed failures, and defects makes UI states explicit rather than derived.
 - **`Effect`** (from the `effect` package) — A typed program `Effect<A, E, R>`. The `.effect(...)` methods on query/mutation handles convert reactive state into composable Effect values.
 - **`BridgeError`** — Tagged errors emitted when you compose a reactive atom into an Effect pipeline and the atom is still `Loading` (`ResultLoadingError`) or has a `Defect` (`ResultDefectError`). Makes the gap between reactive state and Effect's error channel explicit.
 - **`MutationSupersededError`** — Emitted when a newer mutation run interrupts an earlier one. Lets Effect pipelines react to cancellation rather than silently dropping results.
@@ -125,7 +125,7 @@ When `ReactivityService` is present in the layer passed to `mount()`, it is auto
 
 URL state and navigation. Provides a reactive `url` atom and imperative navigation methods. The router layer is environment-specific — you pick the right one for your deployment context.
 
-**What it provides:** `url` atom (`ReadonlyAtom<URL>`), `navigate(to)`, `back()`, `forward()`, `preload?(to)`
+**What it provides:** `url` atom (`ReadonlyAtom<URL>`), `navigate(to)`, `back()`, `forward()`, `preload?(to)`. `preload(to)` warms matched route loaders without changing the current URL.
 
 **Available layers:**
 
@@ -212,9 +212,22 @@ Design tokens and theme mode. Optional — only required if you use `Style.token
 | Layer | Description |
 |-------|-------------|
 | `Theme.ThemeLight` | Default light-mode tokens. |
+| `Theme.layer(tokens, { mode? })` | Layer from a user-declared token object. |
 
 ```ts
 const AppLayer = Layer.mergeAll(ApiLive, Reactivity.live, Theme.ThemeLight);
+```
+
+Custom token schemas use the same typed path machinery:
+
+```ts
+const appTheme = Theme.define({
+  color: { brand: { tertiary: "#f0f" } },
+  spacing: { page: { gutter: 24 } },
+});
+
+appTheme.path("color", "brand.tertiary"); // typed
+const ThemeLive = appTheme.layer({ mode: "dark" });
 ```
 
 ---
@@ -634,6 +647,8 @@ The `Element.*` constructors define what capability a slot needs (is it interact
 - `Behavior.attachBySlotContract(behavior, elementMap, merge?)` — typed remapping through slot contracts
 - `Behavior.attachBySlots(behavior, elementMap, merge?)` — dynamic/generated string-map wiring
 - `Behavior.events(eventMap)` / `Behavior.withMetadata(behavior, metadata)` — declare event requirements for attachment diagnostics
+- `Behavior.binding(name)` / `Behavior.provides(contract)(behavior)` — publish behavior-created binding state (`isOpen`, `selectedKey`, etc.) as typed, inspectable metadata
+- `Behavior.outEvent(name)` / `Behavior.eventBus(contract)` / `Behavior.emits(contract)(behavior)` — declare logical behavior out-events and expose typed `emit` / `on` channels for parent subscribers
 - `Behavior.validateAttachmentBySlots(behavior, elementMap, view)` — validate slot targets and required behavior events against `View.slot(...)` metadata
 - `Behavior.validateComponentAttachmentBySlots(behavior, elementMap, component, props)` — render a component View and validate mapped behavior attachment metadata
 
@@ -680,7 +695,7 @@ Behavior.validateAttachmentBySlots(
 - `Behaviors.searchFilter(options)` — live search/filter over a collection
 - `Behaviors.keyboardNav(options?)` — arrow key navigation
 - `Behaviors.pagination(options?)` — page-based navigation over a collection
-- `Behaviors.focusTrap()` — constrain tab focus within a region
+- `Behaviors.focusTrap(options?)` — constrain tab focus within a region; when the runtime elements include a `focusables` collection it cycles Tab/Shift+Tab and focuses the active item on activation
 - `Behaviors.combobox(options)` — combined input + dropdown behavior
 
 **Headless factory helpers:**
@@ -693,13 +708,15 @@ Behavior.validateAttachmentBySlots(
 Typed style composition that treats CSS as data. Styles are assembled as structured slot objects, not string templates, so they can be composed, overridden, and attached to component slots safely.
 
 **Style composition primitives:**
-- `Style.slot`, `Style.compose`, `Style.when`, `Style.states`, `Style.responsive`
+- `Style.slot`, `Style.compose`, `Style.when`, `Style.whenBinding`, `Style.states`, `Style.responsive`
+- `Style.whenBinding(binding, predicateOrValue, style)` includes a style piece only when a setup/behavior binding matches. Pass either a binding name or a `Behavior.binding(...)` witness; authored `Style.make(...)` attachment preserves the binding name and rejects components that do not expose the referenced binding.
 - animated: `Style.animation`, `Style.keyframes`, `Style.transition`
 - advanced: `Style.nest`, `Style.vars`, `Style.pseudo`, `Style.extends(slot)`
 - selectors: `Style.child`, `Style.descendant`, `Style.sibling`, `Style.attr`, `Style.not`, `Style.is`
 - animation helpers: `Style.animate`, `Style.enter`, `Style.exit`, `Style.enterStagger`, `Style.layoutAnimation`
 - at-rules: `Style.media`, `Style.supports`, `Style.container`, `Style.containerQuery`, `Style.containerType`
 - grid/layers/global: `Style.grid`, `Style.layers`, `Style.inLayer`, `Style.global`, `Style.globalLayer`
+- global style service: `Style.GlobalStyleTag`, `Style.resolveGlobal`, `Style.globalLayer(global, { apply? })`
 
 **Style maps and attachment:**
 - `Style.make` — create a style map (slot name → style)
@@ -713,6 +730,7 @@ Typed style composition that treats CSS as data. Styles are assembled as structu
 - `Style.validatePlatform(style, metadata)` — runtime diagnostics for renderer-supported style properties
 - `Style.platform(metadata, { onDiagnostic? })` — Effect layer for runtime style platform diagnostics during `Style.attach(...)`
 - `Style.PlatformTag` — service tag installed by `Style.platform(...)`
+- `Style.GlobalStyleTag` — service tag installed by `Style.globalLayer(...)`; exposes `{ sheet: { pieces, resolved }, apply? }`
 - `Style.reportPlatformDiagnostics(style, service)` — explicit reporting helper for adapters or non-setup attachment paths
 - `Style.Property.*`, `Style.Property.make(name)` — branded metadata witnesses for type-preserving style property metadata
 - `Style.nameOfProperty(...)` — normalize string or branded property metadata for diagnostics/adapters
@@ -763,6 +781,7 @@ unsupported properties are reported through `onDiagnostic` during setup.
 **Theme service:**
 - `Theme.Theme` service key — inject into Effect layer for system theme access
 - `Theme.ThemeLight` — default layer
+- `Theme.define(tokens)` / `Theme.defineTokens(tokens)` / `Theme.layer(tokens, opts?)` — user-declared token schemas with typed paths
 - `Theme.lookupToken(tokens, path)` — resolve a token path to a value
 
 **Utility helpers (`src/style-utils.ts`):**
@@ -867,7 +886,8 @@ Component wrappers like `Component.withLoading(...)`, `Component.withSpan(...)`,
 - Route head callbacks stay reactive after setup and recompute on match/params/loader changes
 
 **Extra route pipes/utilities:**
-- `Route.guard`, `Route.title`, `Route.meta`, `Route.transition`, `Route.lazy`
+- `Route.guard`, `Route.title`, `Route.meta`, `Route.transition`
+- `Route.lazy(importer, { loading? })` — demand-load a component, expose `preload()`, and update through signals when the module resolves
 - `Route.Switch`, `Route.collect`, `Route.collectAll`, `Route.validateLinks`
 
 **SSR/SSG loader helpers:**
@@ -1750,7 +1770,7 @@ const data = defineQuery(() => fetch('/data'), {
 
 ### Result (Async State)
 
-`Result` has five states because UI needs to distinguish cases that are often collapsed together:
+`Result` has six states because UI needs to distinguish cases that are often collapsed together:
 
 | Variant | Description | Why separate? |
 |---------|-------------|---------------|
@@ -1758,21 +1778,24 @@ const data = defineQuery(() => fetch('/data'), {
 | `Refreshing<A, E>` | Revalidating with previous settled value | Can show stale data + subtle indicator instead of hiding content |
 | `Success<A>` | Settled with a value | Normal case |
 | `Failure<E>` | Settled with a typed error | Expected error you can handle specifically |
+| `Stale<A, E>` | Failed refresh with last successful data | Show the last good data and the typed error together |
 | `Defect` | Unexpected defect or interrupt | Programming error or unhandled exception — usually a generic error boundary |
 
 **`Failure` vs `Defect`:** `Failure` carries a typed `E` — you know what went wrong and can handle it specifically (e.g., show a "not found" message). `Defect` is the untyped escape hatch for things that shouldn't happen — bugs, unexpected exceptions, fiber interruptions. Separating them means your error UI can be typed and specific, not a generic catch-all.
 
 **`Refreshing` vs `Loading`:** `Refreshing` carries the previous `A` and `E` values. This lets you show the last known data while a refresh is in progress, rather than replacing content with a spinner. `isPending(result)` is `true` only during `Refreshing`, not `Loading`.
 
-Constructors/helpers: `Result.loading`, `refreshing`, `success`, `failure`, `defect`, `settled`, `fromExit`, `toExit`, `toOption`, `rawCause`
+**`Stale` vs `Failure`:** `Stale` carries both the typed error and the last successful data. Use it for failed refreshes where the UI can continue showing the last good value while surfacing the error.
 
-Guards: `Result.isLoading`, `isRefreshing`, `isSuccess`, `isFailure`, `isDefect`
+Constructors/helpers: `Result.loading`, `refreshing`, `success`, `failure`, `stale`, `defect`, `settled`, `fromExit`, `toExit`, `toOption`, `getData`, `getError`, `rawCause`
+
+Guards: `Result.isLoading`, `isRefreshing`, `isSuccess`, `isFailure`, `isStale`, `isDefect`
 
 ### Control-Flow Components
 
 These components pattern-match `Result` or conditional values and render the appropriate slot. They are the reactive equivalent of `switch` statements over async state.
 
-- **`Async({ result, loading?, refreshing?, success, error?, defect? })`** — render slots based on `Result` state. `refreshing?` is optional; falls back to `success` slot if not provided (showing stale data during refresh).
+- **`Async({ result, loading?, refreshing?, stale?, success, error?, defect? })`** — render slots based on `Result` state. `refreshing?` is optional; falls back to the previous settled state. `stale?` is optional; falls back to `error?` or the `success` slot with stale data.
 - **`Loading({ when, fallback?, children })`** — show children while loading
 - **`Errored({ result, children })`** — show children on error
 - **`TypedBoundary({ result, catch, children })`** — show children only when error matches a type guard or `Schema`
@@ -1788,7 +1811,7 @@ These components pattern-match `Result` or conditional values and render the app
 
 ### Types
 
-- `Result<A, E>`, `Loading`, `Refreshing<A, E>`, `Success<A>`, `Failure<E>`, `Defect`
+- `Result<A, E>`, `Loading`, `Refreshing<A, E>`, `Success<A>`, `Failure<E>`, `Stale<A, E>`, `Defect`
 - `BridgeError` (`ResultLoadingError | ResultDefectError`), `MutationSupersededError`
 - `RuntimeLike<R, E>`, `OptimisticRef<T>`, `MutationEffectHandle<A, E>`, `MutationEffectOptions<A, E, R>`
 
@@ -1850,31 +1873,189 @@ For JSX runtime transforms, use the package entry: `effect-atom-jsx/runtime`.
 
 <br />
 
+## A11y (`A11y`, `effect-atom-jsx/A11y`)
+
+Renderer-neutral accessibility pattern contracts. These validate structure,
+slot capabilities, and declared slot events. They do not claim full WCAG or
+WAI-ARIA certification by themselves; behavior and renderer adapters still own
+runtime semantics.
+
+- `A11y.pattern(name, slots)` — create a pattern contract from a `View.Slots`
+  contract.
+- `A11y.validate(contract, view)` — return diagnostics for missing slots,
+  capability mismatches, and missing required events.
+- Built-in contracts: `Dialog`, `Tooltip`, `Popover`, `Tabs`, `Slider`,
+  `Calendar`, `DragAndDrop`.
+- Built-in slot contracts: `DialogSlots`, `TooltipSlots`, `PopoverSlots`,
+  `TabsSlots`, `SliderSlots`, `CalendarSlots`, `DragAndDropSlots`.
+- `A11y.catalog` — built-in pattern catalog with `tier` and advisory `roles`.
+
+```ts
+const diagnostics = A11y.validate(A11y.Dialog, view);
+```
+
+<br />
+
+## Form (`Form`, `effect-atom-jsx/Form`)
+
+Schema-driven form fields backed by signals. A form keeps raw field state,
+touched/dirty flags, typed validation errors, and a submit handle that can use
+local mutation semantics or single-flight transport.
+
+- `Form.field(initial)` — create a standalone field handle.
+- `Form.make(spec, options)` — create a form from schema-backed field specs.
+- `Form.applyServerErrors(form, errors)` — map server errors back onto fields.
+- `FieldHandle` — `value`, `touched`, `dirty`, `error`, `state`, `set`,
+  `touch`, `reset`, `setError`.
+- `FormHandle` — `fields`, `values`, `touched`, `dirty`, `valid`, `errors`,
+  `validate`, `reset`, `submit`.
+- `FormInvalid<E>` — typed validation failure `{ _tag: "FormInvalid", errors }`.
+
+```ts
+const form = Form.make({
+  email: { schema: Schema.String, initial: "" },
+}, {
+  onSubmit: (values) => UserService.save(values),
+  reactivityKeys: ["users"],
+  singleFlight: { mode: "auto" },
+});
+
+yield* form.validate();
+form.submit.run();
+```
+
+`FieldHandle.reset()` with no argument restores the current baseline.
+`reset(value)` updates the baseline to `value`, including explicit
+`undefined`.
+
+<br />
+
+## Devtools (`Devtools`, `effect-atom-jsx/Devtools`)
+
+Small in-process devtools primitives for timeline events, atom snapshots,
+slot-contract inspection, and MCP-style agent reads.
+
+- `Devtools.createSession(options?)` — create a timeline/snapshot session.
+- `session.record(event)` — record action/query/invalidation/snapshot events.
+- `session.timeline()` / `session.snapshots()` — read immutable snapshots.
+- `session.snapshotAtoms(entries)` — store an atom snapshot.
+- `session.excludeFromHistory(name)` — skip noisy named events.
+- `session.setKeyframeInterval(n)` — configure automatic keyframes.
+- `session.mcp.readTimeline()` / `readSnapshots()` / `rewindTo(id)` /
+  `dispatchNamed(name, run)` — minimal agent control/read surface.
+- `Devtools.snapshotRegistry(registry, atoms)` — snapshot atoms through a
+  registry.
+- `Devtools.slotContractTree(view)` — inspect rendered slot metadata.
+- `Devtools.observeToTimeline(session, event)` — normalize named action/query
+  observations into timeline events.
+
+```ts
+const session = Devtools.createSession({ keyframeInterval: 25 });
+session.record({ kind: "action", name: "saveUser", phase: "start" });
+session.mcp.readTimeline();
+```
+
+<br />
+
+## Serialization (`Serialization`, `effect-atom-jsx/Serialization`)
+
+Schema-backed wire codec service used by route loader payloads and result wire
+projection.
+
+- `Serialization.Tag` — Effect service tag.
+- `Serialization.layer` — default Effect Schema / JSON codec layer.
+- `encodeSync(schema, value)` / `decodeSync(schema, input)` — pure helpers.
+- Service methods: `serialize(schema, value)` / `deserialize(schema, input)` on
+  `SerializationService`.
+- Result helpers: `resultToWire`, `resultFromWire`, `encodeResult`,
+  `decodeResult`, `encodeResultRecord`, `decodeResultRecord`.
+- Wire schemas: `ResultWire`, `ResultWireRecord`.
+
+The public route helpers `Route.serializeLoaderData(...)`,
+`Route.deserializeLoaderData(...)`, and `Route.streamDeferredLoaderScripts(...)`
+use this service shape internally while keeping the loader wire DTO flat and
+JSON-safe.
+
+<br />
+
+## SafeHtml (`SafeHtml`, `effect-atom-jsx/SafeHtml`)
+
+Small brand for already-sanitized HTML payloads.
+
+- `SafeHtml.make(html)` — brand a string as safe.
+- `SafeHtml.isSafeHtml(value)` — runtime guard.
+- `SafeHtml.unwrap(value)` — recover the underlying string.
+
+Only call `SafeHtml.make(...)` after sanitization at the application boundary.
+
+<br />
+
+## Diagnostics (`Diagnostics`, `effect-atom-jsx/Diagnostics`)
+
+Unified diagnostic helpers that normalize View/Component/Style/Behavior/Route/ServerRoute validators into one shape.
+
+- **`Diagnostics.Diagnostic`** — `{ source, severity, code, message, ... }`
+- **`Diagnostics.normalize(diagnostic, options?)`** — wrap an existing structured diagnostic
+- **`Diagnostics.fromMessages(source, messages, options?)`** — wrap string validators like route/server-route checks
+- **`Diagnostics.collectView(view, options?)`** — run slot-target, remap, tree, and optional platform checks
+- **`Diagnostics.collectComponent(component, props)`** — render and validate declared-vs-rendered slot contract
+- **`Diagnostics.collectStylePlatform(style, platform)`** — normalize style platform diagnostics
+- **`Diagnostics.collectBehaviorAttachment(behavior, map, view)`** — normalize behavior attachment diagnostics
+- **`Diagnostics.collectDoctorTargets(moduleExports, options?)`** — discover diagnostic arrays, route trees, server-route arrays, and `{ diagnostics }` objects from module-like exports
+- **`Diagnostics.doctorFromTargets(targets)`** — summarize collected doctor targets
+- **`Diagnostics.report(diagnostics)`**, **`Diagnostics.layer(onDiagnostic, options?)`** — Effect-native reporting with optional dedupe
+- **`Diagnostics.doctor(diagnostics)`** / **`Diagnostics.formatReport(report)`** — stable summary for tests, dev-mode integrations, and CLI output
+- **`Diagnostics.hasErrors(diagnostics)`** / **`Diagnostics.format(diagnostic)`** — test/CLI-friendly helpers
+
+```ts
+const diagnostics = Diagnostics.collectView(view, {
+  slotTargets: ["root", "missing"],
+  platform: webPlatform,
+});
+
+if (Diagnostics.hasErrors(diagnostics)) {
+  throw new Error(diagnostics.map(Diagnostics.format).join("\n"));
+}
+```
+
+CLI:
+
+```bash
+af-ui doctor ./dist/app-routes.js
+af-ui doctor ./dist/app-routes.js --export app --export serverRoutes
+af-ui doctor ./dist/app-routes.js --json
+af-ui doctor ./dist/app-routes.js --fail-on-warnings
+```
+
+The imported module may export route trees, server route arrays, diagnostics
+arrays, or objects with a `diagnostics` array. The command exits non-zero on
+errors, and `--fail-on-warnings` promotes warnings to a failing CI result.
+
+<br />
+
 ## Testing (`effect-atom-jsx/testing`)
 
 Testing utilities for reactive code without requiring DOM or jsdom.
 
-`TestHarness` combines an Effect runtime with a reactive ownership scope into one object. This lets you run atoms, actions, and queries inside tests as if they were mounted inside a real component tree — without any DOM setup.
+`withTestLayer` combines an Effect runtime with a reactive ownership scope into one object. This lets you run atoms, actions, and queries inside tests as if they were mounted inside a real component tree — without any DOM setup.
 
-- **`TestHarness<R>`** — test environment:
+- **`withTestLayer(layer)`** — create a test harness:
   - `runtime` — the underlying Effect `ManagedRuntime<R>`
-  - `owner` — the reactive `Owner` scope
-  - `cleanup()` — dispose runtime and reactive scope
   - `run<A>(fn: () => A)` — execute function in test context (atoms resolve, effects fire)
+  - `tick(ms?)` — wait for async work
+  - `dispose()` — dispose runtime and reactive scope
+- **`renderWithLayer(layer, ui)`** — create a harness and run a setup callback immediately
+- **`render(component, { props, layer? })`** — AF-UI component test driver; returns `{ view, slots, driver }`
+- **`behaviorDriver(slots)`** — DOM-free event driver over Element handles: `press`, `input`, `emit`, `attr`, `style`
+- **`styleOf` / `attrOf` / `expectStyle` / `expectAttr`** — direct handle assertions
 
 ```ts
-import { TestHarness } from "effect-atom-jsx/testing";
+import { render } from "effect-atom-jsx/testing";
 
-const harness = new TestHarness(MyLayer);
-try {
-  harness.run(() => {
-    const count = Atom.make(0);
-    count.set(5);
-    expect(count()).toBe(5);
-  });
-} finally {
-  harness.cleanup();
-}
+const { slots, driver } = await render(ButtonCard, { props: {} });
+
+driver.press("button");
+expect(slots.root.getStyle("opacity")).toBe(1);
 ```
 
 For full testing patterns, see `docs/TESTING.md`.
@@ -1914,3 +2095,24 @@ Low-level Solid.js-compatible reactive primitives. Also re-exported from `effect
 Exports: `createSignal`, `createEffect`, `createMemo`, `createRoot`, `createContext`, `useContext`, `onCleanup`, `onMount`, `untrack`, `sample`, `batch`, `flush`, `mergeProps`, `splitProps`, `getOwner`, `runWithOwner`.
 
 These are 100% compatible with Solid.js signal/effect patterns.
+
+<br />
+
+## Event Channels (`Event`, `effect-atom-jsx/Event`)
+
+Named typed logical fact channels backed directly by Effect `PubSub`.
+
+- `Event.channel(name)` — declare an allocation-free channel contract.
+- `Event.schema(schema)` — attach a schema for decoded payload inference and
+  `Event.ingest(...)` at untyped boundaries.
+- `Event.layer(channel, options)` — provide one scoped channel service using
+  Effect's `bounded`, `dropping`, `sliding`, or explicit `unbounded` strategy.
+- `Event.publish(channel, payload)` — publish a typed payload; returns Effect's
+  boolean acceptance result, not subscriber success.
+- `Event.ingest(channel, unknown)` — decode unknown input then publish.
+- `Event.stream(channel)` — consume with normal Effect `Stream` operators or
+  `Component.subscription(...)`.
+
+Use direct Effect `PubSub` for private service-local channels. `Event` does not
+provide a global bus, replay, request/reply, automatic Atom updates, or
+automatic Reactivity invalidation.

@@ -6,7 +6,7 @@ import {
   createEffect,
   onCleanup,
 } from "./api.js";
-import { Owner, runWithOwner } from "./owner.js";
+import { Owner, getOwner, runWithOwner } from "./owner.js";
 import {
   atomEffect,
   defineQuery,
@@ -196,6 +196,8 @@ function toEffectResult<A, E>(
     }
     case "Success":
       return Effect.succeed((value as Success<A>).value);
+    case "Stale":
+      return Effect.fail((value as import("./effect-ts.js").Stale<A, E>).error);
     case "Failure": {
       const failure = value as Failure<E>;
       if ("error" in failure) {
@@ -786,7 +788,7 @@ function optimisticBuilder<A, RRuntime>(
           reactivityKeys: spec.reactivityKeys,
           singleFlight: spec.singleFlight,
           onTransition: spec.onTransition,
-        })
+        }) as ActionHandle<Input, E, Success>
         : action(runtimeArg as RuntimeLike<any, unknown>, runEffect as (input: Input) => Effect.Effect<Success, E, any>, {
           name: spec.name,
           reactivityKeys: spec.reactivityKeys,
@@ -1007,21 +1009,61 @@ export interface SingleFlightClientOptions<Input> {
   readonly fetch?: (input: string, init?: { readonly method?: string; readonly headers?: Record<string, string>; readonly body?: string }) => Promise<{ readonly json: () => Promise<unknown> }>;
 }
 
+/**
+ * Typed boundary error when `Atom.action(..., { inputSchema })` rejects input
+ * before the effect or single-flight transport runs.
+ */
+export interface ActionInputSchemaError {
+  readonly _tag: "ActionInputSchemaError";
+  readonly message: string;
+  readonly cause: unknown;
+}
+
+export type ActionOptionsBase<Input, E> = {
+  readonly name?: string;
+  readonly reactivityKeys?: ReactivityKeysInput;
+  readonly singleFlight?: false | SingleFlightClientOptions<Input>;
+  readonly onError?: (error: E) => void;
+  readonly onSuccess?: (input: Input) => void;
+  readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
+};
+
+export type ActionOptions<Input, E> = ActionOptionsBase<Input, E | ActionInputSchemaError> & {
+  /**
+   * Optional schema validation at the action boundary (P13).
+   * Decodes `input` before the effect / single-flight transport runs.
+   * Prefer enabling this for remotely invokable / single-flight actions.
+   */
+  readonly inputSchema?: Schema.Schema<Input>;
+};
+
+function validateActionInput<Input>(
+  input: Input,
+  schema: Schema.Schema<Input> | undefined,
+): Effect.Effect<Input, ActionInputSchemaError> {
+  if (schema === undefined) return Effect.succeed(input);
+  return Schema.decodeUnknownEffect(schema as any)(input).pipe(
+    Effect.map((decoded) => decoded as Input),
+    Effect.mapError((cause): ActionInputSchemaError => ({
+      _tag: "ActionInputSchemaError",
+      message: "Action input failed schema validation",
+      cause,
+    })),
+  ) as Effect.Effect<Input, ActionInputSchemaError>;
+}
+
 export interface AtomRuntime<R, E = unknown> {
   readonly managed: ManagedRuntime.ManagedRuntime<R, E>;
   atom<A, E2, RReq extends R = R>(effect: Effect.Effect<A, E2, RReq>): ResultAtom<A, E2>;
   atom<A, E2, RReq extends R = R>(factory: (get: Context) => Effect.Effect<A, E2, RReq>): ResultAtom<A, E2>;
   action<A, E2, RReq extends R = R, Input = void>(
     effect: (input: Input) => Effect.Effect<A, E2, RReq>,
-    options?: {
-      readonly name?: string;
-      readonly reactivityKeys?: ReactivityKeysInput;
-      readonly singleFlight?: false | SingleFlightClientOptions<Input>;
-      readonly onError?: (error: E2) => void;
-      readonly onSuccess?: (input: Input) => void;
-      readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
-    },
-    ): ActionHandle<Input, E2, A>;
+    options: ActionOptionsBase<Input, E2> & { readonly inputSchema: Schema.Schema<Input> },
+  ): ActionHandle<Input, E2 | ActionInputSchemaError, A>;
+  action<A, E2, RReq extends R = R, Input = void>(
+    effect: (input: Input) => Effect.Effect<A, E2, RReq>,
+    options?: ActionOptionsBase<Input, E2>,
+  ): ActionHandle<Input, E2, A>;
   optimistic<A>(source: Writable<A, A, any, any>): OptimisticBuilder<A>;
   dispose(): Promise<void>;
 }
@@ -1159,17 +1201,12 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
     },
     action<A, E2, RReq extends R = R, Input = void>(
       effect: (input: Input) => Effect.Effect<A, E2, RReq>,
-      options?: {
-        readonly name?: string;
-        readonly reactivityKeys?: ReactivityKeysInput;
-        readonly singleFlight?: false | SingleFlightClientOptions<Input>;
-        readonly onError?: (error: E2) => void;
-        readonly onSuccess?: (input: Input) => void;
-        readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
-      },
-    ): ActionHandle<Input, E2, A> {
+      options?: ActionOptions<Input, E2>,
+    ): ActionHandle<Input, E2 | ActionInputSchemaError, A> {
+      // Keep runtime-local SingleFlightTransportTag lookup (layer-provided
+      // transport) — free `action` only sees getInstalledSingleFlightTransport().
       const singleFlight = options?.singleFlight === false ? undefined : options?.singleFlight;
-      const execute = (input: Input): Effect.Effect<A, E2 | ResultDefectError, RReq> => {
+      const runBody = (input: Input): Effect.Effect<A, E2 | ResultDefectError, RReq> => {
         if (!shouldUseSingleFlight(options?.singleFlight)) {
           return effect(input) as Effect.Effect<A, E2 | ResultDefectError, RReq>;
         }
@@ -1192,6 +1229,10 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
           }),
         ) as Effect.Effect<A, E2 | ResultDefectError, RReq>;
       };
+      const execute = (input: Input): Effect.Effect<A, E2 | ActionInputSchemaError | ResultDefectError, RReq> =>
+        validateActionInput(input, options?.inputSchema).pipe(
+          Effect.flatMap((decoded) => runBody(decoded)),
+        );
       const handle = defineMutation(
         (input: Input) => execute(input),
         {
@@ -1206,22 +1247,23 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
           },
           onFailure: (error) => {
             if (typeof error === "object" && error !== null && "_tag" in error && (error as any)._tag === "ResultDefectError") return;
-            options?.onError?.(error as E2);
+            options?.onError?.(error as E2 | ActionInputSchemaError);
           },
         },
       );
 
+      type ActionE = E2 | ActionInputSchemaError;
       const out = ((input: Input) => {
         handle.run(input);
-      }) as ActionHandle<Input, E2, A>;
+      }) as ActionHandle<Input, ActionE, A>;
       out.run = (input: Input) => handle.run(input);
       out.runEffect = (input: Input) =>
         Effect.tryPromise({
           try: () => runPromiseWithRuntime(managed as RuntimeLike<R, unknown>, execute(input)),
-          catch: (error) => error as E2 | BridgeError | MutationSupersededError,
+          catch: (error) => error as ActionE | BridgeError | MutationSupersededError,
         });
-      out.effect = (input: Input) => handle.effect(input) as Effect.Effect<void, E2 | BridgeError | MutationSupersededError>;
-      out.result = handle.result as Accessor<Result<void, E2>>;
+      out.effect = (input: Input) => handle.effect(input) as Effect.Effect<void, ActionE | BridgeError | MutationSupersededError>;
+      out.result = handle.result as Accessor<Result<void, ActionE>>;
       out.pending = handle.pending;
       return out;
     },
@@ -1334,71 +1376,42 @@ export function reactivityKeys<A, E = never, R = never>(self: ReadonlyAtom<A, E,
 
 export function action<A, E, Input = void>(
   effectFn: (input: Input) => Effect.Effect<A, E, never>,
-  options?: {
-    readonly name?: string;
-    readonly reactivityKeys?: ReactivityKeysInput;
-    readonly singleFlight?: false | SingleFlightClientOptions<Input>;
-    readonly onError?: (error: E) => void;
-    readonly onSuccess?: (input: Input) => void;
-    readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
-  },
+  options: ActionOptionsBase<Input, E> & { readonly inputSchema: Schema.Schema<Input> },
+): ActionHandle<Input, E | ActionInputSchemaError, A>;
+export function action<A, E, Input = void>(
+  effectFn: (input: Input) => Effect.Effect<A, E, never>,
+  options?: ActionOptionsBase<Input, E>,
 ): ActionHandle<Input, E, A>;
 export function action<A, E, R, Input = void>(
   effectFn: (input: Input) => Effect.Effect<A, E, R>,
-  options?: {
-    readonly name?: string;
-    readonly reactivityKeys?: ReactivityKeysInput;
-    readonly singleFlight?: false | SingleFlightClientOptions<Input>;
-    readonly onError?: (error: E) => void;
-    readonly onSuccess?: (input: Input) => void;
-    readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
-  },
+  options: ActionOptionsBase<Input, E> & { readonly inputSchema: Schema.Schema<Input> },
+): ActionHandle<Input, E | ActionInputSchemaError, A>;
+export function action<A, E, R, Input = void>(
+  effectFn: (input: Input) => Effect.Effect<A, E, R>,
+  options?: ActionOptionsBase<Input, E>,
 ): ActionHandle<Input, E, A>;
 export function action<A, E, R, RReq extends R = R, Input = void>(
   runtimeArg: RuntimeLike<R, unknown>,
   effectFn: (input: Input) => Effect.Effect<A, E, RReq>,
-  options?: {
-    readonly name?: string;
-    readonly reactivityKeys?: ReactivityKeysInput;
-    readonly singleFlight?: false | SingleFlightClientOptions<Input>;
-    readonly onError?: (error: E) => void;
-    readonly onSuccess?: (input: Input) => void;
-    readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
-  },
+  options: ActionOptionsBase<Input, E> & { readonly inputSchema: Schema.Schema<Input> },
+): ActionHandle<Input, E | ActionInputSchemaError, A>;
+export function action<A, E, R, RReq extends R = R, Input = void>(
+  runtimeArg: RuntimeLike<R, unknown>,
+  effectFn: (input: Input) => Effect.Effect<A, E, RReq>,
+  options?: ActionOptionsBase<Input, E>,
 ): ActionHandle<Input, E, A>;
 export function action<A, E, R, Input = void>(
   arg1: RuntimeLike<R, unknown> | ((input: Input) => Effect.Effect<A, E, R>),
-  arg2?: ((input: Input) => Effect.Effect<A, E, R>) | {
-    readonly name?: string;
-    readonly reactivityKeys?: ReactivityKeysInput;
-    readonly singleFlight?: false | SingleFlightClientOptions<Input>;
-    readonly onError?: (error: E) => void;
-    readonly onSuccess?: (input: Input) => void;
-    readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
-  },
-  arg3?: {
-    readonly name?: string;
-    readonly reactivityKeys?: ReactivityKeysInput;
-    readonly singleFlight?: false | SingleFlightClientOptions<Input>;
-    readonly onError?: (error: E) => void;
-    readonly onSuccess?: (input: Input) => void;
-    readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
-  },
-): ActionHandle<Input, E, A> {
+  arg2?: ((input: Input) => Effect.Effect<A, E, R>) | ActionOptions<Input, E>,
+  arg3?: ActionOptions<Input, E>,
+): ActionHandle<Input, E | ActionInputSchemaError, A> {
   const hasRuntime = typeof arg1 !== "function";
   const runtimeArg = hasRuntime ? arg1 as RuntimeLike<R, unknown> : undefined;
   const effectFn = (hasRuntime ? arg2 : arg1) as (input: Input) => Effect.Effect<A, E, R>;
-  const options = (hasRuntime ? arg3 : arg2) as {
-    readonly name?: string;
-    readonly reactivityKeys?: ReactivityKeysInput;
-    readonly singleFlight?: false | SingleFlightClientOptions<Input>;
-    readonly onError?: (error: E) => void;
-    readonly onSuccess?: (input: Input) => void;
-    readonly onTransition?: (event: { readonly phase: "start" | "success" | "failure" | "defect" }) => void;
-  } | undefined;
+  const options = (hasRuntime ? arg3 : arg2) as ActionOptions<Input, E> | undefined;
   const singleFlight = options?.singleFlight === false ? undefined : options?.singleFlight;
 
-  const execute = (input: Input): Effect.Effect<A, E | ResultDefectError, R> => {
+  const runBody = (input: Input): Effect.Effect<A, E | ResultDefectError, R> => {
     if (!shouldUseSingleFlight(options?.singleFlight)) {
       return effectFn(input) as Effect.Effect<A, E | ResultDefectError, R>;
     }
@@ -1415,8 +1428,14 @@ export function action<A, E, R, Input = void>(
     return effectFn(input) as Effect.Effect<A, E | ResultDefectError, R>;
   };
 
+  const execute = (input: Input): Effect.Effect<A, E | ActionInputSchemaError | ResultDefectError, R> =>
+    validateActionInput(input, options?.inputSchema).pipe(
+      Effect.flatMap((decoded) => runBody(decoded)),
+    );
+
+  type ActionE = E | ActionInputSchemaError;
   const handle = runtimeArg === undefined
-    ? defineMutation((input: Input) => execute(input) as Effect.Effect<unknown, E | ResultDefectError, never>, {
+    ? defineMutation((input: Input) => execute(input) as Effect.Effect<unknown, ActionE | ResultDefectError, never>, {
       name: options?.name,
       onTransition: options?.onTransition,
       onSuccess: (input) => {
@@ -1427,7 +1446,7 @@ export function action<A, E, R, Input = void>(
       },
       onFailure: (error) => {
         if (typeof error === "object" && error !== null && "_tag" in error && (error as any)._tag === "ResultDefectError") return;
-        options?.onError?.(error as E);
+        options?.onError?.(error as ActionE);
       },
     })
     : defineMutation((input: Input) => execute(input), {
@@ -1442,21 +1461,21 @@ export function action<A, E, R, Input = void>(
       },
       onFailure: (error) => {
         if (typeof error === "object" && error !== null && "_tag" in error && (error as any)._tag === "ResultDefectError") return;
-        options?.onError?.(error as E);
+        options?.onError?.(error as ActionE);
       },
     });
 
   const out = ((input: Input) => {
     handle.run(input);
-  }) as ActionHandle<Input, E, A>;
+  }) as ActionHandle<Input, ActionE, A>;
   out.run = (input: Input) => handle.run(input);
   out.runEffect = (input: Input) =>
     Effect.tryPromise({
       try: () => runPromiseWithRuntime(runtimeArg, execute(input)),
-      catch: (error) => error as E | BridgeError | MutationSupersededError,
+      catch: (error) => error as ActionE | BridgeError | MutationSupersededError,
     });
-  out.effect = (input: Input) => handle.effect(input) as Effect.Effect<void, E | BridgeError | MutationSupersededError>;
-  out.result = handle.result as Accessor<Result<void, E>>;
+  out.effect = (input: Input) => handle.effect(input) as Effect.Effect<void, ActionE | BridgeError | MutationSupersededError>;
+  out.result = handle.result as Accessor<Result<void, ActionE>>;
   out.pending = handle.pending;
   return out;
 }
@@ -1638,12 +1657,104 @@ export function searchInputStream<E, R>(
   }));
 }
 
+/**
+ * Declarative gated stream (P12): exists while `isActive(deps)` holds;
+ * restarts the inner stream when deps change (previous stream interrupted so
+ * finalizers run). `keepAliveEquivalence` can suppress restarts when only
+ * irrelevant dep fields change.
+ *
+ * Dep tracking uses the reactive core (`createEffect` + `deps()` reads) and
+ * pushes generations into a queue that `switchMap`s to `create(...)`.
+ */
+export function gatedStream<Deps, A, E, R>(
+  deps: Accessor<Deps>,
+  create: (context: { readonly deps: Deps }) => FxStream.Stream<A, E, R>,
+  options?: {
+    readonly isActive?: (deps: Deps) => boolean;
+    /** When true (default), unequal deps restart the inner stream. */
+    readonly restartOnDepsChange?: boolean;
+    readonly keepAliveEquivalence?: (a: Deps, b: Deps) => boolean;
+  },
+): FxStream.Stream<A, E, R> {
+  const isActive = options?.isActive ?? (() => true);
+  const restartOnDepsChange = options?.restartOnDepsChange !== false;
+  const eq = options?.keepAliveEquivalence ?? Object.is;
+
+  type Generation = { readonly _tag: "active"; readonly deps: Deps } | { readonly _tag: "idle" };
+
+  return FxStream.unwrap(
+    Effect.gen(function* () {
+      const queue = yield* Queue.unbounded<Generation>();
+      let previous: Deps | undefined;
+      /** Whether the switchMap generation is currently an active (non-idle) stream. */
+      let generationActive = false;
+
+      const publish = (): void => {
+        const current = deps();
+        if (!isActive(current)) {
+          previous = current;
+          // Leaving an active generation → idle (finalizers via switchMap)
+          if (generationActive) {
+            generationActive = false;
+            Effect.runFork(Queue.offer(queue, { _tag: "idle" as const }));
+          }
+          return;
+        }
+        // Active now
+        if (!generationActive) {
+          // First start, or resume after idle — always publish even when
+          // restartOnDepsChange is false (that flag only suppresses restarts
+          // while staying continuously active).
+          generationActive = true;
+          previous = current;
+          Effect.runFork(Queue.offer(queue, { _tag: "active" as const, deps: current }));
+          return;
+        }
+        // Continuously active generation
+        if (!restartOnDepsChange) {
+          previous = current;
+          return;
+        }
+        if (previous !== undefined && eq(previous, current)) {
+          // keepAliveEquivalence: no restart
+          return;
+        }
+        previous = current;
+        Effect.runFork(Queue.offer(queue, { _tag: "active" as const, deps: current }));
+      };
+
+      // Reactive watch: re-runs when any signal read inside deps() changes.
+      const owner = new Owner(getOwner());
+      runWithOwner(owner, () => {
+        createEffect(() => {
+          publish();
+        });
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          owner.dispose();
+        }),
+      );
+
+      return FxStream.fromQueue(queue).pipe(
+        FxStream.switchMap((generation) => {
+          if (generation._tag === "idle") {
+            return FxStream.empty as FxStream.Stream<A, E, R>;
+          }
+          return create({ deps: generation.deps });
+        }),
+      ) as FxStream.Stream<A, E, R>;
+    }) as Effect.Effect<FxStream.Stream<A, E, R>, never, never>,
+  ) as FxStream.Stream<A, E, R>;
+}
+
 export const Stream = {
   emptyState: emptyOOOStreamState,
   applyChunk: applyOOOStreamChunk,
   hydrateState: hydrateOOOStreamState,
   textInput: textInputStream,
   searchInput: searchInputStream,
+  gated: gatedStream,
 } as const;
 
 /**
@@ -1682,7 +1793,17 @@ export function pull<A, E, R>(
     if (running) return;
     running = true;
     const settled = CoreResult.settled(state());
-    setState(Option.isSome(settled) ? CoreResult.refreshing(settled.value) : CoreResult.loading);
+    const staleData =
+      Option.isSome(settled) && settled.value._tag === "Success"
+        ? settled.value.value
+        : Option.isSome(settled) && settled.value._tag === "Stale"
+          ? settled.value.data
+          : null;
+    setState(
+      Option.isSome(settled)
+        ? CoreResult.refreshing(settled.value._tag === "Stale" ? CoreResult.success(settled.value.data) : settled.value)
+        : CoreResult.loading,
+    );
     const collect = FxStream.runCollect(stream).pipe(
       Effect.map((chunk) => Array.from(chunk as Iterable<A>)),
     );
@@ -1696,13 +1817,13 @@ export function pull<A, E, R>(
         if (Cause.isCause(error)) {
           const typed = Cause.findErrorOption(error);
           if (Option.isSome(typed)) {
-            setState(CoreResult.failure(typed.value as E));
+            setState(staleData === null ? CoreResult.failure(typed.value as E) : CoreResult.stale(typed.value as E, staleData));
           } else {
             setState(CoreResult.defect(Cause.pretty(error), error));
           }
           return;
         }
-        setState(CoreResult.failure(error as E));
+        setState(staleData === null ? CoreResult.failure(error as E) : CoreResult.stale(error as E, staleData));
       })
       .finally(() => {
         running = false;

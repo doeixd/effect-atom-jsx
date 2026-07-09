@@ -23,8 +23,16 @@ type SlotContractTargetNames<T> =
     : T extends SlotContractRecord ? View.Slot.NameOf<T[keyof T & string]> & string
       : never;
 
+/**
+ * Branded style property token.
+ *
+ * Platforms can list supported properties using either these tokens or raw
+ * property strings. Tokens make generated diagnostics stable across minifiers
+ * and string transforms.
+ */
 export interface Property<Name extends string = string> extends MetadataToken.MetadataToken<"style.property", Name> {}
 
+/** Common style property tokens and helpers for platform metadata. */
 export namespace Property {
   export type Any = Property<string>;
   export type NameOf<T> = MetadataToken.NameOf<T>;
@@ -45,15 +53,20 @@ export namespace Property {
   export const BorderRadius = make("borderRadius");
 }
 
+/** Raw or branded style property accepted by platform metadata. */
 export type PropertyName = string | Property.Any;
+/** Extract the string name from a property token. */
 export type PropertyNameOf<T> = MetadataToken.NameOf<T>;
+/** Extract string names from a readonly property-token tuple. */
 export type PropertyNamesOf<T extends readonly unknown[]> = MetadataToken.NamesOf<T>;
 
+/** Renderer/platform style support declaration. */
 export interface StylePlatformMetadata {
   readonly name: string;
   readonly properties?: readonly PropertyName[];
 }
 
+/** Effect service used to report style/platform diagnostics during attachment. */
 export interface PlatformService {
   readonly metadata: StylePlatformMetadata;
   readonly onDiagnostic?: (diagnostic: StyleDiagnostic) => void;
@@ -61,12 +74,36 @@ export interface PlatformService {
 
 export const PlatformTag = ServiceMap.Service<PlatformService>("StylePlatform");
 
+/** Resolved global styles published by `Style.globalLayer`. */
+export interface GlobalStyleSheet {
+  readonly pieces: ReadonlyArray<GlobalPiece>;
+  readonly resolved: Readonly<Record<string, SlotStyle>>;
+}
+
+/** Service for renderer/runtime integrations that apply global CSS. */
+export interface GlobalStyleService {
+  readonly sheet: GlobalStyleSheet;
+  readonly apply?: (sheet: GlobalStyleSheet) => Effect.Effect<void>;
+}
+
+export const GlobalStyleTag = ServiceMap.Service<GlobalStyleService>("StyleGlobal");
+
+/** Layer returned by `Style.platform`, branded with its metadata for typing. */
 export type PlatformLayer<Metadata extends StylePlatformMetadata = StylePlatformMetadata> =
   & Layer.Layer<PlatformService>
   & {
     readonly metadata: Metadata;
   };
 
+/**
+ * Create a platform layer for style capability diagnostics.
+ *
+ * @example
+ * const WebStyle = Style.platform({
+ *   name: "web",
+ *   properties: [Style.Property.Color, Style.Property.Display],
+ * })
+ */
 export function platform<const Metadata extends StylePlatformMetadata>(
   metadata: Metadata,
   options?: {
@@ -79,8 +116,10 @@ export function platform<const Metadata extends StylePlatformMetadata>(
   }), { metadata }) as PlatformLayer<Metadata>;
 }
 
+/** Diagnostic codes produced by style/platform validation. */
 export type StyleDiagnosticCode = "style:unsupported-property";
 
+/** Structured diagnostic emitted when style uses unsupported platform features. */
 export interface StyleDiagnostic {
   readonly code: StyleDiagnosticCode;
   readonly message: string;
@@ -89,15 +128,27 @@ export interface StyleDiagnostic {
   readonly property: string;
 }
 
+/** Concrete style object for one slot. */
 export interface SlotPiece {
   readonly _tag: "SlotPiece";
   readonly style: SlotStyle;
 }
 
-export interface ConditionalPiece {
+/** Style piece included only when `condition()` returns true. */
+export interface ConditionalPiece<Piece extends StyleValue = StyleValue> {
   readonly _tag: "ConditionalPiece";
   readonly condition: () => boolean;
-  readonly piece: StyleValue;
+  readonly piece: Piece;
+  readonly _bindings?: BindingNamesOfValue<Piece>;
+}
+
+/** Style piece included by reading a component binding value. */
+export interface BindingConditionalPiece<Binding extends string = string, Piece extends StyleValue = StyleValue> {
+  readonly _tag: "BindingConditionalPiece";
+  readonly binding: Binding;
+  readonly predicate: (value: unknown) => boolean;
+  readonly piece: Piece;
+  readonly _bindings?: Binding | BindingNamesOfValue<Piece>;
 }
 
 export interface StatesPiece {
@@ -200,9 +251,16 @@ export interface ExtendPiece {
   readonly slot: string;
 }
 
+/**
+ * Any composable style expression accepted by `Style.make` and recipes.
+ *
+ * Style values are data, not DOM mutations. Attachment resolves the data
+ * against component bindings and element handles.
+ */
 export type StyleValue =
   | SlotPiece
-  | ConditionalPiece
+  | ConditionalPiece<any>
+  | BindingConditionalPiece<any, any>
   | StatesPiece
   | ResponsivePiece
   | AnimationPiece
@@ -224,22 +282,86 @@ export type StyleValue =
   | ExtendPiece
   | ReadonlyArray<StyleValue>;
 
+export type BindingNamesOfValue<T> =
+  T extends { readonly _bindings?: infer Bindings } ? Bindings & string
+    : never;
+
+export type BindingNamesOfStyleMap<T> = BindingNamesOfValue<NonNullable<T[keyof T]>>;
+
+export type BindingNamesOf<T> = T extends ComposedStyle<any, infer Bindings> ? Bindings : BindingNamesOfValue<T>;
+
+type BindingNameOfInput<T> = T extends { readonly name: infer Name extends string } ? Name : T extends string ? T : string;
+type MissingStyleBindings<Style, C extends Component.Component<any, any, any, any, any>> =
+  Exclude<BindingNamesOf<Style>, keyof Component.BindingsOf<C> & string>;
+type StyleBindingCompatible<Style, C extends Component.Component<any, any, any, any, any>> =
+  [MissingStyleBindings<Style, C>] extends [never] ? C
+    : View.TypeErrorMessage<`Style requires binding '${MissingStyleBindings<Style, C> & string}' which the component does not expose`>;
+
+type StyleSlotsCompatible<C extends Component.Component<any, any, any, any, any>, S extends SlotContractInput> =
+  Component.SlotsOf<C> extends Record<SlotContractTargetNames<S>, Element.Handle | Element.Collection<Element.Handle>>
+    ? unknown
+    : View.TypeErrorMessage<"attachToSlots: component slots do not satisfy the style slot contract">;
+
+/** Map from slot names to style expressions. */
 export type SlotStyles<S extends string = string> = Record<S, StyleValue>;
 
-export interface ComposedStyle<S extends string = string> {
+/** Compiled style map with an optional binding-dependency witness. */
+export interface ComposedStyle<S extends string = string, Bindings extends string = never> {
   readonly slots: SlotStyles<S>;
+  readonly _bindings?: Bindings;
 }
 
+/**
+ * Create a concrete slot style piece.
+ *
+ * @example
+ * const card = Style.slot({ display: "grid", gap: "sm" })
+ */
 export function slot(style: SlotStyle): SlotPiece {
   return { _tag: "SlotPiece", style };
 }
 
-export function compose(...pieces: ReadonlyArray<StyleValue>): ReadonlyArray<StyleValue> {
-  return pieces;
+/**
+ * Compose multiple style pieces into one style value.
+ *
+ * Binding dependencies from conditional pieces are preserved in the output
+ * type so component attachment can require the necessary bindings.
+ */
+export function compose<const Pieces extends ReadonlyArray<StyleValue>>(
+  ...pieces: Pieces
+): ReadonlyArray<Pieces[number]> & { readonly _bindings?: BindingNamesOfValue<Pieces[number]> } {
+  return pieces as ReadonlyArray<Pieces[number]> & {
+    readonly _bindings?: BindingNamesOfValue<Pieces[number]>;
+  };
 }
 
-export function when(condition: () => boolean, piece: StyleValue): ConditionalPiece {
-  return { _tag: "ConditionalPiece", condition, piece };
+/** Include a style piece while an arbitrary runtime condition is true. */
+export function when<const Piece extends StyleValue>(condition: () => boolean, piece: Piece): ConditionalPiece<Piece> {
+  return { _tag: "ConditionalPiece", condition, piece } as ConditionalPiece<Piece>;
+}
+
+/**
+ * Include a style piece by inspecting a named component binding.
+ *
+ * The binding name is tracked at the type level. Attaching the style to a
+ * component that does not expose that binding produces a compile-time error.
+ */
+export function whenBinding<
+  const Binding extends string | { readonly name: string },
+  const Piece extends StyleValue,
+>(
+  binding: Binding,
+  predicate: unknown | ((value: unknown) => boolean),
+  piece: Piece,
+): BindingConditionalPiece<BindingNameOfInput<Binding>, Piece> {
+  return {
+    _tag: "BindingConditionalPiece",
+    binding: typeof binding === "string" ? binding : binding.name,
+    predicate: typeof predicate === "function"
+      ? predicate as (value: unknown) => boolean
+      : (value) => value === predicate,
+    piece,
+  } as BindingConditionalPiece<BindingNameOfInput<Binding>, Piece>;
 }
 
 export function states(map: Record<string, SlotStyle>): StatesPiece {
@@ -270,10 +392,27 @@ export function transition(value: Record<string, unknown>): AnimationPiece {
   return animation({ kind: "transition", ...value });
 }
 
-export function make<S extends string>(slots: SlotStyles<S>): ComposedStyle<S> {
-  return { slots };
+/**
+ * Build a composed style from a slot-to-style map.
+ *
+ * Prefer `Style.forSlots(Slots)(...)` for authored component APIs because it
+ * restricts the keys to the published `View.Slots` contract.
+ */
+export function make<const Styles extends Record<string, StyleValue>>(
+  slots: Styles,
+): ComposedStyle<keyof Styles & string, BindingNamesOfStyleMap<Styles>> {
+  return { slots } as ComposedStyle<keyof Styles & string, BindingNamesOfStyleMap<Styles>>;
 }
 
+/**
+ * Create a style builder keyed by an authored slot contract.
+ *
+ * @example
+ * const FieldStyle = Style.forSlots(FieldSlots)({
+ *   root: Style.slot({ display: "grid" }),
+ *   input: Style.slot({ padding: "sm" }),
+ * })
+ */
 export function forSlots<const W extends SlotContractInput>(
   _slots: W,
 ): (
@@ -284,7 +423,7 @@ export function forSlots<const W extends SlotContractInput>(
     for (const [slotName, styleValue] of Object.entries(styles) as Array<[string, StyleValue | undefined]>) {
       if (styleValue !== undefined) out[slotName] = styleValue;
     }
-    return make(out as SlotStyles<SlotContractNames<W>>);
+    return { slots: out } as ComposedStyle<SlotContractNames<W>>;
   };
 }
 
@@ -408,8 +547,32 @@ export function global(defs: Record<string, SlotStyle | StyleValue>): GlobalPiec
   return { _tag: "GlobalPiece", global: defs };
 }
 
-export function globalLayer(_globalStyles: GlobalPiece): Layer.Layer<never> {
-  return Layer.empty;
+export function resolveGlobal(globalStyles: GlobalPiece, bindings?: unknown): Readonly<Record<string, SlotStyle>> {
+  const resolved: Record<string, SlotStyle> = {};
+  for (const [selector, value] of Object.entries(globalStyles.global)) {
+    const slot = isStyleValue(value) ? resolveSlot(value, bindings) : value;
+    resolved[selector] = resolveSlotTokens(slot);
+  }
+  return resolved;
+}
+
+export function globalLayer(
+  globalStyles: GlobalPiece,
+  options?: { readonly apply?: (sheet: GlobalStyleSheet) => Effect.Effect<void> },
+): Layer.Layer<GlobalStyleService> {
+  return Layer.effect(
+    GlobalStyleTag,
+    Effect.gen(function* () {
+      const sheet: GlobalStyleSheet = {
+        pieces: [globalStyles],
+        resolved: resolveGlobal(globalStyles),
+      };
+      if (options?.apply) {
+        yield* options.apply(sheet);
+      }
+      return { sheet, apply: options?.apply };
+    }),
+  );
 }
 
 export function extendsSlot(slot: string): ExtendPiece {
@@ -428,11 +591,16 @@ export function tokenFontSize(path: TokenPath<"fontSize">): TokenPath<"fontSize"
   return path;
 }
 
-function flattenPiece(piece: StyleValue): ReadonlyArray<SlotStyle> {
+function bindingValue(bindings: unknown, key: string): unknown {
+  const value = (bindings as Record<string, unknown> | undefined)?.[key];
+  return typeof value === "function" ? (value as () => unknown)() : value;
+}
+
+function flattenPiece(piece: StyleValue, bindings?: unknown): ReadonlyArray<SlotStyle> {
   if (Array.isArray(piece)) {
     const all: Array<SlotStyle> = [];
     for (const p of piece) {
-      all.push(...flattenPiece(p));
+      all.push(...flattenPiece(p, bindings));
     }
     return all;
   }
@@ -441,12 +609,14 @@ function flattenPiece(piece: StyleValue): ReadonlyArray<SlotStyle> {
     case "SlotPiece":
       return [node.style];
     case "ConditionalPiece":
-      return node.condition() ? flattenPiece(node.piece) : [];
+      return node.condition() ? flattenPiece(node.piece, bindings) : [];
+    case "BindingConditionalPiece":
+      return node.predicate(bindingValue(bindings, node.binding)) ? flattenPiece(node.piece, bindings) : [];
     case "StatesPiece":
       return [Object.assign({}, node.states.default ?? {}, { _states: node.states }) as SlotStyle];
     case "ResponsivePiece": {
       const base = node.map.base;
-      return base === undefined ? [] : flattenPiece(base);
+      return base === undefined ? [] : flattenPiece(base, bindings);
     }
     case "AnimationPiece":
       return [{ animation: node.value }];
@@ -487,8 +657,24 @@ function flattenPiece(piece: StyleValue): ReadonlyArray<SlotStyle> {
   }
 }
 
-function resolveSlot(piece: StyleValue): SlotStyle {
-  return mergeMany(flattenPiece(piece));
+function isStyleValue(value: unknown): value is StyleValue {
+  return Array.isArray(value) || (
+    typeof value === "object"
+    && value !== null
+    && "_tag" in value
+  );
+}
+
+function resolveSlot(piece: StyleValue, bindings?: unknown): SlotStyle {
+  return mergeMany(flattenPiece(piece, bindings));
+}
+
+function resolveSlotTokens(style: SlotStyle): SlotStyle {
+  const out: Record<string, unknown> = {};
+  for (const [prop, value] of Object.entries(style)) {
+    out[prop] = prop === "_states" || prop.startsWith("__") ? value : resolveTokenValue(value);
+  }
+  return out;
 }
 
 export interface StylePropertyUsage<S extends string = string> {
@@ -504,7 +690,7 @@ function isStylePropertyKey(property: string): boolean {
   return !property.startsWith("__") && !property.startsWith("_");
 }
 
-export function propertiesOf<S extends string>(style: ComposedStyle<S>): readonly StylePropertyUsage<S>[] {
+export function propertiesOf<S extends string>(style: ComposedStyle<S, any>): readonly StylePropertyUsage<S>[] {
   const usages: Array<StylePropertyUsage<S>> = [];
   const seen = new Set<string>();
   for (const [slotName, piece] of Object.entries(style.slots) as Array<[S, StyleValue]>) {
@@ -523,8 +709,7 @@ export function propertiesOf<S extends string>(style: ComposedStyle<S>): readonl
 
 function applyResolvedStyleToHandle(handle: Element.Handle, styleDef: SlotStyle): Effect.Effect<void> {
   return Effect.forEach(Object.entries(styleDef), ([prop, value]) => {
-    if (prop === "_states") return Effect.void;
-    if (prop.startsWith("__")) return Effect.void;
+    if (prop === "_states" || prop.startsWith("__")) return handle.setStyleOnce(prop, value);
     if (typeof value === "function") {
       return handle.setStyle(prop, () => resolveTokenValue((value as () => unknown)()));
     }
@@ -542,14 +727,14 @@ export function override<T extends Overrides>(overrides: T): T {
   return overrides;
 }
 
-function attachToBindingSlotsImpl<S extends string>(
-  style: ComposedStyle<S>,
+function attachToBindingSlotsImpl<S extends string, StyleBindings extends string>(
+  style: ComposedStyle<S, StyleBindings>,
 ): <
   Props,
   Req,
   E,
   Slots extends { readonly [K in S]: Element.Handle | Element.Collection<Element.Handle> },
-  Bindings extends { readonly slots: Slots },
+  Bindings extends { readonly slots: Slots } & Record<StyleBindings, unknown>,
   SlotContract = Slots,
 >(
   component: Component.Component<Props, Req, E, Bindings, SlotContract>,
@@ -563,7 +748,7 @@ function attachToBindingSlotsImpl<S extends string>(
       const overrides = useContext(OverrideContext);
       for (const [slotName, slotPiece] of Object.entries(style.slots as Record<string, StyleValue>)) {
         const overridePiece = overrides[slotName];
-        const resolved = resolveSlot(overridePiece ?? slotPiece);
+        const resolved = resolveSlot(overridePiece ?? slotPiece, bindings);
         const target = (bindings as any).slots?.[slotName] as Element.Handle | Element.Collection<Element.Handle> | undefined;
         if (!target) continue;
 
@@ -589,11 +774,11 @@ function attachToBindingSlotsImpl<S extends string>(
  */
 export const attach = attachToBindingSlotsImpl;
 
-function attachByViewImpl<S extends string>(
-  style: ComposedStyle<S>,
+function attachByViewImpl<S extends string, StyleBindings extends string>(
+  style: ComposedStyle<S, StyleBindings>,
 ): <C extends Component.Component<any, any, any, any, any>>(
   component: Component.SlotsOf<C> extends { readonly [K in S]: Element.Handle | Element.Collection<Element.Handle> }
-    ? C
+    ? StyleBindingCompatible<typeof style, C>
     : never,
 ) => C {
   return Component.withViewTransform((result, _props, _bindings) => {
@@ -602,7 +787,7 @@ function attachByViewImpl<S extends string>(
     const slots = result.slots as Record<string, Element.Handle | Element.Collection<Element.Handle>>;
     for (const [slotName, slotPiece] of Object.entries(style.slots as Record<string, StyleValue>)) {
       const overridePiece = overrides[slotName];
-      const resolved = resolveSlot(overridePiece ?? slotPiece);
+      const resolved = resolveSlot(overridePiece ?? slotPiece, _bindings);
       const target = slots[slotName];
       if (!target) continue;
       if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
@@ -625,6 +810,12 @@ function attachByViewImpl<S extends string>(
  */
 export const attachByView = attachByViewImpl;
 
+/**
+ * Attach a style through an explicit dynamic slot-name map.
+ *
+ * Use this for generated/dynamic integrations. For authored code, prefer
+ * `attachToSlots(style, Slots)` so TypeScript checks the contract directly.
+ */
 export function attachBySlots<
   S extends string,
   Props,
@@ -645,9 +836,15 @@ export function attachBySlots<
     const componentSlot = map[styleSlot];
     mappedSlots[String(componentSlot)] = style.slots[String(styleSlot) as S];
   }
-  return attachToBindingSlotsImpl(make(mappedSlots));
+  return attachToBindingSlotsImpl({ slots: mappedSlots } as ComposedStyle<string, never>);
 }
 
+/**
+ * Attach a style through a map of style slot names to slot witnesses.
+ *
+ * This is useful when adapting one contract to another while preserving slot
+ * witness metadata.
+ */
 export function attachBySlotContract<
   S extends string,
   Props,
@@ -668,20 +865,35 @@ export function attachBySlotContract<
     const componentSlot = map[styleSlot];
     mappedSlots[componentSlot.name] = style.slots[String(styleSlot) as S];
   }
-  return attachToBindingSlotsImpl(make(mappedSlots));
+  return attachToBindingSlotsImpl({ slots: mappedSlots } as ComposedStyle<string, never>);
 }
 
-export function attachToSlots<S extends SlotContractInput>(
-  style: ComposedStyle<SlotContractNames<S>>,
+/**
+ * Attach a style to a component that publishes a compatible `View.Slots`
+ * contract.
+ *
+ * This is the authored golden path. Slot names and style binding requirements
+ * are checked at compile time, while runtime diagnostics can still validate
+ * dynamic platform support.
+ *
+ * @example
+ * export const StyledField = Field.pipe(
+ *   Style.attachToSlots(FieldStyle, FieldSlots),
+ * )
+ */
+export function attachToSlots<S extends SlotContractInput, StyleBindings extends string>(
+  style: ComposedStyle<SlotContractNames<S>, StyleBindings>,
   _slots: S,
 ): <C extends Component.Component<any, any, any, any, any>>(
-  component: Component.SlotsOf<C> extends Record<SlotContractTargetNames<S>, Element.Handle | Element.Collection<Element.Handle>>
-    ? C
-    : never,
+  component: C & StyleSlotsCompatible<C, S> & StyleBindingCompatible<typeof style, C>,
 ) => C {
   return attachByViewImpl(style) as any;
 }
 
+/**
+ * Attach the same style to every rendered slot whose capability satisfies
+ * `capability`.
+ */
 export function attachToAllWithCapability<C extends View.SlotCapability>(
   style: StyleValue,
   capability: C,
@@ -708,7 +920,7 @@ export function attachToAllWithCapability<C extends View.SlotCapability>(
       const target = slots[slotName];
       if (!target) continue;
 
-      const resolved = resolveSlot(style);
+      const resolved = resolveSlot(style, _bindings);
       if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
         const collection = target as Element.Collection<Element.Handle>;
         Effect.runSync(collection.observeEach((item) => applyResolvedStyleToHandle(item, resolved).pipe(Effect.as(() => {}))));
@@ -737,6 +949,7 @@ export function attachBySlotsFor<SlotsOrBindings extends SlotHandleMap | { reado
   };
 }
 
+/** Validate that all style target slots exist on a rendered view. */
 export function validateAttachment<S extends string, Slots>(
   style: ComposedStyle<S>,
   view: View.View<Slots>,
@@ -747,6 +960,7 @@ export function validateAttachment<S extends string, Slots>(
   return View.validateSlotTargets(view, Object.keys(style.slots), options);
 }
 
+/** Validate dynamic slot-map attachment against a rendered view. */
 export function validateAttachmentBySlots<
   S extends string,
   Slots,
@@ -762,6 +976,7 @@ export function validateAttachmentBySlots<
   return View.validateSlotTargets(view, Object.values(map) as string[], options);
 }
 
+/** Render a component and validate that a style can attach to its view slots. */
 export function validateComponentAttachment<
   S extends string,
   Props,
@@ -782,6 +997,7 @@ export function validateComponentAttachment<
   );
 }
 
+/** Validate that a style only uses properties declared by a platform. */
 export function validatePlatform<S extends string>(
   style: ComposedStyle<S>,
   platform: StylePlatformMetadata,
@@ -803,7 +1019,7 @@ export function validatePlatform<S extends string>(
 }
 
 export function reportPlatformDiagnostics<S extends string>(
-  style: ComposedStyle<S>,
+  style: ComposedStyle<S, any>,
   service: PlatformService,
 ): readonly StyleDiagnostic[] {
   const diagnostics = validatePlatform(style, service.metadata);
@@ -826,6 +1042,17 @@ type VariantSelection<D extends VariantDef> = {
   readonly [K in keyof D["variants"]]?: keyof D["variants"][K] & string;
 };
 
+/**
+ * Define a single-slot variant function.
+ *
+ * @example
+ * const button = Style.variants({
+ *   base: Style.slot({ padding: "sm" }),
+ *   variants: {
+ *     tone: { danger: Style.slot({ color: "red" }) },
+ *   },
+ * })
+ */
 export function variants<D extends VariantDef>(def: D) {
   const fn = (selection?: VariantSelection<D>): StyleValue => {
     const picks = { ...(def.defaults ?? {}), ...(selection ?? {}) } as Record<string, string | boolean>;
@@ -864,6 +1091,12 @@ type RecipeSelection<D extends RecipeDef<any>> = D["variants"] extends Record<st
   ? { readonly [K in keyof D["variants"]]?: keyof D["variants"][K] & string }
   : {};
 
+/**
+ * Define a multi-slot recipe with variants.
+ *
+ * Recipes return a slot-to-style map that can be passed to `Style.make` or a
+ * contract-specific `Style.forSlots(...)` builder.
+ */
 export function recipe<Slots extends string, D extends RecipeDef<Slots>>(def: D) {
   const fn = (selection?: RecipeSelection<D>): Record<Slots, StyleValue> => {
     const out = { ...def.base } as Record<Slots, StyleValue>;
@@ -900,6 +1133,7 @@ export const Style = {
   slot,
   compose,
   when,
+  whenBinding,
   states,
   responsive,
   animation,
@@ -930,7 +1164,9 @@ export const Style = {
   layers,
   inLayer,
   global,
+  resolveGlobal,
   globalLayer,
+  GlobalStyleTag,
   extends: extendsSlot,
   tokenColor,
   tokenSpacing,
@@ -958,6 +1194,7 @@ export const Style = {
   Theme: Theme.Theme,
   ThemeLight: Theme.ThemeLight,
   lookupToken: Theme.lookupToken,
+  defineTheme: Theme.define,
+  defineThemeTokens: Theme.defineTokens,
+  themeLayer: Theme.layer,
 } as const;
-
-

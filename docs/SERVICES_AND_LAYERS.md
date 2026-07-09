@@ -52,6 +52,16 @@ trap. Deriving both from one `AppLayer` value is the golden path.
 | **Per-operation** | `Effect.provide(layer)` inside setup/actions/loaders | One Effect execution | Cheap or variant implementations: an HTTP client with different options for one call |
 | **Ambient framework tags** | `Reactivity.Tag`, `Theme`, `View.PlatformTag`, `Style.PlatformTag`, `Route.SingleFlightTransportTag` | Wherever provided (usually app root) | Swapping framework behavior: `Reactivity.test`, a fake single-flight transport, a platform vocabulary |
 
+### Event Channels
+
+`Event.channel(...)` defines a named logical channel; `Event.layer(...)`
+provides its backing Effect `PubSub` as a specific scoped service. Provide the
+same channel layer at the app root when independent features must communicate,
+or at a subtree/request boundary when its facts must remain private. `Event`
+does not replace Effect `PubSub`: use direct `PubSub` for private service-local
+channels, and use `Event` when a named typed contract is useful across module
+boundaries.
+
 ### Decision criteria
 
 Adapted to our tiers (cf. Foldkit's Resources guidance):

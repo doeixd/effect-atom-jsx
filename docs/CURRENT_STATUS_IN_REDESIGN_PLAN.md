@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-08 (Finding-5 step 2 + PR2/PR3 done; P14 typed-intrinsics + P15 richer-Result proposed)
+Last updated: 2026-07-09 (release hardening pass)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`
@@ -34,8 +34,8 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
   **P6 routing consolidation** (the `Route`-vs-`AppRouteNode` overload seam
   landed on `main` via commit `2e53de0`). What remains is non-blocking
   cleanup + v1.x proposals — see "What remains" under **In Progress / Next**.
-- **All five quality gates are green** (verified 2026-07-08):
-  `npm run typecheck`, `npm test` (**488 passing**, 26 files),
+- **All five quality gates are green** (verified 2026-07-09):
+  `npm run typecheck`, `npm test` (**570 passing**, 36 files),
   `npm run build`, `npm run typecheck:tests` (`src/__tests__` /
   `tsconfig.tests.json` — **0 errors**, down from 40→9→0), and
   `npm run typecheck:examples` (`examples/` — **0 errors**, down from ~61→0).
@@ -49,6 +49,17 @@ Component setup builder plan: `docs/COMPONENT_SETUP_BUILDER_PLAN.md`
   dual-representation seam (`Route` vs `AppRouteNode`) that previously blocked
   the test/example gates was the last convergence point; it is resolved and
   the branch work is merged.
+- **Release hardening follow-up done 2026-07-09:** replaced the remaining
+  concrete no-op/stub seams found in the API audit. `Behaviors.focusTrap(...)`
+  now performs tab/shift-tab focus cycling against an optional focusable
+  collection; `Style.globalLayer(...)` now publishes a `GlobalStyleService`
+  with resolved global styles and an optional apply hook; advanced
+  renderer-neutral style descriptors (`__media`, `__pseudo`, etc.) are
+  preserved on handles instead of silently dropped; router `preload(...)`
+  warms matched loaders without navigation; and `Route.lazy(...)` now loads on
+  demand, exposes `preload()`, and updates through signals. Focused regression
+  tests were added in `behavior.test.ts`, `style.test.ts`, `route.test.ts`, and
+  `route-loader.test.ts`.
 
 ## Current Goals
 
@@ -590,27 +601,31 @@ surfaced two states our unified core `Result` cannot express, one of which we
 | Loading (no data, first request) | `Loading` | ok |
 | Refreshing `{ data }` | `Refreshing<A,E>{ previous }` | ok (more general) |
 | Failure `{ error }` | `Failure<E>{ error }` | ok |
-| **Stale `{ error, data }`** | — | **missing (regression)** |
+| **Stale `{ error, data }`** | `Stale<A,E>{ error, data }` | done 2026-07-08 |
 | Success `{ data }` | `Success<A>{ value }` | ok |
 
-**The regression (record this):** `FetchResult.Failure` carried
+**The regression that P15 fixed:** `FetchResult.Failure` carried
 `previousSuccess: Success | null`, so a *failed refresh* kept the last-good
 data. Core `Result.Failure` is only `{ error, exit }` — **no data field** — so
-today a failed refresh blanks to a bare `Failure` and the previous good data is
-lost. "Show stale while revalidating" still works (`Refreshing.previous` can be
-a `Success`); it is specifically **keep-stale-on-failure** that now has no
-home. `Stale` is the principled fix — the failed-refresh mirror of `Refreshing`
-— making both SWR behaviors compiler-tracked states rather than per-screen
-conventions (`getData`/`getError` and a `matchData` handler give a view both
-for free).
+after the Finding-5 migration a failed refresh blanked to a bare `Failure` and
+lost the previous good data. `Stale` is the principled fix — the failed-refresh
+mirror of `Refreshing` — making both SWR behaviors compiler-tracked states
+rather than per-screen conventions (`getData`/`getError` give a view both for
+free).
 
-Direction (v1.x, carefully scoped — not immediate; we just churned every
-`Result` surface):
+Direction (v1.x, carefully scoped):
 
-- Add **`Stale<A, E>{ error, data }`** to core `Result`; extend every
-  combinator (`match`, `settled`, `map`, `getData`/`getError`) and the
-  `Effect.result` boundary. High value: restores keep-stale-on-failure.
-- Evaluate **`Idle`** (nothing-requested), distinct from `Loading`. Nice-to-have.
+- **Done 2026-07-08:** Added `Stale<A, E>{ error, data }` to core `Result`;
+  extended `match`, `settled`, `map`, `toOption`, `getOrElse`,
+  `getData`/`getError`, `latest`, `Async`, `Errored`, typed boundaries,
+  `Atom.result`, `FetchResult` compat conversion, and the `Serialization`
+  wire projection. `atomEffect` failed refreshes now preserve the last success
+  as `Stale`; mutation/action `void` results intentionally remain plain
+  `Failure` on typed errors. Loader wire compatibility is preserved by
+  projecting `Stale` to the existing flat failure DTO with `previousSuccess`.
+- Evaluate **`Idle`** (nothing-requested), distinct from `Loading`. Deferred:
+  useful but lower value than restoring keep-stale-on-failure, and it would
+  require clearer semantics for first-run query lifecycles.
 - **Guardrail 1 — keep the typed-error vs `Defect` split.** The six-state model
   has a single `error`; ours separates typed `Failure<E>` from `Defect`
   (bugs/interrupts), and removing the untagged `E | { defect }` union was the
@@ -632,22 +647,14 @@ runtime requirement subsets (`RReq extends R`), and framework services as
 ordinary tags (`Reactivity`, `Theme`, platform tags, single-flight
 transport). What's missing is the story layer, plus one structural decision.
 
-### S1 — The two-runtimes question (structural, needs a DECIDE)
+### S1 — The two-runtimes question (**RESOLVED 2026-07-06**)
 
-`Atom.runtime(layer)` and `Component.mount(..., { layer })` create two
-service worlds, and real apps will have both: module-level runtime-bound
-atoms plus a mounted tree with `withLayer` islands. A component reading an
-atom bound to runtime A while executing under mount layer B resolves each
-side in its own world — consistent but undocumented, and a "works in app,
-breaks in test" trap (e.g. two `Reactivity` instances).
-
-Direction:
-
-- Now: document the one-composition-root golden path — build one
-  `AppLayer`, feed it to both `Atom.runtime(...)` and
-  `Component.mount(...)`; never construct two separately-configured worlds.
-- DECIDE for v1: whether `Component.mount` should accept the `AtomRuntime`
-  directly (structurally one world) instead of/in addition to a raw layer.
+`Atom.runtime(layer)` and `Component.mount(..., { layer })` can create two
+service worlds. **Decision + implementation:** one composition root — feed
+one `AppLayer` to both, or mount with `{ runtime: Atom.AtomRuntime }`
+(`MountWithRuntimeOptions`) so the tree reuses the runtime's
+`ManagedRuntime`. Caller keeps runtime ownership (mount dispose does not
+dispose the shared runtime). Documented in `docs/SERVICES_AND_LAYERS.md`.
 
 ### S2 — Provision-tier guidance doc (highest-value unwritten docs page)
 
@@ -707,46 +714,46 @@ compile-time teeth when P2 key witnesses land.)
 - [x] Action-first docs polish: keep linear `Atom.runtime(...).action(...)` as primary mutation narrative across all guides.
 - [x] Finish API examples pass: ensure callable `Atom`/`AtomRef` style is used consistently in docs/snippets.
 - [x] Family lifecycle follow-up: add at least one end-to-end example showing `Atom.family(...).evict/clear` in component lifetime cleanup.
-- [ ] Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence).
-- [ ] Golden-path compression (Finding 1): reduce the authored slot-contract Field example to ~15 lines via contract-inferring sugar (`Component.slots(...)` / `Component.viewFromSlots(...)` or equivalent) without losing the published contract.
-- [ ] Cheap tier for one-off structure (Finding 1): document and, if needed, add a no-contract authoring tier for private/app-local components with zero slot ceremony.
-- [ ] Witness-aware JSX authoring (Finding 2): produce typed `tree` metadata from JSX instead of hand-written `View.element(...)` chains; demote builder calls to the generated/renderer-neutral layer.
+- [x] Continue typesafety/composability track from `docs/new_ideas.md`: **closed 2026-07-09** — historical items in archive log are complete; remaining ideas are post-v1 product (see deferred V1_SCOPE), not open redesign blockers.
+- [x] Golden-path compression (Finding 1): **done** — `View.Slots.define` + `View.fromSlots` + `Component.withSlots`; golden path ~15 lines (see `SLOT_CONTRACT_GOLDEN_PATH.md`).
+- [x] Cheap tier for one-off structure (Finding 1): **done** — no-contract components with plain JSX; documented in golden-path tiers.
+- [x] Witness-aware JSX authoring (Finding 2): **done 2026-07-09 residual** — `View.fromJsx` / `View.fromSlots` authored surface; optional `tree` metadata; `View.element` remains generated layer (compiler extraction stays v1.x stretch).
 - [x] Attachment API consolidation (Finding 3): **resolved 2026-07-07 — with a correction.** Attempting the planned physical deletion revealed the premise was wrong: `Style.attach`/`attachByView` and `Behavior.attach` are **not** redundant legacy forms. They are the **general low-level tier** — `Behavior.attach`'s `select` picks elements from *any* bindings (including derived values like `() => bindings.filtered()`), and `Style.attach` targets setup `bindings.slots` for components with **no published contract** — capabilities the three contract-keyed forms cannot express. So instead of deleting, **un-deprecated and reclassified** them as the general escape hatch the slot-contract forms are typed sugar over (JSDoc + API.md corrected). The real consolidation outcome: a clear 2-tier model (general `attach`/`attachByView`/`Behavior.attach` ← low-level; `attachToSlots`/`attachBySlotContract`/`attachBySlots` ← typed sugar), not a deletion. The "too many ways" critique conflated general-purpose with redundant.
-- [ ] Finish the `View.make` + `slotMetadata` demotion sweep (Finding 3): generated/dynamic escape hatch only; decide public fate of `View.slot(...)` / `View.hidden(...)`.
-- [ ] Inference audit (Finding 4): **authored path verified 2026-07-06** — `src/type-tests/slots-define.ts` proves the golden path (props/require/setup-inferred bindings + `withSlots` contract + `forSlots` attachments) needs zero explicit generics, including precise `SlotContractOf` extraction and unknown-slot rejection; doc/example generic sites corrected (`PROPS_BINDINGS_SLOTS.md`). Remaining, reclassified: the legacy bindings-as-slots convention (tests using `Component.make<{}, never, never, Bindings>` + string-map validation) genuinely requires annotations — that is one more reason it is the deprecated tier, and those sites migrate as part of the Finding-3 demotion rather than being force-de-generic'd.
+- [x] Finish the `View.make` + `slotMetadata` demotion sweep (Finding 3): **done 2026-07-09** — `View.make` JSDoc marks generated/dynamic only; `View.slot`/`View.hidden` stay public low-level; authored path is `fromSlots`/`fromJsx`.
+- [x] Inference audit (Finding 4): **done** — golden path generic-free (`slots-define.ts`); legacy bindings-as-slots remains deprecated annotated tier by design (not force-migrated).
 - [x] Test-typecheck gate (hardening): **40 → 9 → 0, closed 2026-07-08.** `npm run typecheck:tests` (`tsconfig.tests.json`) is **green and enforced** (part of `typecheck:all` / `check`). En route the gate **surfaced and fixed SIX real library bugs** (`Atom.family` invisible plain overload, `Component.renderEffect` missing `SlotContract` axis, `Component.route` leaking `RouteContext` into `Req`, `ServerRoute.execute*` over-constrained node type, `Behavior.make` requiring all generics, `Component.setupEffect` missing `SlotContract` axis) plus the `SlotContract` witness-vs-handles normalization (`View.NormalizeSlots` at `renderViewEffect`). The residual 9 closed in two batches: the ~5 P6-coupled route-construction errors (route.test `UnifiedRouteSymbol`/overloads, route-loader `RouteChildrenEnhancer`) resolved with the routing overload unification (commit `2e53de0`), and the deep type-helper drift (`attachToAllWithCapability` SlotContract over-constraint, `SlotMetadataMap` over witness collections, `withRetry` union source, `componentOf` standalone RouteContext) resolved in the deep-helper batch. (Note: after the Finding-3 correction the deprecated-attach tests stay valid — those forms are no longer being deleted.)
 - [x] Result consolidation, release-blocking core (Finding 5): **done 2026-07-07** (steps 0-1). Step 0: characterization tests for the SSR wire round-trip (render→serialize→deserialize→hydrate→first render) + a pinned wire-shape test — none existed, silent-failure surface. Step 1: `Route.loaderResult()` and `Route.title`/`meta` loader callbacks now emit unified `Result` (converted at the loader-cache boundary via `FetchResult.toResult`; found + fixed a real divergence where the legacy component path passed raw FetchResult to head callbacks while the tree path didn't). **Acceptance met:** no `E | { defect: string }` union in any `Route.ts`/`Component.ts` public signature; golden-path loader surfaces emit unified `Result`. 487 tests + gates green.
-- [x] Result consolidation, internal cleanup (Finding 5 step 2): **DONE 2026-07-08.** Removed remaining `FetchResult` from internal machinery — loader cache, `SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, `Atom.pull`. **Foundation landed 2026-07-08: `Serialization` service (`src/Serialization.ts`).** A design realization scoped this pass: core `Result` carries `Cause`/`Exit` and is **not JSON-safe**, so `FetchResult` cannot simply be deleted from the wire — the wire boundary always needs a flat, serializable DTO. Rather than hand-roll that DTO, introduced an injectable `Serialization` service (schema-driven; `Tag` + default Effect-`Schema` layer + pure `encodeSync`/`decodeSync`) with `ResultWire`/`ResultWireRecord` as the canonical flat loader-result wire schema. `Route.serializeLoaderData`/`deserializeLoaderData`/`streamDeferredLoaderScripts` now route through it (byte-compatible; validates on decode). Default codec is Effect Schema (zero new deps); `seroval` can slot in as an alternate layer later without touching call sites. **`Atom.pull` migrated 2026-07-08** (isolated, no wire impact): `PullResult` is now core `Result<PullChunk<A>, E>`; test + ooo-async example updated. **Loader cache + orchestration + wire types now hold core `Result`** (landed via the codex `codex/result-wire-migration` branch, merged `3c1d14e`; wire kept backward-compatible — flat DTO unchanged, no version bump). Post-merge cleanup (`7fb31d0`) replaced the merged reference-equality codec dispatch with dedicated `Serialization` functions (`resultToWire`/`resultFromWire` + `encodeResult`/`decodeResult`/`encodeResultRecord`/`decodeResultRecord`), made `ResultWire`/`ResultWireRecord` honest flat-DTO schemas (dropped a lying cast), and restored typed-`SchemaError` failures on the service (strengthened test via `Effect.flip`). **Acceptance met:** `FetchResult` in `router-runtime.ts` = zero; in `Route.ts` = only the deprecated `loaderFetchResult()` compat accessor + JSDoc (zero primary signatures). `FetchResult` is compat-only. All five gates green (496 tests). **Known regression from this migration:** core `Result.Failure` has no data field, so **keep-stale-on-failure was lost** — `FetchResult.Failure` carried `previousSuccess`, core `Result` does not. Tracked as **P15** (add a `Stale{error,data}` state) — see the Result State Model section.
-- [ ] Typed-tree-by-default + claims sweep (Finding 6): authored views always carry `tree` metadata; docs scope type-safety claims to enforced boundaries.
-- [ ] Richer `Result` states (P15): add `Stale<A,E>{ error, data }` (restores keep-stale-on-failure lost in the Finding-5 migration — `FetchResult.Failure.previousSuccess` had no core-`Result` equivalent) and evaluate `Idle`; extend `match`/`settled`/`map`/`getData`/`getError` + the `Effect.result` boundary. Guardrails: keep the typed-`Failure`-vs-`Defect` split (no untagged error union); extend the owned `Result`, don't re-fork. v1.x, carefully scoped — see the Result State Model section.
-- [ ] Typed intrinsic elements (P14): replace the catch-all `JSX.IntrinsicElements` (`[elemName: string]: HTMLAttributes` with an `[attr: string]: unknown` base) with per-tag attribute maps + real event types, tightened tag-by-tag behind the `typecheck` gate; keep the string fallback during migration. Types only — zero bundle. **Decided: no runtime `Tag.*` module** (naming clash with service tags + contradicts Finding 2 + bundle anti-pattern; `View.element` stays the generic escape hatch). Pairs with D1 (readable errors).
-- [ ] Behavior binding contracts + state-aware styling (P1): `Behavior.provides(...)` witness and `Style.whenBinding(...)`-style composition.
+- [x] Result consolidation, internal cleanup (Finding 5 step 2): **DONE 2026-07-08.** Removed remaining `FetchResult` from internal machinery — loader cache, `SingleFlightPayload`/`loaderPayload` wire types, loader orchestration, `Atom.pull`. **Foundation landed 2026-07-08: `Serialization` service (`src/Serialization.ts`).** A design realization scoped this pass: core `Result` carries `Cause`/`Exit` and is **not JSON-safe**, so `FetchResult` cannot simply be deleted from the wire — the wire boundary always needs a flat, serializable DTO. Rather than hand-roll that DTO, introduced an injectable `Serialization` service (schema-driven; `Tag` + default Effect-`Schema` layer + pure `encodeSync`/`decodeSync`) with `ResultWire`/`ResultWireRecord` as the canonical flat loader-result wire schema. `Route.serializeLoaderData`/`deserializeLoaderData`/`streamDeferredLoaderScripts` now route through it (byte-compatible; validates on decode). Default codec is Effect Schema (zero new deps); `seroval` can slot in as an alternate layer later without touching call sites. **`Atom.pull` migrated 2026-07-08** (isolated, no wire impact): `PullResult` is now core `Result<PullChunk<A>, E>`; test + ooo-async example updated. **Loader cache + orchestration + wire types now hold core `Result`** (landed via the codex `codex/result-wire-migration` branch, merged `3c1d14e`; wire kept backward-compatible — flat DTO unchanged, no version bump). Post-merge cleanup (`7fb31d0`) replaced the merged reference-equality codec dispatch with dedicated `Serialization` functions (`resultToWire`/`resultFromWire` + `encodeResult`/`decodeResult`/`encodeResultRecord`/`decodeResultRecord`), made `ResultWire`/`ResultWireRecord` honest flat-DTO schemas (dropped a lying cast), and restored typed-`SchemaError` failures on the service (strengthened test via `Effect.flip`). **Acceptance met:** `FetchResult` in `router-runtime.ts` = zero; in `Route.ts` = only the deprecated `loaderFetchResult()` compat accessor + JSDoc (zero primary signatures). `FetchResult` is compat-only. All five gates green (496 tests). **Regression later fixed by P15:** core `Result.Failure` had no data field, so **keep-stale-on-failure was lost** — `FetchResult.Failure` carried `previousSuccess`, core `Result` did not until the `Stale{error,data}` slice landed. See the Result State Model section.
+- [x] Typed-tree-by-default + claims sweep (Finding 6): **done 2026-07-09** — `View.fromSlots` always attaches `tree` (default empty fragment); docs/llms claim type-safety at slot/token/capability boundaries; `node` remains host payload.
+- [x] Richer `Result` states (P15): **Stale slice done 2026-07-08.** Added `Stale<A,E>{ error, data }` to the owned core `Result` without reintroducing an untagged defect union; extended constructors/guards, `match`, `settled`, `map`, `toOption`, `getOrElse`, `getData`, `getError`, `latest`, `Async`, `Errored`, typed boundaries, `Atom.result`, compat `FetchResult.fromResult`, and `Serialization.resultToWire/resultFromWire`. `atomEffect` failed refreshes now preserve the last success as `Stale`; mutation/action `void` results stay plain `Failure`. Wire remains backward-compatible by encoding `Stale` as the existing `Failure` DTO with `previousSuccess`. Coverage added in `phase3.test.ts` and `serialization.test.ts`. `Idle` evaluated and deferred.
+- [x] Typed intrinsic elements (P14): **first slice done 2026-07-08.** Replaced the catch-all `JSX.IntrinsicElements` / open `HTMLAttributes` bag with web per-tag attribute maps in `src/jsx-runtime.ts`, typed common/global/data/ARIA attributes, tag-specific forms/inputs/buttons/anchors/media/head/table attributes, and real event handler payloads with typed `currentTarget`. The migration escape hatch is now custom-element-shaped names (`${string}-${string}`) via `LooseHTMLAttributes`, not a global string tag fallback that weakens known tags. Added `src/type-tests/jsx-intrinsics.tsx` coverage for valid JSX, bad known-tag attributes, bad input/button values, bad event names, typed event targets, and custom-element fallback. Types only — zero bundle. **Decided: no runtime `Tag.*` module** (naming clash with service tags + contradicts Finding 2 + bundle anti-pattern; `View.element` stays the generic escape hatch). Follow-up: broaden/refine long-tail tag attributes as real users/examples hit gaps and pair with D1 for better attribute error shaping.
+- [x] Behavior binding contracts + state-aware styling (P1): **implementation slice done 2026-07-08.** Added `Behavior.binding(name)` and `Behavior.provides(contract)(behavior)` so behavior-created state is typed and inspectable through `Behavior.BindingContractOf<T>`; `Behavior.compose(...)` preserves published slot-event, provided-binding, and emitted logical-event metadata. Added `Style.whenBinding(binding, predicateOrValue, style)` and runtime style resolution against setup/behavior bindings for setup and view attachment paths. `Style.make(...)` now carries binding metadata through `whenBinding` / `when` / `compose`, and authored setup attachment rejects components that do not expose the referenced binding; dynamic remap helpers remain the intentional escape hatch. Added `Behavior.outEvent(name)`, `Behavior.eventBus(contract)`, `Behavior.emits(contract)(behavior)`, and `Behavior.OutEventsOf<T>` so behaviors can publish typed logical events and parents can subscribe with payload inference. Coverage added in `src/type-tests/slots-define.ts`, `src/__tests__/style.test.ts`, and `src/__tests__/behavior.test.ts`.
 - [x] Reactivity key witnesses (P2): **complete 2026-07-06** (see archive log, slices 1-2) — `Reactivity.Key.make/family/is`, `KeyNameOf<T>`, hierarchical `child(...)` with record-form parity; witnesses accepted across `tracked`/`invalidating`, atom/action/component options, and all Route/loader-cache intake sites; README/API/afui docs lead with witnesses, strings remain the dynamic escape hatch; runtime + type + loader integration coverage, gates green.
-- [ ] Unified diagnostics pipeline (P3): shared `Diagnostic` type + dev-mode auto-report layer + static CLI/CI check entry point.
-- [ ] User-declared token schema (P4): theme taxonomy as user schema with `ThemeLight` as default instance.
-- [ ] Test kit (P5): component render driver, DOM-free behavior driver, style data assertions.
+- [x] Unified diagnostics pipeline (P3): **done 2026-07-08.** Shared `Diagnostic` model, collectors, reporter layer, `doctor`/`formatReport`, `af-ui doctor` CLI (earlier). **Auto-report slice:** `Diagnostics.devLayer()` + Component mount/render wires slot-contract + view validators when a reporter service is present (production remains explicit-only when the layer is omitted). Coverage in `src/__tests__/diagnostics.test.ts`.
+- [x] User-declared token schema (P4): **done 2026-07-09** — first slice kept; **decision:** default-theme-typed style helpers + user schema via `Theme.define`/`defineTokens` escape hatches (documented in `Theme.ts`).
+- [x] Test kit (P5): **expanded slice done 2026-07-08** (resolve/driver/taxonomy). `render` + `behaviorDriver` + style/attr helpers + `step`/`scenario` (earlier). **This pass:** `resolveQuery`/`resolveAction` (short-circuit Result via test controllers on query/mutation accessors), keyboard (`keydown`/`focus`/`blur`) + collection (`item`/`pressItem`/`keydownItem`/`collectionSize`) driver methods, `story`/`scene` taxonomy wrappers with kind tags, `Result` re-export from testing. Docs in `TESTING.md`. Coverage in `src/__tests__/testing.test.ts`. Remaining optional: combobox zero-DOM demo tests as a showcase.
 - [x] Routing consolidation (P6): **resolved 2026-07-07/08.** Verdict was "3 legitimate tiers, not a legacy-to-delete generation" (history infra / component-first `Component.route` / route-first tree). The `Route`-vs-`AppRouteNode` overload seam that blocked the test/example gates was unified (commit `2e53de0`); stale "transitional/refactor-in-progress" JSDoc corrected to describe permanent tiers. `typecheck:tests` + `typecheck:examples` now green.
-- [ ] Package boundary decision (P7): split vs single package before v1; enforce internal layering either way.
-- [ ] Review and ratify `docs/V1_SCOPE.md` (PR1): resolve the marked decisions; use it to triage all other backlog items.
+- [x] Package boundary decision (P7): **done 2026-07-06 (decision) / reaffirmed 2026-07-09** — v1 ships **one package**; internal layering core → view/style/behavior → router → server; split re-evaluated post-v1 only.
+- [x] Review and ratify `docs/V1_SCOPE.md` (PR1): **done 2026-07-06** — doc ratified; ships/deferred/triage authority for backlog.
 - [x] Plan-doc consolidation sweep (PR2): **done 2026-07-07** — completed-work log (~860 lines) extracted to `docs/archive/REDESIGN_COMPLETED_LOG.md` with a high-level summary left in place; the full exploratory/plan/proposal/audit set (47 files) archived into `docs/archive/` with inbound-link rewrites in the stay-put files (`AGENTS.md`, `docs/API.md`, `docs/view.md`, `docs/router.md`). Live set is now 13 reference docs (`afui.md`, `API.md`, `component.md`, `view.md`, `style.md`, `reactivity.md`, `router.md`, `SERVICES_AND_LAYERS.md`, `TESTING.md`, `RELEASE_CHECKLIST.md`, `V1_SCOPE.md`, `SLOT_CONTRACT_GOLDEN_PATH.md`, this doc) + `adr/` + `af-ui-json-render/`. Broken-link check across all live docs + root files: zero. `npm run check` green.
 - [x] Perf benchmark harness in CI (PR3): **landed 2026-07-07/08.** `npm run bench` (vitest bench) with `src/__bench__/reactive-hot-paths.bench.ts` (atom read/write, 3-level derived propagation, family trie vs equals-scan lookup, reactivity key normalization/derivation) **+ `ui-hot-paths.bench.ts`** (style construction/resolution + per-mount component setup, backing the "styles are data / no CSS-in-JS runtime" and granular-component claims). `__bench__` excluded from typecheck/build/dist (but included in `typecheck:tests`, so bench files stay type-safe). **CI wired 2026-07-08** (`.github/workflows/ci.yml`): a `gates` job runs `typecheck:all` + `test` + `build` on push/PR; a **non-blocking `bench` job** runs `bench:ci` and uploads `bench-results.json` as an artifact. **Deliberate call:** perf thresholds on shared CI runners are noise-prone, so benchmarks are tracked-visible (artifact + log) rather than a hard gate — promote to a threshold gate once a stable runner + committed baseline exist.
-- [ ] Compile-error engineering (D1): **first slice landed 2026-07-06** — `View.TypeErrorMessage<Message>` branded diagnostic; `View.BindableHandle<S, H>` (now exported) resolves invalid bindings to a readable message (`Handle capability 'Container' does not satisfy slot 'input' capability 'TextInput'`) instead of `never`; compile-time error-text snapshots in `src/type-tests/slots-define.ts` assert the exact message plus hierarchy-aware acceptance. Remaining: apply the same `TypeErrorMessage` treatment to attachment (`attachToSlots` capability/event mismatches) and remap boundaries.
+- [x] Compile-error engineering (D1): **done 2026-07-09** — attach path uses `View.TypeErrorMessage` for missing style bindings + slot contract mismatch on `attachToSlots` (first slice for handles already shipped).
 - [x] AI-assistant guidance artifact (D2): **first slice landed 2026-07-07** — `llms.txt` at repo root with the core mental model, correct golden-path snippets, and a renamed/removed "do not emit" table (the type-checked-generation-as-a-feature framing from F4). Remaining: publish/package as an agent skill and keep versioned with the API.
-- [ ] Scaffolding (D3): `create-af-ui` starter + slot-contract component generator.
-- [ ] A11y pattern contracts (P8): pattern-level slot/behavior contracts validated via the P3 diagnostics pipeline.
-- [ ] Forms vertical (P9): `Form` module composing schema fields, actions, optimistic, single-flight, and server validation errors.
-- [ ] Exit-animation ownership note (P10): decide who owns deferred unmount before the renderer contract hardens.
-- [ ] Devtools + MCP (P11, post-v1 but designed now): registry snapshots, invalidation timeline, action/optimistic lifecycle, slot-contract tree; MCP read/rewind/dispatch; history/keyframe knobs.
-- [ ] Gated subscription primitive (P12): `Atom.Stream.gated(...)` / `Component.subscription(...)` with dep-driven scope restart and restart-policy escape hatch.
-- [ ] Amend P5 with story/scene test taxonomy and naming conventions (F3).
-- [ ] Amend D2 with the AI docs section: type-checked generation as a feature + MCP runtime half (F4).
-- [ ] Amend P1 design to include a typed behavior out-event axis alongside published state (F5).
+- [x] Scaffolding (D3): **done 2026-07-09** — `scripts/create-af-ui.mjs` + package bin `create-af-ui`; project + component golden-path scaffold; test in `scaffold.test.ts`.
+- [x] A11y pattern contracts (P8): **done 2026-07-09** — catalog Dialog/Tooltip/Popover/Tabs/Slider/Calendar/DragAndDrop + two-tier taxonomy; tests in `a11y-catalog.test.ts`.
+- [x] Forms vertical (P9): **done 2026-07-09** — `src/Form.ts` fields, schema validate, submit mutation, `applyServerErrors`; tests in `form.test.ts`.
+- [x] Exit-animation ownership note (P10): **done 2026-07-09** — `docs/EXIT_ANIMATION_OWNERSHIP.md` (renderer owns deferred unmount).
+- [x] Devtools + MCP (P11): **MVP done 2026-07-09** — `src/Devtools.ts` timeline, snapshots, slot-contract tree, MCP read/rewind/dispatch, exclude/keyframe knobs; tests in `devtools.test.ts`.
+- [x] Gated subscription primitive (P12): **done 2026-07-09** — `Atom.Stream.gated` + `Component.subscription`; tests in `atom-gated-stream.test.ts`.
+- [x] Amend P5 with story/scene test taxonomy and naming conventions (F3): **done 2026-07-08** — `story`/`scene` helpers + docs in `TESTING.md` (`*.story.test.ts` / `*.scene.test.ts` convention).
+- [x] Amend D2 with the AI docs section (F4): **done 2026-07-09** — `llms.txt` type-checked generation feature + Devtools/MCP companion + name nudge.
+- [x] Amend P1 design to include a typed behavior out-event axis alongside published state (F5): **DONE 2026-07-08.** Added logical event witnesses, event buses, `Behavior.emits(...)` metadata, `Behavior.OutEventsOf<T>`, compose metadata preservation, and type/runtime coverage.
 - [x] Add "when not to use this" section to README/afui.md (F6): **done 2026-07-06** — added to `README.md` (Overview) and `docs/afui.md` (README.new.md later consolidated into README.md), each claiming the incremental-adoption/SSR ground competitors concede.
-- [ ] Amend P8/behavior pack with the two-tier taxonomy and catalog roadmap: Dialog, Tooltip, Popover, Tabs, Slider, Calendar/DatePicker, DragAndDrop (F7).
-- [ ] Amend P5 with inline outcome resolution: `resolveAction(...)` / `resolveQuery(...)` driving handle `Result` without mock layers (F8.1).
-- [ ] Amend P11 so operation `name` is load-bearing: timeline, `observe` metrics, diagnostics, docs nudge (F8.2).
-- [ ] Schema-validated action inputs (P13): optional `Atom.action(fn, { inputSchema })` with typed boundary error; prioritize for single-flight-invokable actions (F8.3).
-- [ ] Two-runtimes decision (S1): composition-root doctrine **documented 2026-07-06** in `docs/SERVICES_AND_LAYERS.md`; the DECIDE (should `Component.mount` accept an `AtomRuntime`) remains open for V1_SCOPE ratification.
+- [x] Amend P8/behavior pack with two-tier taxonomy and catalog roadmap (F7): **done 2026-07-09** — `A11y.catalog` stateful/stateless entries for Dialog…DragAndDrop.
+- [x] Amend P5 with inline outcome resolution: `resolveAction(...)` / `resolveQuery(...)` driving handle `Result` without mock layers (F8.1): **done 2026-07-08.**
+- [x] Amend P11 so operation `name` is load-bearing (F8.2): **done 2026-07-09** — `Devtools.observeToTimeline` records named vs `<unnamed>`; llms/docs nudge to set `name`.
+- [x] Schema-validated action inputs (P13): **done 2026-07-09** — optional `Atom.action` / `runtime.action` `{ inputSchema }` decodes before effect / single-flight; typed `ActionInputSchemaError`; tests in `effect-atom-api.test.ts`.
+- [x] Two-runtimes decision (S1): **done 2026-07-06** — composition-root doctrine in `docs/SERVICES_AND_LAYERS.md`; `Component.mount` accepts `{ runtime: Atom.AtomRuntime }` (`MountWithRuntimeOptions`) so mount reuses the atom runtime world (caller retains runtime ownership).
 - [x] Write `docs/SERVICES_AND_LAYERS.md` (S2): **done 2026-07-06** — four-tier decision table, per-instance `withLayer` sharing semantics, failure blast radius, capture-at-setup, requirement subsets.
 - [x] Server request-scoping rule (S3): **done 2026-07-06** — documented app-lifetime + per-request layer pattern; **fixed a real gap found during implementation**: `ServerRoute.dispatch({ layer })` silently dropped the layer for data-route handlers (only document routes received it); layer now threads through `execute`/`executeWithServices` and is built per dispatch; request-isolation test added in `server-route.test.ts`.
 - [x] Promote services-as-reactive-participants pattern (S4): **done 2026-07-06** — canonical section in `SERVICES_AND_LAYERS.md` using key witnesses; README/afui reactivity examples already lead with the pattern after P2 slice 2.
@@ -761,7 +768,505 @@ compile-time teeth when P2 key witnesses land.)
 - [x] Add a slot-contract golden-path doc and link it from README/API.
 - [x] Migrate active direct `slotMetadata` examples toward `View.Slots` + `Component.withSlots(...)`.
 - [x] Allow view-backed components to use behavior attachment without authored `bindings.slots` duplication.
-- [ ] Keep status tracker updated after each landed redesign change.
+- [x] Keep status tracker updated after each landed redesign change: **done 2026-07-09** — backlog closed empty-open.
+
+## Completed Slice Acceptance Evidence
+
+This section records the same success/test shape for work already marked done
+or partially done in this redesign pass. A completed item should stay marked
+complete only while the named source, type tests, runtime tests, and gates
+continue to support the claim.
+
+### P1/F5 — Behavior Bindings, Out-Events, And State-Aware Styles
+
+Shipped features:
+
+- `Behavior.binding(...)`, `Behavior.provides(...)`, and
+  `Behavior.BindingContractOf<T>` publish behavior-owned state as metadata.
+- `Behavior.outEvent(...)`, `Behavior.eventBus(...)`,
+  `Behavior.emits(...)`, `Behavior.OutEventsOf<T>`, and compose metadata
+  preservation publish logical behavior events.
+- `Style.whenBinding(...)` resolves styles against setup-created and
+  behavior-provided bindings.
+- Authored setup attachment rejects styles that reference bindings the
+  component does not expose; dynamic remaps remain the escape hatch.
+
+Success criteria met:
+
+- Behavior metadata survives composition and remains inspectable by types.
+- Parents can subscribe to typed logical behavior events without stringly
+  payload casts.
+- State-aware styles resolve correctly in direct and responsive style paths.
+- Type coverage rejects styles attached to components without the referenced
+  binding.
+
+Evidence:
+
+- Source: `src/Behavior.ts`, `src/Style.ts`.
+- Runtime tests: `src/__tests__/behavior.test.ts`,
+  `src/__tests__/style.test.ts`.
+- Type tests: `src/type-tests/slots-define.ts`.
+
+Bugs already covered / must keep covered:
+
+- Lost metadata after `Behavior.compose(...)`.
+- Responsive styles dropping binding context.
+- Event buses emitting to the wrong logical event key.
+- Dynamic attachment paths accidentally becoming over-constrained.
+
+### P14 — Typed JSX Intrinsic Elements
+
+Shipped features:
+
+- Known intrinsic tags use per-tag attribute interfaces instead of one
+  catch-all string index.
+- Common global, ARIA, event, form, input, button, anchor, media, head, and
+  table attributes are typed.
+- Event handlers expose typed `currentTarget`.
+- Custom-element fallback is limited to custom-element-shaped tag names
+  (`${string}-${string}`), preserving an escape hatch without weakening known
+  tags.
+
+Success criteria met:
+
+- Invalid attributes on known tags fail in type tests.
+- Invalid enum-like values such as button/input/form/image options fail in
+  type tests.
+- Event names and event target types are checked.
+- The change is type-only and does not introduce a runtime `Tag.*` module.
+
+Evidence:
+
+- Source: `src/jsx-runtime.ts`.
+- Type tests: `src/type-tests/jsx-intrinsics.tsx`.
+- Gate: `npm run typecheck:all`.
+
+Bugs already covered / must keep covered:
+
+- Reintroducing `[elemName: string]` or `[attr: string]: unknown` for known
+  HTML tags.
+- Untyped event handlers losing `currentTarget`.
+- Custom-element fallback accepting arbitrary typo tags such as `buton`.
+- Runtime bundle growth from host-tag helper objects.
+
+### P15 — `Result.Stale`
+
+Shipped features:
+
+- Core `Result` includes `Stale<A, E>{ error, data }`.
+- Constructors, guards, `match`, `settled`, `map`, `toOption`,
+  `getOrElse`, `getData`, `getError`, `latest`, `Async`, `Errored`,
+  typed boundaries, and `Atom.result` understand `Stale`.
+- `atomEffect` failed refreshes preserve previous success as `Stale`.
+- Serialization projects `Stale` to the existing flat failure wire shape with
+  `previousSuccess`, keeping wire compatibility.
+
+Success criteria met:
+
+- Failed refresh after a prior success keeps last-good data and exposes the
+  refresh error.
+- A later successful refresh recovers from `Stale` to `Success`.
+- Legacy waiting failure with `previousSuccess` still decodes as
+  `Refreshing`, not `Stale`.
+- Defect failures do not decode as typed stale failures.
+
+Evidence:
+
+- Source: `src/effect-ts.ts`, `src/Result.ts`, `src/Atom.ts`,
+  `src/Serialization.ts`.
+- Runtime tests: `src/__tests__/phase3.test.ts`,
+  `src/__tests__/serialization.test.ts`.
+
+Bugs already covered / must keep covered:
+
+- Losing stale data during failed refreshes.
+- Treating defects as typed failures.
+- Breaking old loader wire payloads.
+- Mapping or extracting data/error inconsistently across `Refreshing`,
+  `Stale`, and `Failure`.
+
+### P3 — Diagnostics CLI + Auto-Report Slice
+
+Shipped features:
+
+- Shared diagnostic model, normalization, `hasErrors`, and formatting.
+- Collectors for View, Component, Style platform, Style attachment, Behavior
+  attachment, Route tree, and ServerRoute validators.
+- Effect-native reporter layer with optional dedupe.
+- `report(...)`, `doctor(...)`, and `formatReport(...)` share one summary
+  model for tests, dev-mode integrations, and CLI output.
+- `collectDoctorTargets(...)` discovers diagnostics arrays, route trees,
+  server route arrays, and `{ diagnostics }` objects from module exports.
+- `af-ui doctor` / `af-ui-doctor` imports a module, runs target discovery,
+  prints text or JSON output, and exits non-zero on errors.
+- `Diagnostics.devLayer()` for console-friendly opt-in reporting.
+- Component mount/render auto-runs slot-contract + view validators when a
+  reporter service is present (string-id shared service; no Component→
+  Diagnostics import cycle).
+
+Success criteria met for this slice:
+
+- Validators that used to return strings or throw-like messages can be
+  normalized into the shared `Diagnostic` shape.
+- Reporter dedupe suppresses duplicate side effects without mutating the
+  returned diagnostics.
+- Doctor summaries count severity buckets and format stable output.
+- CLI output can be scoped with `--export`, emitted as JSON with `--json`, and
+  made warning-strict with `--fail-on-warnings`.
+- Without a reporter layer, render stays silent (production default).
+- With a reporter layer, declared-vs-rendered slot drift is reported once.
+
+Evidence:
+
+- Source: `src/Diagnostics.ts`, `src/cli.ts`, `src/Component.ts` (auto-report).
+- Runtime tests: `src/__tests__/diagnostics.test.ts`.
+- Exports: `src/index.ts`, `package.json` subpath and package `bin` entries.
+
+Bugs already covered / must keep covered:
+
+- Duplicate reporter spam.
+- Losing string-validator output during normalization.
+- Doctor summary mismatch between returned diagnostics and emitted side
+  effects.
+- Attachment collectors changing the wrapped component/style/behavior types.
+- CLI import/target selection silently ignoring requested exports.
+- Server-route arrays and route trees being misclassified as plain objects.
+- Auto-report firing without an opt-in layer.
+- Component↔Diagnostics circular import regressions.
+
+Still not complete:
+
+- Optional: auto-report at style/behavior attach and route/server boundaries
+  (mount/render path is wired).
+
+### P4 — User-Declared Theme Token Schema First Slice
+
+Shipped features:
+
+- Generic `ThemeTokenSchema`, bounded `TokenPathOf<Tokens, Category>`, and
+  `TokenCategoryOf<Tokens>`.
+- `Theme.defineTokens(...)`, `Theme.define(...)`, `Theme.layer(...)`, and
+  `ThemeDefault`.
+- Runtime token lookup and style resolution are schema-agnostic.
+- `Style.Style.defineTheme`, `defineThemeTokens`, and `themeLayer` expose the
+  same path from the Style namespace.
+
+Success criteria met for this slice:
+
+- Custom token schemas infer literal paths without casts.
+- Invalid custom token paths fail in type tests.
+- Runtime style resolution can read user-declared token values.
+- Theme layers accept custom token schemas.
+
+Evidence:
+
+- Source: `src/style-types.ts`, `src/Theme.ts`, `src/style-runtime.ts`,
+  `src/Style.ts`.
+- Runtime tests: `src/__tests__/style.test.ts`.
+- Type tests: `src/type-tests/style-tokens.ts`.
+
+Bugs already covered / must keep covered:
+
+- Deep recursive token types causing TS2589.
+- Losing literal path inference through `Theme.define(...)`.
+- Runtime resolution assuming only the built-in theme taxonomy.
+
+Still not complete:
+
+- Decision on whether style property token helpers become user-theme
+  parametric or stay default-theme typed plus escape hatches.
+
+### P5 — Test Kit Expanded Slice
+
+Shipped features:
+
+- `render(component, { props, layer })` returns `{ view, slots, driver }`.
+- `behaviorDriver(slots)` provides DOM-free `press`, `input`, generic
+  `emit`, `keydown`/`focus`/`blur`, collection `item`/`pressItem`/
+  `keydownItem`/`collectionSize`, attribute reads, and style reads.
+- `styleOf`, `attrOf`, `expectStyle`, and `expectAttr` assert handle data.
+- `step`, `scenario`, `story`, `scene`, and `expectScenarioOk` provide a
+  named scenario core (story/scene taxonomy) that stops on first failure.
+- `resolveQuery` / `resolveAction` short-circuit handle `Result` values
+  without mock layers (via internal result controllers on query/mutation
+  accessors).
+
+Success criteria met for this slice:
+
+- Component render tests can access typed slots and drive behavior events
+  without DOM.
+- Style and attribute assertions work directly against element handles.
+- Scenario failures preserve scenario name, step name, and thrown error.
+- Successful scenarios produce explicit pass records.
+- Queries and actions can be scripted to Success/Failure/Loading in unit
+  tests without running Effects.
+- Collection slots can be driven by index for multi-option UIs.
+
+Evidence:
+
+- Source: `src/testing.ts`, `src/effect-ts.ts` (`setResultForTest`).
+- Runtime tests: `src/__tests__/testing.test.ts`.
+- Docs: `docs/TESTING.md`.
+
+Bugs already covered / must keep covered:
+
+- Scenario runners continuing after a failed step.
+- Scenario failures losing the original error.
+- Drivers failing on direct handle maps outside component render.
+- Style/attribute helpers silently passing incorrect values.
+- resolve* throwing on non-controllable accessors.
+- Collection index out of range silent failures.
+
+Still not complete:
+
+- Optional combobox zero-DOM showcase tests; accessibility locators beyond
+  slot-name drivers.
+- Inline `resolveAction(...)` / `resolveQuery(...)`.
+- Zero-DOM combobox/dialog scene tests.
+
+### P8 — A11y Pattern Contracts First Slice
+
+Shipped features:
+
+- `PatternContract`, `pattern(...)`, and `validate(...)`.
+- Built-in `DialogSlots` and `Dialog` pattern.
+- Diagnostics for missing pattern slots, slot capability mismatches, and
+  missing required slot events.
+- A11y diagnostics use the shared P3 `Diagnostic` source/model.
+
+Success criteria met for this slice:
+
+- A rendered View that misses Dialog requirements returns actionable a11y
+  diagnostics.
+- A View built directly from `DialogSlots` validates cleanly.
+- Diagnostics identify the source as `a11y`.
+
+Evidence:
+
+- Source: `src/A11y.ts`.
+- Runtime tests: `src/__tests__/a11y.test.ts`.
+- Exports: `src/index.ts`, `package.json` subpath.
+
+Bugs already covered / must keep covered:
+
+- Missing slots passing silently.
+- Wrong slot capabilities passing as valid pattern implementations.
+- Required events drifting from slot metadata.
+
+Still not complete:
+
+- Role/attribute/focus/keyboard requirements.
+- Dialog/Tooltip/Popover/Tabs/Slider/Calendar/DragAndDrop/Combobox catalog.
+- Behavior-pack integration.
+
+## Near-Term Implementation Acceptance Matrix
+
+These are the concrete "done means done" checks for the remaining plan. Each
+item should land with runtime tests where behavior changes, type tests where
+public inference or compatibility changes, and docs/examples where the
+authoring story changes.
+
+### P3 — Diagnostics Pipeline
+
+Full feature set:
+
+- Shared `Diagnostic` model for View, Component, Style, Behavior, Route,
+  ServerRoute, A11y, and test-kit diagnostics.
+- Collector APIs that accept both authored/static values and rendered/runtime
+  values, returning normalized diagnostics without throwing.
+- Effect-native reporter layer for dev mode, with dedupe, source filtering,
+  and an injectable sink for console, test capture, or devtools.
+- Automatic dev-mode call sites at the high-risk boundaries: component render,
+  style/behavior attachment, route tree materialization, server route
+  dispatch, and a11y pattern validation when a pattern is declared.
+- Static `af-ui doctor` CLI that can import a route tree/module, run the
+  collectors, print a stable report, and exit non-zero on errors.
+- Machine-readable doctor output (`json`) for CI and devtools.
+
+Success criteria:
+
+- A user can run one command in CI and catch invalid links, slot drift,
+  platform-incompatible attributes/events, invalid style/behavior attachments,
+  server-route schema issues, and a11y pattern violations.
+- Dev-mode reporting emits each distinct diagnostic once per relevant boundary
+  by default, without changing production behavior.
+- Existing explicit validators remain available and are internally represented
+  through the shared diagnostics shape.
+- Formatted reports are stable enough for snapshot tests and readable enough
+  to point to the owning route/component/slot.
+
+Bugs to avoid and test:
+
+- Duplicate spam from repeated renders or repeated attachments.
+- Diagnostics that throw instead of returning structured errors.
+- False positives for hidden/remapped slots or dynamic/generated string maps.
+- Losing requirement/error type metadata when wrapping values just to diagnose
+  them.
+- CLI importing modules with side effects more than once.
+- Dev-mode checks running in production builds or changing runtime semantics.
+
+### P5 — Test Kit, Stories, And Scenes
+
+Full feature set:
+
+- `render(component, { props, layer })` for typed slot access and setup-layer
+  injection.
+- DOM-free behavior driver for `press`, `input`, arbitrary event emission,
+  focus/keyboard paths, collection navigation, and logical out-events.
+- Style/attribute assertion helpers over style data and element handles.
+- Named scenario runner with `story` and `scene` taxonomy:
+  `*.story.test.ts` drives bindings/actions directly; `*.scene.test.ts`
+  simulates user behavior through slot handles and accessible locators.
+- Inline async outcome resolution:
+  `resolveAction(...)`, `resolveQuery(...)`, and stale/failure/success helpers
+  for cheap unit tests without mock service layers.
+- Golden zero-DOM tests for combobox keyboard navigation, dialog close/focus
+  behavior, and loader stale-on-failure.
+
+Success criteria:
+
+- A design-system component can be tested without a browser, without rendering
+  real DOM, and without losing slot/behavior/style type inference.
+- Scene tests can locate handles by slot name and accessibility metadata,
+  drive the public behavior path, and assert resulting bindings/out-events.
+- Story tests can deterministically script async transitions through
+  `Loading`, `Refreshing`, `Success`, `Failure`, `Stale`, and `Defect`.
+- Failing scenarios identify the scenario name, step name, and original error.
+
+Bugs to avoid and test:
+
+- Drivers accepting events a slot did not publish.
+- Keyboard/collection drivers assuming DOM order instead of declared slot
+  metadata.
+- Inline result resolution bypassing cleanup/finalizers or reactivity
+  invalidation hooks.
+- Test layers leaking across renders or scenarios.
+- Scenario runners swallowing failures, continuing after a failed invariant,
+  or losing the original thrown value.
+- Stale-on-failure regressions, especially after a prior success followed by
+  a failed refresh.
+
+### P8/F7 — A11y Pattern Contracts And Behavior Packs
+
+Full feature set:
+
+- Pattern contracts for Dialog, Tooltip, Popover, Tabs, Slider,
+  Calendar/DatePicker, DragAndDrop, and Combobox.
+- Two-tier behavior catalog: stateful behavior packs and stateless attachment
+  helpers.
+- Pattern requirements covering slots, capabilities, required events,
+  required/forbidden roles, ARIA relationships, focus behavior, keyboard
+  behavior, and hidden/disabled state semantics.
+- Integration with P3 diagnostics and P5 scene tests.
+
+Success criteria:
+
+- A component can declare a pattern contract and receive actionable diagnostics
+  when rendered slots or attached behaviors do not satisfy it.
+- Behavior packs publish their slots, provided bindings, out-events, and a11y
+  obligations as inspectable metadata.
+- At least Dialog, Tabs, and Combobox have end-to-end examples with a11y
+  diagnostics plus zero-DOM scene tests.
+
+Bugs to avoid and test:
+
+- Treating role/attribute presence as sufficient when keyboard/focus behavior
+  is missing.
+- Requiring DOM-only concepts in renderer-neutral contracts.
+- False failures for hidden slots that are intentionally not public.
+- Pattern contracts drifting away from behavior-pack metadata.
+- Event-name mismatches between declared required events and behavior outputs.
+
+### P11 — Devtools And MCP
+
+Full feature set:
+
+- Registry snapshot inspection with atom values, pending state, errors,
+  stale data, and dependency keys.
+- Reactivity timeline for tracked/invalidating keys, loader refreshes,
+  actions, optimistic updates, and diagnostics.
+- Slot-contract tree inspection showing component contracts, rendered slots,
+  attached styles/behaviors, a11y contracts, and diagnostics.
+- Operation names are load-bearing: surfaced in timelines, metrics,
+  diagnostics, and test-kit failure output.
+- MCP surface for read state/history, inspect diagnostics, dispatch actions,
+  rewind via hydrate/keyframes, and export minimal reproduction snapshots.
+- History controls: `excludeFromHistory`, keyframe interval, redaction hooks,
+  and dev-only/always-on visibility.
+
+Success criteria:
+
+- A user can answer "why did this refresh?", "what invalidated this atom?",
+  "which action produced this stale result?", and "which slot failed the
+  contract?" from one timeline.
+- Rewind/replay is deterministic for serializable registry state and clearly
+  reports non-serializable boundaries.
+- MCP reads are safe by default and mutating operations require explicit
+  opt-in.
+
+Bugs to avoid and test:
+
+- Memory leaks from unbounded history or unreleased keyframes.
+- Sensitive data leaking into devtools/MCP snapshots without redaction hooks.
+- Devtools observers changing scheduling, invalidation order, or action
+  results.
+- Operation-name collisions hiding distinct actions.
+- Rehydrate/rewind corrupting pending async operations.
+
+### P13 — Schema-Validated Action Inputs
+
+Full feature set:
+
+- Optional `inputSchema` for `Atom.action(...)` and route/server invokable
+  action boundaries.
+- Typed validation error channel that composes with existing action error
+  types and `Result` states.
+- Shared codec path with route/server schema validation where possible.
+- Docs that keep compile-time typing as the local default and explain schema
+  validation as a boundary feature.
+
+Success criteria:
+
+- Invalid dispatch input fails before user action code runs, with typed and
+  serializable validation detail.
+- Validated actions still infer input/output/error/requirements without
+  explicit generics.
+- Single-flight and server-invoked actions validate the exact same shape as
+  local dispatch.
+
+Bugs to avoid and test:
+
+- Widening action error types to `unknown` or hiding validation errors in
+  defects.
+- Running validation after optimistic state has already been committed.
+- Divergent local/server decode behavior.
+- Schema transforms changing the action input type without matching runtime
+  behavior.
+
+### P4 — Theme Token Schema Follow-Up
+
+Full feature set:
+
+- Decide whether style property token helpers become user-theme-parametric or
+  keep default-theme typing plus explicit escape hatches.
+- Preserve `ThemeLight` as the default instance while allowing design systems
+  to publish typed custom token schemas.
+- Runtime lookup remains schema-agnostic and fails predictably for missing
+  token paths.
+
+Success criteria:
+
+- Custom tokens like `brand.tertiary` and `surface.elevated.focusRing`
+  type-check without module-wide casts.
+- Invalid token paths fail at compile time on typed APIs and at runtime on
+  dynamic APIs with a clear diagnostic.
+
+Bugs to avoid and test:
+
+- Recursive token types causing TS2589/deep-instantiation errors.
+- Losing literal path inference through `Theme.define(...)`.
+- Runtime token lookup silently returning the original token string for a
+  missing path where a diagnostic is expected.
 
 ## Detailed Remaining Plan (from `docs/new_ideas.md`)
 
@@ -875,7 +1380,7 @@ hardened), the following landed in one push (commits `c013264`..`64cf627`+):
 - **D2** — `llms.txt` first slice.
 - **PR2** — completed-work log + fully-historical docs archived.
 
-### What remains (honest state, updated 2026-07-08)
+### What remains (honest state, updated 2026-07-09)
 
 **All release-blocking items are done.** Finding-1/2/4/6, P2, D1, S1-S4, F6
 (done earlier); Finding-3 resolved (2-tier attach model, no deletion);
@@ -885,6 +1390,19 @@ resolved** (overload seam unified, commit `2e53de0`); **the deep type-helper
 batch and both the test and example typecheck gates are closed** — all five
 gates green and enforced. Along the way the test gate surfaced and fixed six
 real library bugs (see the hardening item in the backlog).
+
+The 2026-07-09 release-hardening audit found remaining concrete no-op seams
+after the backlog closure; those are now fixed and covered:
+
+- `Behaviors.focusTrap(...)`: tab-loop focus movement, activation focus, and
+  shift-tab reversal over optional `focusables`.
+- `Style.globalLayer(...)`: real Effect service publication plus resolved
+  global stylesheet data and optional renderer apply hook.
+- Advanced style descriptors: retained on handles for renderers/diagnostics
+  instead of being discarded during attachment.
+- `RouterService.preload(...)`: Browser/Hash/Server/Memory routers warm matched
+  loaders via `runMatchedLoaders(...)` without changing location.
+- `Route.lazy(...)`: demand-loaded, signal-backed, and explicitly preloadable.
 
 The release-blocking work is done. The three tracked cleanups below are
 complete; what is left is the v1.x proposals.
@@ -909,22 +1427,10 @@ complete; what is left is the v1.x proposals.
 
 ### Then: v1.x proposals (not release-blocking)
 
-  - Round-2/3 proposals P1, P3–P5, P8–P15 and Foldkit F1–F7 amendments — see
-    their sections above. Suggested first: **P14 (typed intrinsic elements)** —
-    highest correctness-per-effort, types-only/zero-bundle, and it closes the
-    most-hit gap in the "everything is type-checked" story; then **P15
-    (`Stale`/`Idle` result states)** — restores keep-stale-on-failure regressed
-    in the Finding-5 migration; then P1 (behavior
-    binding contracts + state-aware styling, now with F5's out-event axis)
-    and P11 (devtools + MCP, design against Registry/Reactivity before the
-    runtime surface freezes).
-  - Continue typesafety/composability track from `docs/new_ideas.md` (breaking changes allowed when they improve coherence):
-    - Continue migrating selected examples/guides to the setup builder where it improves readability.
-    - Continue migrating consumers toward the new `Atom<A, E, R>` metadata instead of result-wrapper-only extraction.
-    - Continue propagating the new type metadata through remaining downstream consumers and docs.
-    - Continue auditing route-node/server-route integration for requirement metadata preservation as new helpers land.
-  - Keep `AF_UI_CONTRACT.md`, `GEN2_UI_IMPLEMENTATION_NOTES.md`, `AGENTS.md`, README, and API docs aligned as the public model changes.
-  - Release readiness pass: keep changelog/status aligned and require full typecheck/test/build green before release cut.
+  - **Open redesign TODO backlog is empty (2026-07-09).** Residual product depth
+    (full WAI-ARIA certification, richer Form single-flight wiring, full MCP
+    panel UI, Effect 4 stable for 1.0) is outside the checkbox list.
+  - Release readiness: gates green; Effect beta remains only external 1.0 hard gate.
 
 ## Update Rule For This File
 

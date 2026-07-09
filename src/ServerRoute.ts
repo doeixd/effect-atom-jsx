@@ -5,12 +5,21 @@ import type { AnyRoute, AppRouteNode } from "./Route.js";
 
 export const ServerRouteNodeSymbol: unique symbol = Symbol.for("effect-atom-jsx/ServerRouteNode");
 
+/** Kind of server route handled by the AF-UI server bridge. */
 export type ServerRouteKind = "action" | "document" | "json" | "resource";
 
 type AnyServerRouteNode = ServerRouteNode<any, any, any, any, any, any, any>;
 
 type ServerRouteEnhancer<I extends AnyServerRouteNode = AnyServerRouteNode, O extends AnyServerRouteNode = AnyServerRouteNode> = (route: I) => O;
 
+/**
+ * Metadata carried by one server route node.
+ *
+ * Type parameters describe decoded request parts and response:
+ * `P` params, `F` form, `B` body, `R` response, `Q` query, `H` headers, `C`
+ * cookies. Schemas decode the request before the handler runs and can encode
+ * the response after it returns.
+ */
 export interface ServerRouteMeta<P = unknown, F = unknown, B = unknown, R = unknown, Q = unknown, H = unknown, C = unknown> {
   readonly key?: string;
   readonly method?: string;
@@ -27,6 +36,22 @@ export interface ServerRouteMeta<P = unknown, F = unknown, B = unknown, R = unkn
   readonly handler?: (input: { readonly params: P; readonly form: F; readonly body: B; readonly query: Q; readonly headers: H; readonly cookies: C }) => Effect.Effect<R, unknown, unknown>;
 }
 
+/**
+ * Pipeable server route declaration.
+ *
+ * Routes are pure data until dispatched. `ServerRoute.execute(...)` decodes a
+ * `Request`, provides request/response services, runs the handler Effect, and
+ * returns adapter-neutral response data.
+ *
+ * @example
+ * const SaveUser = ServerRoute.action({ key: "save-user" }).pipe(
+ *   ServerRoute.method("POST"),
+ *   ServerRoute.path("/users/:id"),
+ *   ServerRoute.params(Schema.Struct({ id: Schema.String })),
+ *   ServerRoute.body(Schema.Struct({ name: Schema.String })),
+ *   ServerRoute.handle(({ params, body }) => UserService.save(params.id, body)),
+ * )
+ */
 export interface ServerRouteNode<P = unknown, F = unknown, B = unknown, R = unknown, Q = unknown, H = unknown, C = unknown> {
   readonly [ServerRouteNodeSymbol]: true;
   readonly meta: ServerRouteMeta<P, F, B, R, Q, H, C>;
@@ -53,14 +78,22 @@ export interface ServerRouteNode<P = unknown, F = unknown, B = unknown, R = unkn
   pipe(...ops: ReadonlyArray<ServerRouteEnhancer>): ServerRouteNode<P, F, B, R, Q, H, C>;
 }
 
+/** Extract decoded params type from a server route. */
 export type ParamsOf<T> = T extends ServerRouteNode<infer P, any, any, any, any, any, any> ? P : never;
+/** Extract decoded form type from a server route. */
 export type FormOf<T> = T extends ServerRouteNode<any, infer F, any, any, any, any, any> ? F : never;
+/** Extract decoded JSON body type from a server route. */
 export type BodyOf<T> = T extends ServerRouteNode<any, any, infer B, any, any, any, any> ? B : never;
+/** Extract typed response value from a server route. */
 export type ResponseOf<T> = T extends ServerRouteNode<any, any, any, infer R, any, any, any> ? R : never;
+/** Extract decoded query type from a server route. */
 export type QueryOf<T> = T extends ServerRouteNode<any, any, any, any, infer Q, any, any> ? Q : never;
+/** Extract decoded headers type from a server route. */
 export type HeadersOf<T> = T extends ServerRouteNode<any, any, any, any, any, infer H, any> ? H : never;
+/** Extract decoded cookies type from a server route. */
 export type CookiesOf<T> = T extends ServerRouteNode<any, any, any, any, any, any, infer C> ? C : never;
 
+/** Handler input inferred from a complete server route node. */
 export type ServerHandlerInputOf<T extends AnyServerRouteNode> = {
   readonly params: ParamsOf<T>;
   readonly form: FormOf<T>;
@@ -78,6 +111,7 @@ type WithHeaders<T extends AnyServerRouteNode, H> = ServerRouteNode<ParamsOf<T>,
 type WithCookies<T extends AnyServerRouteNode, C> = ServerRouteNode<ParamsOf<T>, FormOf<T>, BodyOf<T>, ResponseOf<T>, QueryOf<T>, HeadersOf<T>, C>;
 type WithResponse<T extends AnyServerRouteNode, R> = ServerRouteNode<ParamsOf<T>, FormOf<T>, BodyOf<T>, R, QueryOf<T>, HeadersOf<T>, CookiesOf<T>>;
 
+/** Adapter-neutral result of executing a non-document server route. */
 export interface ExecuteResult<R> {
   readonly response: R | undefined;
   readonly encoded: unknown;
@@ -87,10 +121,12 @@ export interface ExecuteResult<R> {
   readonly notFound?: true;
 }
 
+/** Result of dispatching a request through document and data routes. */
 export type DispatchResult =
   | { readonly _tag: "document"; readonly result: Route.RenderRequestResult }
   | { readonly _tag: "data"; readonly result: ExecuteResult<unknown> };
 
+/** Generic response object suitable for HTTP adapter integrations. */
 export interface AdapterResponse {
   readonly status: number;
   readonly headers: ReadonlyMap<string, ReadonlyArray<string>>;
@@ -109,12 +145,14 @@ type ResponseService = {
   readonly snapshot: () => { readonly status: number; readonly headers: ReadonlyMap<string, ReadonlyArray<string>> };
 };
 
+/** Typed control-flow error used by `ServerRoute.redirect(...)`. */
 export type RedirectSignal = {
   readonly _tag: "ServerRedirect";
   readonly location: string;
   readonly status: number;
 };
 
+/** Typed control-flow error used by `ServerRoute.notFound()`. */
 export type NotFoundSignal = {
   readonly _tag: "ServerNotFound";
 };

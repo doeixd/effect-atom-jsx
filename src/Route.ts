@@ -2,7 +2,7 @@ import { Effect, Layer, Schema, ServiceMap } from "effect";
 import * as Atom from "./Atom.js";
 import { createComponent } from "./dom.js";
 import { renderToString, setRequestEvent } from "./dom.js";
-import { useContext, type Accessor } from "./api.js";
+import { createSignal, useContext, type Accessor } from "./api.js";
 import {
   ManagedRuntimeContext,
   defineMutation,
@@ -1009,6 +1009,12 @@ type LoaderTarget = string | (ComponentType<any, any, any, any, any> & LoaderTag
  * Path params are inferred from the pattern. Use `Route.paramsSchema(...)` when
  * you want decoded params with richer types than the raw string-based inference.
  */
+/**
+ * Create a route enhancer that assigns a path pattern.
+ *
+ * Path params are inferred from `:param` segments and flow into typed links,
+ * loaders, and route context.
+ */
 export function path<Pattern extends string>(
   pattern: Pattern,
 ): <C extends ComponentType<any, any, any, any, any>>(
@@ -1028,6 +1034,7 @@ export function path<Pattern extends string>(
 }
 
 /** Create a first-class page route node. */
+/** Create a page route from a path and component. */
 export function page<C extends ComponentType<any, any, any, any, any>>(path: string, component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown> {
   return makeRouteNode("page", path, component);
 }
@@ -1074,6 +1081,12 @@ export function index(component?: ComponentType<any, any, any, any, any>) {
 }
 
 /** Materialize a route tree and return its root node. */
+/**
+ * Mark a route tree root as an application route definition.
+ *
+ * The returned value is unchanged at runtime; the helper communicates intent
+ * to tooling and keeps inference stable around the root.
+ */
 export function define<T extends AppRouteNode<any, any, any, any, any, any>>(root: T): T {
   materializeTree(root);
   return root;
@@ -1097,6 +1110,7 @@ export function mount<T extends AppRouteNode<any, any, any, any, any, any>>(
  *
  * In the unified route model this should be used after `Route.layout()`.
  */
+/** Attach child routes to a route node. */
 export function children(nodes: ReadonlyArray<AnyAppRouteNode> | ReadonlyArray<AnyRoute>): RouteChildrenEnhancer {
   const out = (route: RouteTarget): RouteTarget => {
     if (isUnifiedRoute(route)) {
@@ -1110,6 +1124,7 @@ export function children(nodes: ReadonlyArray<AnyAppRouteNode> | ReadonlyArray<A
 }
 
 /** Assign a stable route id to a route or route node. */
+/** Assign a stable route id for loaders, hydration, diagnostics, and links. */
 export function id(value: string): RouteIdEnhancer {
   const out = (route: AnyAppRouteNode | AnyRoute): AnyAppRouteNode | AnyRoute => {
     if (isUnifiedRoute(route)) {
@@ -1949,6 +1964,13 @@ export const prefix = Effect.gen(function* () {
   return ctx.prefix();
 });
 
+/**
+ * Read the current route loader data atom from route context.
+ *
+ * Use inside component setup when the component is rendered under a route with
+ * `Route.loader(...)`. The returned atom throws if read before loader data is
+ * available.
+ */
 export function loaderData<A>(): Effect.Effect<Atom.ReadonlyAtom<A>, never, RouteContext<any, any, any>> {
   return Effect.gen(function* () {
     const ctx = yield* RouteContextTag;
@@ -2027,6 +2049,12 @@ export function matches(pattern: string): Effect.Effect<Atom.ReadonlyAtom<boolea
   });
 }
 
+/**
+ * Create a typed URL builder for a routed component or route node.
+ *
+ * @example
+ * const href = Route.link(UserRoute)({ userId: "alice" })
+ */
 export function link<T extends ComponentType<any, any, any, any, any> | AppRouteNode<any, any, any, any, any, any> | AnyRoute>(
   routed: T,
 ): T extends AppRouteNode<infer P, infer Q, any, any, any, any>
@@ -2036,9 +2064,12 @@ export function link<T extends ComponentType<any, any, any, any, any> | AppRoute
   : T extends RoutedComponent<any, any, any>
     ? RouteLink<RouteParamsOf<T>, RouteQueryOf<T>>
   : RouteLink<Record<string, string>, Record<string, string>> {
+  const routedComponent = isRouteNode(routed)
+    ? materializeNode(routed as AppRouteNode<any, any, any, any, any, any>)
+    : routed;
   const meta = isUnifiedRoute(routed)
     ? routed[UnifiedRouteSymbol].meta
-    : getRouteMeta(asRouteComponent(isRouteNode(routed) ? materializeNode(routed) : routed));
+    : getRouteMeta(asRouteComponent(routedComponent as ComponentType<any, any, any, any, any>));
   if (!meta) {
     throw new Error("[effect-atom-jsx/Route] Route.link requires a routed component or unified route.");
   }
@@ -2075,6 +2106,7 @@ export function link<T extends ComponentType<any, any, any, any, any> | AppRoute
       : RouteLink<Record<string, string>, Record<string, string>>;
 }
 
+/** JSX-friendly anchor helper backed by a typed route link. */
 export function Link<P, Q>(props: {
   readonly to: RouteLink<P, Q> | (((paramsValue: P, options?: { readonly query?: Partial<Q>; readonly hash?: string }) => string) & { readonly pattern?: string });
   readonly params: P;
@@ -2151,6 +2183,13 @@ export function queryAtom<A>(
   });
 }
 
+/**
+ * Attach a loader to a component or route node.
+ *
+ * Loader requirements/errors bubble through route execution and SSR. Results
+ * are keyed by route id and readable with `Route.loaderData()` or
+ * `Route.loaderResult()`.
+ */
 export function loader<T extends AnyAppRouteNode, A, E, R>(
   fn: (params: RouteNodeParamsOf<T>, deps?: { readonly parent: <X>() => X }) => Effect.Effect<A, E, R>,
   options?: LoaderOptions,
@@ -2187,6 +2226,7 @@ export function loader<P, A, E, R>(
   return attach as LoaderRouteEnhancer<P, A, E, R>;
 }
 
+/** Attach loader error renderers keyed by typed error `_tag`. */
 export function loaderError(
   cases: LoaderErrorCases<any, any>,
 ): <C extends ComponentType<any, any, any, any, any> | AnyRoute>(component: C) => C {
@@ -2359,6 +2399,11 @@ export function seedLoaderResult<A>(
   }];
 }
 
+/**
+ * Create a route-scoped action/mutation helper.
+ *
+ * `reactivityKeys` invalidate matching loaders/queries after success.
+ */
 export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
   fn: (...args: Args) => Effect.Effect<A, E, R>,
   options?: { readonly reactivityKeys?: ReactivityKeysInput; readonly onSuccess?: () => Effect.Effect<void> },
@@ -2666,6 +2711,7 @@ export function invokeSingleFlight<Args extends ReadonlyArray<unknown>, A>(
   );
 }
 
+/** Attach a guard Effect that must succeed before a route renders. */
 export function guard<Req, E>(
   check: Effect.Effect<unknown, E, Req>,
 ): UnifiedGuardEnhancer<Req, E>;
@@ -2686,6 +2732,7 @@ export function guard<Req, E>(
   return attach as GuardEnhancer<Req, E>;
 }
 
+/** Attach static or loader-aware document title metadata to a route. */
 export function title<P, A = unknown, E = unknown>(
   value: NonNodeRouteTitleValue<P, A, E>,
 ): TitleRouteEnhancer<P, A, E>;
@@ -2698,24 +2745,27 @@ export function title<P, A = unknown, E = unknown>(
 export function title(
   value: string | ((params: unknown, loaderData: unknown, loaderResult: CoreResultType<unknown, unknown> | undefined) => string),
 ): TitleRouteEnhancer<unknown, unknown, unknown> {
-  const attach = <C extends ComponentType<any, any, any, any, any> | AnyAppRouteNode | AnyRoute>(component: C): C => {
+  // Implementation is intentionally untyped at the union root so TS7 does not
+  // explode on Component|AppRouteNode|AnyRoute overload instantiation depth.
+  const attach = (component: unknown): unknown => {
     if (isUnifiedRoute(component)) {
       return copyUnifiedRoute(component, {
         title: value,
-      }) as C;
+      });
     }
     if (isRouteNode(component)) {
-      return appendNodeEnhancer(component, (inner) => {
+      return appendNodeEnhancer(component as AnyAppRouteNode, (inner: any) => {
         setTitleInternal(inner, value);
         return inner;
-      }) as C;
+      });
     }
-    setTitleInternal(component, value);
+    setTitleInternal(component as ComponentType<any, any, any, any, any>, value);
     return component;
   };
   return attach as TitleRouteEnhancer<unknown, unknown, unknown>;
 }
 
+/** Attach static or loader-aware meta records to a route. */
 export function meta<P, A = unknown, E = unknown>(
   value: NonNodeRouteMetaExtraValue<P, A, E>,
 ): MetaRouteEnhancer<P, A, E>;
@@ -2728,19 +2778,21 @@ export function meta<P, A = unknown, E = unknown>(
 export function meta(
   value: RouteMetaRecord | ((params: unknown, loaderData: unknown, loaderResult: CoreResultType<unknown, unknown> | undefined) => RouteMetaRecord),
 ): MetaRouteEnhancer<unknown, unknown, unknown> {
-  const attach = <C extends ComponentType<any, any, any, any, any> | AnyAppRouteNode | AnyRoute>(component: C): C => {
+  // Implementation is intentionally untyped at the union root so TS7 does not
+  // explode on Component|AppRouteNode|AnyRoute overload instantiation depth.
+  const attach = (component: unknown): unknown => {
     if (isUnifiedRoute(component)) {
       return copyUnifiedRoute(component, {
         metaExtra: value,
-      }) as C;
+      });
     }
     if (isRouteNode(component)) {
-      return appendNodeEnhancer(component, (inner) => {
+      return appendNodeEnhancer(component as AnyAppRouteNode, (inner: any) => {
         setMetaInternal(inner, value);
         return inner;
-      }) as C;
+      });
     }
-    setMetaInternal(component, value);
+    setMetaInternal(component as ComponentType<any, any, any, any, any>, value);
     return component;
   };
   return attach as MetaRouteEnhancer<unknown, unknown, unknown>;
@@ -3008,21 +3060,44 @@ export function Switch(props: { readonly children: ReadonlyArray<unknown>; reado
 export function lazy<T extends { readonly default?: unknown }>(
   importer: () => Promise<T>,
   options?: { readonly loading?: () => unknown },
-): (props: any) => unknown {
-  let loaded: unknown = null;
-  void importer().then((module) => {
-    loaded = module.default ?? module;
-  });
-  return (props: any) => {
-    if (typeof loaded === "function") {
-      return (loaded as (p: any) => unknown)(props);
+): ((props: any) => unknown) & { readonly preload: () => Promise<unknown> } {
+  const [loaded, setLoaded] = createSignal<unknown>(null);
+  const [failed, setFailed] = createSignal<unknown>(null);
+  let inflight: Promise<unknown> | undefined;
+  const load = (): Promise<unknown> => {
+    if (inflight) return inflight;
+    inflight = importer().then(
+      (module) => {
+        const resolved = module.default ?? module;
+        setLoaded(() => resolved);
+        return resolved;
+      },
+      (error) => {
+        setFailed(error);
+        throw error;
+      },
+    );
+    return inflight;
+  };
+  const component = (props: any) => {
+    void load();
+    const error = failed();
+    if (error) throw error;
+    const value = loaded();
+    if (typeof value === "function") {
+      return (value as (p: any) => unknown)(props);
     }
     return options?.loading?.() ?? null;
   };
+  return Object.assign(component, { preload: load });
 }
 
 function browserUrl(): URL {
   return new URL(window.location.href);
+}
+
+function preloadUrl(to: string, base: URL | string): Effect.Effect<void> {
+  return runMatchedLoaders(new URL(to, base), { includeDeferred: true }).pipe(Effect.asVoid);
 }
 
 export const Browser: Layer.Layer<RouterService> = Layer.effect(
@@ -3047,7 +3122,7 @@ export const Browser: Layer.Layer<RouterService> = Layer.effect(
       }),
       back: () => Effect.sync(() => window.history.back()),
       forward: () => Effect.sync(() => window.history.forward()),
-      preload: () => Effect.void,
+      preload: (to) => preloadUrl(to, window.location.origin),
     } as RouterService;
   }),
 );
@@ -3070,7 +3145,7 @@ export const Hash: Layer.Layer<RouterService> = Layer.effect(
       }),
       back: () => Effect.sync(() => window.history.back()),
       forward: () => Effect.sync(() => window.history.forward()),
-      preload: () => Effect.void,
+      preload: (to) => preloadUrl(to, window.location.origin),
     } as RouterService;
   }),
 );
@@ -3082,7 +3157,7 @@ export function Server(request: { readonly url: string }): Layer.Layer<RouterSer
     navigate: () => Effect.void,
     back: () => Effect.void,
     forward: () => Effect.void,
-    preload: () => Effect.void,
+    preload: (to) => preloadUrl(to, url()),
   });
 }
 
@@ -3110,7 +3185,7 @@ export function Memory(initial = "/"): Layer.Layer<RouterService> {
       const next = entries[index];
       if (next) url.set(new URL(next));
     }),
-    preload: () => Effect.void,
+    preload: (to) => preloadUrl(to, url()),
   } as RouterService);
 }
 

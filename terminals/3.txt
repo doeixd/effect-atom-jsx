@@ -1,0 +1,7 @@
+---
+pid: 46728
+cwd: "C:\Users\Patrick\effect-atom-jsx"
+command: "Start-Sleep -Seconds 30"
+started_at: 2026-07-09T12:57:24.651Z
+running_for_ms: 25003    
+---

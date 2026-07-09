@@ -1,4 +1,4 @@
-import { defaultThemeTokens, type SlotStyle, type ThemeTokens } from "./style-types.js";
+import { defaultThemeTokens, type SlotStyle, type ThemeTokenSchema } from "./style-types.js";
 import { lookupToken } from "./Theme.js";
 
 export function mergeStyle(a: SlotStyle, b: SlotStyle): SlotStyle {
@@ -13,7 +13,7 @@ export function mergeMany(styles: ReadonlyArray<SlotStyle>): SlotStyle {
   return out;
 }
 
-export function resolveTokenValue(value: unknown, tokens: ThemeTokens = defaultThemeTokens): unknown {
+export function resolveTokenValue(value: unknown, tokens: ThemeTokenSchema = defaultThemeTokens): unknown {
   if (typeof value === "string") {
     const resolved = lookupToken(tokens, value);
     return resolved;

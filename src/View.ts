@@ -5,16 +5,33 @@ import type * as SafeHtml from "./SafeHtml.js";
 
 export const ViewTypeId: unique symbol = Symbol.for("effect-atom-jsx/View");
 
+/**
+ * Runtime value stored for a view slot.
+ *
+ * Slots expose renderer-neutral `Element.Handle` values to styles, behaviors,
+ * diagnostics, and tests. A slot can also expose a collection when one authored
+ * slot maps to repeated runtime elements.
+ */
 export type SlotValue = Element.Handle | Element.Collection<Element.Handle>;
 
+/**
+ * Capability required by a slot or supported by a platform.
+ *
+ * Prefer `Element.Capability.*` tokens for authored APIs; raw strings remain
+ * accepted for dynamic/generated integrations.
+ */
 export type SlotCapability =
   | string
   | Element.Capability.Any;
 
+/** Branded event token used by slot contracts and behavior validation. */
 export type EventName<Name extends string = string> = MetadataToken.MetadataToken<"view.event", Name>;
+/** Branded attribute token used by platform-aware slot diagnostics. */
 export type AttributeName<Name extends string = string> = MetadataToken.MetadataToken<"view.attribute", Name>;
+/** Branded platform requirement token used by renderer capability checks. */
 export type RequirementName<Name extends string = string> = MetadataToken.MetadataToken<"view.requirement", Name>;
 
+/** Raw or branded metadata name accepted by normalization helpers. */
 export type MetadataName = string | MetadataToken.Any;
 
 function makeEvent<const Name extends string>(name: Name): EventName<Name> {
@@ -29,6 +46,17 @@ function makeRequirement<const Name extends string>(name: Name): RequirementName
   return MetadataToken.make("view.requirement", name);
 }
 
+/**
+ * Common event tokens for slot contracts.
+ *
+ * @example
+ * const FieldSlots = View.Slots.define({
+ *   input: {
+ *     capability: Element.Capability.TextInput,
+ *     allowedEvents: [View.Event.Input, View.Event.Focus],
+ *   },
+ * })
+ */
 export const Event = {
   make: makeEvent,
   Press: makeEvent("press"),
@@ -39,6 +67,7 @@ export const Event = {
   Hover: makeEvent("hover"),
 } as const;
 
+/** Common attribute tokens for platform diagnostics and generated renderers. */
 export const Attribute = {
   make: makeAttribute,
   AriaLabel: makeAttribute("aria-label"),
@@ -48,6 +77,7 @@ export const Attribute = {
   Value: makeAttribute("value"),
 } as const;
 
+/** Common platform requirement tokens for slot contracts. */
 export const Requirement = {
   make: makeRequirement,
   Keyboard: makeRequirement("keyboard"),
@@ -55,6 +85,13 @@ export const Requirement = {
   Clipboard: makeRequirement("clipboard"),
 } as const;
 
+/**
+ * Authored metadata for one named slot.
+ *
+ * Metadata is intentionally renderer-neutral: capabilities, allowed events,
+ * attributes, and requirements describe what the slot promises rather than a
+ * concrete DOM element.
+ */
 export interface SlotMetadata<Name extends string = string> {
   readonly name: Name;
   readonly capability?: SlotCapability;
@@ -77,11 +114,18 @@ export type SlotMetadataMap<Slots> = {
  */
 export type NormalizeSlots<S> = S extends Slots.Any ? Slots.HandlesOf<S> : S;
 
+/**
+ * Declares that one public slot is implemented by another runtime slot.
+ *
+ * Remaps are validated for existence and capability compatibility by
+ * `View.validateRemaps`.
+ */
 export interface SlotRemap<Slots = Record<string, unknown>> {
   readonly source: keyof Slots & string;
   readonly target: keyof Slots & string;
 }
 
+/** Diagnostic codes produced by view, slot, remap, tree, and platform checks. */
 export type ViewDiagnosticCode =
   | "view:unknown-slot"
   | "view:hidden-slot"
@@ -91,6 +135,7 @@ export type ViewDiagnosticCode =
   | "view:unsupported-slot-attribute"
   | "view:missing-platform-requirement";
 
+/** Structured view diagnostic used directly and normalized by `Diagnostics`. */
 export interface ViewDiagnostic {
   readonly code: ViewDiagnosticCode;
   readonly message: string;
@@ -110,6 +155,23 @@ type ViewPipeable<Slots> = {
   pipe<A>(ab: (self: View<Slots>) => A): A;
 };
 
+/**
+ * Renderer-neutral view value.
+ *
+ * `Slots` is the runtime handle map, usually projected from an authored
+ * `View.Slots` contract by `View.fromSlots(...)`. The `node` may be JSX output,
+ * a renderer-native value, or an explicit typed tree. Optional `tree` metadata
+ * enables diagnostics and future non-DOM renderers without requiring a JSX
+ * compiler transform in the first release slice.
+ *
+ * @example
+ * const Slots = View.Slots.define({
+ *   root: { capability: Element.Capability.Container },
+ * })
+ *
+ * const view = View.fromSlots(Slots, <section />)
+ * type Handles = View.SlotsOf<typeof view>
+ */
 export interface View<Slots> extends ViewPipeable<Slots> {
   readonly [ViewTypeId]: {
     readonly Slots: Slots;
@@ -123,10 +185,12 @@ export interface View<Slots> extends ViewPipeable<Slots> {
   readonly slotRemaps?: readonly SlotRemap<Slots>[];
 }
 
+/** Free-form metadata carried by a view for tools and generated adapters. */
 export interface ViewMetadata {
   readonly [key: string]: unknown;
 }
 
+/** Extract the runtime slot handle map from a `View<Slots>`. */
 export type SlotsOf<T> = T extends View<infer Slots> ? Slots : never;
 
 export const SlotTypeId: unique symbol = Symbol.for("effect-atom-jsx/View/Slot");
@@ -194,6 +258,12 @@ function pipeSelf(self: unknown, fns: ReadonlyArray<(value: any) => any>): unkno
 }
 
 export namespace Slot {
+  /**
+   * Authored witness for one structural slot.
+   *
+   * Slots are type-level metadata plus a name. Binding a slot to an
+   * `Element.Handle` checks capability compatibility at compile time.
+   */
   export interface Slot<
     Name extends string = string,
     Capability extends SlotCapability = typeof Element.Capability.Base,
@@ -220,8 +290,10 @@ export namespace Slot {
     };
   }
 
+  /** Any slot witness, useful for helpers that accept arbitrary contracts. */
   export type Any = Slot<string, SlotCapability, readonly (string | EventName)[], readonly (string | AttributeName)[], readonly (string | RequirementName)[], boolean>;
 
+  /** A slot witness paired with the runtime handle that implements it. */
   export interface Bound<
     S extends Any = Any,
     H extends SlotHandle = SlotHandle,
@@ -230,6 +302,7 @@ export namespace Slot {
     readonly handle: H;
   }
 
+  /** Any bound slot/handle pair. */
   export type BoundAny = Bound<Any, SlotHandle>;
   export type NameOf<T> = T extends Bound<infer S, any> ? NameOf<S> : T extends Slot<infer Name, any, any, any, any, any> ? Name : never;
   export type CapabilityOf<T> = T extends Bound<infer S, any> ? CapabilityOf<S> : T extends Slot<any, infer Capability, any, any, any, any> ? MetadataToken.NameOf<Capability> : never;
@@ -251,6 +324,18 @@ export namespace Slot {
   export type Public<T> = HiddenOf<T> extends true ? never : T;
   export type Hidden<T> = HiddenOf<T> extends true ? T : never;
 
+  /**
+   * Create one slot witness.
+   *
+   * Prefer `View.Slots.define(...)` for component contracts. Use this directly
+   * when you need a reusable slot witness or want to bind handles manually.
+   *
+   * @example
+   * const input = View.Slot.make("input", {
+   *   capability: Element.Capability.TextInput,
+   *   allowedEvents: [View.Event.Input],
+   * })
+   */
   export function make<
     const Name extends string,
     const Capability extends SlotCapability = typeof Element.Capability.Base,
@@ -297,6 +382,12 @@ export namespace Slot {
     }) as Slot<Name, Capability, Events, Attributes, Requirements, Hidden>;
   }
 
+  /**
+   * Bind a slot witness to a runtime element handle.
+   *
+   * The `handle` type must satisfy the slot capability. Invalid bindings fail
+   * as readable TypeScript errors via `TypeErrorMessage`.
+   */
   export function bind<S extends Any, H extends SlotHandle>(
     slot: S,
     handle: H & BindableHandle<S, H>,
@@ -304,6 +395,7 @@ export namespace Slot {
     return { slot, handle };
   }
 
+  /** Pipeable transform that replaces a slot's capability. */
   export function capability<const C extends SlotCapability>(
     cap: C,
   ): <N extends string, OldC extends SlotCapability, E extends readonly (string | EventName)[], A extends readonly (string | AttributeName)[], R extends readonly (string | RequirementName)[], H extends boolean>(
@@ -318,6 +410,7 @@ export namespace Slot {
     }) as any;
   }
 
+  /** Pipeable transform that replaces the allowed event list for a slot. */
   export function events<const E extends readonly (string | EventName)[]>(
     ...evts: E
   ): <N extends string, C extends SlotCapability, OldE extends readonly (string | EventName)[], A extends readonly (string | AttributeName)[], R extends readonly (string | RequirementName)[], H extends boolean>(
@@ -332,6 +425,7 @@ export namespace Slot {
     }) as any;
   }
 
+  /** Pipeable transform that replaces the allowed attribute list for a slot. */
   export function attributes<const A extends readonly (string | AttributeName)[]>(
     ...attrs: A
   ): <N extends string, C extends SlotCapability, E extends readonly (string | EventName)[], OldA extends readonly (string | AttributeName)[], R extends readonly (string | RequirementName)[], H extends boolean>(
@@ -346,6 +440,7 @@ export namespace Slot {
     }) as any;
   }
 
+  /** Pipeable transform that replaces platform requirements for a slot. */
   export function requires<const R extends readonly (string | RequirementName)[]>(
     ...reqs: R
   ): <N extends string, C extends SlotCapability, E extends readonly (string | EventName)[], A extends readonly (string | AttributeName)[], OldR extends readonly (string | RequirementName)[], H extends boolean>(
@@ -360,6 +455,7 @@ export namespace Slot {
     }) as any;
   }
 
+  /** Mark a slot as hidden from public style/behavior attachment by default. */
   export function hidden<N extends string, C extends SlotCapability, E extends readonly (string | EventName)[], A extends readonly (string | AttributeName)[], R extends readonly (string | RequirementName)[], H extends boolean>(
     slot: Slot<N, C, E, A, R, H>,
   ): Slot<N, C, E, A, R, true> {
@@ -383,6 +479,12 @@ type PickRecord<T, K extends keyof T> = {
 type OmitRecord<T, K extends keyof T> = PickRecord<T, Exclude<keyof T, K>>;
 
 export namespace Slots {
+  /**
+   * Authored slot contract for a component or view.
+   *
+   * This is the canonical structural contract. Runtime views expose
+   * `HandlesOf<Slots>`; components publish it with `Component.withSlots(...)`.
+   */
   export interface Slots<T extends BoundSlotRecord = BoundSlotRecord> {
     readonly [SlotsTypeId]: {
       readonly Bound: T;
@@ -390,6 +492,7 @@ export namespace Slots {
     readonly bound: T;
   }
 
+  /** Any authored slot contract. */
   export type Any = Slots<BoundSlotRecord>;
   export type BoundOf<T> = T extends Slots<infer Bound> ? Bound : never;
   export type HandlesOf<T> = {
@@ -411,6 +514,12 @@ export namespace Slots {
   export type Pick<T, Names extends keyof BoundOf<T> & string> = Slots<PickRecord<BoundOf<T>, Names>>;
   export type Omit<T, Names extends keyof BoundOf<T> & string> = Slots<OmitRecord<BoundOf<T>, Names>>;
 
+  /**
+   * Create a slot contract from already-bound slot witnesses.
+   *
+   * Most authored code should use `define(...)`, which creates and binds the
+   * witnesses from a concise record shape.
+   */
   export function make<const T extends BoundSlotRecord>(
     bound: T & SlotRecordKeyMatches<T>,
   ): Slots<T> {
@@ -423,6 +532,12 @@ export namespace Slots {
   }
 
   /** Options for one slot in `Slots.define(...)` — `Slot.make` options minus the name (taken from the record key). */
+  /**
+   * Options for one slot in `Slots.define(...)`.
+   *
+   * The slot name comes from the record key, so this mirrors `Slot.make`
+   * options minus `name`.
+   */
   export interface DefineOptions {
     readonly capability?: SlotCapability;
     readonly allowedEvents?: readonly (string | EventName)[];
@@ -472,6 +587,18 @@ export namespace Slots {
    *
    * Equivalent to `Slots.make({ root: Slot.bind(Slot.make("root", ...), Element.container()), ... })`.
    * Use `Slots.make` + `Slot.bind` directly when a slot needs a custom handle.
+   */
+  /**
+   * Define an authored slot contract from a record.
+   *
+   * @example
+   * export const FieldSlots = View.Slots.define({
+   *   root: { capability: Element.Capability.Container },
+   *   input: {
+   *     capability: Element.Capability.TextInput,
+   *     allowedEvents: [View.Event.Input],
+   *   },
+   * })
    */
   export function define<const T extends Record<string, DefineOptions>>(
     definitions: T,
@@ -766,6 +893,11 @@ export interface ChildrenHole {
   readonly value: unknown;
 }
 
+/**
+ * Low-level / generated constructor. Prefer `View.fromSlots` / `View.fromJsx`
+ * for authored code. `slotMetadata` on this form is the dynamic escape hatch;
+ * `View.slot` / `View.hidden` remain public as low-level witness builders.
+ */
 export function make<Slots>(
   slots: Slots,
   node: unknown,
@@ -943,6 +1075,13 @@ export function tree<Slots>(
   });
 }
 
+/**
+ * Authored path: build a View from a slot contract + JSX (or other) node.
+ * Prefer this over `View.make` / raw `slotMetadata` maps.
+ *
+ * When `options.tree` is omitted, a minimal fragment tree is attached so
+ * authored views always carry `tree` metadata (Finding 6 staging).
+ */
 export function fromSlots<S extends Slots.Any>(
   slots: S,
   node: unknown,
@@ -954,13 +1093,31 @@ export function fromSlots<S extends Slots.Any>(
     readonly slotRemaps?: readonly SlotRemap<Slots.HandlesOf<S>>[];
   },
 ): View<Slots.HandlesOf<S>> {
-  return make(Slots.handles(slots), node, {
+  const handles = Slots.handles(slots);
+  const treeNode = options?.tree ?? fragment([]);
+  return make(handles, node, {
     ...options,
+    tree: treeNode as ViewNode<Slots.HandlesOf<S>>,
     slotMetadata: {
       ...Slots.metadata(slots),
       ...options?.slotMetadata,
     } as SlotMetadataMap<Slots.HandlesOf<S>>,
   });
+}
+
+/**
+ * Finding 2 residual: authored JSX is the markup surface; optional explicit
+ * typed tree metadata rides alongside (compiler extraction is v1.x).
+ */
+export function fromJsx<S extends Slots.Any>(
+  slots: S,
+  jsxNode: unknown,
+  options?: {
+    readonly tree?: ViewNode<Slots.HandlesOf<S>>;
+    readonly name?: string;
+  },
+): View<Slots.HandlesOf<S>> {
+  return fromSlots(slots, jsxNode, options);
 }
 
 function cloneView<Slots>(
@@ -1409,6 +1566,7 @@ export const View = {
   Slots,
   make,
   fromSlots,
+  fromJsx,
   withTree,
   withChildren,
   appendChildren,

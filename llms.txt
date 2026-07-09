@@ -12,6 +12,16 @@ strict — invalid slots, tokens, capabilities, and unprovided services are
 compile errors, which is the point: generated code that guesses wrong fails to
 compile rather than misbehaving at runtime.
 
+## Type-checked generation is a feature (F4)
+
+AF-UI is designed so LLMs generate well **because** mistakes fail at compile
+time: wrong slot names, capability mismatches, missing layers, and bad token
+paths are rejected by TypeScript. Prefer emitting the golden path from this
+file; do not invent React hooks, Tailwind class strings, or Registry-first
+setup. Runtime companion: `Devtools` session/MCP read-rewind-dispatch for
+agents inspecting atoms/timeline (`effect-atom-jsx` `Devtools` module).
+Always set `name` on actions/queries so timelines stay legible.
+
 ## Core mental model
 
 - **Atoms** are callable: `count()` reads, `count.set(1)` / `count.update(fn)`
@@ -92,3 +102,12 @@ adoption inside an existing app and SSR.
 - `docs/SERVICES_AND_LAYERS.md` — DI, provision tiers, request scoping
 - `docs/API.md` — API reference
 - `docs/V1_SCOPE.md` — what v1 ships vs. defers
+
+## Event Channels
+
+`Event` is a named typed contract implemented by Effect `PubSub` and `Stream`.
+Use `Event.channel(...).pipe(Event.schema(...))`, provide `Event.layer(...)`,
+publish with `Event.publish(...)`, and consume with `Event.stream(...)`.
+Do not invent a global Event runtime, custom Event composition operators, or
+automatic Event-to-Atom invalidation. Prefer direct Effect `PubSub` for private
+service-local channels.

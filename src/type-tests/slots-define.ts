@@ -96,11 +96,72 @@ const fieldBehavior = Behavior.forSlots(FieldSlots)((elements) => {
   void focus;
   return Effect.succeed({});
 });
+const IsOpen = Behavior.binding<"isOpen", boolean>("isOpen");
+const SelectionChanged = Behavior.outEvent<"selectionChanged", { readonly key: string }>("selectionChanged");
+const statefulBehavior = Behavior.provides({ isOpen: IsOpen })(
+  Behavior.forSlots(FieldSlots)(() => Effect.succeed({ isOpen: true })),
+);
+const selectionEvents = { selectionChanged: SelectionChanged };
+const selectionBus = Behavior.eventBus(selectionEvents);
+const eventfulBehavior = Behavior.emits(selectionEvents)(
+  Behavior.forSlots(FieldSlots)(() => Effect.succeed({ events: selectionBus })),
+);
+type StatefulProvides = Behavior.BindingContractOf<typeof statefulBehavior>;
+const providedBindingName: Behavior.BindingNameOf<StatefulProvides["isOpen"]> = "isOpen";
+void providedBindingName;
+type EventfulEmits = Behavior.OutEventsOf<typeof eventfulBehavior>;
+const emittedEventName: Behavior.OutEventNameOf<EventfulEmits["selectionChanged"]> = "selectionChanged";
+void emittedEventName;
+selectionBus.emit(SelectionChanged, { key: "a" });
+selectionBus.emit("selectionChanged", { key: "b" });
+selectionBus.on(SelectionChanged, (payload) => {
+  const key: string = payload.key;
+  void key;
+  return undefined;
+});
+// @ts-expect-error logical behavior event payloads are typed
+selectionBus.emit(SelectionChanged, { value: "missing key" });
 const Styled = Field.pipe(
   Style.attachToSlots(fieldStyle, FieldSlots),
   Behavior.attachToSlots(fieldBehavior, FieldSlots),
+  Behavior.attachToSlots(statefulBehavior, FieldSlots),
+  Behavior.attachToSlots(eventfulBehavior, FieldSlots),
 );
 void Styled;
+
+Style.forSlots(FieldSlots)({
+  root: Style.whenBinding(IsOpen, true, Style.slot({ opacity: 1 })),
+});
+
+const bindingAwareStyle = Style.make({
+  root: Style.compose(
+    Style.slot({ opacity: 0.5 }),
+    Style.when(
+      () => true,
+      Style.whenBinding(IsOpen, true, Style.slot({ opacity: 1 })),
+    ),
+  ),
+});
+const SetupCardWithBinding = Component.make<{}, never, never, {
+  readonly isOpen: boolean;
+  readonly slots: { readonly root: Element.Container };
+}>(
+  Component.props<{}>(),
+  Component.require<never>(),
+  () => Effect.succeed({ isOpen: true, slots: { root: Element.container() } }),
+  () => null,
+).pipe(Style.attach(bindingAwareStyle));
+void SetupCardWithBinding;
+const SetupCardWithoutBinding = Component.make<{}, never, never, {
+  readonly slots: { readonly root: Element.Container };
+}>(
+  Component.props<{}>(),
+  Component.require<never>(),
+  () => Effect.succeed({ slots: { root: Element.container() } }),
+  () => null,
+);
+// @ts-expect-error binding-aware styles require the referenced binding on the component
+SetupCardWithoutBinding.pipe(Style.attach(bindingAwareStyle));
 
 Style.forSlots(FieldSlots)({
   // @ts-expect-error unknown slot in a contract-keyed style

@@ -59,11 +59,17 @@ Everything here is implemented today or is tracked release-blocking work.
   nest, vars, tokens/Theme, platform property diagnostics
 - Behavior system: `forSlots`, event requirements, compose, behavior pack
   (disclosure/selection/search/nav/pagination/focusTrap/combobox)
-- Attachment surface consolidated to three forms each (Finding 3) —
-  release-blocking
+- Behavior binding contracts + state-aware styling + out-events (P1/F5):
+  **shipped** — `Behavior.provides` / `Behavior.emits`, `Style.whenBinding`,
+  typed out-event buses (landed prerelease; no longer deferred)
+- Attachment surface consolidated (Finding 3) — 2-tier model (general
+  `attach` + typed slot sugar); release-blocking core done
 - Inference audit: no explicit generics in authored code (Finding 4) —
-  release-blocking
-- Declared-vs-rendered diagnostics (explicit-only) + platform validation
+  release-blocking core done
+- Declared-vs-rendered diagnostics + platform validation; **diagnostics
+  pipeline + `af-ui doctor` CLI + opt-in dev auto-report (P3)** shipped
+- Test kit on `effect-atom-jsx/testing` (P5): `render`, `behaviorDriver`,
+  `resolveQuery`/`resolveAction`, story/scene helpers — shipped
 
 ### Routing / server (single canonical generation)
 
@@ -74,13 +80,12 @@ Everything here is implemented today or is tracked release-blocking work.
   path + loader seeding helpers
 - Hydration: `dehydrate` / `hydrate` with strict validation
 - `ServerRoute` kinds + schema decoding + `dispatch` + document rendering
-- Routing consolidation (P6): **DECIDED 2026-07-06** — survivors are the
-  unified route model (route nodes, `Route.path/paramsSchema/loader/...`),
-  `RouterRuntime`, and `ServerRoute`. The legacy service-first generation
-  (`Component.route(...)` as the authored entry, direct `RouterService`
-  golden-path usage) is deprecated in v1 docs; physical deletion happens in
-  a dedicated consolidation pass (examples must migrate first) and remains
-  release-blocking work.
+- Routing consolidation (P6): **RESOLVED 2026-07-07/08** — three permanent
+  tiers (history infra / component-first `Component.route` / route-first
+  tree), not a legacy-to-delete generation. Survivors: unified route model,
+  `RouterRuntime`, `ServerRoute`. Overload seam unified; docs describe the
+  tiers (not "transitional"). Physical deletion of deprecated helpers is
+  **not** release-blocking — cosmetic follow-up only.
 
 ### Services / layers
 
@@ -123,35 +128,26 @@ findings. Status:
   lived only in `/runtime`. Now re-exported (with SSR entry points).
 - **No example typecheck gate** — added `typecheck:examples`.
 
-**Release-blocking, still open:**
-- **Effect *beta* dependency.** `effect ^4.0.0-beta.29` (dep + peer). A 1.0
-  cannot be stable on a beta core. Gated on Effect 4 stable.
-- **`typecheck:tests` not green** (9 left) and **`typecheck:examples` not
-  green** (115 left, real per-example drift). Until both are required green
-  gates, "tests pass" overstates correctness — the tests gate alone already
-  found 6 real bugs.
-- **Examples drifted badly** — 16 apps, 115 type errors, several still on
-  deprecated patterns (Registry-first, `AsyncResult`, `mutationEffect`). Needs
-  a per-app migration to *current* patterns **and** runtime verification, not
-  mechanical import swaps.
+**Release-blocking for a true 1.0 stable (updated 2026-07-09):**
+- **Effect *beta* dependency only.** `effect ^4.0.0-beta.29` (dep + peer). A
+  1.0 cannot be stable on a beta core. Gated on Effect 4 stable.
 
-**Should-fix (quality):**
-- Two coexisting Result models (Finding-5 step 2); routing overload seam +
-  "type instantiation excessively deep" warnings in `Route.ts`; cast density
-  (`as any`/`as unknown as`); CHANGELOG/versioning for breaking changes.
-- **Done 2026-07-07:** README consolidated to one file — kept the concise,
-  current rewrite (former `README.new.md`) as `README.md`, folding in the
-  essential setup section (babel + tsconfig) the old comprehensive README had;
-  deep reference stays in `docs/` (API, testing, services, golden path). Two
-  real README setup bugs fixed — the `render` import (now top-level) and the
-  babel `moduleName` (was `effect-atom-jsx`, corrected to
-  `effect-atom-jsx/runtime`, which would otherwise break the JSX transform).
-  Dist import smoke-test passed (59 exports incl. `render`; `jsx-runtime`
-  resolves).
+**Resolved since the 2026-07-07 scrutiny pass:**
+- `typecheck:tests` and `typecheck:examples` are green and enforced via
+  `npm run typecheck:all` / `npm run check`.
+- Example apps migrated to current patterns; example typecheck gate clean.
+- Finding-5 wire/internal cleanup landed; primary surfaces emit unified
+  `Result`.
+- P13 boundary hardening: optional `Atom.action(..., { inputSchema })`
+  validates inputs before the effect / single-flight transport (2026-07-09).
 
-Verdict: architecturally strong, **not release-ready** — solid beta. A stable
-core dep, two green type gates (with the example migration), and a security-
-minded review of the remaining SSR/`innerHTML` paths stand between it and 1.0.
+**Should-fix (quality, non-blocking for prerelease):**
+- Cast density / occasional deep-instantiation warnings in `Route.ts`
+  internals; continue reducing as helpers land.
+- CHANGELOG Unreleased tracks redesign; cut version notes when tagging.
+
+Verdict: **prerelease / beta-ready** with green gates. A stable Effect 4
+core is the only hard external blocker for cutting `1.0.0`.
 
 ## Deferred (explicitly not v1)
 
@@ -162,41 +158,18 @@ minded review of the remaining SSR/`innerHTML` paths stand between it and 1.0.
 - **ADR-005 family hydration identity** (validation modes, eviction
   controls). Proposal only today; current `hydrate` strict mode is enough
   for v1.
-- **Behavior binding contracts + state-aware styling (P1).** High value, but
-  it is new API surface with real design risk; better designed calmly in
-  v1.x than rushed. **DECIDED 2026-07-06: deferral confirmed** — first
-  design item of v1.x.
-- **Unified diagnostics pipeline / "af-ui doctor" CLI (P3).** V1 keeps
-  explicit validators; the dev-mode auto-report layer and CLI come after.
-- **User-declared token schema (P4).** V1 ships the built-in taxonomy;
-  module-augmentation/generic theme schema is v1.x.
-- **Test kit package (P5).** `Reactivity.test` and existing harness patterns
-  ship; the packaged driver API is v1.x.
 - **Package split (P7).** **DECIDED 2026-07-06: confirmed** — v1 ships one
-  package. The layering (core → view/style/behavior → router → server) is
-  enforced internally so a later split is cheap; split re-evaluated post-v1.
-- **A11y pattern contracts (P8), Forms vertical (P9).** Both are flagship
-  v1.x features; v1 ships the primitives they compose.
-- **Exit-animation deferred unmount (P10).** V1 needs only the design note
-  deciding ownership; implementation follows.
-- **Devtools + MCP (P11)** (registry snapshots, invalidation timeline,
-  action/optimistic lifecycle, slot-contract tree; MCP read/rewind/dispatch).
-  Post-v1 implementation, but the design should be validated against the
-  Registry/Reactivity data model before the runtime surface freezes.
-- **Schema-validated action inputs (P13)** (optional
-  `Atom.action(fn, { inputSchema })`). **DECIDED 2026-07-06:** the
-  boundary-hardening subset is pulled into v1 — remotely-invokable actions
-  accepting unvalidated input is a correctness/security question. Local-only
-  ergonomic extensions stay v1.x.
-- **Gated subscription primitive (P12)** (`Atom.Stream.gated(...)` /
-  `Component.subscription(...)`). **DECIDED 2026-07-06: v1.x confirmed** —
-  the dependency-driven scope-restart semantics are real new runtime
-  machinery, not a cheap composition of existing helpers.
-- **`RouterRuntime` cancellation/supersession polish** beyond what exists.
-  Current guarded in-flight model ships; deeper Effect-fiber interruption
-  integration is v1.x.
-- **Scaffolding (D3)** (`create-af-ui`, generators). Can trail the release;
-  does not gate it.
+  package. Split re-evaluated post-v1 only.
+- **Depth beyond shipped MVPs (2026-07-09 backlog close):** full WAI-ARIA
+  certification theater, browser Devtools panel chrome, Form+single-flight
+  demo apps, and Effect-fiber interruption polish. **Shipped in-tree already:**
+  P1/P3/P5 cores, P4 decision + schema, P8 catalog MVP, P9 `Form`, P10
+  ownership note, P11 Devtools/MCP session MVP, P12 gated stream +
+  `Component.subscription`, P13 inputSchema, D3 `create-af-ui`.
+- **`RouterRuntime` cancellation/supersession polish** beyond the current
+  guarded in-flight model (deeper fiber interruption) remains optional depth.
+- **Schema-validated action inputs (P13)** boundary subset **shipped**;
+  further local-only ergonomics optional.
 
 ## Release-blocking summary
 
@@ -212,21 +185,15 @@ backlog + archive log):
 | 5 | Result consolidation (Finding 5) | ✅ release-blocking core done (loaderResult + title/meta emit unified Result; no defect union on golden path); step-2 internal cache/wire cleanup is a non-blocking follow-up pass |
 | 6 | Typed-tree/claims sweep (Finding 6) | ✅ claims scoped in docs; typed-tree-by-default is v1.x per #2 |
 | 7 | Reactivity key witnesses (P2) | ✅ shipped end-to-end |
-| 8 | Routing consolidation (P6) | ◑ audited → **3-tier model, not a deletion** (history infra / component-first `Component.route` / route-first tree); reclassified the misleading "transitional" JSDoc. `RouteChildrenEnhancer`/pipe-overload type seam fixed (Codex, type-only). Remaining: dedupe constructor-vs-piped forms (cosmetic) |
-| 9 | Docs/archive alignment (PR2) + green gates | ◑ log + fully-historical docs archived; exploratory-doc sweep remains; **all gates green + enforced** (`npm run check` = typecheck main/tests/examples + 488 tests) |
+| 8 | Routing consolidation (P6) | ✅ **3-tier model resolved** (not deletion); overload seam unified; docs corrected. Cosmetic helper dedupe only — not release-blocking |
+| 9 | Docs/archive alignment (PR2) + green gates | ✅ log archived; gates green + enforced (`typecheck:all` + tests + build) |
 | 10 | Services/layers S1/S2/S3 | ✅ mount-with-runtime shipped, guide shipped, isolation test green |
+| 11 | P13 action inputSchema boundary | ✅ optional schema decode before effect / single-flight (2026-07-09) |
 
-Remaining release-blocking work (updated 2026-07-07): **`effect` stable
-release** (external — currently pinned to `^4.0.0-beta.29`) is the only
-hard blocker left. Resolved since last update: tests/examples typecheck gates
-green and wired into `npm run check`; all 13 example apps migrated + typecheck
-clean; `MaterializedAppRoute` discharges `RouteContext` in its type; **P6
-constructor-vs-piped dedupe closed** (verified non-redundant — both forms
-load-bearing — stale "transitional" JSDoc corrected); **PR2 doc archive sweep
-done** (47 exploratory/plan docs moved to `docs/archive/`, live set = 13
-reference docs, zero broken links). Non-blocking follow-ups: Finding-5 step 2
-(internal FetchResult cleanup), Finding-5 wire format, dead type-alias sweep in
-`Route.ts`. Do not cut by re-adding deferred features.
+Remaining release-blocking work for **1.0 stable** (updated 2026-07-09):
+**`effect` stable release** only (external — pinned to `^4.0.0-beta.29`).
+Prerelease is ready when quality gates are green (see
+`docs/RELEASE_CHECKLIST.md`). Do not cut by re-adding deferred features.
 
 ## Update rule
 

@@ -39,6 +39,15 @@ router; the router works without the server runtime.
 npm install effect-atom-jsx effect
 ```
 
+**Effect compatibility:** this package peers on **Effect 4 beta**
+(`effect ^4.0.0-beta.29`). Ship as **0.x prerelease / beta** until Effect 4
+is stable; a `1.0.0` cut waits on a stable Effect core. See
+`docs/RELEASE_CHECKLIST.md` and `docs/V1_SCOPE.md`.
+
+**TypeScript:** library typecheck and `tsc` build use **TypeScript 7**
+(`typescript` ^7.0.2). Consumer projects may use TS 5.x+ for app code; the
+package ships `.d.ts` from the TS7 toolchain.
+
 ### Setup
 
 JSX compiles to fine-grained DOM operations via
@@ -250,15 +259,16 @@ is released on unmount. For larger components a pipeable builder
 The behavior pack ships composable headless primitives — `disclosure`,
 `selection`, `keyboardNav`, `focusTrap`, `searchFilter`, `pagination`, and a
 composed `combobox` — all matched by element capability, so a press behavior
-attaches to anything `Interactive`.
+attaches to anything `Interactive`. `focusTrap` can cycle Tab/Shift+Tab over a
+focusable collection while remaining renderer-neutral.
 
 **Honest scoping:** slot contracts, attachments, tokens, and
-capability/platform checks are enforced at compile time today. The view body
-between slots carries typed tree metadata where authored; typed-tree-by-default
-and JSX-first tree authoring are active workstreams (see
-`docs/V1_SCOPE.md`). Platform-agnosticism means your components are *verified*
-against declared platform vocabularies — alternate renderers (TUI, native)
-are deferred, not shipped.
+capability/platform checks are enforced at compile time today. Authored views
+carry tree metadata through `View.fromSlots(...)` / `View.fromJsx(...)`;
+compiler extraction of richer JSX tree metadata remains a tooling concern.
+Platform-agnosticism means your components are *verified* against declared
+platform vocabularies — alternate renderers (TUI, native) are deferred, not
+shipped.
 
 ## 5. Routing: schema-first, loader-driven
 
@@ -384,8 +394,11 @@ What you don't give up: incremental adoption inside an existing app, and SSR
 
 ## Learn more
 
+- `docs/README.md` — docs map and current golden paths
 - `docs/afui.md` — the full narrative: inside-out model, runtime, routing
 - `docs/SLOT_CONTRACT_GOLDEN_PATH.md` — the authored component shape
+- `docs/component.md`, `docs/view.md`, `docs/style.md`, `docs/router.md` —
+  current focused guides for the main subsystems
 - `docs/SERVICES_AND_LAYERS.md` — dependency injection, provision tiers, request scoping
 - `docs/API.md` — API reference
 - `docs/TESTING.md` — DOM-free test harness, layer swapping, `Reactivity.test`
@@ -399,3 +412,12 @@ Pre-release, breaking-change-first redesign track. The API shown here is the
 current shipped surface; names from older docs/posts (e.g.
 `ServerRoute.make("json")`, `AsyncResult`, `Atom.fn`) are gone. See
 `CHANGELOG.md` and `docs/CURRENT_STATUS_IN_REDESIGN_PLAN.md`.
+
+## Events
+
+`Event` is a thin typed contract over Effect `PubSub`, not a replacement event
+system. Use it when a named in-process fact crosses module boundaries; use
+direct `PubSub` for private service-local channels. Provide the channel through
+the same application Layer used by components and atoms, publish with
+`Event.publish`, and consume with `Event.stream` plus normal Effect `Stream`
+operators or `Component.subscription`.

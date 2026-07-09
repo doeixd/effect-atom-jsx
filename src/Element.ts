@@ -6,6 +6,13 @@ type EventHandler = (event: unknown) => void;
 
 type Cleanup = () => void;
 
+/**
+ * Renderer-neutral element handle.
+ *
+ * Handles are the runtime objects styles, behaviors, tests, and diagnostics
+ * operate on. DOM renderers can adapt these operations to real elements; tests
+ * use the same interface without jsdom.
+ */
 export interface Handle {
   readonly id: string;
   listen(event: string, handler: EventHandler): Effect.Effect<Cleanup>;
@@ -18,28 +25,39 @@ export interface Handle {
   getStyle(prop: string): unknown;
 }
 
+/** Element that can participate in interactive behavior. */
 export interface Interactive extends Handle {
   readonly kind: string;
 }
 
+/** Container-like element handle. */
 export interface Container extends Interactive {
   readonly kind: "Container";
 }
 
+/** Element handle that can receive focus and blur events. */
 export interface Focusable extends Interactive {
   readonly kind: string;
   focus(): void;
   blur(): void;
 }
 
+/** Text-input capable element handle. */
 export interface TextInput extends Focusable {
   readonly kind: "TextInput";
 }
 
+/** Draggable element handle. */
 export interface Draggable extends Interactive {
   readonly kind: "Draggable";
 }
 
+/**
+ * Reactive collection of element handles for repeated slots.
+ *
+ * `observeEach` runs immediately for current items and re-runs when the
+ * collection changes, cleaning up per-item finalizers.
+ */
 export interface Collection<E extends Handle> {
   readonly _tag: "Collection";
   readonly items: () => ReadonlyArray<E>;
@@ -48,8 +66,10 @@ export interface Collection<E extends Handle> {
   observeEach(f: (item: E, index: number) => Effect.Effect<Cleanup | void>): Effect.Effect<void>;
 }
 
+/** Parent capability reference accepted by `Capability.make`. */
 export type CapabilityParent = string | MetadataToken.MetadataToken<"element.capability", string>;
 
+/** Branded element capability with an inheritance list. */
 export interface Capability<
   Name extends string = string,
   Extends extends readonly CapabilityParent[] = readonly [],
@@ -70,6 +90,14 @@ export namespace Capability {
 
   const parentsByName = new Map<string, ReadonlyArray<string>>();
 
+  /**
+   * Create a custom capability token.
+   *
+   * @example
+   * const Select = Element.Capability.make("Select", {
+   *   extends: [Element.Capability.Focusable],
+   * })
+   */
   export function make<const Name extends string, const Extends extends readonly CapabilityParent[] = readonly []>(
     name: Name,
     options?: {
@@ -109,10 +137,12 @@ export namespace Capability {
   }
 }
 
+/** Normalize a raw or branded capability to its string name. */
 export function nameOfCapability(value: string | Capability.Any): string {
   return MetadataToken.nameOf(value);
 }
 
+/** Return true when `value` is equal to or inherits from `base`. */
 export function extendsCapability(value: string | Capability.Any, base: string | Capability.Any): boolean {
   return Capability.extendsCapability(value, base);
 }
@@ -202,14 +232,17 @@ export function handleFor(capability: string | Capability.Any): Handle | Collect
   return makeHandle(name);
 }
 
+/** Create an in-memory interactive handle. */
 export function interactive(): Interactive {
   return makeHandle("Interactive") as Interactive;
 }
 
+/** Create an in-memory container handle. */
 export function container(): Container {
   return makeHandle("Container") as Container;
 }
 
+/** Create an in-memory focusable handle. */
 export function focusable(): Focusable {
   const h = makeHandle("Focusable") as Focusable;
   h.focus = () => {
@@ -221,6 +254,7 @@ export function focusable(): Focusable {
   return h;
 }
 
+/** Create an in-memory text input handle. */
 export function textInput(): TextInput {
   const h = makeHandle("TextInput") as TextInput;
   h.focus = () => {
@@ -232,10 +266,12 @@ export function textInput(): TextInput {
   return h;
 }
 
+/** Create an in-memory draggable handle. */
 export function draggable(): Draggable {
   return makeHandle("Draggable") as Draggable;
 }
 
+/** Create an in-memory collection handle for repeated slots. */
 export function collection<E extends Handle>(initial: ReadonlyArray<E> = []): Collection<E> {
   let current = initial;
   const observers = new Set<{

@@ -534,21 +534,29 @@ The resulting handle exposes `value` (optimistic-or-committed), `committed`, `ha
 
 AF-UI uses a standardized `Result<A, E>` union to handle asynchronous states consistently across the framework. It is deliberately shaped for stale-while-revalidate rendering:
 
-- `Initial` — no data yet (`waiting: true` while the first load is in flight).
-- `Success<A>` — data available, with a `timestamp`; `waiting: true` means a revalidation is in progress while stale data stays on screen.
-- `Failure<E>` — a typed error (or a captured defect), carrying `previousSuccess` so the UI can keep showing the last good data alongside the error.
+- `Loading` — no data yet; the first load is in flight.
+- `Refreshing<A, E>` — a refresh is in flight and a previous settled result is still available.
+- `Success<A>` — data is available.
+- `Failure<E>` — a typed error with no data to show.
+- `Stale<A, E>` — a failed refresh with both the typed error and the last successful data.
+- `Defect` — an unexpected defect or interrupt, kept separate from typed failures.
 
 Loaders and queries produce reactive `Result` values. Because it is a tagged union, you render states with exhaustive matching — no "conditional hook" errors:
 
 ```ts
-Result.builder(users)
-  .onInitial(() => <Spinner />)
-  .onSuccess((list) => <UserList users={list} />)
-  .onFailure((error) => <ErrorView error={error} />)
-  .render()
+Result.match(users, {
+  onLoading: () => <Spinner />,
+  onRefreshing: (previous) => previous._tag === "Success"
+    ? <UserList users={previous.value} refreshing />
+    : null,
+  onSuccess: (list) => <UserList users={list} />,
+  onFailure: (error) => <ErrorView error={error} />,
+  onStale: (error, list) => <UserList users={list} error={error} />,
+  onDefect: (cause) => <ErrorView error={cause} />,
+})
 ```
 
-`Result.match`, `Result.map`, and `Result.getOrElse` cover the non-JSX cases.
+`Result.match`, `Result.map`, `Result.getData`, `Result.getError`, and `Result.getOrElse` cover the non-JSX cases.
 
 ### Hydration: Explicit State Transfer
 

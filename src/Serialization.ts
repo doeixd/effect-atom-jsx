@@ -25,7 +25,7 @@
  */
 
 import { Effect, Layer, Schema, ServiceMap } from "effect";
-import type { Result as CoreResultType } from "./effect-ts.js";
+import { Result as CoreResult, type Result as CoreResultType } from "./effect-ts.js";
 import * as FetchResult from "./Result.js";
 
 /**
@@ -117,6 +117,10 @@ export function resultToWire(result: CoreResultType<unknown, unknown>): ResultWi
       return FetchResult.success(result.value);
     case "Failure":
       return FetchResult.failure(result.error);
+    case "Stale":
+      return FetchResult.failure(result.error, {
+        previousSuccess: FetchResult.success(result.data),
+      });
     case "Defect":
       return FetchResult.failure({ defect: result.cause });
   }
@@ -124,7 +128,21 @@ export function resultToWire(result: CoreResultType<unknown, unknown>): ResultWi
 
 /** Rehydrate a core `Result` from its flat wire shape. */
 export function resultFromWire(wire: ResultWireValue): CoreResultType<unknown, unknown> {
-  return FetchResult.toResult(wire);
+  switch (wire._tag) {
+    case "Initial":
+      return FetchResult.toResult(wire);
+    case "Success":
+      return FetchResult.toResult(wire);
+    case "Failure":
+      if (
+        wire.waiting === false
+        && wire.previousSuccess !== null
+        && !(typeof wire.error === "object" && wire.error !== null && "defect" in wire.error)
+      ) {
+        return CoreResult.stale(wire.error, wire.previousSuccess.value);
+      }
+      return FetchResult.toResult(wire);
+  }
 }
 
 // ─── Pure synchronous codec ─────────────────────────────────────────────────

@@ -80,6 +80,32 @@ describe("Route loader", () => {
     expect(child).toBeDefined();
   });
 
+  it("preloads matched route loaders without navigating the memory router", () => {
+    clearLoaderCache();
+    let loads = 0;
+    const User = Component.from<{}>(() => null).pipe(
+      Component.route("/preload/users/:userId", { params: Schema.Struct({ userId: Schema.String }) }),
+      Route.loader<{ readonly userId: string }, { readonly id: string }, never, never>((params) =>
+        Effect.sync(() => {
+          loads += 1;
+          return { id: params.userId };
+        })),
+    );
+    void User;
+
+    Effect.runSync(
+      Effect.gen(function* () {
+        const router = yield* Route.RouterTag;
+        if (router.preload) {
+          yield* router.preload("/preload/users/alice");
+        }
+        expect(router.url().pathname).toBe("/");
+      }).pipe(Effect.provide(Route.Memory("/"))),
+    );
+
+    expect(loads).toBe(1);
+  });
+
   it("serializes streamed loader payload and sitemap entries", () => {
     const entries = Effect.runSync(Route.collectSitemapEntries("https://example.com"));
     expect(Array.isArray(entries)).toBe(true);

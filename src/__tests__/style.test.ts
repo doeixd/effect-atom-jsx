@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
+import * as Behavior from "../Behavior.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
 import * as Style from "../Style.js";
 import * as StyleUtils from "../style-utils.js";
 import { defaultThemeTokens } from "../style-types.js";
+import * as Theme from "../Theme.js";
 import * as View from "../View.js";
 
 describe("Style", () => {
@@ -76,6 +78,153 @@ describe("Style", () => {
     const styles = card({ compact: "true" });
     expect(styles.root).toBeDefined();
     expect(styles.title).toBeDefined();
+  });
+
+  it("applies binding-conditional styles against setup bindings", () => {
+    const makeCard = (isOpen: boolean) =>
+      Component.make<{}, never, never, {
+        readonly isOpen: boolean;
+        readonly slots: {
+          readonly root: Element.Container;
+        };
+      }>(
+        Component.props<{}>(),
+        Component.require<never>(),
+        () => Effect.succeed({ isOpen, slots: { root: Element.container() } }),
+        () => null,
+      ).pipe(
+        Style.attach(
+          Style.make({
+            root: Style.compose(
+              Style.slot({ opacity: 0.5 }),
+              Style.whenBinding("isOpen", true, Style.slot({ opacity: 1 })),
+            ),
+          }),
+        ),
+      );
+
+    const open = Effect.runSync(Component.setupEffect(makeCard(true), {}));
+    const closed = Effect.runSync(Component.setupEffect(makeCard(false), {}));
+
+    expect(open.slots.root.getStyle("opacity")).toBe(1);
+    expect(closed.slots.root.getStyle("opacity")).toBe(0.5);
+  });
+
+  it("publishes resolved global styles through a layer service", () => {
+    const piece = Style.global({
+      body: Style.slot({ color: "text.primary" }),
+      ".app": { display: "grid" },
+    });
+    const applied: Array<string | undefined> = [];
+    const layer = Style.globalLayer(piece, {
+      apply: (sheet) => Effect.sync(() => {
+        applied.push(String(sheet.resolved.body?.color));
+      }),
+    });
+
+    const service = Effect.runSync(
+      Effect.service(Style.GlobalStyleTag).pipe(Effect.provide(layer)) as Effect.Effect<Style.GlobalStyleService, never, never>,
+    );
+
+    expect(service.sheet.resolved.body?.color).toBe("#111827");
+    expect(service.sheet.resolved[".app"]?.display).toBe("grid");
+    expect(applied).toEqual(["#111827"]);
+  });
+
+  it("preserves renderer-neutral style descriptors on attached handles", () => {
+    const Card = Component.make<{}, never, never, {
+      readonly slots: {
+        readonly root: Element.Container;
+      };
+    }>(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: { root: Element.container() } }),
+      () => null,
+    ).pipe(
+      Style.attach(
+        Style.make({
+          root: Style.compose(
+            Style.media({ "(min-width: 800px)": Style.slot({ display: "grid" }) }),
+            Style.pseudo({ ":hover": { color: "accent.default" } }),
+          ),
+        }),
+      ),
+    );
+
+    const bindings = Effect.runSync(Component.setupEffect(Card, {}));
+
+    expect(bindings.slots.root.getStyle("__media")).toEqual({
+      "(min-width: 800px)": Style.slot({ display: "grid" }),
+    });
+    expect(bindings.slots.root.getStyle("__pseudo")).toEqual({
+      ":hover": { color: "accent.default" },
+    });
+  });
+
+  it("resolves binding-conditional styles nested inside responsive base pieces", () => {
+    const makeCard = (isOpen: boolean) =>
+      Component.make<{}, never, never, {
+        readonly isOpen: boolean;
+        readonly slots: {
+          readonly root: Element.Container;
+        };
+      }>(
+        Component.props<{}>(),
+        Component.require<never>(),
+        () => Effect.succeed({ isOpen, slots: { root: Element.container() } }),
+        () => null,
+      ).pipe(
+        Style.attach(
+          Style.make({
+            root: Style.compose(
+              Style.slot({ opacity: 0.25 }),
+              Style.responsive({
+                base: Style.whenBinding("isOpen", true, Style.slot({ opacity: 1 })),
+              }),
+            ),
+          }),
+        ),
+      );
+
+    const open = Effect.runSync(Component.setupEffect(makeCard(true), {}));
+    const closed = Effect.runSync(Component.setupEffect(makeCard(false), {}));
+
+    expect(open.slots.root.getStyle("opacity")).toBe(1);
+    expect(closed.slots.root.getStyle("opacity")).toBe(0.25);
+  });
+
+  it("applies binding-conditional styles against behavior-provided bindings in view attachment", () => {
+    const Slots = View.Slots.define({
+      root: { capability: Element.Capability.Container },
+    });
+    const IsOpen = Behavior.binding<"isOpen", boolean>("isOpen");
+    const disclosure = Behavior.provides({ isOpen: IsOpen })(
+      Behavior.forSlots(Slots)(() => Effect.succeed({ isOpen: true })),
+    );
+    const Card = Component.make<{}, never, never, {
+      readonly slots: View.Slots.HandlesOf<typeof Slots>;
+    }>(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ slots: View.Slots.handles(Slots) }),
+      () => View.fromSlots(Slots, null),
+    ).pipe(
+      Component.withSlots(Slots),
+      Behavior.attachToSlots(disclosure, Slots),
+      Style.attachToSlots(
+        Style.forSlots(Slots)({
+          root: Style.compose(
+            Style.slot({ opacity: 0.25 }),
+            Style.whenBinding(IsOpen, true, Style.slot({ opacity: 1 })),
+          ),
+        }),
+        Slots,
+      ),
+    );
+
+    const view = Effect.runSync(Component.renderViewEffect(Card, {}));
+    expect(view?.slots.root.getStyle("opacity")).toBe(1);
   });
 
   it("validates style attachments against View slot metadata", () => {
@@ -282,5 +431,27 @@ describe("Style", () => {
   it("exposes theme helpers through the Style namespace", () => {
     expect(Style.Style.ThemeLight).toBeDefined();
     expect(Style.Style.lookupToken(defaultThemeTokens, "surface")).toBe("#ffffff");
+  });
+
+  it("supports user-declared theme token schemas at runtime", () => {
+    const appTheme = Theme.define({
+      color: {
+        brand: {
+          tertiary: "#ff00ff",
+        },
+      },
+      spacing: {
+        page: {
+          gutter: 24,
+        },
+      },
+    });
+
+    expect(appTheme.path("color", "brand.tertiary")).toBe("brand.tertiary");
+    expect(appTheme.lookup("color.brand.tertiary")).toBe("#ff00ff");
+    expect(appTheme.lookup("brand.tertiary")).toBe("#ff00ff");
+    expect(appTheme.lookup("missing.token")).toBe("missing.token");
+    expect(Style.Style.defineTheme(appTheme.tokens).lookup("spacing.page.gutter")).toBe(24);
+    expect(Style.Style.themeLayer(appTheme.tokens)).toBeDefined();
   });
 });

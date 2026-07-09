@@ -2,6 +2,46 @@
 
 ## Unreleased (Redesign Track)
 
+### 2026-07-09 — Full redesign TODO backlog closed
+
+- **Form** (`Form.make` / fields / schema validate / server errors)
+- **Devtools** session + MCP-style read/rewind/dispatch + timeline `name`
+- **A11y catalog** Tooltip/Popover/Tabs/Slider/Calendar/DragAndDrop + tiers
+- **Atom.Stream.gated** + **Component.subscription**
+- **create-af-ui** scaffold bin + `EXIT_ANIMATION_OWNERSHIP.md`
+- **View.fromJsx** / default tree on `fromSlots`; Style attach TypeErrorMessage
+- Status backlog open checkboxes: **zero**
+
+### 2026-07-09 — TypeScript 7 toolchain
+
+- **TypeScript 7.0.2** is the supported typecheck/build toolchain
+  (`devDependencies.typescript`: `^7.0.2`).
+- `tsconfig.examples.json`: removed `baseUrl` (hard-removed in TS7; paths
+  remain relative to the config file).
+- `tsconfig.json`: set `"types": ["node"]` so CLI/node entrypoints typecheck
+  under TS7 ambient-types rules (DOM still comes from `lib`).
+- `Route.title` / `Route.meta` implementation roots widened to `unknown` to
+  avoid TS7 `TS2589` excessive deep instantiation on the multi-target attach
+  union (public overloads unchanged).
+- `setResultForTest` (used by `resolveQuery`/`resolveAction`) now `flush()`es
+  reactive memos so `pending` is immediately consistent after scripted Results.
+
+### 2026-07-09 — V1 prerelease readiness
+
+- **P13 action input boundary:** `Atom.action` / `Atom.runtime(...).action`
+  accept optional `{ inputSchema }`. Invalid input fails with
+  `ActionInputSchemaError` **before** the effect body or single-flight
+  transport runs (typed boundary hardening for remotely invokable actions).
+- **TodoMVC integration robustness:** optimistic add + refresh settlement
+  polls until `Success` (and failure path until settled) instead of fixed
+  ticks alone, reducing Refreshing/Success flake.
+- **Diagnostics / test kit (earlier same track):** `Diagnostics.devLayer` +
+  mount/render auto-report when a reporter is present; testing harness
+  `resolveQuery`/`resolveAction`, keyboard/collection drivers, story/scene
+  helpers.
+- Release class remains **0.x prerelease / beta** while `effect` is
+  `^4.0.0-beta.29`. See `docs/RELEASE_CHECKLIST.md` and `docs/V1_SCOPE.md`.
+
 ### Breaking API consolidation
 
 - Removed legacy query/mutation constructors from public surface: `queryEffect`, `mutationEffect`, and strict variants.

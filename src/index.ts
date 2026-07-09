@@ -42,6 +42,11 @@ export * as ServerRoute from "./ServerRoute.js";
 export * as RouterRuntime from "./RouterRuntime.js";
 export * as FetchResult from "./Result.js";
 export * as Serialization from "./Serialization.js";
+export * as Diagnostics from "./Diagnostics.js";
+export * as A11y from "./A11y.js";
+export * as Form from "./Form.js";
+export * as Devtools from "./Devtools.js";
+export * as Event from "./Event.js";
 
 // ─── Effect-TS integration ───────────────────────────────────────────────────
 export {

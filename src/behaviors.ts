@@ -4,7 +4,11 @@ import * as Component from "./Component.js";
 import * as Atom from "./Atom.js";
 import type * as Element from "./Element.js";
 
-type KeyLikeEvent = { readonly key?: string };
+type KeyLikeEvent = {
+  readonly key?: string;
+  readonly shiftKey?: boolean;
+  readonly preventDefault?: () => void;
+};
 
 export const disclosure = Behavior.make<{
   readonly trigger: Element.Interactive;
@@ -259,18 +263,51 @@ export const pagination = (options?: {
     };
   }));
 
-export const focusTrap = () => Behavior.make<{
+export const focusTrap = (options?: {
+  readonly initialIndex?: number;
+  readonly loop?: boolean;
+}) => Behavior.make<{
   readonly container: Element.Interactive;
+  readonly focusables?: Element.Collection<Element.Focusable>;
 }, {
   readonly active: Atom.WritableAtom<boolean>;
+  readonly activeIndex: Atom.WritableAtom<number>;
   readonly activate: () => void;
   readonly deactivate: () => void;
+  readonly focusNext: () => void;
+  readonly focusPrev: () => void;
   readonly handleKeyDown: (event: KeyLikeEvent) => void;
 }, never, never>((elements) =>
   Effect.gen(function* () {
     const active = yield* Component.state(false);
-    const handleKeyDown = (_event: KeyLikeEvent): void => {
+    const activeIndex = yield* Component.state(options?.initialIndex ?? 0);
+    const focusAt = (index: number): void => {
+      const items = elements.focusables?.items() ?? [];
+      if (items.length === 0) return;
+      const loop = options?.loop ?? true;
+      const max = items.length - 1;
+      const next = loop
+        ? ((index % items.length) + items.length) % items.length
+        : Math.max(0, Math.min(index, max));
+      activeIndex.set(next);
+      items[next]?.focus();
+    };
+    const focusNext = (): void => focusAt(activeIndex() + 1);
+    const focusPrev = (): void => focusAt(activeIndex() - 1);
+    const activate = (): void => {
+      active.set(true);
+      focusAt(activeIndex());
+    };
+    const deactivate = (): void => active.set(false);
+    const handleKeyDown = (event: KeyLikeEvent): void => {
       if (!active()) return;
+      if (event.key !== "Tab") return;
+      event.preventDefault?.();
+      if (event.shiftKey) {
+        focusPrev();
+      } else {
+        focusNext();
+      }
     };
 
     yield* elements.container.on("keydown", (event) => {
@@ -279,8 +316,11 @@ export const focusTrap = () => Behavior.make<{
 
     return {
       active,
-      activate: () => active.set(true),
-      deactivate: () => active.set(false),
+      activeIndex,
+      activate,
+      deactivate,
+      focusNext,
+      focusPrev,
       handleKeyDown,
     };
   }));
