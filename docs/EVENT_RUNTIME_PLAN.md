@@ -434,6 +434,61 @@ unmounting the component removes the bridge.
 unmount prevents later publishes, target payload mismatches fail at compile
 time, and a consumer cannot observe an undeclared behavior out-event.
 
+#### Typed Host-Event Adapters
+
+Host events are renderer/platform input (`drop`, pointer, keyboard, TUI input,
+or a native gesture). Logical Event channels are application facts such as
+`file.dropped` or `dialog.dismissed`. They are related by an explicit adapter,
+not by making every host event a global PubSub channel.
+
+**Problem to prove:** two or more renderer integrations repeat the same scoped
+"listen to host event -> decode/map -> publish logical channel" bridge, and the
+repetition cannot be removed by an ordinary Behavior alone.
+
+**Possible shape:** platform packages define typed witnesses such as
+`Web.Event.Drop: HostEvent<"drop", DragEvent, WebPlatform>`. A renderer-neutral
+host-event source is scoped Stream data, conceptually:
+
+```ts
+const hostDrops = Element.events(root, Web.Event.Drop);
+const publishDrops = Event.fromHost(
+  hostDrops,
+  FileDropped,
+  (event) => decodeFiles(event.dataTransfer),
+);
+```
+
+`Element.events(...)` returns a `Stream` of the platform payload. `fromHost`
+is an explicit scoped bridge that maps the host payload into the logical channel
+payload and calls `Event.publish`. The core Event module does not import DOM,
+TUI, React Native, or browser event types.
+
+**Type and platform rules:** a host-event witness carries its literal event
+name, payload type, and platform identity. The source target must support that
+witness according to its slot/element and platform metadata. The mapper must
+return the target Event channel's payload type, or an Effect that carries its
+own error/requirements. A web `DragEvent` is never presented as a portable
+payload; portability begins only after mapping to a logical domain value.
+
+**Lifecycle and browser rules:** adapters attach listeners only while their
+component/behavior/Stream scope is live and remove them exactly once at scope
+exit. They must not globally subscribe to every DOM event, retain host event
+objects beyond listener execution, or bypass synchronous browser semantics such
+as `preventDefault`, propagation, passive listeners, focus, and capture. Host
+event handling stays at the renderer boundary; publishing is a subsequent,
+visible application action.
+
+**Outbound bridges:** publishing a logical Event to the DOM (for example as a
+custom event) is a separate, rare adapter. It must be explicitly targeted at an
+element/renderer and never happen automatically because a logical channel was
+published.
+
+**Acceptance evidence:** web adapter tests prove payload inference, unsupported
+slot/platform rejection, listener cleanup, mapper error propagation, and no
+publish after unmount. A second non-web platform or a convincing renderer
+interface design must show that the witness abstraction is genuinely portable
+rather than a DOM type renamed in core.
+
 #### Devtools Observation
 
 **Problem to prove:** named Event publications materially improve debugging in
