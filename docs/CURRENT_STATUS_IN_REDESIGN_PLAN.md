@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-09 (release hardening pass)
+Last updated: 2026-07-27 (ADR-005 family hydration identity implemented)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`
@@ -860,6 +860,12 @@ Shipped features:
 - `atomEffect` failed refreshes preserve previous success as `Stale`.
 - Serialization projects `Stale` to the existing flat failure wire shape with
   `previousSuccess`, keeping wire compatibility.
+- Compat round-trip closed (2026-07-27): `FetchResult.toResult` now
+  reconstructs core `Stale` from a settled failure carrying `previousSuccess`
+  (previously it rebuilt a bare `Failure`, silently dropping last-good data on
+  the `fromResult`→`toResult` round-trip — the keep-stale-on-failure
+  regression surfacing at the compat boundary). Guarded in
+  `effect-atom-api.test.ts`.
 
 Success criteria met:
 
@@ -1427,6 +1433,15 @@ complete; what is left is the v1.x proposals.
 
 ### Then: v1.x proposals (not release-blocking)
 
+  - **ADR-005 family hydration identity — IMPLEMENTED 2026-07-27.**
+    `Atom.Family` now enumerates live members (`keys()`/`entries()`/`size`) and
+    bounds growth via `FamilyOptions.capacity` (FIFO eviction).
+    `Hydration.dehydrateFamily` + `hydrateFamilies`/`hydrateFamiliesEffect`
+    carry family members across SSR by argument identity, and
+    `ValidationMode` (`off`/`loose`/`strict`, via `resolveMode`) unifies drift
+    diagnostics for both scalar and family hydration. Gates green
+    (`typecheck:all`, `npm test` = 583 passing). A non-FIFO eviction *policy*
+    (LRU/TTL) and router loader-cache hydration wiring remain follow-ups.
   - **Open redesign TODO backlog is empty (2026-07-09).** Residual product depth
     (full WAI-ARIA certification, richer Form single-flight wiring, full MCP
     panel UI, Effect 4 stable for 1.0) is outside the checkbox list.

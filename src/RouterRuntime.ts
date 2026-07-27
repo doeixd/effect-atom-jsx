@@ -455,20 +455,43 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
     return Route.runMatchedLoaders(config.app, nextLocation, { includeDeferred: true });
   };
 
-  const refreshMatchedLoaders = (): Effect.Effect<void> => Effect.gen(function* () {
-    const results = yield* loadMatchedRouteResultsAt(location);
+  const commitLoaderResults = (
+    results: ReadonlyArray<{ readonly routeId: string; readonly result: CoreResultType<unknown, unknown> }>,
+  ): void => {
     const next = routeResultEntriesToMaps(results);
     loaderData.clear();
     for (const [key, value] of next.loaderData) loaderData.set(key, value);
     errors = next.errors;
+  };
+
+  const refreshMatchedLoaders = (): Effect.Effect<void> => Effect.gen(function* () {
+    const results = yield* loadMatchedRouteResultsAt(location);
+    commitLoaderResults(results);
   });
 
   const refreshMatchedLoadersAt = (nextLocation: URL): Effect.Effect<void> => Effect.gen(function* () {
     const results = yield* loadMatchedRouteResultsAt(nextLocation);
-    const next = routeResultEntriesToMaps(results);
-    loaderData.clear();
-    for (const [key, value] of next.loaderData) loaderData.set(key, value);
-    errors = next.errors;
+    commitLoaderResults(results);
+  });
+
+  /**
+   * Load matched loaders for `nextLocation` and commit the results only if the
+   * owning task is still current when the loaders settle.
+   *
+   * This is the supersession guard: a superseded (late-loser) run resolves its
+   * loaders but its `isCurrent()` check fails, so it never clobbers the winner's
+   * loader data. Real fiber interruption stops most losers before they reach
+   * this point; the guard closes the remaining race where a loser resumes in
+   * the same tick as the interrupt request.
+   */
+  const refreshMatchedLoadersGuarded = (
+    nextLocation: URL,
+    isCurrent: () => boolean,
+  ): Effect.Effect<boolean> => Effect.gen(function* () {
+    const results = yield* loadMatchedRouteResultsAt(nextLocation);
+    if (!isCurrent()) return false;
+    commitLoaderResults(results);
+    return true;
   });
 
   const prepareRequestLocation = (request: Request): Effect.Effect<void> => Effect.gen(function* () {
@@ -634,27 +657,34 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       unsubscribeHistory = config.history.subscribe((event) => {
         historyAction = event.action;
         location = new URL(event.location.toString());
-        if (inFlightNavigationFiber) {
-          Effect.runFork(Fiber.interrupt(inFlightNavigationFiber));
-        }
-        const taskId = inFlightNavigation ?? allocateTaskId();
+        const nextLocation = location;
+        // Hand the superseded navigation fiber to the new run so it can be
+        // interrupted (finalizers run) before the winner commits loader state.
+        const supersededFiber = inFlightNavigationFiber;
+        inFlightNavigationFiber = null;
+        const taskId = allocateTaskId();
         inFlightNavigation = taskId;
         if (navigation.phase === "idle" || navigation.phase === "cancelled") {
-          navigation = loadingTask(location.pathname);
+          navigation = loadingTask(nextLocation.pathname);
           emit();
         }
-        const body = refreshMatchedLoaders().pipe(
-          Effect.tap(() => Effect.sync(() => {
-            if (isCurrentTask("navigation", taskId)) {
-              finishTask((state) => {
-                navigation = state;
-              }, new Map(loaderData));
-              clearInFlight("navigation");
-            }
-          })),
+        const body = Effect.gen(function* () {
+          if (supersededFiber) yield* Fiber.interrupt(supersededFiber);
+          const committed = yield* refreshMatchedLoadersGuarded(
+            nextLocation,
+            () => isCurrentTask("navigation", taskId),
+          );
+          if (committed && isCurrentTask("navigation", taskId)) {
+            finishTask((state) => {
+              navigation = state;
+            }, new Map(loaderData));
+            clearInFlight("navigation");
+            inFlightNavigationFiber = null;
+          }
+        }).pipe(
           Effect.onInterrupt(() => Effect.sync(() => {
             if (isCurrentTask("navigation", taskId)) {
-              navigation = cancelledTask(location.pathname, navigation.outcome);
+              navigation = cancelledTask(nextLocation.pathname, navigation.outcome);
               clearInFlight("navigation");
               emit();
             }
@@ -701,7 +731,8 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       };
     },
     navigate: (to, options) => Effect.sync(() => {
-      Effect.runFork(interruptTrackedFiber("navigation"));
+      // Navigation-fiber interruption is owned by the history listener, which
+      // interrupts the superseded fiber before the new run commits.
       if (typeof to === "number") {
         const taskId = allocateTaskId();
         inFlightNavigation = taskId;
@@ -721,7 +752,6 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       else config.history.push(to);
     }),
     navigateApp: (route, options) => Effect.sync(() => {
-      Effect.runFork(interruptTrackedFiber("navigation"));
       const to = isUnifiedAppRoute(route)
         ? Route.link(route)(options?.params ?? {})
         : (() => {
@@ -868,16 +898,22 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       supersedeTask(revalidation, (state) => {
         revalidation = state;
       }, loadingTask(location.pathname));
-      yield* refreshMatchedLoaders();
-      if (isCurrentTask("revalidate", taskId)) {
+      const committed = yield* refreshMatchedLoadersGuarded(
+        location,
+        () => isCurrentTask("revalidate", taskId),
+      );
+      if (committed && isCurrentTask("revalidate", taskId)) {
         finishTask((state) => {
           revalidation = state;
         }, new Map(loaderData));
         clearInFlight("revalidate");
       }
     })) as RouterRuntimeInstance["revalidate"],
-    cancel: (target) => Effect.sync(() => {
+    cancel: (target) => Effect.gen(function* () {
       cancelTask(target);
+      // Real interruption: stop the in-flight fiber for the cancelled task so
+      // its loaders/finalizers unwind promptly (e.g. on unmount mid-flight).
+      yield* interruptTrackedFiber(target ?? "navigation");
     }),
     renderRequest: (request, options) => Effect.gen(function* () {
       cancelTask("request");

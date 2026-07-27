@@ -156,8 +156,13 @@ core is the only hard external blocker for cutting `1.0.0`.
   renderers. The claim stays "your components are verified against declared
   platform vocabularies," nothing more.
 - **ADR-005 family hydration identity** (validation modes, eviction
-  controls). Proposal only today; current `hydrate` strict mode is enough
-  for v1.
+  controls). **IMPLEMENTED 2026-07-27** — `Atom.Family` gained
+  `keys()`/`entries()`/`size` + `capacity` (FIFO) eviction;
+  `Hydration.dehydrateFamily`/`hydrateFamilies`/`hydrateFamiliesEffect` carry
+  family members across SSR by identity; `ValidationMode`
+  (`off`/`loose`/`strict`) unifies drift diagnostics. See
+  `docs/adr/ADR-005-family-hydration-identity.md`. A non-FIFO eviction
+  *policy* (LRU/TTL) remains a v1.x follow-up.
 - **Package split (P7).** **DECIDED 2026-07-06: confirmed** — v1 ships one
   package. Split re-evaluated post-v1 only.
 - **Depth beyond shipped MVPs (2026-07-09 backlog close):** full WAI-ARIA

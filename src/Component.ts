@@ -15,6 +15,7 @@ import { Owner, getOwner, runWithOwner } from "./owner.js";
 import * as Atom from "./Atom.js";
 import type * as Behavior from "./Behavior.js";
 import * as Element from "./Element.js";
+import * as Portable from "./Portable.js";
 import * as Route from "./Route.js";
 import * as View from "./View.js";
 import {
@@ -81,9 +82,42 @@ type Pipeable<Self> = {
 type Simplify<T> = { readonly [K in keyof T]: T[K] };
 type NoDuplicateName<Bindings, Name extends string> = Name extends keyof Bindings ? never : Name;
 type NoDuplicateFragment<Bindings, Added> = Extract<keyof Bindings, keyof Added> extends never ? unknown : never;
-type SetupStep<Props> = (
-  input: { readonly props: Props; readonly bindings: Readonly<Record<string, unknown>> },
-) => Effect.Effect<Readonly<Record<string, unknown>>, unknown, unknown>;
+
+/** Inspectable category for one named setup-builder step. */
+export type SetupStepKind = "binding" | "value" | "effect" | "fragment";
+
+/** Read-only setup step metadata retained after builder construction. */
+export interface SetupStepInspection {
+  readonly name?: string;
+  readonly kind: SetupStepKind;
+  readonly plan?: SetupPlan;
+}
+
+/** Inspectable setup shape. Raw setup functions are intentionally opaque. */
+export type SetupPlan =
+  | {
+    readonly kind: "named";
+    readonly steps: ReadonlyArray<SetupStepInspection>;
+  }
+  | {
+    readonly kind: "opaque";
+  };
+
+type SetupStep<Props> = {
+  readonly inspection: SetupStepInspection;
+  readonly run: (
+    input: { readonly props: Props; readonly bindings: Readonly<Record<string, unknown>> },
+  ) => Effect.Effect<Readonly<Record<string, unknown>>, unknown, unknown>;
+};
+
+const opaqueSetupPlan: SetupPlan = Object.freeze({ kind: "opaque" as const });
+
+function setupPlanFromSteps<Props>(steps: ReadonlyArray<SetupStep<Props>>): SetupPlan {
+  return Object.freeze({
+    kind: "named" as const,
+    steps: Object.freeze(steps.map((step) => Object.freeze({ ...step.inspection }))),
+  });
+}
 
 /** Input passed to each step of the named setup builder. */
 export interface SetupInput<Props, Bindings> {
@@ -113,6 +147,7 @@ export interface Setup<Props, Bindings, E = never, R = never> extends Pipeable<S
     readonly R: R;
   };
   readonly effect: (props: Props) => Effect.Effect<Bindings, E, R>;
+  readonly plan: SetupPlan;
   bind<const Name extends string, A, E2, R2>(
     name: NoDuplicateName<Bindings, Name>,
     f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E2, R2>,
@@ -186,16 +221,108 @@ type RequirementSpec<Req> = {
   readonly _Req?: (_: Req) => Req;
 };
 
+/** Phase affected by an inspectable component wrapper. */
+export type ComponentTransformPhase = "setup" | "view";
+
+/** An execution transform whose captured behavior is not yet portable. */
+export interface OpaqueComponentTransformDescriptor {
+  readonly kind: "component.wrapper";
+  readonly phase: ComponentTransformPhase;
+  readonly portability: "opaque";
+}
+
+/**
+ * The canonical slot wrapper can be reconstructed from the published slot
+ * contract, so it remains portable even though it augments setup bindings.
+ */
+export interface SlotsComponentTransformDescriptor {
+  readonly kind: "component.withSlots";
+  readonly phase: "setup";
+  readonly portability: "portable";
+}
+
+/** Inspectable metadata for a wrapper that changes component execution. */
+export type ComponentTransformDescriptor =
+  | OpaqueComponentTransformDescriptor
+  | SlotsComponentTransformDescriptor;
+
+/** Immutable, read-only definition metadata retained by a component value. */
+export interface ComponentDefinition {
+  readonly name?: string;
+  readonly setupPlan: SetupPlan;
+  readonly transforms: ReadonlyArray<ComponentTransformDescriptor>;
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Authored metadata accepted by `Component.withDefinition(...)`.
+ *
+ * Metadata is inspection-only and is not implicitly treated as wire-safe.
+ * Adapters must explicitly project and validate anything they serialize.
+ */
+export interface ComponentDefinitionOptions {
+  readonly name?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
 type InternalComponent<Props, Req, E, Bindings> = {
   readonly [ComponentImplTypeId]: true;
   readonly props: PropsSpec<Props>;
   readonly requirements: RequirementSpec<Req>;
   readonly setup: (props: Props) => Effect.Effect<Bindings, E, Req>;
+  readonly definition: ComponentDefinition;
   readonly view?: (props: Props, bindings: Bindings) => unknown;
   readonly loading?: () => unknown;
   readonly boundary?: ErrorHandlers;
   readonly memo?: (prev: Props, next: Props) => boolean;
 };
+
+function freezeDefinition(
+  definition: {
+    readonly name?: string;
+    readonly setupPlan: SetupPlan;
+    readonly transforms?: ReadonlyArray<ComponentTransformDescriptor>;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+  },
+): ComponentDefinition {
+  return Object.freeze({
+    ...(definition.name === undefined ? {} : { name: definition.name }),
+    setupPlan: definition.setupPlan,
+    transforms: Object.freeze([...(definition.transforms ?? [])]),
+    metadata: Object.freeze({ ...(definition.metadata ?? {}) }),
+  });
+}
+
+function definitionForSetup<Props, Bindings, E, R>(
+  source: SetupSource<Props, Bindings, E, R>,
+): ComponentDefinition {
+  return freezeDefinition({
+    setupPlan: isSetup<Props, Bindings, E, R>(source) ? source.plan : opaqueSetupPlan,
+  });
+}
+
+function appendOpaqueTransform(
+  definition: ComponentDefinition,
+  phase: ComponentTransformPhase,
+): ComponentDefinition {
+  return appendTransform(definition, {
+    kind: "component.wrapper",
+    phase,
+    portability: "opaque",
+  });
+}
+
+function appendTransform(
+  definition: ComponentDefinition,
+  transform: ComponentTransformDescriptor,
+): ComponentDefinition {
+  return freezeDefinition({
+    name: definition.name,
+    setupPlan: definition.setupPlan,
+    transforms: [...definition.transforms, transform],
+    metadata: definition.metadata,
+  });
+}
 
 function isInternalComponent<Props, Req, E, Bindings>(
   value: unknown,
@@ -226,7 +353,7 @@ function makeSetup<Props, Bindings, E, R>(
     Effect.gen(function* () {
       let bindings: Record<string, unknown> = {};
       for (const step of steps) {
-        const added = yield* step({ props, bindings });
+        const added = yield* step.run({ props, bindings });
         bindings = { ...bindings, ...added };
       }
       return bindings as Bindings;
@@ -240,31 +367,47 @@ function makeSetup<Props, Bindings, E, R>(
       R: undefined as unknown as R,
     },
     effect,
+    plan: setupPlanFromSteps(steps),
     bind: (name: string, f: (input: SetupInput<Props, Bindings>) => Effect.Effect<unknown, unknown, unknown>) =>
       makeSetup<Props, any, any, any>([
         ...steps,
-        (input) =>
-          f(input as unknown as SetupInput<Props, Bindings>).pipe(
-            Effect.map((value) => ({ [name]: value })),
-          ),
+        {
+          inspection: { kind: "binding", name },
+          run: (input) =>
+            f(input as unknown as SetupInput<Props, Bindings>).pipe(
+              Effect.map((value) => ({ [name]: value })),
+            ),
+        },
       ]),
     value: (name: string, f: (input: SetupInput<Props, Bindings>) => unknown) =>
       makeSetup<Props, any, any, any>([
         ...steps,
-        (input) => Effect.succeed({ [name]: f(input as unknown as SetupInput<Props, Bindings>) }),
+        {
+          inspection: { kind: "value", name },
+          run: (input) => Effect.succeed({ [name]: f(input as unknown as SetupInput<Props, Bindings>) }),
+        },
       ]),
     doEffect: (f: (input: SetupInput<Props, Bindings>) => Effect.Effect<void, unknown, unknown>) =>
       makeSetup<Props, Bindings, any, any>([
         ...steps,
-        (input) =>
-          f(input as unknown as SetupInput<Props, Bindings>).pipe(
-            Effect.as({}),
-          ),
+        {
+          inspection: { kind: "effect" },
+          run: (input) =>
+            f(input as unknown as SetupInput<Props, Bindings>).pipe(
+              Effect.as({}),
+            ),
+        },
       ]),
     use: (fragment: Setup<Props, unknown, unknown, unknown>) =>
       makeSetup<Props, any, any, any>([
         ...steps,
-        (input) => fragment.effect(input.props).pipe(Effect.map((added) => added as Readonly<Record<string, unknown>>)),
+        {
+          inspection: { kind: "fragment", plan: fragment.plan },
+          run: (input) =>
+            fragment.effect(input.props).pipe(
+              Effect.map((added) => added as Readonly<Record<string, unknown>>),
+            ),
+        },
       ]),
   } as unknown as Setup<Props, Bindings, E, R>;
 
@@ -369,6 +512,7 @@ function toComponent<Props, Req, E, Bindings, SlotContract = SlotsFromBindings<B
     props: internal.props,
     requirements: internal.requirements,
     setup: internal.setup,
+    definition: internal.definition,
     view: internal.view,
     loading: internal.loading,
     boundary: internal.boundary,
@@ -523,6 +667,7 @@ export function make<Props, Req, SetupReq, E, Bindings>(
     props: propSpec,
     requirements: req as unknown as RequirementSpec<Req | SetupReq>,
     setup: setupSourceEffect(setup),
+    definition: definitionForSetup(setup),
     view,
   });
 }
@@ -548,6 +693,7 @@ export function headless<Props, Req, SetupReq, E, Bindings>(
     props: propSpec as unknown as PropsSpec<Props & HeadlessChildren<Bindings>>,
     requirements: req as unknown as RequirementSpec<Req | SetupReq>,
     setup: setupEffect as unknown as (props: Props & HeadlessChildren<Bindings>) => Effect.Effect<Bindings, E, Req | SetupReq>,
+    definition: definitionForSetup(setup),
   }) as HeadlessComponent<Props, Req | SetupReq, E, Bindings>;
 }
 
@@ -814,6 +960,27 @@ function renderViewResult(
   return View.node(result);
 }
 
+function invokeCommittedView<Props, Req, E, Bindings>(
+  internal: InternalComponent<Props, Req, E, Bindings>,
+  propsValue: Props,
+  bindings: Bindings,
+): unknown {
+  if (internal.view === undefined) {
+    const renderProp = (propsValue as RenderPropChildren<Bindings>).children;
+    return typeof renderProp === "function" ? renderProp(bindings) : null;
+  }
+  return internal.view(propsValue, bindings);
+}
+
+function committedView<Slots>(
+  component: Component<any, any, any, any, any>,
+  result: unknown,
+): View.View<View.NormalizeSlots<Slots>> | undefined {
+  if (!View.isView(result)) return undefined;
+  registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
+  return result as unknown as View.View<View.NormalizeSlots<Slots>>;
+}
+
 /**
  * Run a component's setup effect without rendering its view.
  *
@@ -843,13 +1010,7 @@ export function renderEffect<Props, Req, E, Bindings, SlotContract>(
       }).pipe(Effect.map(({ platform: maybePlatform, diagnostics: maybeDiagnostics }) => {
         const platform = maybePlatform._tag === "Some" ? maybePlatform.value : undefined;
         const diagnosticsReporter = maybeDiagnostics._tag === "Some" ? maybeDiagnostics.value : undefined;
-        if (i.view === undefined) {
-          const renderProp = (parsed as RenderPropChildren<Bindings>).children;
-          return typeof renderProp === "function"
-            ? renderViewResult(component, renderProp(bindings), bindings, platform, diagnosticsReporter)
-            : null;
-        }
-        const result = i.view(parsed, bindings);
+        const result = invokeCommittedView(i, parsed, bindings);
         return renderViewResult(component, result, bindings, platform, diagnosticsReporter);
       })),
     ),
@@ -871,20 +1032,97 @@ export function renderViewEffect<Props, Req, E, Bindings, Slots>(
   const parsed = i.props.parse(propsValue);
   return i.setup(parsed).pipe(
     Effect.map((bindings) => {
-      const result = i.view === undefined
-        ? typeof (parsed as RenderPropChildren<Bindings>).children === "function"
-          ? (parsed as RenderPropChildren<Bindings>).children?.(bindings)
-          : undefined
-        : i.view(parsed, bindings);
-      if (!View.isView(result)) return undefined;
-      registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
-      // Runtime slots are the handle map; NormalizeSlots aligns the type.
-      return result as unknown as View.View<View.NormalizeSlots<Slots>>;
+      const result = invokeCommittedView(i, parsed, bindings);
+      return committedView<Slots>(component, result);
     }),
   );
 }
 
-export interface ComponentAction<Args extends ReadonlyArray<unknown>, A, E> {
+/**
+ * Render a component from an already committed setup snapshot.
+ *
+ * Props are parsed and View slots are registered exactly as on the normal
+ * render path, but setup is not executed. Platform diagnostics that require
+ * Effect services remain available through explicit View/component validation
+ * or the normal `renderEffect` path.
+ */
+export function renderWithBindings<Props, Req, E, Bindings, SlotContract>(
+  component: Component<Props, Req, E, Bindings, SlotContract>,
+  propsValue: Props,
+  bindings: Bindings,
+): unknown {
+  const i = internals(component);
+  const parsed = i.props.parse(propsValue);
+  const result = invokeCommittedView(i, parsed, bindings);
+  return renderViewResult(component, result, bindings, undefined, undefined);
+}
+
+/**
+ * Render a component from committed bindings and return its explicit View.
+ *
+ * JSX-only and headless components without a View return `undefined`. Setup is
+ * never executed.
+ */
+export function renderViewWithBindings<Props, Req, E, Bindings, Slots>(
+  component: Component<Props, Req, E, Bindings, Slots>,
+  propsValue: Props,
+  bindings: Bindings,
+): View.View<View.NormalizeSlots<Slots>> | undefined {
+  const i = internals(component);
+  const parsed = i.props.parse(propsValue);
+  const result = invokeCommittedView(i, parsed, bindings);
+  return committedView<Slots>(component, result);
+}
+
+/**
+ * Read-only supported inspection surface for component tooling and adapters.
+ *
+ * Call `parseProps` once at the input boundary. The setup/render methods
+ * consume that parsed value and never decode it again.
+ */
+export interface ComponentInspection<Props, Req, E, Bindings, SlotContract> {
+  readonly definition: ComponentDefinition;
+  readonly parseProps: (input: unknown) => Props;
+  readonly setup: (propsValue: Props) => Effect.Effect<Bindings, E, Req>;
+  readonly render: (propsValue: Props, bindings: Bindings) => unknown;
+  readonly renderView: (
+    propsValue: Props,
+    bindings: Bindings,
+  ) => View.View<View.NormalizeSlots<SlotContract>> | undefined;
+  readonly slotContract?: SlotContract;
+}
+
+/**
+ * Inspect a component without exposing its mutable/private representation.
+ */
+export function inspect<Props, Req, E, Bindings, SlotContract>(
+  component: Component<Props, Req, E, Bindings, SlotContract>,
+): ComponentInspection<Props, Req, E, Bindings, SlotContract> {
+  const i = internals(component);
+  const slotContract = getSlotContract(component);
+  return Object.freeze({
+    definition: i.definition,
+    parseProps: (input: unknown) => i.props.parse(input),
+    setup: (propsValue: Props) => i.setup(propsValue),
+    render: (propsValue: Props, bindings: Bindings) => {
+      const result = invokeCommittedView(i, propsValue, bindings);
+      return renderViewResult(component, result, bindings, undefined, undefined);
+    },
+    renderView: (propsValue: Props, bindings: Bindings) => {
+      const result = invokeCommittedView(i, propsValue, bindings);
+      return committedView<SlotContract>(component, result);
+    },
+    ...(slotContract === undefined
+      ? {}
+      : { slotContract: slotContract as SlotContract }),
+  });
+}
+
+export interface ComponentAction<
+  Args extends ReadonlyArray<unknown>,
+  A,
+  E,
+> extends Portable.InspectableExecutable<Args, A, E, any> {
   (...args: Args): void;
   run(...args: Args): void;
   runEffect(...args: Args): Effect.Effect<A, E>;
@@ -1049,11 +1287,43 @@ export function query<A, E, R>(
  * `reactivityKeys` to invalidate queries after successful mutations and
  * `singleFlight` to route the call through a server transport.
  */
+export function action<
+  Captures,
+  EncodedCaptures,
+  Args extends ReadonlyArray<unknown>,
+  A,
+  E,
+  R,
+>(
+  executable: Portable.BoundCode<Captures, EncodedCaptures, Args, A, E, R>,
+  options?: ActionOptions,
+): Effect.Effect<ComponentAction<Args, A, E>, never, R>;
 export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
   fn: (...args: Args) => Effect.Effect<A, E, R>,
   options?: ActionOptions,
+): Effect.Effect<ComponentAction<Args, A, E>, never, R>;
+export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
+  executable:
+    | ((...args: Args) => Effect.Effect<A, E, R>)
+    | Portable.BoundCode<any, any, Args, A, E, R>,
+  options?: ActionOptions,
 ): Effect.Effect<ComponentAction<Args, A, E>, never, R> {
   return Effect.gen(function* () {
+    const isPortable = Portable.isBoundCode(executable);
+    const inspection: Portable.ExecutableInspection<Args, A, E, any> =
+      isPortable
+        ? {
+          kind: "portable",
+          executable: executable as Portable.BoundCode<any, any, Args, A, E, R>,
+        }
+        : { kind: "opaque" };
+    const fn: (...args: Args) => Effect.Effect<A, E, R> = isPortable
+      ? (...args: Args) =>
+        Portable.execute(
+          executable as Portable.BoundCode<any, any, Args, A, E, R>,
+          ...args,
+        )
+      : executable as (...args: Args) => Effect.Effect<A, E, R>;
     const lifetime = yield* setupLifetime("Component.action");
     const runtimeContext = yield* Effect.services<R>();
     return yield* setupReactiveOwner(() => {
@@ -1099,7 +1369,7 @@ export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
       );
     out.result = handle.result;
     out.pending = handle.pending;
-    return out;
+    return Portable.annotateExecutable(out, inspection);
     });
   });
 }
@@ -1209,6 +1479,34 @@ export function withLayer<ROut, E2, RIn>(
     provideLayerToSetup(component, layer) as PreserveRouteMetadata<C, Component<PropsOf<C>, Exclude<Requirements<C>, ROut> | RIn, Errors<C> | E2, BindingsOf<C>, SlotContractOf<C>>>;
 }
 
+/**
+ * Add immutable authored metadata to a component definition.
+ *
+ * This advanced inspection surface does not change setup or rendering.
+ * Repeated calls merge metadata and replace the optional diagnostic name.
+ */
+export function withDefinition(
+  options: ComponentDefinitionOptions,
+): <C extends Component<any, any, any, any, any>>(
+  component: C,
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotContractOf<C>>> {
+  return <C extends Component<any, any, any, any, any>>(component: C) => {
+    const i = internals(component);
+    return toComponentLike(component, {
+      ...i,
+      definition: freezeDefinition({
+        name: options.name ?? i.definition.name,
+        setupPlan: i.definition.setupPlan,
+        transforms: i.definition.transforms,
+        metadata: {
+          ...i.definition.metadata,
+          ...options.metadata,
+        },
+      }),
+    });
+  };
+}
+
 export function withSlotContract<const SlotContract extends AnySlotContract>(
   slotContract: SlotContract,
 ): <C extends Component<any, any, any, any, any>>(
@@ -1265,10 +1563,89 @@ export function withSlots<const SlotContract extends AnySlotContract>(
         }
         return { value: bindings, slots: handles };
       })) as any,
+    }, {
+      setup: {
+        kind: "component.withSlots",
+        phase: "setup",
+        portability: "portable",
+      },
     });
     slotContractRegistry.set(wrapped, slots);
     return wrapped as any;
   };
+}
+
+/** Options for the golden-path `makeWithSlots(...)` entry point. */
+export interface MakeWithSlotsOptions<Props, Req, SetupReq, E, Bindings> {
+  /** Props declaration. Defaults to `Component.props<{}>()` when omitted. */
+  readonly props?: PropsSpec<Props>;
+  /** Service requirements. Defaults to `Component.require<never>()` when omitted. */
+  readonly require?: RequirementSpec<Req>;
+  /** Setup effect or named setup builder producing committed bindings. */
+  readonly setup: SetupSource<Props, Bindings, E, SetupReq>;
+  /** Authored view returning plain JSX; wrapped in `View.fromSlots(slots, ...)`. */
+  readonly view: (props: Props, bindings: Bindings) => unknown;
+}
+
+/**
+ * Golden-path sugar: create a slot-bearing component in a single call.
+ *
+ * `makeWithSlots(slots, { props, require, setup, view })` is exactly
+ * `make(props, require, setup, (p, b) => View.fromSlots(slots, view(p, b)))`
+ * piped through `withSlots(slots)`. The authored `view` returns plain JSX; the
+ * slot contract is inferred from `slots`, the rendered node is wrapped in
+ * `View.fromSlots(...)`, and the contract is published automatically so styles
+ * and behaviors attach to the same contract. Declared-vs-rendered diagnostics
+ * fire exactly as on the explicit path. `props`/`require` are optional and
+ * default to `Component.props<{}>()` / `Component.require<never>()`.
+ *
+ * The explicit `make(...).pipe(withSlots(...))` form stays available for custom
+ * or shared per-slot handles; this sugar is purely additive.
+ *
+ * @example
+ * const Field = Component.makeWithSlots(FieldSlots, {
+ *   props: Component.props<{ readonly label: string }>(),
+ *   setup: () => Effect.succeed({}),
+ *   view: (props) => (
+ *     <label>
+ *       <span>{props.label}</span>
+ *       <input />
+ *     </label>
+ *   ),
+ * })
+ */
+export function makeWithSlots<
+  const S extends View.Slots.Any,
+  Props = {},
+  Req = never,
+  SetupReq = never,
+  E = never,
+  Bindings = {},
+>(
+  slots: S,
+  options: MakeWithSlotsOptions<Props, Req, SetupReq, E, Bindings>,
+): Component<
+  Props,
+  Req | SetupReq,
+  E,
+  Bindings & { readonly slots: View.Slots.HandlesOf<S> },
+  S
+> {
+  const propSpec = options.props ?? props<Props>();
+  const req = options.require ?? require<Req>();
+  const component = make(
+    propSpec,
+    req,
+    options.setup,
+    (componentProps: Props, bindings: Bindings) => View.fromSlots(slots, options.view(componentProps, bindings)),
+  );
+  return withSlots(slots)(component) as unknown as Component<
+    Props,
+    Req | SetupReq,
+    E,
+    Bindings & { readonly slots: View.Slots.HandlesOf<S> },
+    S
+  >;
 }
 
 /** Attach typed error renderers keyed by `_tag`. */
@@ -1446,7 +1823,7 @@ function setRoutedMeta<P, Q, H>(component: Component<any, any, any, any, any>, m
   (asRoutedComponent<P, Q, H>(component) as RoutedComponentInternals<P, Q, H, unknown, unknown> & WithRouteMeta<P, Q, H>)[Route.RouteMetaSymbol] = meta;
 }
 
-function copyRouteDecorations(
+function copySlotContract(
   source: Component<any, any, any, any, any>,
   target: Component<any, any, any, any, any>,
 ): void {
@@ -1454,7 +1831,13 @@ function copyRouteDecorations(
   if (slotContract !== undefined) {
     slotContractRegistry.set(target, slotContract);
   }
+}
 
+function copyRouteDecorations(
+  source: Component<any, any, any, any, any>,
+  target: Component<any, any, any, any, any>,
+): void {
+  copySlotContract(source, target);
   const sourceRoute = asRoutedComponent(source);
   const targetRoute = asRoutedComponent(target);
 
@@ -1480,8 +1863,32 @@ function copyRouteDecorations(
 function toComponentLike<Source extends Component<any, any, any, any, any>, Props, Req, E, Bindings, SlotContract = SlotContractOf<Source>>(
   source: Source,
   internal: InternalComponent<Props, Req, E, Bindings>,
+  transforms?: {
+    readonly setup?: ComponentTransformDescriptor;
+    readonly view?: ComponentTransformDescriptor;
+  },
 ): PreserveRouteMetadata<Source, Component<Props, Req, E, Bindings, SlotContract>> {
-  const wrapped = toComponent<Props, Req, E, Bindings, SlotContract>(internal);
+  const previous = internals(source);
+  let definition = internal.definition;
+  if (internal.setup !== previous.setup) {
+    definition = transforms?.setup === undefined
+      ? appendOpaqueTransform(definition, "setup")
+      : appendTransform(definition, transforms.setup);
+  }
+  if (
+    internal.view !== previous.view
+    || internal.loading !== previous.loading
+    || internal.boundary !== previous.boundary
+    || internal.memo !== previous.memo
+  ) {
+    definition = transforms?.view === undefined
+      ? appendOpaqueTransform(definition, "view")
+      : appendTransform(definition, transforms.view);
+  }
+  const wrapped = toComponent<Props, Req, E, Bindings, SlotContract>({
+    ...internal,
+    definition,
+  });
   copyRouteDecorations(source, wrapped);
   return wrapped as PreserveRouteMetadata<Source, Component<Props, Req, E, Bindings, SlotContract>>;
 }
@@ -1526,8 +1933,13 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
 
     let wrapped: Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
 
+    const routeDefinition = appendOpaqueTransform(
+      appendOpaqueTransform(i.definition, "setup"),
+      "view",
+    );
     wrapped = toComponent({
       ...i,
+      definition: routeDefinition,
       setup: (props) => Effect.gen(function* () {
         const router = yield* Route.RouterTag;
         const parentPrefix = "";
@@ -1731,8 +2143,9 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
         }
         return i.view(props, bindings.__routeInner as Bindings);
       },
-    }) as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
+    }) as unknown as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
 
+    copySlotContract(component, wrapped);
     const meta: Route.RouteMeta<P, Q, H> = {
       pattern,
       fullPattern: Route.resolvePattern("", pattern),
@@ -1935,6 +2348,9 @@ export const Component = {
   setupEffect,
   renderEffect,
   renderViewEffect,
+  renderWithBindings,
+  renderViewWithBindings,
+  inspect,
   validateSlotContract,
   validateRenderedSlotContract,
   mount,
@@ -1953,8 +2369,10 @@ export const Component = {
   schedule,
   scheduleEffect,
   withLayer,
+  withDefinition,
   withSlotContract,
   withSlots,
+  makeWithSlots,
   withErrorBoundary,
   withLoading,
   withSpan,
@@ -1974,5 +2392,3 @@ export const Component = {
   slotCollection,
   subscription,
 } as const;
-
-

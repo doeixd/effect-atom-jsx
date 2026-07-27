@@ -133,13 +133,37 @@ const FieldSlots = View.Slots.define({
   },
 });
 
-const Field = Component.make(/* ... */).pipe(
-  Component.withSlots(FieldSlots),
-);
+const Field = Component.makeWithSlots(FieldSlots, {
+  props: Component.props<{ readonly label: string }>(),
+  setup: () => Effect.succeed({}),
+  view: (props) => (
+    <label>
+      <span>{props.label}</span>
+      <input />
+    </label>
+  ),
+});
 ```
+
+`Component.makeWithSlots(slots, options)` is the golden-path sugar: it wraps the
+authored JSX in `View.fromSlots(slots, ...)` and publishes the contract in one
+call, inferring props, bindings, errors, requirements, and the slot contract
+with no explicit generics. `options.props` and `options.require` default to
+`Component.props<{}>()` / `Component.require<never>()` when omitted. It is
+exactly:
+
+```ts
+Component.make(props, require, setup, (p, b) => View.fromSlots(slots, view(p, b)))
+  .pipe(Component.withSlots(slots))
+```
+
+Reach for the explicit `make(...).pipe(withSlots(...))` form when a slot needs a
+custom or shared handle (`View.Slots.make` + `View.Slot.bind`); the sugar is
+purely additive and the two forms produce identical contracts.
 
 Useful helpers:
 
+- `Component.makeWithSlots(slots, options)` builds and publishes in one call.
 - `Component.withSlots(slots)` publishes the authored contract.
 - `Component.SlotContractOf<T>` extracts the authored contract.
 - `Component.SlotsOf<T>` extracts the runtime handle map projection.

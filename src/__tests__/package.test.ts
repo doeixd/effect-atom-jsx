@@ -25,6 +25,7 @@ describe("package release surface", () => {
       "./RouterRuntime",
       "./Result",
       "./Serialization",
+      "./Portable",
       "./Diagnostics",
       "./A11y",
       "./Form",

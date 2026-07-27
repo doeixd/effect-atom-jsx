@@ -309,6 +309,25 @@ describe("Route", () => {
     expect(unmatched).toBeUndefined();
   });
 
+  it("does not replace an existing route registration when a routed component is wrapped again", () => {
+    const slots = View.Slots.define({
+      root: { capability: Element.Capability.Container },
+    });
+    const Base = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({}),
+      () => "page",
+    ).pipe(Component.withSlots(slots));
+    const First = Base.pipe(Component.route("/registration-first"));
+    const Second = First.pipe(Component.route("/registration-second"));
+
+    expect(Route.findRegisteredRoute("/registration-first")?.component).toBe(First);
+    expect(Route.findRegisteredRoute("/registration-second")?.component).toBe(Second);
+    expect(Component.getSlotContract(First)).toBe(slots);
+    expect(Component.getSlotContract(Second)).toBe(slots);
+  });
+
   it("preserves component View metadata through route-node materialization", () => {
     const Page = Component.make<
       {},

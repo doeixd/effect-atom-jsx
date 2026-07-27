@@ -3,10 +3,10 @@
 This is the preferred authored shape for structural UI in AF-UI.
 
 The component author defines slot identity once with `View.Slots.define`.
-Components publish that contract with `Component.withSlots(...)`. Styles and
+`Component.makeWithSlots(...)` builds the component, wraps the authored JSX in
+`View.fromSlots(...)`, and publishes the contract in a single call. Styles and
 behaviors consume the same contract from the outside. JSX is the authored
-markup surface — `View.fromSlots(slots, <jsx/>)` takes the rendered node
-directly.
+markup surface.
 
 ```tsx
 import { Effect } from "effect";
@@ -22,20 +22,19 @@ const FieldSlots = View.Slots.define({
   },
 });
 
-// 2. The component: setup for logic, JSX for structure.
-//    withSlots publishes the contract and injects the slot handles.
-const Field = Component.make(
-  Component.props<{ readonly label: string }>(),
-  Component.require<never>(),
-  () => Effect.succeed({}),
-  (props) =>
-    View.fromSlots(FieldSlots, (
-      <label>
-        <span>{props.label}</span>
-        <input />
-      </label>
-    )),
-).pipe(Component.withSlots(FieldSlots));
+// 2. The component: one call publishes the contract, wraps the JSX, and
+//    injects the slot handles. No fromSlots wrap, no withSlots pipe, no
+//    explicit generics — props/bindings/errors/requirements all inferred.
+const Field = Component.makeWithSlots(FieldSlots, {
+  props: Component.props<{ readonly label: string }>(),
+  setup: () => Effect.succeed({}),
+  view: (props) => (
+    <label>
+      <span>{props.label}</span>
+      <input />
+    </label>
+  ),
+});
 
 // 3. Appearance and interaction attach from outside, keyed by the contract.
 const FieldStyle = Style.forSlots(FieldSlots)({
@@ -54,6 +53,33 @@ export const StyledField = Field.pipe(
   Style.attachToSlots(FieldStyle, FieldSlots),
   Behavior.attachToSlots(FieldBehavior, FieldSlots),
 );
+```
+
+The component itself is ~9 lines — the golden path fits in ~15 with the
+contract. `makeWithSlots` is exactly `make(props, require, setup, (p, b) =>
+View.fromSlots(slots, view(p, b))).pipe(withSlots(slots))`; `props`/`require`
+default to `Component.props<{}>()` / `Component.require<never>()`.
+
+## The Explicit Path
+
+`makeWithSlots` is additive sugar. The explicit
+`Component.make(...).pipe(Component.withSlots(...))` form stays first-class and
+is preferred when a slot needs a custom or shared handle, or when the view must
+build the `View` itself (e.g. attaching typed `tree` metadata):
+
+```tsx
+const Field = Component.make(
+  Component.props<{ readonly label: string }>(),
+  Component.require<never>(),
+  () => Effect.succeed({}),
+  (props) =>
+    View.fromSlots(FieldSlots, (
+      <label>
+        <span>{props.label}</span>
+        <input />
+      </label>
+    )),
+).pipe(Component.withSlots(FieldSlots));
 ```
 
 ## The Tiers
@@ -90,6 +116,10 @@ authored surface. Typed-tree extraction from JSX is planned for v1.x (see
 
 - `View.Slots` is the authored structural contract; `View.Slots.define` is
   the one-step authored constructor.
+- `Component.makeWithSlots(slots, options)` is the golden-path component
+  constructor: build + `View.fromSlots` + `Component.withSlots` in one call.
+  The explicit `make(...).pipe(withSlots(...))` form is the escape hatch for
+  custom handles or hand-built views.
 - JSX is the authored markup path (`View.fromSlots(slots, <jsx/>)`);
   `View.element(...)` builders are the typed-tree/generated layer.
 - `Component.SlotContractOf<typeof Field>` returns the authored contract.

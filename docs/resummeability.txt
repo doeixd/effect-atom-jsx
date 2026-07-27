@@ -1,0 +1,2536 @@
+the qwik js framework, read its docs website, and learn everything about resumability / serializtion. how, what, why, and how.
+Worked for 2m 56s
+Qwik resumability and serialization
+
+Qwik’s core idea is:
+
+Do the initial application work on the server, encode the useful result into HTML, and load executable JavaScript only when a particular interaction actually needs it.
+
+This is resumability. Serialization is the machinery that makes resumability possible.
+
+One important version note: the official site currently labels Qwik v2 as beta. The architecture remains the same, but generated HTML markers, package names, and some serialization APIs differ between Qwik v1 and v2. For example, older documentation shows on:click, while current v2 source documentation uses q-e:click; treat those exact spellings as implementation details rather than the fundamental model.
+
+The essential difference: hydration versus resumability
+
+In a conventional SSR framework, the server renders HTML, but the browser still needs to recreate the application runtime. It generally must:
+
+Download component code.
+execute component render functions again;
+reconstruct the component tree;
+locate and install event listeners;
+rebuild the relationship between state and UI.
+
+That reconstruction is hydration.
+
+Qwik performs those calculations during SSR or SSG and serializes the important results into the HTML. The browser therefore does not have to replay every component merely to discover what the server already knew.
+
+Hydration-based model	Qwik model
+HTML is rendered on the server	HTML is rendered on the server
+Component code is downloaded at startup	Component code can remain unloaded
+Components execute again in the browser	Components do not execute again merely for startup
+Listeners are rediscovered	Listener locations are encoded in HTML
+State subscriptions are rebuilt	Subscriptions are serialized
+Application starts by replaying	Application starts by resuming
+
+“Resuming” does not mean Qwik freezes and transfers an arbitrary JavaScript CPU stack or instruction pointer. The pause/resume language is a mental model. Technically, Qwik creates numerous resumable entry points and serializes the state and references those entry points will require later.
+
+What Qwik actually serializes
+
+Qwik needs to preserve three broad categories of information.
+
+1. Event-listener information
+
+Suppose you write:
+
+export const Counter = component$(() => {
+  const count = useSignal(0);
+
+  return (
+    <button onClick$={() => count.value++}>
+      Count: {count.value}
+    </button>
+  );
+});
+
+Conceptually, the server may generate metadata resembling:
+
+<button
+  on:click="./counter-handler.js#Counter_onClick[0]"
+  q:obj="42"
+>
+  Count: 0
+</button>
+
+The exact attribute format varies by Qwik version, but the important information is:
+
+which event matters;
+which code chunk contains the handler;
+which exported symbol in that chunk should execute;
+which serialized objects were captured by the closure.
+
+The browser does not need the Counter component code merely to know that the button has a click handler.
+
+2. Component boundaries and the reactivity graph
+
+Qwik records enough information to know:
+
+where component boundaries occur;
+which state each component read;
+which component or template fragment should be invalidated when that state changes;
+which tasks are subscribed to which state.
+
+Without this information, the browser would have to run components again to rediscover those relationships. Qwik constructs the graph during server rendering and serializes it into the response.
+
+3. Reachable application state
+
+Signals, stores, props, contexts, closure captures, task state, and related objects may need to survive the server-to-browser transition.
+
+However, Qwik does not blindly serialize every object created during rendering. Its documentation describes serialization as reachability-based: objects retained by component contexts or event references become serialization roots, and objects reachable from them are included. Unreachable temporary data can be discarded.
+
+That has an important practical consequence:
+
+const enormousCatalog = await loadCatalog();
+
+return (
+  <button onClick$={() => {
+    console.log(enormousCatalog.length);
+  }}>
+    Show count
+  </button>
+);
+
+Because the closure captures enormousCatalog, the catalog may become part of the serialized graph.
+
+A better design is:
+
+const catalogCount = enormousCatalog.length;
+
+return (
+  <button onClick$={() => {
+    console.log(catalogCount);
+  }}>
+    Show count
+  </button>
+);
+
+Or capture an ID and load the required data later.
+
+QRL: the pointer that makes resumption possible
+
+A QRL, or Qwik URL, is a serializable reference to executable code.
+
+Its conceptual form is:
+
+./path/to/chunk.js#ExportedSymbol[captured-object-indexes]
+
+It contains:
+
+a module URL;
+an exported symbol name;
+optionally, references to captured lexical values;
+a base path used to resolve the module URL.
+
+For example:
+
+./chunk-c.js#Counter_onClick[0,1]
+
+could mean:
+
+Load chunk-c.js, obtain Counter_onClick, and restore the closure’s first two captured objects before running it.
+
+Ordinary import() is not sufficient by itself because Qwik needs a representation that survives HTML serialization, identifies an individual symbol rather than only a module, resolves paths correctly after server rendering, and records closure captures.
+
+The role of $
+
+Every $ is fundamentally a lazy execution and serialization boundary.
+
+Examples include:
+
+component$(...)
+$(() => ...)
+onClick$={...}
+useTask$(...)
+useComputed$(...)
+
+The Qwik Optimizer sees these boundaries at build time. It extracts the associated function into an independently importable symbol and leaves a QRL behind. A component and one of its event handlers can therefore reside in different chunks—and a single component may be divided into several smaller symbols.
+
+Developer code:
+
+onClick$={() => count.value++}
+
+Conceptual optimizer output:
+
+onClick$={qrl(
+  './counter-click.js',
+  'Counter_onClick',
+  [count]
+)}
+
+Conceptual extracted module:
+
+export const Counter_onClick = () => {
+  const [count] = useLexicalScope();
+  count.value++;
+};
+
+useLexicalScope() is mostly an internal detail generated by the optimizer. It restores the values that the original closure captured.
+
+A click, from server render to DOM update
+
+Here is the complete lifecycle.
+
+Phase 1: server rendering
+
+The server executes the component.
+
+It creates:
+
+a signal containing 0;
+a rendered button;
+a click-handler QRL;
+a subscription connecting the signal to the button’s rendered output.
+
+The server sends:
+
+the visible HTML;
+event metadata;
+serialized state;
+component-boundary information;
+subscription information;
+the small Qwik loader.
+Phase 2: browser startup
+
+The browser parses and displays the HTML.
+
+Qwikloader establishes global delegated event handling. It does not execute every component or install a separate JavaScript function on every button. The official documentation describes Qwikloader as roughly 1 KB minified.
+
+Phase 3: interaction
+
+The user clicks the button.
+
+The event bubbles to Qwikloader. Qwikloader walks the event path, finds Qwik’s generated event metadata, and identifies the QRL.
+
+Phase 4: code resolution
+
+Qwikloader resolves the module URL and obtains the corresponding exported handler. The file might be downloaded at that moment, or it might already be in the browser cache because Qwik’s prefetching system predicted that the interaction was likely.
+
+Phase 5: closure restoration
+
+Qwik restores the signal captured by the original handler.
+
+The handler then runs:
+
+count.value++;
+Phase 6: reactive update
+
+The serialized subscription graph tells Qwik which output depends on count.
+
+Qwik can load the relevant render symbol, if it is not already available, and update the affected DOM output. It does not need to start rendering again from the application root.
+
+Serialization boundaries and their rules
+
+The governing rule is:
+
+Only serializable local data can cross a $ boundary.
+
+Consider:
+
+component$(() => {
+  const message = 'Hello';
+
+  return (
+    <button onClick$={() => {
+      console.log(message);
+    }}>
+      Click
+    </button>
+  );
+});
+
+message crosses from the component closure into the separately extracted click-handler closure. Qwik therefore needs to serialize it.
+
+The documented closure rules are:
+
+a captured local variable must be declared with const;
+its value must be serializable;
+top-level imported or exported identifiers can be referenced as importable code rather than serialized captures.
+
+Valid:
+
+component$(() => {
+  const config = { increment: 2 };
+
+  return (
+    <button onClick$={() => {
+      console.log(config.increment);
+    }}>
+      Click
+    </button>
+  );
+});
+
+Normally invalid:
+
+component$(() => {
+  const socket = new WebSocket('wss://example.com');
+
+  return (
+    <button onClick$={() => {
+      socket.send('hello');
+    }}>
+      Click
+    </button>
+  );
+});
+
+A live WebSocket is attached to the current runtime and network connection. It cannot meaningfully be recreated by serializing its JavaScript fields.
+
+Which values are serializable?
+
+The published conceptual documentation explicitly describes support for:
+
+primitive values;
+plain objects and arrays;
+object graphs with shared or circular references;
+DOM references;
+promises;
+functions represented as QRLs;
+Date;
+URL;
+Map;
+Set.
+
+It describes arbitrary class instances and streams as unsupported by the default serializer.
+
+The current Qwik v2 beta source tests cover a wider serializer set, including such values as:
+
+RegExp;
+BigInt;
+URLSearchParams;
+Error;
+Uint8Array;
+Temporal values where supported;
+framework-native signals, tasks, QRLs, and components.
+
+Those are current source-level observations and should be checked against the exact Qwik beta version being used.
+
+Custom classes and custom serialization
+
+In the published v1-era model, arbitrary instances do not preserve their prototype or instanceof identity automatically.
+
+Qwik v2 beta’s current documentation source introduces more explicit custom-serialization mechanisms:
+
+useSerializer$();
+createSerializer$();
+SerializerSymbol;
+NoSerializeSymbol.
+
+A serializer converts a custom object into serializable data and reconstructs it lazily on the client. The v2 documentation says the deserializer runs only when the serializer signal is first read, preserving lazy execution.
+
+Conceptually:
+
+const point = useSerializer$({
+  initial: { x: 3, y: 4 },
+
+  deserialize(data) {
+    return new Point(data.x, data.y);
+  },
+
+  serialize(value) {
+    return { x: value.x, y: value.y };
+  },
+});
+
+The HTML receives plain coordinate data, not a raw Point instance. When the value is needed in the browser, Qwik calls deserialize() to create a new instance.
+
+noSerialize()
+
+Some objects should not cross the boundary at all:
+
+editor instances;
+WebSockets;
+observers;
+media controllers;
+third-party widgets;
+browser-only SDK clients;
+native resource handles.
+
+noSerialize() tells Qwik to exclude the value.
+
+const state = useStore<{
+  editor: NoSerialize<Editor>;
+}>({
+  editor: undefined,
+});
+
+useVisibleTask$(() => {
+  state.editor = noSerialize(createEditor());
+});
+
+A non-serialized value does not survive SSR-to-browser resumption. On the client it is undefined until you recreate it.
+
+This is not “free serialization.” It is opting out of persistence.
+
+Tasks and resumability
+
+A normal useTask$() can execute during SSR. If it already ran on the server, Qwik does not run it again in the browser simply because the page arrived there. Its state dependencies are retained so it can run later if tracked state changes.
+
+This is a major difference from lifecycle APIs built around “mount on server, then mount again on client.”
+
+useVisibleTask$() is different
+
+useVisibleTask$() deliberately executes browser-side code eagerly according to its visibility strategy. It is useful for browser-only integrations, but it bypasses some of Qwik’s ability to delay JavaScript execution.
+
+The documentation recommends treating it as an escape hatch rather than the default lifecycle mechanism.
+
+Why resumability helps
+Less JavaScript at startup
+
+Component render code and event handlers do not all need to be in the initial executable bundle.
+
+Less main-thread work
+
+The browser avoids executing every component merely to recover listeners and internal framework state.
+
+Fine-grained loading
+
+An individual event handler can be a loading boundary smaller than an entire component.
+
+Independent component resumption
+
+A component can become active without first executing every ancestor that originally produced its props.
+
+Fine-grained rerendering
+
+Because state subscriptions are preserved, Qwik knows which component or expression depends on a changed signal.
+
+Better scaling characteristics
+
+Adding components and features does not necessarily add corresponding startup execution, provided those features are not immediately needed.
+
+These properties come from combining serialization, compiler-created entry points, delegated events, fine-grained reactivity, and lazy module loading—not from serialization alone.
+
+The costs and tradeoffs
+
+Resumability eliminates one category of work, but it does not eliminate all cost.
+
+Serialized HTML can become large
+
+Captured objects and state must be transmitted. Carelessly capturing a large object can trade JavaScript execution for HTML/state payload size.
+
+First interaction may require a module request
+
+If the required chunk was not prefetched or cached, the user interaction must wait for it. Qwik uses prefetching to reduce this risk, but network behavior still matters.
+
+Code must obey extraction rules
+
+A closure behind $ is not just an ordinary synchronous local function. It may live in another module and execute later in another runtime.
+
+Some browser events require synchronous handling
+
+Certain browser APIs must be invoked during the original synchronous event turn. Lazy asynchronous resolution can be incompatible with those cases, requiring a traditional browser listener or visible task. The Qwik event documentation cites drag-related behavior as an example.
+
+Third-party libraries may be heap-centric
+
+Libraries that assume long-lived class instances, global singletons, immediate lifecycle execution, or manually attached listeners may require adapters or client-only initialization.
+
+State in the HTML is visible
+
+Serialized state is delivered to the browser. Therefore, secrets, private credentials, database objects, and server-only authorization data must never be placed in client-reachable serialized state.
+
+Version-sensitive internals
+
+Generated attributes, serializer formats, package names, and low-level APIs can change. Application code should normally use Qwik’s public $, signal, store, task, event, and serializer APIs rather than constructing QRL strings manually.
+
+The right mental model for writing Qwik applications
+
+Think in terms of durable data plus reloadable behavior:
+
+State is data that can travel.
+Behavior is code that can be addressed by a QRL.
+Closures are code references plus serializable captured values.
+Reactivity is a serializable relationship between state and output.
+The DOM carries information that identifies where behavior belongs.
+Execution occurs only when demanded.
+
+Do not think:
+
+“My entire JavaScript heap will magically move from Node.js into Chrome.”
+
+Think:
+
+“The server will emit HTML, a compact reachable state graph, dependency information, and addresses for independently loadable pieces of code.”
+
+Practical rules
+Keep resumable state as primitives, plain objects, arrays, signals, and stores.
+Use $-suffixed APIs for behavior that may need to execute later.
+Capture the smallest possible values in handlers. Capture an ID or count rather than an entire database result.
+Import services and pure functions from modules instead of capturing runtime-created service instances.
+Represent methods as QRLs:
+const store = useStore({
+  count: 0,
+  increment: $(function () {
+    this.count++;
+  }),
+});
+Use noSerialize() for genuine runtime handles and recreate them on the client.
+Use custom serializers when an object has a meaningful data representation and can be reconstructed.
+Keep secrets entirely on the server.
+Prefer normal Qwik event APIs over manually attaching browser listeners.
+Treat useVisibleTask$() as a controlled opt-out, not as Qwik’s equivalent of a default mount hook.
+The most precise definition
+
+Resumability is Qwik’s ability to continue an SSR-produced application in the browser without eagerly re-executing its component graph to reconstruct listeners, state, component boundaries, and reactive subscriptions.
+
+Serialization is the process that encodes those listeners, references, state objects, captures, boundaries, and subscriptions into a transferable representation.
+
+The Optimizer creates the independently addressable code symbols.
+
+QRLs connect serialized HTML and state to those code symbols.
+
+Qwikloader dispatches browser events to the appropriate symbols.
+
+Signals and stores preserve the dependency graph needed for focused updates.
+
+Together, those pieces allow Qwik to replace application-wide startup replay with event-driven, fine-grained resumption.
+
+Fri, Jul 17 at 9:19 AM
+Pasted markdown(15).md
+File
+can the following framework, does it have the bones to implement some sort of resumeability? becuase it has the setup function and returns handles etc?
+
+
+---
+
+# Component System
+
+Components are typed Effect programs with a pure view function. Props are owned
+by the caller, setup creates scoped bindings, and the view renders from the
+committed setup snapshot.
+
+The current component shape is:
+
+
+ts
+Component<Props, Req, E, Bindings, SlotContract> -> View<Slots> | JSX-like node
+
+
+- Props are caller-provided inputs.
+- Req is the union of Effect services required by setup and helpers.
+- E is the typed setup error channel.
+- Bindings are setup-created state, resources, atoms, actions, and handles.
+- SlotContract is the authored View.Slots metadata published by
+  Component.withSlots(...).
+
+Superseded component design sketches live in docs/archive/. Use the APIs
+below for current authoring.
+
+## Golden Path
+
+
+ts
+import { Component, Element, Result, View } from "effect-atom-jsx";
+import { Effect } from "effect";
+
+const UserSlots = View.Slots.define({
+  root: { capability: Element.Capability.Container },
+  name: { capability: Element.Capability.Container },
+});
+
+const UserCard = Component.make(
+  Component.props<{ readonly id: string }>(),
+  Component.require(Api),
+  (props) =>
+    Effect.gen(function* () {
+      const api = yield* Api;
+      const user = yield* Component.query(
+        () => api.getUser(props.id),
+        { name: `user:${props.id}` },
+      );
+      return { user };
+    }),
+  (_props, bindings) =>
+    View.fromSlots(UserSlots, (
+      <article>
+        {Result.builder(bindings.user())
+          .onInitial(() => "Loading")
+          .onSuccess((user) => <h2>{user.name}</h2>)
+          .onFailure(() => "Could not load user")
+          .render()}
+      </article>
+    )),
+).pipe(Component.withSlots(UserSlots));
+
+
+## Setup As Effect
+
+Setup is an Effect. That keeps service requirements, typed errors, cleanup,
+spans, and resource ownership in one model.
+
+Common helpers:
+
+- Component.state(initial) creates a writable atom scoped to the component.
+- Component.derived(fn) creates a derived atom.
+- Component.query(effectOrThunk, options?) creates a result-valued async atom.
+- Component.action(fn, options?) creates an action handle.
+- Component.optimistic(source).action(...) creates an optimistic action.
+- Component.use(effect) runs an arbitrary Effect in setup.
+- Effect.addFinalizer(...) registers cleanup on unmount.
+
+
+ts
+const SaveButton = Component.make(
+  Component.props<{ readonly userId: string }>(),
+  Component.require(Api),
+  (props) =>
+    Effect.gen(function* () {
+      const api = yield* Api;
+      const pending = yield* Component.state(false);
+      const save = yield* Component.action((input: UserPatch) =>
+        api.saveUser(props.userId, input),
+      );
+      return { pending, save };
+    }),
+  (_props, bindings) => (
+    <button disabled={bindings.save.pending()}>Save</button>
+  ),
+);
+
+
+## Setup Builder
+
+For larger setup blocks, use the pipeable builder. It keeps names visible and
+avoids one large generator.
+
+
+ts
+const setup = Component.setup<{ readonly id: string }>()
+  .bind("count", () => Component.state(0))
+  .bind("user", ({ props }) =>
+    Component.query(() =>
+      Api.pipe(Effect.flatMap((api) => api.getUser(props.id))),
+    )
+  )
+  .bind("save", ({ props }) =>
+    Component.action((patch: UserPatch) =>
+      Api.pipe(Effect.flatMap((api) => api.saveUser(props.id, patch))),
+    )
+  );
+
+const UserEditor = Component.make(
+  Component.props<{ readonly id: string }>(),
+  Component.require(Api),
+  setup,
+  (_props, bindings) => <div>{bindings.count()}</div>,
+);
+
+
+Requirements from builder helpers bubble to
+Component.Requirements<typeof UserEditor>.
+
+## Slot Contracts
+
+Authored slot-bearing components should publish a View.Slots contract.
+
+
+ts
+const FieldSlots = View.Slots.define({
+  root: { capability: Element.Capability.Container },
+  input: {
+    capability: Element.Capability.TextInput,
+    allowedEvents: [View.Event.Input, View.Event.Focus],
+  },
+});
+
+const Field = Component.make(/* ... */).pipe(
+  Component.withSlots(FieldSlots),
+);
+
+
+Useful helpers:
+
+- Component.withSlots(slots) publishes the authored contract.
+- Component.SlotContractOf<T> extracts the authored contract.
+- Component.SlotsOf<T> extracts the runtime handle map projection.
+- Component.PublicSlotsOf<T> and Component.HiddenSlotsOf<T> extract public
+  and hidden slot names.
+
+## Slot Handles In Setup
+
+For low-level or generated components, setup can create handles directly:
+
+
+ts
+const LowLevel = Component.make(
+  Component.props<{}>(),
+  Component.require<never>(),
+  () =>
+    Effect.gen(function* () {
+      const root = yield* Component.slotContainer();
+      const input = yield* Component.slotTextInput();
+      return { slots: { root, input } };
+    }),
+  () => null,
+);
+
+
+This no-contract tier is useful, but published View.Slots are preferred for
+design-system components because style and behavior attachment can be checked
+against the authored contract.
+
+## Layers And Requirements
+
+Component.require(...) documents requirements, while setup usage through
+yield* ServiceTag proves them. Providing a layer subtracts requirements:
+
+
+ts
+const WithApi = UserCard.pipe(
+  Component.withLayer(ApiLive),
+);
+
+
+Mount with either a layer or an existing Atom.runtime(...):
+
+
+ts
+Component.mount(App, {
+  props: {},
+  target,
+  layer: Layer.mergeAll(ApiLive, Reactivity.live),
+});
+
+const runtime = Atom.runtime(Layer.mergeAll(ApiLive, Reactivity.live));
+Component.mount(App, { props: {}, target, runtime });
+
+
+Use one composition root for the app. See docs/SERVICES_AND_LAYERS.md.
+
+## Component Transforms
+
+Common transforms preserve slot and route metadata where applicable:
+
+- Component.withLayer(layer)
+- Component.withLoading(render)
+- Component.withErrorBoundary(render)
+- Component.withRetry(policy)
+- Component.withSpan(name)
+- Component.tapSetup(effect)
+- Component.withViewTransform(transform)
+- Component.withBehavior(behavior, select, merge?)
+
+Style and behavior modules provide the preferred authored attachment helpers:
+Style.attachToSlots(...) and Behavior.attachToSlots(...).
+
+## Rendering And Mounting
+
+- Component.setupEffect(component, props) runs setup and returns bindings.
+- Component.renderEffect(component, props) renders to JSX-like output.
+- Component.renderViewEffect(component, props) renders a View when the
+  component returns one.
+- Component.mount(component, options) mounts and returns a disposer.
+
+Server helpers live in ServerRoute and the DOM runtime:
+renderToString, hydrateRoot, and document routes.
+
+## Type Helpers
+
+- Component.PropsOf<T>
+- Component.Requirements<T>
+- Component.ErrorOf<T>
+- Component.BindingsOf<T>
+- Component.SlotsOf<T>
+- Component.SlotContractOf<T>
+
+These helpers make wrappers, route pipes, style attachments, and tests recover
+component metadata without repeating generic parameters.
+
+## Testing
+
+Most component behavior can be tested without a DOM:
+
+
+ts
+const bindings = Effect.runSync(Component.setupEffect(UserCard, { id: "1" }));
+expect(bindings.user()).toBeDefined();
+
+
+For behavior, style, and interaction tests use effect-atom-jsx/testing; see
+docs/TESTING.md.
+
+## Related Docs
+
+- docs/SLOT_CONTRACT_GOLDEN_PATH.md
+- docs/view.md
+- docs/style.md
+- docs/SERVICES_AND_LAYERS.md
+
+Worked for 55s
+Yes—but it is currently hydration-oriented, not resumable
+
+This framework has better bones for resumability than most component systems because it already separates:
+
+setup from rendering;
+bindings from the view;
+services from component code;
+logical elements from platform elements;
+state from actions and queries;
+component structure from attached behavior.
+
+The setup → Bindings → pure view shape gives you a natural serialization checkpoint:
+
+server
+  run setup
+      ↓
+  bindings snapshot
+      ↓
+  render view
+      ↓
+  serialize snapshot + references
+      ↓
+browser
+  restore snapshot
+      ↓
+  resume selected behavior
+
+But the existence of a setup function and returned handles does not by itself make the framework resumable.
+
+The deciding question is:
+
+Are the returned handles portable descriptions that can be reconstructed in another JavaScript VM, or are they references to live closures, atoms, scopes, and services in the server heap?
+
+At present, they appear primarily to be live runtime handles. That makes the framework well-structured for hydration, but not yet genuinely resumable.
+
+Why the architecture is promising
+1. Setup is already an explicit boundary
+
+Your components explicitly separate setup from view:
+
+Component.make(
+  props,
+  requirements,
+  setup,
+  view,
+);
+
+The framework describes setup as an Effect that creates scoped bindings, while the view renders from those bindings. That is exactly the kind of lifecycle boundary a resumable compiler/runtime needs.
+
+A framework without this separation has to discover where initialization ends and rendering begins. Yours already knows.
+
+This means the server could theoretically:
+
+run setup;
+capture the resulting logical state;
+render the view;
+discard the active component execution;
+restore selected bindings in the browser later.
+2. Bindings are named and classified
+
+You already distinguish:
+
+state;
+derived state;
+queries;
+actions;
+optimistic actions;
+slot handles;
+service requirements.
+
+That is extremely useful.
+
+A resumability system cannot safely serialize an arbitrary object bag without understanding what each object means. It needs to know whether something represents:
+
+a persistent value;
+a derived calculation;
+executable behavior;
+an external resource;
+a DOM reference;
+a subscription;
+a server-only dependency.
+
+Your API already gives the framework most of this semantic information.
+
+For example:
+
+.bind("count", () => Component.state(0))
+.bind("user", () => Component.query(...))
+.bind("save", () => Component.action(...))
+
+is much easier to lower into a resumable manifest than arbitrary code returning:
+
+return {
+  x: whatever(),
+  y: new SomeObject(),
+  z: () => doSomething(),
+};
+3. Actions are already handles
+
+This is probably your strongest foundation.
+
+If this:
+
+const save = yield* Component.action((input) =>
+  api.saveUser(props.userId, input)
+);
+
+currently returns a callable closure, it is not inherently resumable.
+
+But the API allows the implementation to evolve so that save is conceptually:
+
+interface ResumableActionHandle<Input, Output> {
+  readonly actionId: string;
+  readonly module: string;
+  readonly symbol: string;
+  readonly captures: ReadonlyArray<SerializedReference>;
+  readonly pendingAtomId: string;
+  readonly resultAtomId: string;
+}
+
+Its callable interface could remain ergonomic:
+
+bindings.save(input);
+bindings.save.pending();
+
+Internally, however, it could be a code address plus serializable captures—not an ordinary closure.
+
+That would be analogous to Qwik’s QRL mechanism, where executable behavior is represented by a module URL, exported symbol, and captured values rather than by a live function object. Qwik’s source-level serialization explicitly includes QRLs and their captures.
+
+4. Slot contracts give you stable structural identities
+
+Your slots are first-class, named structural attachment points:
+
+const FieldSlots = View.Slots.define({
+  root: ...,
+  input: ...,
+});
+
+That gives the renderer a natural place to emit stable identifiers:
+
+<article data-af-component="UserCard:17">
+  <h2 data-af-slot="name" data-af-node="n38">Alice</h2>
+</article>
+
+Those identifiers could connect:
+
+serialized component state;
+behavior attachments;
+event declarations;
+reactive dependencies;
+targeted DOM updates.
+
+Qwik must explicitly serialize component boundaries and relationships between state and rendered components so it does not have to rebuild them by executing every component.
+
+Your slot model makes that job potentially cleaner because structural attachment points are already named.
+
+5. Behaviors and styles are represented as data
+
+The framework says slot contracts, styles, and behaviors are data interpreted by the runtime, rather than being entirely hidden inside component execution.
+
+That is favorable for resumability because the framework can inspect and serialize declarations such as:
+
+input:
+  events: input, focus
+  behavior: autocomplete
+  state dependency: searchText
+
+instead of rerunning arbitrary component code merely to discover them.
+
+There is an important caveat: the behavior’s metadata may be data while the behavior implementation is still a live closure. The implementation must become independently addressable code for true lazy resumption.
+
+6. The atom registry already has stable serialization concepts
+
+Your current hydration design serializes selected atom entries with keys, values, and timestamps, then restores them before mounting.
+
+That is a useful starting point.
+
+The remaining leap is to serialize not just atom values, but also:
+
+who subscribed to each atom;
+which DOM output each subscription controls;
+which code symbol updates that output;
+which event or task can mutate the atom.
+7. Semantic reactivity could serialize well
+
+The key-based reactivity model may be especially useful.
+
+You already map semantic keys to version signals and track dependencies through active scopes.
+
+A resumable payload could encode:
+
+{
+  "reactivity": {
+    "users": {
+      "version": 4,
+      "subscribers": [
+        "component:UserList:12",
+        "loader:users-route"
+      ]
+    }
+  }
+}
+
+This would allow the browser to restore the dependency relationship without rerunning every original tracking scope.
+
+Why the current hydration system is not resumability
+
+Your document says the client:
+
+restores atom values;
+then mounts the component tree;
+components synchronously read the restored state during their first render.
+
+That is state hydration.
+
+It avoids a loading flicker, but the client apparently still has to:
+
+load component setup and view code;
+mount the component tree;
+execute setup or related initialization;
+execute views;
+recreate subscriptions;
+attach behaviors;
+rediscover structural relationships.
+
+That is the work resumability seeks to avoid.
+
+A useful distinction is:
+
+State hydration:
+  restore values
+  replay application construction
+
+Resumability:
+  restore values
+  restore application relationships
+  load no component code until needed
+
+Your existing documentation also explicitly describes hydration as a first-class feature rather than claiming no-hydration startup.
+
+The largest technical obstacle: handles may point into a dead heap
+
+Consider:
+
+const save = yield* Component.action((patch) =>
+  api.saveUser(props.id, patch)
+);
+
+The callback captures:
+
+api;
+props.id;
+possibly the current Effect environment;
+potentially the current Scope;
+runtime scheduling and tracing context.
+
+On the server, these are live objects.
+
+After SSR finishes:
+
+the request scope may close;
+its finalizers may run;
+the api service instance may be disposed;
+the closure itself does not exist in the browser;
+the server’s Effect runtime is not the browser’s runtime.
+
+You cannot serialize that closure literally.
+
+Instead, it needs to become something like:
+
+export const saveUserAction = (
+  captures: {
+    readonly userId: string;
+  },
+  patch: UserPatch,
+) =>
+  Api.pipe(
+    Effect.flatMap((api) =>
+      api.saveUser(captures.userId, patch)
+    )
+  );
+
+And the SSR output needs to retain:
+
+{
+  "action": {
+    "module": "/assets/user-editor.actions.js",
+    "symbol": "saveUserAction",
+    "captures": {
+      "userId": "123"
+    },
+    "requirements": ["Api"]
+  }
+}
+
+When invoked in the browser, the framework would:
+
+load the module;
+import saveUserAction;
+deserialize { userId: "123" };
+resolve the browser-side Api service from the active Layer;
+run the Effect in a new browser Scope.
+
+The important part is that the service instance is not serialized. Its requirement is serialized or statically known, and a fresh client implementation is resolved later.
+
+What must be added for actual resumability
+1. Code-addressable setup fragments, actions, and render fragments
+
+Qwik’s Optimizer extracts functions behind $ boundaries into independently importable symbols.
+
+Your framework needs one of two approaches.
+
+Explicit authoring
+const save = yield* Component.action$(
+  SaveUserAction,
+  { userId: props.id },
+);
+
+Where SaveUserAction is a top-level export.
+
+Compiler transformation
+
+Keep the current syntax:
+
+Component.action((patch) =>
+  api.saveUser(props.id, patch)
+);
+
+Then transform it into an exported symbol plus captured data during compilation.
+
+Without this compiler or explicit module-symbol system, the runtime will have to eagerly load and execute the component module to recreate the closure.
+
+2. Stable IDs for every resumable entity
+
+You will need stable IDs for:
+
+component instances;
+binding entries;
+atoms;
+queries;
+actions;
+derived values;
+behaviors;
+slots;
+rendered dynamic expressions;
+subscriptions.
+
+For example:
+
+component UserEditor instance c17
+  props              p17
+  binding count      a41
+  binding user       q19
+  binding save       x22
+  slot root          n63
+  dynamic text       r72
+
+These IDs must survive server rendering, HTML transfer, and browser reconstruction.
+
+They should preferably be deterministic within the rendered document, though not necessarily globally deterministic across deployments.
+
+3. Component boundaries in the rendered output
+
+The browser must know which HTML belongs to which logical component without rerendering the component.
+
+Conceptually:
+
+<!--af:c17:start-->
+<div data-af-slot="root">
+  <span data-af-expression="r72">0</span>
+</div>
+<!--af:c17:end-->
+
+These markers allow the framework to:
+
+locate a component’s existing DOM;
+lazily associate it with its serialized state;
+update or replace only that region;
+mount descendants independently.
+4. Event delegation plus executable references
+
+Instead of eagerly attaching this:
+
+button.addEventListener("click", save);
+
+SSR could emit:
+
+<button
+  data-af-event-click="x22"
+  data-af-component="c17"
+>
+  Save
+</button>
+
+A small global loader handles the click:
+
+document.addEventListener("click", async (event) => {
+  const target = findEventTarget(event, "click");
+  const actionId = target.dataset.afEventClick;
+  await resumeAction(actionId, event);
+});
+
+resumeAction() would:
+
+find the action descriptor in the serialized table;
+load its module;
+restore its captures;
+resolve its Layer requirements;
+execute it.
+
+Qwik uses the same general principle: a single loader handles global events, while HTML contains the chunk and symbol information required to locate the handler.
+
+5. Serialized subscriptions
+
+Restoring atom values is not enough.
+
+Suppose the server rendered:
+
+<div>{bindings.count()}</div>
+
+During SSR, the renderer must record something like:
+
+{
+  "atom:a41": [
+    {
+      "target": "expression:r72",
+      "render": "/assets/user-editor.view.js#renderCount"
+    }
+  ]
+}
+
+Then, when a41 changes, the browser knows:
+
+which DOM expression is affected;
+which small render function to load;
+where to apply the result.
+
+Without that subscription record, the browser must execute the entire view again to rediscover that r72 reads a41.
+
+Your current reactive tracking system already observes reads. The missing step is persisting those observed relationships during SSR.
+
+6. Serializable binding categories
+
+Every setup binding should have an explicit resumption strategy.
+
+For example:
+
+type ResumeStrategy =
+  | "value"
+  | "code-reference"
+  | "recompute"
+  | "reacquire-client"
+  | "server-only"
+  | "not-resumable";
+State
+Component.state(0)
+
+Strategy: serialize atom ID and value.
+
+Derived state
+Component.derived(() => count() * 2)
+
+Possible strategies:
+
+serialize current value and dependencies;
+serialize code reference and dependencies;
+recompute only on first read.
+Query
+Component.query(() => api.getUser(id))
+
+Serialize:
+
+query key;
+current Result;
+timestamp;
+invalidation keys;
+loader code reference;
+serializable captures;
+requirements.
+
+Do not serialize:
+
+a running Effect fiber;
+a server socket;
+a request-local service instance.
+Action
+
+Serialize:
+
+action code reference;
+captures;
+pending/result atom IDs;
+invalidation keys;
+single-flight metadata;
+requirements.
+External resource
+yield* Component.use(acquireEditor)
+
+Choose either:
+
+server-only;
+reacquire on browser resume;
+nonserializable;
+custom serializer.
+7. A noResume/noSerialize mechanism
+
+Some bindings should explicitly not survive:
+
+const socket = yield* Component.use(
+  Effect.acquireRelease(...)
+);
+
+A useful API might be:
+
+const socket = yield* Component.clientResource({
+  acquire: connectSocket,
+});
+
+or:
+
+return {
+  socket: Component.noResume(socket),
+};
+
+The browser would see the binding as uninitialized and reacquire it when the component or associated behavior actually resumes.
+
+Qwik similarly marks nonserializable values, which become undefined after crossing the serialization boundary and must be recreated client-side.
+
+8. Custom serialization
+
+Effect applications commonly use:
+
+branded values;
+Schema-decoded domain objects;
+Duration;
+Option;
+Either;
+Cause;
+Chunk;
+custom classes.
+
+You will need a serialization protocol beyond plain JSON.
+
+Effect Schema could be an excellent fit:
+
+Component.serializable(UserSchema)
+
+or:
+
+Component.state(initial, {
+  schema: UserSchema,
+});
+
+A binding manifest could include the schema or codec identity:
+
+{
+  "id": "a41",
+  "codec": "User@2",
+  "value": {
+    "id": "123",
+    "name": "Alice"
+  }
+}
+
+You will also need:
+
+shared-reference preservation;
+circular-reference handling;
+versioning;
+validation on restore;
+mismatch errors;
+deployment-version compatibility.
+
+Qwik’s serializer goes beyond JSON by retaining repeated references and circular graphs and supporting framework-specific entities such as QRLs and signals.
+
+9. Clear server/client Scope semantics
+
+An Effect Scope cannot simply move from the server process to the browser.
+
+You need to define:
+
+Server rendering scope
+exists for the request or render;
+server resources are acquired here;
+finalizers run at the end of SSR;
+no live handle from this scope may enter the serialized payload.
+Resumable logical scope
+represented by serializable ownership metadata;
+says which client resources belong to which component;
+does not contain live finalizer closures.
+Browser execution scope
+created lazily when a component, behavior, query, or action resumes;
+resolves client Layers;
+reacquires client resources;
+installs fresh finalizers;
+closes when the component’s DOM boundary is removed.
+
+This is essential. “Scoped setup” is useful, but a live server Scope itself is not portable.
+
+A possible resumability architecture for this framework
+Server-side pipeline
+1. Execute component setup
+2. Classify each returned binding
+3. Render the pure view
+4. During rendering:
+   - assign component and node IDs
+   - record atom reads
+   - record dynamic expression boundaries
+   - record behavior and event attachments
+5. Produce HTML
+6. Produce a serialized resume manifest
+7. Close the server Effect scope
+
+Example manifest:
+
+{
+  "version": "build-abc123",
+  "components": {
+    "c17": {
+      "type": "/assets/UserEditor.js#UserEditor",
+      "props": "p17",
+      "bindings": {
+        "count": "a41",
+        "user": "q19",
+        "save": "x22"
+      },
+      "dom": {
+        "start": "c17:start",
+        "end": "c17:end"
+      }
+    }
+  },
+  "atoms": {
+    "a41": {
+      "value": 0,
+      "subscribers": ["r72"]
+    }
+  },
+  "expressions": {
+    "r72": {
+      "module": "/assets/UserEditor.view.js",
+      "symbol": "renderCount",
+      "captures": ["a41"]
+    }
+  },
+  "actions": {
+    "x22": {
+      "module": "/assets/UserEditor.actions.js",
+      "symbol": "saveUser",
+      "captures": {
+        "userId": "123"
+      },
+      "requirements": ["Api"],
+      "pending": "a52"
+    }
+  }
+}
+Browser startup
+
+At initial page load:
+
+1. Parse HTML
+2. Parse or lazily locate the manifest
+3. Install one delegated event system
+4. Create lightweight atom records
+5. Do not run components
+6. Do not run setup
+7. Do not execute views
+First click
+1. Delegated listener finds action x22
+2. Runtime loads UserEditor.actions.js
+3. It restores userId = "123"
+4. It resolves Api from the client Layer
+5. It executes the Effect
+6. The action updates atom a41 or invalidates a key
+7. Runtime sees subscriber r72
+8. It loads renderCount if necessary
+9. It patches the existing expression DOM
+
+That would be genuine resumability.
+
+A practical implementation path
+
+Trying to implement complete Qwik-style resumability at once would be a very large compiler and runtime project. Your framework can reach it incrementally.
+
+Stage 1: resumable actions
+
+Start with actions because they are already explicit handles.
+
+Requirements:
+
+actions must be top-level symbols or compiler-extracted;
+captures must be serializable;
+requirements must be resolvable from a client Layer;
+events must be delegated;
+SSR must emit action IDs.
+
+This allows buttons and forms to work without hydrating the component tree.
+
+const save = yield* Component.action$(
+  saveUser,
+  { userId: props.id },
+);
+
+This stage alone can meaningfully reduce startup JavaScript.
+
+Stage 2: resumable queries
+
+Make query handles portable:
+
+restore their existing Result;
+retain cache timestamps;
+retain invalidation keys;
+lazy-load the query function only when refresh is needed.
+
+Your existing SingleFlight and loader infrastructure would fit this well.
+
+Stage 3: serialize reactive subscriptions
+
+During SSR, record which atom or semantic key each dynamic output reads.
+
+This allows updates without rerunning the whole component tree.
+
+Stage 4: extracted view expressions
+
+Compile dynamic expressions into independently loadable functions:
+
+<div>{bindings.count()}</div>
+
+becomes conceptually:
+
+export const expression_r72 = ([count]) => String(count());
+
+Only that function must load when count changes.
+
+Stage 5: lazily resumable component setup
+
+Setup should run in the browser only when:
+
+a required binding was not serialized;
+a client resource must be acquired;
+a component first needs structural rerendering;
+serialization was intentionally skipped.
+
+At this point, whole component modules could remain absent until genuinely needed.
+
+The most important design decision
+
+You should decide what a binding fundamentally is.
+
+Today it may effectively be:
+
+type Binding = LiveRuntimeObject;
+
+For resumability, it needs to become closer to:
+
+type Binding =
+  | SerializableValueBinding
+  | ResumableCodeBinding
+  | DerivedBinding
+  | QueryDescriptor
+  | ActionDescriptor
+  | ClientResourceDescriptor
+  | ServerOnlyBinding;
+
+The public API can still expose pleasant functions and methods. But internally those should be façades over stable identities and descriptors.
+
+Final assessment
+
+Does it have the bones? Yes.
+
+In particular, these are excellent foundations:
+
+explicit setup/view separation;
+named bindings;
+action and query handles;
+Effect service requirements;
+scoped resource ownership;
+atom registries;
+semantic dependency tracking;
+typed slot contracts;
+behavior metadata;
+renderer abstraction;
+existing SSR state transfer.
+
+Is the current design already resumable? No.
+
+The present system appears to restore selected state and then mount the client component tree. That is good hydration, but still hydration.
+
+The largest missing pieces are:
+
+code-addressable handlers and render expressions;
+serializable captures;
+stable component/binding/node identities;
+event delegation;
+serialized reactive subscriptions;
+component boundaries encoded in HTML;
+client-side service rebinding;
+explicit resource resumption policies;
+a compiler or strict authoring model that creates lazy execution boundaries.
+
+The strongest route is to begin with resumable action handles. Your current Component.action abstraction is already almost the right public boundary; it mainly needs to stop meaning “a closure stored in the live heap” and start meaning “a portable reference to behavior plus serializable captures and Effect requirements.”
+
+I'd like to make the library capable of someone implementing resumability. do we need api changes? if so which ones? whats the most elegant / and minimal api design changes?
+Stopped thinking
+doeixd/effect-atom-jsx this is the github.
+Worked for 5m 44s
+Yes—small API changes are needed
+
+The existing public component API does not need to be redesigned. The golden path can remain:
+
+Component.make(props, requirements, setup, view)
+
+The cleanest approach is to add an optional resumability SPI under something like effect-atom-jsx/advanced, while keeping ordinary components fully compatible.
+
+The minimum additions are:
+
+A portable code-reference protocol.
+Introspection metadata for components, setup bindings, and handles.
+A way to render from restored bindings without rerunning setup.
+Runtime hooks around component boundaries, reactive expressions, and events.
+Snapshot policies and codecs for state.
+
+Everything else can be built by a resumability package or compiler plugin.
+
+Why some changes are unavoidable
+
+The current internal component representation contains executable setup and view functions but no stable definition identity or portable description:
+
+type InternalComponent<Props, Req, E, Bindings> = {
+  readonly setup: (props: Props) => Effect.Effect<Bindings, E, Req>;
+  readonly view?: (props: Props, bindings: Bindings) => unknown;
+  // ...
+};
+
+At runtime, mounting:
+
+executes setup;
+captures its result in a live signal;
+retains the setup fiber;
+then invokes the view with the bindings.
+
+That is a good execution model, but a third-party resumer cannot currently ask:
+
+What is this component’s stable identity?
+Which named setup bindings exist?
+Which binding is state, an action, a query, or an external resource?
+Can this handler be loaded independently?
+Can I render using restored bindings without running setup?
+Which reactive expression corresponds to which existing DOM region?
+
+Those are the gaps to fill.
+
+Recommended design principle
+
+Do not turn the core component representation into a giant resumability AST.
+
+Instead, let runtime values optionally implement a small protocol:
+
+ordinary executable value
+        +
+optional portable description
+
+Normal execution continues using the executable value. A resumability implementation consumes the portable description.
+
+That means:
+
+Component.action(fn)
+
+continues working exactly as today.
+
+A resumable application can instead pass:
+
+Component.action(Resume.bind(actionRef, captures))
+
+The same applies to queries, behaviors, setup fragments, and eventually view expressions.
+
+1. Add a portable CodeRef
+
+This is the one truly unavoidable abstraction.
+
+JavaScript functions cannot be moved from the server heap into the browser. A resumer needs an address that says:
+
+which code unit;
+which export;
+how to load it;
+optionally, which build produced it.
+
+I would add this to an advanced Resume namespace:
+
+export const CodeRefTypeId: unique symbol =
+  Symbol.for("effect-atom-jsx/Resume/CodeRef");
+
+export interface CodeRef<F> {
+  readonly [CodeRefTypeId]: typeof CodeRefTypeId;
+
+  /**
+   * Stable logical identity used by manifests and diagnostics.
+   */
+  readonly id: string;
+
+  /**
+   * Resolve the executable code.
+   *
+   * A build plugin can replace or generate this.
+   */
+  readonly load: () => Promise<F>;
+}
+
+export function code<F>(options: {
+  readonly id: string;
+  readonly load: () => Promise<F>;
+}): CodeRef<F>;
+
+Example:
+
+export const SaveUserRef = Resume.code<
+  (
+    captures: { readonly userId: string },
+    patch: UserPatch,
+  ) => Effect.Effect<User, ApiError, Api>
+>({
+  id: "UserEditor.saveUser",
+  load: () =>
+    import("./user-editor.actions.js").then(
+      (module) => module.saveUser,
+    ),
+});
+
+A compiler integration could generate these references automatically. Manual users could author them explicitly.
+
+Do not put module URLs directly in core types
+
+Avoid:
+
+{
+  module: "/assets/chunk-abc.js",
+  symbol: "saveUser"
+}
+
+The bundler owns URLs and chunking. CodeRef.load() leaves that decision to:
+
+Vite;
+Rollup;
+esbuild;
+a manifest-based adapter;
+a test registry;
+a native or TUI runtime.
+2. Add serializable closure bindings
+
+A code reference alone is not a closure. You also need captured values.
+
+export interface BoundCodeRef<Captures, F> {
+  readonly code: CodeRef<F>;
+  readonly captures: Captures;
+  readonly capturesSchema?: Schema.Codec<Captures, unknown>;
+}
+
+export function bind<Captures, F>(
+  code: CodeRef<F>,
+  captures: Captures,
+  options?: {
+    readonly schema?: Schema.Codec<Captures, unknown>;
+  },
+): BoundCodeRef<Captures, F>;
+
+Usage:
+
+const save = yield* Component.action(
+  Resume.bind(
+    SaveUserRef,
+    { userId: props.id },
+    {
+      schema: Schema.Struct({
+        userId: Schema.String,
+      }),
+    },
+  ),
+);
+
+The loaded function receives captures explicitly:
+
+export const saveUser = (
+  captures: { readonly userId: string },
+  patch: UserPatch,
+) =>
+  Api.pipe(
+    Effect.flatMap((api) =>
+      api.saveUser(captures.userId, patch)
+    ),
+  );
+
+This is better than serializing a captured api service. The client resolves Api from its current Effect runtime when it executes the returned Effect.
+
+Add overloads; do not add parallel APIs
+
+Avoid creating:
+
+Component.resumableAction(...)
+Component.resumableQuery(...)
+Component.resumableBehavior(...)
+
+Instead, overload the existing APIs:
+
+type Executable<F> =
+  | F
+  | Resume.CodeRef<F>
+  | Resume.BoundCodeRef<any, F>;
+
+export function action<Args, A, E, R>(
+  fn: Executable<
+    (...args: Args) => Effect.Effect<A, E, R>
+  >,
+  options?: ActionOptions,
+): Effect.Effect<ComponentAction<Args, A, E>, never, R>;
+
+Likewise:
+
+Component.query(executable, options);
+Behavior.make(executable, metadata);
+
+Potentially later:
+
+Component.make(
+  props,
+  requirements,
+  setupExecutable,
+  viewExecutable,
+);
+
+Ordinary closures continue to work. They are simply classified as nonportable unless a compiler decorates them.
+
+3. Preserve a component definition record
+
+Add a small definition object to InternalComponent:
+
+export interface ComponentDefinition {
+  readonly identity?: Resume.CodeRef<unknown>;
+  readonly setupPlan?: SetupPlan;
+  readonly transforms?: readonly ComponentTransformDescriptor[];
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+type InternalComponent<Props, Req, E, Bindings> = {
+  // Existing fields
+  readonly setup: (
+    props: Props,
+  ) => Effect.Effect<Bindings, E, Req>;
+
+  readonly view?: (
+    props: Props,
+    bindings: Bindings,
+  ) => unknown;
+
+  // New
+  readonly definition: ComponentDefinition;
+};
+
+Do not expose the whole mutable internal representation. Export a read-only inspector from the advanced entry point:
+
+export function inspect<
+  Props,
+  Req,
+  E,
+  Bindings,
+  Slots,
+>(
+  component: Component<
+    Props,
+    Req,
+    E,
+    Bindings,
+    Slots
+  >,
+): ComponentInspection<Props, Req, E, Bindings, Slots>;
+
+The inspection can include:
+
+export interface ComponentInspection<
+  Props,
+  Req,
+  E,
+  Bindings,
+  Slots,
+> {
+  readonly definition: ComponentDefinition;
+  readonly parseProps: (input: unknown) => Props;
+  readonly setup: (
+    props: Props,
+  ) => Effect.Effect<Bindings, E, Req>;
+  readonly render: (
+    props: Props,
+    bindings: Bindings,
+  ) => unknown;
+  readonly slotContract?: Slots;
+}
+
+This gives a third-party implementation supported access without exposing private symbols or forcing it to reverse-engineer callable component objects.
+
+4. Preserve the setup plan instead of only the setup Effect
+
+The setup builder currently turns its steps into one closure and exposes only the combined effect. Its named structure disappears after construction.
+
+Change the internal step representation from:
+
+type SetupStep<Props> = (
+  input: SetupInput<Props, Record<string, unknown>>,
+) => Effect.Effect<Record<string, unknown>, unknown, unknown>;
+
+to:
+
+export interface SetupStepDescriptor<
+  Props = unknown,
+  A = unknown,
+> {
+  readonly name?: string;
+
+  readonly kind:
+    | "binding"
+    | "value"
+    | "effect"
+    | "fragment";
+
+  readonly run: (
+    input: SetupInput<
+      Props,
+      Readonly<Record<string, unknown>>
+    >,
+  ) => Effect.Effect<A, unknown, unknown>;
+
+  readonly resume?: BindingResumePolicy<A>;
+}
+
+Then Setup gains an inspectable plan:
+
+export interface Setup<
+  Props,
+  Bindings,
+  E = never,
+  R = never,
+> {
+  readonly effect: (
+    props: Props,
+  ) => Effect.Effect<Bindings, E, R>;
+
+  readonly plan: SetupPlan<Props>;
+
+  // Existing builder methods...
+}
+
+The existing builder syntax remains unchanged:
+
+Component.setup<Props>()
+  .bind("count", () => Component.state(0))
+  .bind("user", () => Component.query(...))
+
+But a resumability adapter can now see that:
+
+count → state-like binding
+user  → query-like binding
+Raw setup functions remain supported
+
+This must continue working:
+
+(props) =>
+  Effect.gen(function* () {
+    // ...
+    return { count, save };
+  })
+
+It should simply produce:
+
+setupPlan: {
+  kind: "opaque"
+}
+
+A compiler could later analyze and decorate it. Without a compiler, the resumability implementation can fall back to rerunning that setup.
+
+This gives you progressive resumability rather than an all-or-nothing rule.
+
+5. Make built-in handles inspectable
+
+Currently Component.state() produces a writable atom backed by a live signal and setup lifetime.
+
+Component.action() captures:
+
+the setup lifetime;
+the current Effect service context;
+the original callback;
+a live mutation handle.
+
+Do not change their callable public shapes. Associate metadata through either:
+
+a symbol property; or
+a WeakMap.
+
+I prefer a symbol protocol so external implementations can inspect without importing mutable registries:
+
+export const HandleTypeId: unique symbol =
+  Symbol.for("effect-atom-jsx/Resume/Handle");
+
+export interface InspectableHandle {
+  readonly [HandleTypeId]: () => HandleDescriptor;
+}
+
+Possible descriptors:
+
+export type HandleDescriptor =
+  | StateHandleDescriptor
+  | DerivedHandleDescriptor
+  | QueryHandleDescriptor
+  | ActionHandleDescriptor
+  | ResourceHandleDescriptor
+  | OpaqueHandleDescriptor;
+
+For example:
+
+export interface StateHandleDescriptor {
+  readonly kind: "state";
+  readonly read: () => unknown;
+  readonly write?: (value: unknown) => void;
+  readonly policy: BindingResumePolicy<unknown>;
+}
+export interface ActionHandleDescriptor {
+  readonly kind: "action";
+  readonly executable:
+    | Resume.BoundCodeRef<any, any>
+    | Resume.CodeRef<any>
+    | undefined;
+
+  readonly name?: string;
+  readonly reactivityKeys?: Atom.ReactivityKeysInput;
+  readonly concurrency?: ActionOptions["concurrency"];
+}
+
+An action created from an ordinary function would report:
+
+{
+  kind: "action",
+  executable: undefined
+}
+
+That tells the adapter it must hydrate or rerun setup for that action.
+
+6. Add one general binding policy
+
+Avoid adding separate options to every API unless there is a concrete need.
+
+Use one common policy type:
+
+export type ResumeStrategy =
+  | "snapshot"
+  | "recompute"
+  | "client"
+  | "never";
+
+export interface BindingResumePolicy<A> {
+  readonly strategy: ResumeStrategy;
+  readonly schema?: Schema.Codec<A, unknown>;
+}
+
+Meaning:
+
+snapshot: send the current value and restore it.
+recompute: omit the value; recreate lazily from code.
+client: this is a browser resource; acquire it in a new client scope.
+never: nonportable and unavailable after server rendering.
+
+Built-in defaults:
+
+Handle	Default
+Component.state	snapshot
+settled Component.query result	snapshot
+query executor	recompute
+Component.derived	recompute
+Component.action state	snapshot
+action implementation	code-reference dependent
+Component.ref	never
+subscriptions, schedules	client or never
+arbitrary Component.use resource	never
+
+Provide one escape hatch:
+
+Resume.policy(value, {
+  strategy: "client",
+});
+
+Ideally this returns the original value unchanged and attaches metadata through a WeakMap:
+
+const editor = yield* Component.use(createEditor).pipe(
+  Effect.map(
+    Resume.policy({
+      strategy: "client",
+    }),
+  ),
+);
+
+Or a setup-builder option:
+
+Component.bind(
+  "editor",
+  () => Component.use(createEditor),
+  {
+    resume: {
+      strategy: "client",
+    },
+  },
+);
+
+The latter is more statically visible, but it changes the builder signature. Both can coexist, with the builder option as a convenience.
+
+7. Add renderWithBindings
+
+This is a small, essential API.
+
+At present, renderEffect() and renderViewEffect() always execute setup first.
+
+A resumability implementation needs to restore bindings and invoke only the view.
+
+Add:
+
+export function renderWithBindings<
+  Props,
+  Req,
+  E,
+  Bindings,
+  Slots,
+>(
+  component: Component<
+    Props,
+    Req,
+    E,
+    Bindings,
+    Slots
+  >,
+  props: Props,
+  bindings: Bindings,
+): unknown;
+
+And optionally:
+
+export function renderViewWithBindings<
+  Props,
+  Req,
+  E,
+  Bindings,
+  Slots,
+>(
+  component: Component<
+    Props,
+    Req,
+    E,
+    Bindings,
+    Slots
+  >,
+  props: Props,
+  bindings: Bindings,
+): View.View<View.NormalizeSlots<Slots>> | undefined;
+
+This should perform:
+
+prop parsing;
+view invocation;
+view-slot registration;
+platform diagnostics;
+slot-contract diagnostics.
+
+It should not run setup.
+
+This API is useful even outside resumability:
+
+Storybook-like tools;
+replay testing;
+snapshot debugging;
+deterministic rendering;
+devtools;
+server cache replay.
+8. Add runtime instrumentation hooks
+
+This can remain internal or advanced. No component author should see it.
+
+The DOM runtime currently:
+
+creates a Computation directly inside insert;
+attaches ordinary event listeners in setProp;
+delegates events through an in-memory __click-style property;
+makes addEventListener() a no-op in the SSR virtual DOM.
+
+A third-party resumer needs to intercept these operations.
+
+Add an optional runtime hook interface:
+
+export interface RuntimeInstrumentation {
+  readonly enterComponent?: (
+    definition: ComponentDefinition,
+    props: unknown,
+  ) => ComponentInstanceToken;
+
+  readonly leaveComponent?: (
+    token: ComponentInstanceToken,
+  ) => void;
+
+  readonly registerBinding?: (
+    component: ComponentInstanceToken,
+    name: string,
+    value: unknown,
+    descriptor?: HandleDescriptor,
+  ) => void;
+
+  readonly registerExpression?: (
+    expression: ReactiveExpressionDescriptor,
+  ) => void;
+
+  readonly registerEvent?: (
+    event: EventAttachmentDescriptor,
+  ) => void;
+}
+
+Install it per render:
+
+renderToString(app, {
+  instrumentation: resumeCollector,
+});
+
+or through an Effect service/context.
+
+Do not use a global mutable singleton. SSR requests need isolated collectors.
+
+Separate observation from policy
+
+The core runtime should report:
+
+an event was attached here
+a computation was created here
+this component produced these bindings
+
+The resumability package decides:
+
+which markers to emit;
+which values to serialize;
+how IDs are assigned;
+whether to produce comments or attributes;
+which entries go in the manifest.
+9. Allow compiler metadata in runtime helper signatures
+
+The current project uses babel-plugin-jsx-dom-expressions, which compiles JSX to helpers such as insert, createComponent, and spread.
+
+A generic JSX compiler does not know your resumability semantics. A future plugin needs somewhere to place generated metadata.
+
+Make runtime helper signatures accept an optional final metadata argument:
+
+export interface SourceInfo {
+  readonly id?: string;
+  readonly code?: Resume.CodeRef<unknown>;
+  readonly location?: {
+    readonly file: string;
+    readonly line: number;
+    readonly column: number;
+  };
+}
+insert(
+  parent,
+  accessor,
+  marker?,
+  current?,
+  sourceInfo?,
+);
+createComponent(
+  component,
+  props,
+  sourceInfo?,
+);
+spread(
+  node,
+  accessor,
+  isSvg?,
+  skipChildren?,
+  sourceInfo?,
+);
+
+Existing generated code remains valid because the new arguments are optional.
+
+Your own compiler plugin can then generate expression identities and code references without changing the ordinary runtime contract.
+
+10. Record behavior attachment declaratively
+
+A behavior currently has a live run function plus metadata.
+
+Component.withBehavior() currently rewrites setup so that setup executes the behavior and merges the returned bindings.
+
+Keep that execution path, but also append a descriptor to the component definition:
+
+export interface BehaviorAttachmentDescriptor {
+  readonly behavior:
+    | Resume.CodeRef<unknown>
+    | undefined;
+
+  readonly selection: unknown;
+  readonly metadata?: Behavior.BehaviorMetadata;
+}
+
+An ordinary behavior remains executable but opaque:
+
+{
+  behavior: undefined,
+  metadata: ...
+}
+
+A resumable behavior can provide a CodeRef.
+
+This is important because withBehavior otherwise erases the distinction between:
+
+base component setup;
+behavior setup;
+contributed bindings.
+
+After wrapping, an external tool sees only one larger setup function.
+
+What should remain unchanged
+
+Do not change:
+
+Component.make(...)
+Component.setup(...)
+Component.bind(...)
+Component.state(...)
+Component.query(...)
+Component.action(...)
+Component.withBehavior(...)
+Component.withSlots(...)
+Component.mount(...)
+
+Do not require every user to:
+
+provide global IDs;
+annotate every state value;
+supply schemas for primitives;
+learn Qwik-like $ suffixes;
+manually construct chunk URLs;
+author a manifest;
+stop using closures in non-resumable applications.
+
+The library should support three capability levels:
+
+Level 1: ordinary runtime
+  Existing APIs; no resumability metadata required.
+
+Level 2: partially portable
+  State snapshots restore, but opaque setup/handlers hydrate when needed.
+
+Level 3: fully addressable
+  Compiler-generated or manually authored CodeRefs enable lazy resumption.
+The smallest coherent API proposal
+
+I would introduce only these public advanced concepts:
+
+namespace Resume {
+  interface CodeRef<F> { ... }
+  interface BoundCodeRef<C, F> { ... }
+
+  function code<F>(...): CodeRef<F>;
+  function bind<C, F>(...): BoundCodeRef<C, F>;
+
+  type Strategy =
+    | "snapshot"
+    | "recompute"
+    | "client"
+    | "never";
+
+  function policy<A>(
+    options: BindingResumePolicy<A>,
+  ): (value: A) => A;
+
+  function inspectHandle(
+    value: unknown,
+  ): HandleDescriptor | undefined;
+}
+
+And these component integration APIs:
+
+Component.inspect(component);
+
+Component.renderWithBindings(
+  component,
+  props,
+  bindings,
+);
+
+Component.renderViewWithBindings(
+  component,
+  props,
+  bindings,
+);
+
+Component.withDefinition(definition);
+
+Plus overload existing APIs to accept executable references:
+
+Component.action(fnOrRef);
+Component.query(fnOrRef);
+Behavior.make(fnOrRef);
+
+Everything else should initially be an internal SPI:
+
+RuntimeInstrumentation
+ComponentInstanceToken
+ReactiveExpressionDescriptor
+EventAttachmentDescriptor
+SetupPlan
+HandleDescriptor
+
+Once more than one external implementation depends on the SPI, promote the stable pieces.
+
+Suggested API example
+
+A normal component remains unchanged:
+
+const Counter = Component.make(
+  Component.props<{}>(),
+  Component.require<never>(),
+  Component.setup<{}>()
+    .bind("count", () => Component.state(0)),
+  (_props, bindings) => (
+    <button>{bindings.count()}</button>
+  ),
+);
+
+A manually resumable action uses the optional advanced layer:
+
+// user-actions.ts
+
+export const saveUser = (
+  captures: {
+    readonly userId: string;
+  },
+  patch: UserPatch,
+) =>
+  Api.pipe(
+    Effect.flatMap((api) =>
+      api.saveUser(captures.userId, patch)
+    ),
+  );
+// UserEditor.tsx
+
+const SaveUser = Resume.code<
+  typeof import("./user-actions.js").saveUser
+>({
+  id: "UserEditor.saveUser",
+  load: () =>
+    import("./user-actions.js").then(
+      (module) => module.saveUser,
+    ),
+});
+
+const UserEditor = Component.make(
+  Component.props<{
+    readonly id: string;
+  }>(),
+  Component.require(Api),
+  (props) =>
+    Effect.gen(function* () {
+      const count = yield* Component.state(0);
+
+      const save = yield* Component.action(
+        Resume.bind(
+          SaveUser,
+          { userId: props.id },
+          {
+            schema: Schema.Struct({
+              userId: Schema.String,
+            }),
+          },
+        ),
+      );
+
+      return { count, save };
+    }),
+  (_props, bindings) => (
+    <button onClick={() => bindings.save({})}>
+      Save
+    </button>
+  ),
+);
+
+Without a resumability adapter, Component.action resolves the reference and creates the same live handle used today.
+
+With an adapter, SSR can serialize:
+
+{
+  "action": "UserEditor.saveUser",
+  "captures": {
+    "userId": "42"
+  }
+}
+Implementation order
+Phase 1: no behavioral changes
+
+Add:
+
+component definition metadata;
+setup plan preservation;
+handle descriptors;
+Component.inspect;
+Component.renderWithBindings;
+runtime instrumentation hooks.
+
+This should not alter user-visible behavior.
+
+Phase 2: portable executables
+
+Add:
+
+Resume.CodeRef;
+Resume.bind;
+overloads for action, query, and behavior;
+code-reference-aware descriptors.
+
+Build a test adapter that serializes an action and restores it in a second runtime.
+
+Phase 3: SSR collection
+
+Have renderToString() optionally collect:
+
+component instances;
+named bindings;
+snapshots;
+behavior attachments;
+event attachments.
+
+Your existing serialization service is already a strong seam: it supports schema validation and injectable alternate codecs.
+
+Phase 4: compiler support
+
+Add a small companion Babel/Vite transform that:
+
+assigns stable source identities;
+turns selected closures into CodeRefs;
+emits source metadata to insert and createComponent;
+generates a manifest.
+Phase 5: resumable DOM expressions
+
+Record reactive dependencies and expression boundaries so state updates can patch existing SSR DOM without rebuilding the component.
+
+Bottom line
+
+The most elegant minimal design is not a new resumable component API.
+
+It is:
+
+existing executable API
+        +
+optional inspectable descriptors
+        +
+portable code references
+        +
+runtime instrumentation
+
+The most important concrete changes are:
+
+Preserve setup steps as data.
+Add CodeRef and bound captures.
+Make built-in handles inspectable.
+Add renderWithBindings.
+Preserve declarative transform and behavior metadata.
+Add per-render instrumentation hooks.
+Let compiler-facing DOM helpers accept optional source metadata.
+
+That gives another package enough supported surface to implement anything from event-only lazy resumption to full fine-grained resumability, without forcing the main library or its users to commit to one particular serialization format, bundler, manifest design, or resumption strategy.

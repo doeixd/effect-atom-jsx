@@ -139,6 +139,10 @@
       "import": "./dist/Serialization.js",
       "types": "./dist/Serialization.d.ts"
     },
+    "./Portable": {
+      "import": "./dist/Portable.js",
+      "types": "./dist/Portable.d.ts"
+    },
     "./Diagnostics": {
       "import": "./dist/Diagnostics.js",
       "types": "./dist/Diagnostics.d.ts"

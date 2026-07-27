@@ -236,9 +236,15 @@ export function toResult<A, E>(
       ? ResultState.refreshing(ResultState.success(value.previousSuccess.value))
       : defect;
   }
-  return value.waiting && value.previousSuccess !== null
-    ? ResultState.refreshing(ResultState.success(value.previousSuccess.value))
-    : ResultState.failure(value.error as E);
+  if (value.previousSuccess !== null) {
+    // Settled failure that still has last-known-good data: a failed refresh.
+    // Round-trips to core `Refreshing` while waiting, and to `Stale` once
+    // settled — restoring keep-stale-on-failure across the compat boundary.
+    return value.waiting
+      ? ResultState.refreshing(ResultState.success(value.previousSuccess.value))
+      : ResultState.stale(value.error as E, value.previousSuccess.value);
+  }
+  return ResultState.failure(value.error as E);
 }
 
 /**

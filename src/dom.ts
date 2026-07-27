@@ -220,7 +220,7 @@ function setProp(node: Element, name: string, value: unknown, isSVG: boolean): v
     classList(node, value as Record<string, boolean>);
   } else if (name.startsWith("on") && name.length > 2) {
     const eventName = name.slice(2).toLowerCase();
-    node.addEventListener(eventName, value as EventListener);
+    addEventListener(node, eventName, value as RuntimeEventHandler);
   } else if (!isSVG && name in node) {
     prop(node, name, value);
   } else {
@@ -275,32 +275,149 @@ export function style(
 
 // ─── Event delegation ─────────────────────────────────────────────────────────
 
-const delegatedEvents = new Set<string>();
+export type RuntimeEventHandler =
+  | EventListener
+  | EventListenerObject
+  | readonly [
+    (data: unknown, event: Event) => unknown,
+    unknown,
+  ];
+
+const delegatedEvents = new WeakMap<Document, Set<string>>();
+
+/**
+ * Attach an event through the compiler-facing runtime ABI.
+ *
+ * `babel-plugin-jsx-dom-expressions` passes `delegate = true` for delegated
+ * events. Those handlers are stored on the element for the document-level
+ * dispatcher instead of allocating one native listener per element.
+ */
+export function addEventListener(
+  node: Element,
+  name: string,
+  handler: RuntimeEventHandler,
+  delegate = false,
+): void {
+  if (delegate) {
+    const key = `$$${name}`;
+    const record = node as unknown as Record<string, unknown>;
+    if (Array.isArray(handler)) {
+      record[key] = handler[0];
+      record[`${key}Data`] = handler[1];
+    } else {
+      record[key] = handler;
+      delete record[`${key}Data`];
+    }
+    return;
+  }
+
+  if (Array.isArray(handler)) {
+    const [listener, data] = handler;
+    node.addEventListener(name, function (this: Element, event) {
+      listener.call(this, data, event);
+    });
+    return;
+  }
+  node.addEventListener(name, handler as EventListenerOrEventListenerObject);
+}
 
 /**
  * Set up global event delegation for the listed event names.
  * Delegated handlers are attached to `document` and use
- * a `__handlers` property on each element.
+ * the `$$eventName` property convention emitted by the JSX compiler.
  */
-export function delegateEvents(events: string[], document_: Document = document): void {
+export function delegateEvents(events: string[], document_?: Document): void {
+  const target = document_ ?? (typeof document === "undefined" ? undefined : document);
+  if (target === undefined) return;
+
+  let installed = delegatedEvents.get(target);
+  if (installed === undefined) {
+    installed = new Set<string>();
+    delegatedEvents.set(target, installed);
+  }
   for (const event of events) {
-    if (!delegatedEvents.has(event)) {
-      delegatedEvents.add(event);
-      document_.addEventListener(event, delegatedEventHandler);
+    if (!installed.has(event)) {
+      installed.add(event);
+      target.addEventListener(event, delegatedEventHandler);
     }
   }
 }
 
+/** Remove all delegated listeners installed by this runtime for a document. */
+export function clearDelegatedEvents(document_?: Document): void {
+  const target = document_ ?? (typeof document === "undefined" ? undefined : document);
+  if (target === undefined) return;
+
+  const installed = delegatedEvents.get(target);
+  if (installed === undefined) return;
+  for (const event of installed) {
+    target.removeEventListener(event, delegatedEventHandler);
+  }
+  delegatedEvents.delete(target);
+}
+
 function delegatedEventHandler(e: Event): void {
-  let node = e.target as Element | null;
-  const key = `__${e.type}`;
-  while (node !== null) {
-    const handler = (node as unknown as Record<string, unknown>)[key] as EventListener | undefined;
-    if (handler) {
-      handler(e);
+  const key = `$$${e.type}`;
+  const dataKey = `${key}Data`;
+  const composedPath = typeof e.composedPath === "function" ? e.composedPath() : [];
+  const path: EventTarget[] = composedPath.length > 0
+    ? [...composedPath]
+    : [];
+
+  if (path.length === 0) {
+    let current = e.target as (EventTarget & {
+      readonly parentNode?: EventTarget | null;
+      readonly parentElement?: EventTarget | null;
+      readonly host?: EventTarget | null;
+    }) | null;
+    while (current !== null) {
+      path.push(current);
+      current = current.parentNode ?? current.parentElement ?? current.host ?? null;
+    }
+  }
+
+  let currentTarget: EventTarget | null = null;
+  const previousCurrentTarget = Object.getOwnPropertyDescriptor(e, "currentTarget");
+  let patchedCurrentTarget = false;
+  try {
+    Object.defineProperty(e, "currentTarget", {
+      configurable: true,
+      get: () => currentTarget,
+    });
+    patchedCurrentTarget = true;
+  } catch {
+    // Some custom Event implementations expose a non-configurable property.
+  }
+
+  try {
+    for (const target of path) {
+      const node = target as Element;
+      currentTarget = target;
+      const record = node as unknown as Record<string, unknown>;
+      const handler = record[key] as EventListener | EventListenerObject | undefined;
+      if (handler === undefined || record.disabled === true) continue;
+
+      const data = record[dataKey];
+      if (typeof handler === "function") {
+        if (dataKey in record) {
+          (handler as unknown as (data: unknown, event: Event) => unknown).call(node, data, e);
+        } else {
+          handler.call(node, e);
+        }
+      } else {
+        handler.handleEvent(e);
+      }
       if (e.cancelBubble) return;
     }
-    node = node.parentElement;
+  } finally {
+    currentTarget = null;
+    if (patchedCurrentTarget) {
+      if (previousCurrentTarget === undefined) {
+        delete (e as unknown as Record<string, unknown>).currentTarget;
+      } else {
+        Object.defineProperty(e, "currentTarget", previousCurrentTarget);
+      }
+    }
   }
 }
 
@@ -794,6 +911,8 @@ export function renderToString(fn: () => unknown): string {
   const prevSSR = _ssrMode;
   const prevDoc = _serverDoc;
   const origDocument = typeof globalThis.document !== "undefined" ? globalThis.document : undefined;
+  const origNode = typeof globalThis.Node !== "undefined" ? globalThis.Node : undefined;
+  let dispose: (() => void) | undefined;
 
   try {
     _ssrMode = true;
@@ -805,11 +924,9 @@ export function renderToString(fn: () => unknown): string {
     (globalThis as Record<string, unknown>).document = serverDoc;
 
     // Also patch `Node` so that `instanceof Node` checks work with virtual nodes.
-    const origNode = typeof globalThis.Node !== "undefined" ? globalThis.Node : undefined;
     (globalThis as Record<string, unknown>).Node = ServerNode as unknown;
 
     let result: unknown;
-    let dispose: (() => void) | undefined;
 
     createRoot((d) => {
       dispose = d;
@@ -827,24 +944,24 @@ export function renderToString(fn: () => unknown): string {
       html = String(result);
     }
 
-    // Dispose the reactive root — we only needed a single snapshot.
-    dispose?.();
-
-    // Restore Node
-    if (origNode !== undefined) {
-      (globalThis as Record<string, unknown>).Node = origNode;
-    } else {
-      delete (globalThis as Record<string, unknown>).Node;
-    }
-
     return html;
   } finally {
-    _ssrMode = prevSSR;
-    _serverDoc = prevDoc;
-    if (origDocument !== undefined) {
-      (globalThis as Record<string, unknown>).document = origDocument;
-    } else {
-      delete (globalThis as Record<string, unknown>).document;
+    try {
+      // Dispose on both success and failure; SSR only needs one snapshot.
+      dispose?.();
+    } finally {
+      _ssrMode = prevSSR;
+      _serverDoc = prevDoc;
+      if (origNode !== undefined) {
+        (globalThis as Record<string, unknown>).Node = origNode;
+      } else {
+        delete (globalThis as Record<string, unknown>).Node;
+      }
+      if (origDocument !== undefined) {
+        (globalThis as Record<string, unknown>).document = origDocument;
+      } else {
+        delete (globalThis as Record<string, unknown>).document;
+      }
     }
   }
 }

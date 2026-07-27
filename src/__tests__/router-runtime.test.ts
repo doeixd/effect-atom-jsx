@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Schema } from "effect";
+import { Deferred, Effect, Schema } from "effect";
 import * as Component from "../Component.js";
 import * as Route from "../Route.js";
 import * as RouterRuntime from "../RouterRuntime.js";
 import * as ServerRoute from "../ServerRoute.js";
+
+/** Flush pending microtasks/interrupt signals so forked fibers can settle. */
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("RouterRuntime", () => {
   it("initializes and exposes a snapshot", () => {
@@ -401,6 +404,128 @@ describe("RouterRuntime", () => {
     await Effect.runPromise(runtime.revalidate());
     snapshot = Effect.runSync(runtime.snapshot());
     expect(snapshot.inFlight.revalidate).toBeNull();
+  });
+
+  it("interrupts superseded in-flight navigation loader fibers", async () => {
+    let slowInterrupted = false;
+    const SlowPage = Route.loader((_: {}) => Effect.never.pipe(
+      Effect.onInterrupt(() => Effect.sync(() => {
+        slowInterrupted = true;
+      })),
+    ))(
+      Route.id("slow")(Route.path("/slow")(Component.from<{}>(() => null))),
+    );
+    const FastPage = Route.loader((_: {}) => Effect.succeed({ ok: true as const }))(
+      Route.id("fast")(Route.path("/fast")(Component.from<{}>(() => null))),
+    );
+    const App = Route.children([SlowPage, FastPage])(
+      Route.layout()(Route.path("/")(Component.from<{}>(() => null))),
+    );
+    const runtime = RouterRuntime.create({
+      app: App,
+      history: RouterRuntime.createMemoryHistory("/"),
+    });
+
+    Effect.runSync(runtime.initialize());
+    // Navigate into the never-completing loader, then supersede it.
+    Effect.runSync(runtime.navigate("/slow"));
+    await flush();
+    expect(slowInterrupted).toBe(false);
+
+    Effect.runSync(runtime.navigate("/fast"));
+    await flush();
+
+    // The superseded /slow loader fiber is really interrupted (finalizer ran).
+    expect(slowInterrupted).toBe(true);
+    const snapshot = Effect.runSync(runtime.snapshot());
+    // Winner state is committed; late loser never clobbers it.
+    expect(snapshot.location.pathname).toBe("/fast");
+    expect(snapshot.loaderData.get("fast")).toEqual({ ok: true });
+    expect(snapshot.loaderData.has("slow")).toBe(false);
+    expect(snapshot.navigation.phase).toBe("idle");
+    expect(snapshot.inFlight.navigation).toBeNull();
+  });
+
+  it("keeps winner loader state across rapid successive navigations", async () => {
+    const gates = new Map<string, Deferred.Deferred<void>>();
+    const makePage = (id: string, path: string) =>
+      Route.loader((_: {}) => Effect.gen(function* () {
+        const gate = yield* Effect.sync(() => {
+          const d = Effect.runSync(Deferred.make<void>());
+          gates.set(id, d);
+          return d;
+        });
+        yield* Deferred.await(gate);
+        return { id };
+      }))(
+        Route.id(id)(Route.path(path)(Component.from<{}>(() => null))),
+      );
+    const A = makePage("a", "/a");
+    const B = makePage("b", "/b");
+    const C = makePage("c", "/c");
+    const App = Route.children([A, B, C])(
+      Route.layout()(Route.path("/")(Component.from<{}>(() => null))),
+    );
+    const runtime = RouterRuntime.create({
+      app: App,
+      history: RouterRuntime.createMemoryHistory("/"),
+    });
+
+    Effect.runSync(runtime.initialize());
+    Effect.runSync(runtime.navigate("/a"));
+    Effect.runSync(runtime.navigate("/b"));
+    Effect.runSync(runtime.navigate("/c"));
+    await flush();
+
+    // Complete any settled losers first, then the winner: losers must not commit.
+    const release = (id: string) => {
+      const gate = gates.get(id);
+      if (gate) Effect.runSync(Deferred.succeed(gate, undefined));
+    };
+    release("a");
+    release("b");
+    await flush();
+    release("c");
+    await flush();
+
+    const snapshot = Effect.runSync(runtime.snapshot());
+    expect(snapshot.location.pathname).toBe("/c");
+    expect(snapshot.loaderData.get("c")).toEqual({ id: "c" });
+    expect(snapshot.loaderData.has("a")).toBe(false);
+    expect(snapshot.loaderData.has("b")).toBe(false);
+    expect(snapshot.navigation.phase).toBe("idle");
+  });
+
+  it("interrupts in-flight navigation loaders on explicit cancel (unmount mid-flight)", async () => {
+    let interrupted = false;
+    const SlowPage = Route.loader((_: {}) => Effect.never.pipe(
+      Effect.onInterrupt(() => Effect.sync(() => {
+        interrupted = true;
+      })),
+    ))(
+      Route.id("slow-cancel")(Route.path("/slow-cancel")(Component.from<{}>(() => null))),
+    );
+    const App = Route.children([SlowPage])(
+      Route.layout()(Route.path("/")(Component.from<{}>(() => null))),
+    );
+    const runtime = RouterRuntime.create({
+      app: App,
+      history: RouterRuntime.createMemoryHistory("/"),
+    });
+
+    Effect.runSync(runtime.initialize());
+    Effect.runSync(runtime.navigate("/slow-cancel"));
+    await flush();
+    expect(interrupted).toBe(false);
+
+    Effect.runSync(runtime.cancel());
+    await flush();
+
+    expect(interrupted).toBe(true);
+    const snapshot = Effect.runSync(runtime.snapshot());
+    expect(snapshot.navigation.phase).toBe("cancelled");
+    expect(snapshot.navigation.interrupted).toBe(true);
+    expect(snapshot.inFlight.navigation).toBeNull();
   });
 
   it("tracks in-flight ids for submit and clears them after completion", async () => {

@@ -1,7 +1,7 @@
 import { Effect, Layer, Schema, ServiceMap } from "effect";
 import * as Atom from "./Atom.js";
 import { createComponent } from "./dom.js";
-import { renderToString, setRequestEvent } from "./dom.js";
+import { getRequestEvent, renderToString, setRequestEvent } from "./dom.js";
 import { createSignal, useContext, type Accessor } from "./api.js";
 import {
   ManagedRuntimeContext,
@@ -383,7 +383,10 @@ export interface SingleFlightOptions<Args extends ReadonlyArray<unknown>, A> {
   readonly setLoaders?: (result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry>;
 }
 
-type LoaderFn = (params: unknown, deps?: { readonly parent: <A>() => A }) => Effect.Effect<unknown, unknown, unknown>;
+// Loaders are stored after their requirements are erased; the runtime provides
+// services before running, so the stored shape carries `R = never`. Typing it
+// this way lets loader call sites feed `runCachedLoader` without re-casting.
+type LoaderFn = (params: unknown, deps?: { readonly parent: <A>() => A }) => Effect.Effect<unknown, unknown>;
 type ErrorTag<E> = E extends { readonly _tag: infer K extends string }
   ? K
   : E extends { _tag: infer K extends string }
@@ -517,9 +520,9 @@ function loaderSuccess(result: UnknownRouteResult | undefined): { readonly value
 
 function toComponentRouteOptions<P, Q, H>(node: AppRouteNode<P, Q, H, any, any, any>) {
   return {
-    params: node.options.params as Schema.Schema<P> | undefined,
-    query: node.options.query as Schema.Schema<Q> | undefined,
-    hash: node.options.hash as Schema.Schema<H> | undefined,
+    params: node.options.params,
+    query: node.options.query,
+    hash: node.options.hash,
     exact: node.options.exact,
   };
 }
@@ -1470,7 +1473,7 @@ function runMatchedLoadersRegistry(
         return runCachedLoader(
           routeId,
           paramsRaw,
-          loaderFn(paramsRaw, { parent: <X>() => parentData as X }) as Effect.Effect<unknown, unknown>,
+          loaderFn(paramsRaw, { parent: <X>() => parentData as X }),
           loaderOptions,
         ).pipe(Effect.map((result) => ({ routeId, result, pattern: entry.meta.fullPattern })));
       }), { concurrency: "unbounded" });
@@ -1847,9 +1850,14 @@ export function renderRequest(
     if (isUnifiedRoute(app)) {
       setResolvedTreeHeadEntries(app, requestUrl, streaming.critical);
     }
+    const previousRequestEvent = getRequestEvent();
     setRequestEvent({ request: options.request, url: requestUrl });
-    const html = renderToString(() => Effect.runSync(effect));
-    setRequestEvent(undefined);
+    let html: string;
+    try {
+      html = renderToString(() => Effect.runSync(effect));
+    } finally {
+      setRequestEvent(previousRequestEvent);
+    }
     const head = resolveRouteHead([...routeHeadEntries.values()]);
     return {
       status,
@@ -2948,7 +2956,7 @@ export function runRouteLoader(
     return runCachedLoader(
       meta.id ?? meta.fullPattern,
       paramsRaw,
-      loaderFn(paramsRaw, { parent: <A>() => parentData as A }) as Effect.Effect<unknown, unknown>,
+      loaderFn(paramsRaw, { parent: <A>() => parentData as A }),
       component[UnifiedRouteSymbol].loaderOptions,
     );
   }
@@ -2963,7 +2971,7 @@ export function runRouteLoader(
   return runCachedLoader(
     routeId,
     paramsRaw,
-    loaderFn(paramsRaw, { parent: <A>() => parentData as A }) as Effect.Effect<unknown, unknown>,
+    loaderFn(paramsRaw, { parent: <A>() => parentData as A }),
     loaderOptions,
   );
 }
@@ -3272,5 +3280,4 @@ export const Route = {
   matchPattern,
   extractParams,
 } as const;
-
 

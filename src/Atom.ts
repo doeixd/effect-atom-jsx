@@ -522,8 +522,22 @@ export function make<A>(valueOrRead: A | ((get: Context) => A)): ReadonlyAtom<A>
  */
 export interface Family<Args extends ReadonlyArray<unknown>, T> {
   (...args: Args): T;
+  /** Drop the cached member for `args` (and its subtree) from the family. */
   evict(...args: Args): void;
+  /** Drop every cached member from the family. */
   clear(): void;
+  /**
+   * Live member argument-tuples currently retained, in insertion order.
+   *
+   * Enables hydration identity: a family's members can be enumerated,
+   * serialized with their identifying `args`, and restored member-for-member
+   * across an SSR boundary (see `Hydration.dehydrateFamily`).
+   */
+  keys(): Array<Args>;
+  /** Live members as `[args, value]` pairs, in insertion order. */
+  entries(): Array<readonly [Args, T]>;
+  /** Number of live members currently retained. */
+  readonly size: number;
 }
 
 export interface FamilyOptions<Args extends ReadonlyArray<unknown>, T> {
@@ -532,6 +546,13 @@ export interface FamilyOptions<Args extends ReadonlyArray<unknown>, T> {
    * this function instead of reference-equality trie lookup.
    */
   readonly equals?: (a: Args, b: Args) => boolean;
+  /**
+   * Maximum number of live members retained. When creating a member would
+   * exceed the capacity, the oldest-inserted member is evicted first
+   * (insertion-order / FIFO eviction). Bounds unbounded family growth for
+   * per-id caches with open-ended key spaces (ADR-005).
+   */
+  readonly capacity?: number;
 }
 
 export interface FamilySchemaOptions<Args extends ReadonlyArray<unknown>, T, A>
@@ -605,51 +626,81 @@ export function family<Args extends ReadonlyArray<unknown>, T>(
     return value;
   };
 
+  const capacity = options?.capacity;
+  // `members` is the source of truth for enumeration + eviction ordering in
+  // both branches; the trie (default branch) is only a fast lookup index.
+  const members: Array<{ args: Args; value: T }> = [];
+
+  const finalize = (fam: Family<Args, T>): Family<Args, T> => {
+    fam.keys = () => members.map((m) => m.args);
+    fam.entries = () => members.map((m) => [m.args, m.value] as const);
+    Object.defineProperty(fam, "size", { get: () => members.length, enumerable: true });
+    return fam;
+  };
+
   if (options?.equals !== undefined) {
-    const entries: Array<{ args: Args; value: T }> = [];
     const getOrCreate = ((...args: Args) => {
-      const found = entries.find((entry) => options.equals!(entry.args, args));
+      const found = members.find((entry) => options.equals!(entry.args, args));
       if (found) return found.value;
       const next = create(...args);
-      entries.push({ args, value: next });
+      members.push({ args, value: next });
+      if (capacity !== undefined) {
+        while (members.length > capacity) members.shift();
+      }
       return next;
     }) as Family<Args, T>;
 
     getOrCreate.evict = (...args: Args) => {
-      const index = entries.findIndex((entry) => options.equals!(entry.args, args));
-      if (index >= 0) entries.splice(index, 1);
+      const index = members.findIndex((entry) => options.equals!(entry.args, args));
+      if (index >= 0) members.splice(index, 1);
     };
     getOrCreate.clear = () => {
-      entries.length = 0;
+      members.length = 0;
     };
 
-    return getOrCreate;
+    return finalize(getOrCreate);
   }
 
   const root = familyNode<T>();
-  const getOrCreate = ((...args: Args) => {
-    const node = familyPath(root, args, true) as FamilyNode<T>;
-    if (node.hasValue) return node.value as T;
-    const next = create(...args);
-    node.hasValue = true;
-    node.value = next;
-    return next;
-  }) as Family<Args, T>;
-
-  getOrCreate.evict = (...args: Args) => {
+  const evictArgs = (args: Args) => {
     const node = familyPath(root, args, false);
     if (node === null) return;
     node.hasValue = false;
     node.value = undefined;
     node.children.clear();
   };
+  const sameArgs = (a: Args, b: Args) =>
+    a === b || (a.length === b.length && a.every((v, i) => v === b[i]));
+
+  const getOrCreate = ((...args: Args) => {
+    const node = familyPath(root, args, true) as FamilyNode<T>;
+    if (node.hasValue) return node.value as T;
+    const next = create(...args);
+    node.hasValue = true;
+    node.value = next;
+    members.push({ args, value: next });
+    if (capacity !== undefined) {
+      while (members.length > capacity) {
+        const oldest = members.shift();
+        if (oldest !== undefined) evictArgs(oldest.args);
+      }
+    }
+    return next;
+  }) as Family<Args, T>;
+
+  getOrCreate.evict = (...args: Args) => {
+    evictArgs(args);
+    const index = members.findIndex((entry) => sameArgs(entry.args, args));
+    if (index >= 0) members.splice(index, 1);
+  };
   getOrCreate.clear = () => {
     root.children.clear();
     root.hasValue = false;
     root.value = undefined;
+    members.length = 0;
   };
 
-  return getOrCreate;
+  return finalize(getOrCreate);
 }
 
 /**

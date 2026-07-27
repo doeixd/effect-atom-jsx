@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Effect, Exit, Layer, Scope, ServiceMap } from "effect";
+import { Effect, Exit, Layer, Schema, Scope, ServiceMap } from "effect";
 import { createRoot, flush } from "../api.js";
 import * as Behavior from "../Behavior.js";
 import * as Component from "../Component.js";
@@ -96,6 +96,205 @@ describe("Component", () => {
     bindings.increment();
 
     expect(bindings.count()).toBe(6);
+  });
+
+  it("retains inspectable named setup plans and classifies raw setup as opaque", () => {
+    const fragment = Component.setup<{ readonly start: number }>()
+      .value("label", ({ props }) => `start:${props.start}`);
+    const named = Component.setup<{ readonly start: number }>()
+      .bind("count", ({ props }) => Component.state(props.start))
+      .value("step", () => 1)
+      .doEffect(() => Effect.void)
+      .use(fragment);
+
+    expect(named.plan).toEqual({
+      kind: "named",
+      steps: [
+        { kind: "binding", name: "count" },
+        { kind: "value", name: "step" },
+        { kind: "effect" },
+        {
+          kind: "fragment",
+          plan: {
+            kind: "named",
+            steps: [{ kind: "value", name: "label" }],
+          },
+        },
+      ],
+    });
+
+    const Named = Component.make(
+      Component.props<{ readonly start: number }>(),
+      Component.require<never>(),
+      named,
+      (_props, bindings) => bindings.count(),
+    ).pipe(
+      Component.withDefinition({
+        name: "NamedCounter",
+        metadata: { feature: "inspection" },
+      }),
+    );
+    const Raw = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ value: 1 }),
+      (_props, bindings) => bindings.value,
+    );
+
+    const namedInspection = Component.inspect(Named);
+    expect(namedInspection.definition.name).toBe("NamedCounter");
+    expect(namedInspection.definition.metadata).toEqual({ feature: "inspection" });
+    expect(namedInspection.definition.setupPlan).toEqual(named.plan);
+    expect(namedInspection.definition.transforms).toEqual([]);
+    expect(Component.inspect(Raw).definition.setupPlan).toEqual({ kind: "opaque" });
+  });
+
+  it("renders committed bindings without executing setup", () => {
+    let setupRuns = 0;
+    const slots = {
+      root: Element.container(),
+    };
+    const Replayable = Component.make(
+      Component.props<{ readonly prefix: string }>(),
+      Component.require<never>(),
+      () =>
+        Effect.sync(() => {
+          setupRuns += 1;
+          return { value: "from setup" };
+        }),
+      (props, bindings) =>
+        View.make(slots, `${props.prefix}:${bindings.value}`),
+    );
+
+    const bindings = { value: "restored" };
+    expect(Component.renderWithBindings(Replayable, { prefix: "value" }, bindings))
+      .toBe("value:restored");
+    const view = Component.renderViewWithBindings(
+      Replayable,
+      { prefix: "value" },
+      bindings,
+    );
+
+    expect(view?.node).toBe("value:restored");
+    expect(view?.slots).toBe(slots);
+    expect(Component.getViewSlots(Replayable)).toBe(slots);
+    expect(setupRuns).toBe(0);
+  });
+
+  it("parses props once before inspection setup and committed rendering", () => {
+    let parseRuns = 0;
+    const propSpec = {
+      parse: (input: unknown) => {
+        parseRuns += 1;
+        return input as { readonly value: string };
+      },
+    };
+    const Inspected = Component.make(
+      propSpec,
+      Component.require<never>(),
+      (props) => Effect.succeed({ setupValue: props.value }),
+      (props, bindings) => `${props.value}:${bindings.setupValue}`,
+    );
+    const inspection = Component.inspect(Inspected);
+    const parsed = inspection.parseProps({ value: "parsed" });
+    const bindings = Effect.runSync(inspection.setup(parsed));
+
+    expect(inspection.render(parsed, bindings)).toBe("parsed:parsed");
+    expect(parseRuns).toBe(1);
+  });
+
+  it("renders headless components from committed bindings", () => {
+    let setupRuns = 0;
+    const Headless = Component.headless(
+      Component.props<{ readonly label: string }>(),
+      Component.require<never>(),
+      () =>
+        Effect.sync(() => {
+          setupRuns += 1;
+          return { value: "setup" };
+        }),
+    );
+
+    const result = Component.renderWithBindings(
+      Headless,
+      {
+        label: "restored",
+        children: (bindings) => `${bindings.value}:child`,
+      },
+      { value: "restored" },
+    );
+
+    expect(result).toBe("restored:child");
+    expect(setupRuns).toBe(0);
+  });
+
+  it("keeps prop-schema validation on the public committed-render path", () => {
+    const Validated = Component.make(
+      Component.propsSchema(Schema.Struct({ count: Schema.Number })),
+      Component.require<never>(),
+      () => Effect.succeed({}),
+      (props) => props.count,
+    );
+
+    expect(() =>
+      Component.renderWithBindings(
+        Validated,
+        { count: "invalid" } as unknown as { readonly count: number },
+        {},
+      )
+    ).toThrow();
+  });
+
+  it("records conservative setup/view transforms across component wrappers", () => {
+    const Base = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>().value("value", () => 1),
+      (_props, bindings) => bindings.value,
+    ).pipe(Component.withDefinition({ name: "Base" }));
+
+    const Wrapped = Base.pipe(
+      Component.tapSetup<{}, never, never, { readonly value: number }, never, never>(
+        () => Effect.void,
+      ),
+      Component.withViewTransform<{}, never, never, { readonly value: number }, {}>(
+        (value) => `wrapped:${String(value)}`,
+      ),
+      Component.withLoading(() => "loading"),
+    );
+
+    expect(Component.inspect(Wrapped).definition).toMatchObject({
+      name: "Base",
+      setupPlan: Component.inspect(Base).definition.setupPlan,
+      transforms: [
+        { kind: "component.wrapper", phase: "setup", portability: "opaque" },
+        { kind: "component.wrapper", phase: "view", portability: "opaque" },
+        { kind: "component.wrapper", phase: "view", portability: "opaque" },
+      ],
+    });
+  });
+
+  it("records the canonical slot wrapper as a portable transform", () => {
+    const slots = View.Slots.define({
+      root: {
+        capability: Element.Capability.Container,
+      },
+    });
+    const Slotted = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>().value("value", () => 1),
+      (_props, bindings) => bindings.value,
+    ).pipe(Component.withSlots(slots));
+
+    expect(Component.inspect(Slotted).definition.transforms).toEqual([
+      {
+        kind: "component.withSlots",
+        phase: "setup",
+        portability: "portable",
+      },
+    ]);
+    expect(Component.inspect(Slotted).slotContract).toBe(slots);
   });
 
   it("ties Component.state writes to the provided setup scope", () => {
@@ -655,6 +854,48 @@ describe("Component", () => {
 
     expect(diagnostics).toEqual([]);
     expect(Component.getSlotContract(Card)).toBe(slots);
+  });
+
+  it("makeWithSlots publishes the contract, wraps the view, and validates clean", () => {
+    const FieldSlots = View.Slots.define({
+      root: { capability: Element.Capability.Container },
+      input: { capability: Element.Capability.TextInput },
+    });
+
+    const Field = Component.makeWithSlots(FieldSlots, {
+      props: Component.props<{ readonly label: string }>(),
+      setup: () => Effect.succeed({}),
+      view: () => "field",
+    });
+
+    // contract is published from the single call
+    expect(Component.getSlotContract(Field)).toBe(FieldSlots);
+
+    // the view is wrapped in View.fromSlots and validates against the contract
+    const view = Effect.runSync(Component.renderViewEffect(Field, { label: "Name" }));
+    expect(view && View.isView(view)).toBe(true);
+    expect(View.node(view!)).toBe("field");
+
+    const diagnostics = Effect.runSync(Component.validateRenderedSlotContract(Field, { label: "Name" }));
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("makeWithSlots defaults props/require and publishes the contract in bindings", () => {
+    const FieldSlots = View.Slots.define({
+      root: { capability: Element.Capability.Container },
+    });
+
+    // props and require omitted — defaulted internally
+    const Field = Component.makeWithSlots(FieldSlots, {
+      setup: () => Effect.succeed({ draft: "x" }),
+      view: () => "field",
+    });
+
+    expect(Component.getSlotContract(Field)).toBe(FieldSlots);
+
+    // withSlots injects slot handles into the committed bindings snapshot
+    const bindings = Effect.runSync(Component.setupEffect(Field, {})) as { readonly slots: Record<string, unknown> };
+    expect(bindings.slots.root).toBe(View.Slots.handles(FieldSlots).root);
   });
 
   it("reports declared slots missing from the rendered View", () => {
