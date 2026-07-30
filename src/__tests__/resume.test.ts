@@ -1638,6 +1638,68 @@ describe("Resume state binding restoration", () => {
     }
   });
 
+  it("mounts the wrapper, not the pre-wrapper base, from a carried activation", () => {
+    // Preserving the activation across a wrapper by *copying* it is not
+    // preservation: `componentActivation` closes over the component it was
+    // built for, so a copied activation SSRs the wrapper and mounts the base,
+    // silently dropping the wrapper's view transform / provided layer /
+    // behavior on the client. The activation must be re-derived against the
+    // wrapper, which this asserts by driving the activation and checking that
+    // the wrapper's transform is present in what it mounts.
+    const Props = Schema.Struct({ label: Schema.String });
+    const Base = Component.make(
+      Component.propsSchema(Props),
+      Component.require<never>(),
+      ({ label }) => Effect.succeed({ label }),
+      (_props, bindings) => bindings.label,
+    ).pipe(
+      Resume.addressable({
+        id: "test.resume.wrapper-mount-target",
+        buildId: TestBuildId,
+        props: Props,
+      }),
+    );
+    const Wrapped = Base.pipe(
+      Component.withViewTransform<
+        { readonly label: string },
+        never,
+        never,
+        { readonly label: string }
+      >((result) => `[wrapped]${String(result)}`),
+    );
+
+    expect(Wrapped).not.toBe(Base);
+
+    let mounted: unknown;
+    const context = {
+      componentId: "c0" as never,
+      mount: (component: any, props: any) => {
+        mounted = component;
+        return Effect.succeed({ dispose: Effect.void });
+      },
+    };
+    Effect.runSync(
+      Resume.activationOf(Wrapped as typeof Base).run(
+        { label: "hello" },
+        context as never,
+      ) as Effect.Effect<unknown, never, never>,
+    );
+
+    expect(mounted).toBe(Wrapped);
+    expect(mounted).not.toBe(Base);
+
+    // Observable, not just referential: the mounted component renders the
+    // wrapper's transform.
+    const scope = Scope.makeUnsafe();
+    const rendered = Effect.runSync(
+      Component.renderEffect(mounted as typeof Base, { label: "hello" }).pipe(
+        Scope.provide(scope),
+      ),
+    );
+    Effect.runSync(Scope.close(scope, Exit.void));
+    expect(rendered).toBe("[wrapped]hello");
+  });
+
   it("does not invent an activation for a component that never had one", () => {
     const slots = View.Slots.define({
       root: { capability: Element.Capability.Container },
@@ -3041,6 +3103,104 @@ describe("Resume portable queries", () => {
     expect(setupRuns).toBe(1);
 
     await Effect.runPromise(installation.dispose);
+    await runtime.dispose();
+    vi.unstubAllGlobals();
+  });
+
+  it("does not report a refresh interrupted by ordinary teardown as a failure", async () => {
+    vi.stubGlobal("Node", class {});
+    // The dispose finalizer interrupts every in-flight refresh fiber, so an
+    // observer that reports *any* failure exit turns ordinary teardown of a
+    // restored component with a refresh in flight into a false
+    // "component-query-refresh-failure" diagnostic. Interruption is not a
+    // query failure — the same rule the expression path already applies.
+    const diagnostics: Resume.ClientDiagnostic[] = [];
+    const QueryCard = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>().bind(
+        "data",
+        () =>
+          Component.query(Portable.bind(QueryCode, { label: "todos" }), {
+            reactivityKeys: ["todos"],
+          }),
+        { resume: Resume.snapshotQuery(Schema.String) },
+      ),
+      (_props, bindings) => () => {
+        bindings.data();
+        return null;
+      },
+    ).pipe(
+      Component.withDefinition({ name: "InterruptedRefreshCard" }),
+      Resume.addressable({
+        id: "test.resume.interrupted-refresh",
+        buildId: TestBuildId,
+        props: Schema.Struct({}),
+      }),
+    );
+    const serverScope = Scope.makeUnsafe();
+    const collected = collect(() =>
+      renderToString(() =>
+        Effect.runSync(
+          Component.renderEffect(QueryCard, {}).pipe(
+            Scope.provide(serverScope),
+          ),
+        ),
+      ),
+    );
+    Effect.runSync(Scope.close(serverScope, Exit.void));
+
+    let started!: () => void;
+    const startedGate = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const BlockingClientCode = Portable.code<
+      { readonly label: string },
+      { readonly label: string },
+      readonly [],
+      string,
+      never,
+      never
+    >({
+      id: "test.resume.query",
+      buildId: TestBuildId,
+      captures: Schema.Struct({ label: Schema.String }),
+      run: () =>
+        Effect.sync(started).pipe(Effect.flatMap(() => Effect.never)),
+    });
+    const activation = Resume.activationOf(QueryCard);
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const installation = Effect.runSync(
+      Resume.installClient({
+        root: componentBoundaryRoot([
+          ["c0", "start"],
+          ["c0", "end"],
+        ]),
+        manifest: collected.manifest,
+        expectedBuildId: TestBuildId,
+        resolverEntries: {
+          [activation.id]: activation,
+          [BlockingClientCode.id]: BlockingClientCode,
+        },
+        runtime,
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      }),
+    );
+
+    await Effect.runPromise(installation.resume("c0"));
+    Atom.invalidateReactivity(["todos"]);
+    await startedGate;
+
+    // Ordinary teardown, with the refresh still in flight.
+    await Effect.runPromise(installation.dispose);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(
+      diagnostics.filter(
+        (diagnostic) => diagnostic.code === "component-query-refresh-failure",
+      ),
+    ).toEqual([]);
+
     await runtime.dispose();
     vi.unstubAllGlobals();
   });

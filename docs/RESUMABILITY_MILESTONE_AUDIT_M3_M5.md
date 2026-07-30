@@ -169,7 +169,7 @@ rather than the value transport the item describes.
 | --- | --- |
 | **M3 F1** non-delegated events silently uncollected | **Fixed by collecting them.** A session-level `directEventHandlers` WeakMap plus `observeDirectEventHandler`, called *after* the `if (delegate) { … return }` block so the delegated fast path and the compiler ABI are untouched. No new diagnostic code was needed — the existing `opaque-event-handler` / `event-data-unsupported` / `invalid-event-type` codes now fire on a path where they previously could not. |
 | **M4** non-atomic install claim | **Fixed structurally.** The claim is minted outside the yielding work and check-and-set now happen with no yield between them, so the invariant is structural rather than guarded — the same move that closed `DQ-099`. `Effect.onExit` releases the claim on failure or interrupt, idempotently and only if the map still holds *this* token. |
-| **M5 #1** `addressable` terminality unenforced | **Fixed by preservation.** `registerComponentMetadataCopier` in `Component.ts` is drained by `copyComponentMetadata`, the single choke point every wrapper already funnels through; `Resume.ts` registers a copier that re-stamps both the symbol and the WeakMap entry. Ordering no longer matters. |
+| **M5 #1** `addressable` terminality unenforced | **PARTIALLY fixed — see the correction below.** Fixed by preservation. `registerComponentMetadataCopier` in `Component.ts` is drained by `copyComponentMetadata`, the single choke point every wrapper already funnels through; `Resume.ts` registers a copier that re-stamps both the symbol and the WeakMap entry. Ordering no longer matters. |
 
 ### Two things learned that generalise
 
@@ -205,3 +205,87 @@ async resolver). Harder to hit than stated, not less real.
   wrapper's return type, so `Resume.activationOf(Wrapped)` still needs a cast.
   Carrying it would mean extending `PreserveRouteMetadata`.
 - M3 F2–F5 and M5 #2–#7 are unaddressed; see the sections above.
+
+---
+
+## CORRECTION (2026-07-30, second-pass audit) — the M5 #1 fix was incomplete and made the failure mode worse
+
+The fix preserved the activation **object** through wrappers. But
+`componentActivation` (`Resume.ts:1337`) captures its component permanently:
+
+```ts
+run: (props, context) => context.mount(options.component, props)
+```
+
+Copying that object onto the wrapper therefore copies an activation that still
+mounts the **base**. Verified empirically against `dist/`:
+
+```
+distinct objects: true
+activation present on wrapper: true   same activation object: true
+activation mounts Base: true | mounts Wrapped: false
+```
+
+So `Base.pipe(Resume.addressable(...), Component.withViewTransform(f))` — or
+`Component.provide(layer)`, `errorBoundary`, `Behavior.attachToSlots`,
+`Component.route` — **SSRs the wrapped component and mounts the unwrapped one on
+first click.** The behaviour, error boundary, or provided layer silently vanishes
+client-side, or setup fails for a missing service.
+
+**This is strictly worse than the original bug.** Before the fix, the mistake was
+a loud `ResumeComponentNotAddressableError`; after it, the same mistake is a
+**silent SSR/client divergence** — exactly what the addressable-must-be-terminal
+rule existed to prevent.
+
+It also bypasses a deliberate fail-closed guard: `restoreStateBindingsInScope`
+rejects non-reconstructible wrappers by inspecting
+`Component.inspect(component).definition.transforms` (`Resume.ts:1987-2010`).
+Since the component reaching restoration is the pre-wrapper base, the wrapper's
+opaque transform is **invisible** and the check passes.
+
+**The resolution table's claim "Ordering no longer matters" is therefore not true
+as written**, and the backing test (`resume.test.ts:1581-1638`) asserts only
+`activationOf(Wrapped).id` and the manifest entry — never *which component the
+activation mounts* — so it passes unchanged under the defect. Defect signature #4
+again: a test that would pass under the bug it is named for.
+
+**Lesson.** "Preservation beats diagnosis" is right, but preserving a *handle* is
+not preserving the *property*. The activation captured its component, so copying
+the handle moved the symbol without moving the behaviour. When applying that
+principle, check what the preserved value closes over.
+
+**FIXED (2026-07-30) by re-deriving, not copying.** `addressable` no longer builds
+the activation eagerly: it stores an `ActivationSpec` (id, buildId, props codec)
+in a module-private WeakMap, and `stampComponentActivation(component, spec)`
+constructs the activation **for whichever component object it stamps**. The
+metadata copier looks up the *spec* on the source and re-stamps the target, so a
+wrapper gets an activation whose `run` closes over the wrapper. Re-deriving with
+the same id is free and safe, because `Portable.code` is a plain frozen object
+with no global id registry.
+
+Proven by mount target, not by reference identity:
+
+```ts
+expect(mounted).toBe(Wrapped);
+expect(mounted).not.toBe(Base);
+expect(rendered).toBe("[wrapped]hello");   // the wrapper's effect is observably present
+```
+
+Verified by reverting: with the copy-the-activation copier restored, the new test
+fails with *"expected [Function component] to be [Function component] — no visual
+difference"*, which is the silent-divergence signature in miniature.
+
+**The fail-closed guard is restored for free.** Against a fresh `dist/`:
+
+```
+mounts wrapper: true | mounts base: false
+base transforms: []
+mounted transforms: ["component.wrapper"]
+```
+
+Restoration previously inspected the *base* and saw `[]`, so the opaque wrapper
+transform was invisible and the reconstructibility check passed. It now sees
+`component.wrapper`, which is not on the reconstructible allowlist, so a
+`withViewTransform`-wrapped addressable correctly takes the fallback-activation
+path. **The guard bypass and the mount-target defect were the same bug** — fixing
+the mount target fixed both, with no separate change.

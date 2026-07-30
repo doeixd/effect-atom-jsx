@@ -1367,17 +1367,41 @@ export function addressable<Props, EncodedProps>(
   return <C extends Component.Component<Props, any, any, any, any>>(
     component: C,
   ) => {
-    const activation = componentActivation({
-      ...options,
-      props: options.props as Schema.Codec<Component.PropsOf<C>, EncodedProps>,
-      component,
-    });
-    stampComponentActivation(component, activation);
+    const spec: ActivationSpec = {
+      id: options.id,
+      buildId: options.buildId,
+      props: options.props as Schema.Codec<any, any>,
+    };
+    stampComponentActivation(component, spec);
     return component as AddressableComponent<C, EncodedProps>;
   };
 }
 
-function stampComponentActivation(component: object, activation: any): void {
+/**
+ * Everything needed to *re-derive* an activation for a different component
+ * object. Copying the activation itself across a wrapper would be a lie: the
+ * activation's `run` closes over the component it was built for, so a copied
+ * activation mounts the pre-wrapper base while SSR renders the wrapper.
+ */
+interface ActivationSpec {
+  readonly id: string;
+  readonly buildId: string;
+  readonly props: Schema.Codec<any, any>;
+}
+
+const activationSpecs = new WeakMap<object, ActivationSpec>();
+
+function stampComponentActivation(
+  component: object,
+  spec: ActivationSpec,
+): void {
+  const activation = componentActivation({
+    id: spec.id,
+    buildId: spec.buildId,
+    props: spec.props,
+    component: component as Component.Component<any, any, any, any, any>,
+  });
+  activationSpecs.set(component, spec);
   registerComponentActivation(component, activation);
   Object.defineProperty(component, ComponentActivationTypeId, {
     configurable: true,
@@ -1391,12 +1415,17 @@ function stampComponentActivation(component: object, activation: any): void {
 // both the activation symbol and its registry entry, shipping a dormant
 // boundary that failed on the first click. Preserving the activation across
 // wrappers makes the ordering irrelevant rather than merely diagnosable.
+//
+// The activation is *re-derived* against the wrapper rather than copied, so the
+// portable entry mounts exactly the component SSR rendered. Copying the
+// captured activation would have turned the old loud failure into a silent
+// SSR/client divergence, and would also have hidden the wrapper's transforms
+// from the fail-closed reconstructibility check in
+// `restoreStateBindingsInScope`.
 Component.registerComponentMetadataCopier((source, target) => {
-  const activation = (source as unknown as Record<symbol, unknown>)[
-    ComponentActivationTypeId
-  ];
-  if (activation === undefined) return;
-  stampComponentActivation(target, activation);
+  const spec = activationSpecs.get(source);
+  if (spec === undefined) return;
+  stampComponentActivation(target, spec);
 });
 
 export function activationOf<
@@ -3700,10 +3729,23 @@ function mountRestoredComponent<
             });
             continue;
           }
+          // An invalidation racing teardown would otherwise add a fiber to the
+          // already-cleared set and never be interrupted, leaking a fiber
+          // handle. The refresh fails fast on the `disposed` check, but the
+          // handle is still worth not stranding.
+          if (disposed) {
+            void Fiber.interrupt(fiber).pipe(Effect.runFork);
+            continue;
+          }
           refreshFibers.add(fiber);
           fiber.addObserver((exit) => {
             refreshFibers.delete(fiber);
-            if (Exit.isFailure(exit)) {
+            // Interruption is not a query failure: the scope finalizer
+            // interrupts every in-flight refresh on ordinary dispose, so
+            // reporting interrupted exits would emit a false
+            // "refresh failed" diagnostic on normal teardown. This mirrors
+            // the `expressionIsDormant` guard on the expression path.
+            if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
               report({
                 code: "component-query-refresh-failure",
                 componentId,
