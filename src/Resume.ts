@@ -85,13 +85,20 @@ export {
   snapshotState,
 };
 export type {
+  ActionHandleInspection,
   BindingResumePolicy,
+  DerivedHandleInspection,
   HandleInspection,
+  InspectableActionHandle,
+  InspectableDerivedHandle,
   InspectableHandle,
   InspectableQueryHandle,
+  InspectableRefHandle,
   InspectableStateHandle,
   QueryHandleInspection,
   QuerySnapshotPolicy,
+  ReadableHandleInspection,
+  RefHandleInspection,
   StateHandleInspection,
   StateSnapshotPolicy,
 } from "./resume-handle.js";

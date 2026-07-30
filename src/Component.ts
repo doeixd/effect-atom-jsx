@@ -22,7 +22,10 @@ import {
   annotateHandle,
   type AnyBindingSnapshotPolicy,
   type BindingResumePolicy,
+  type InspectableActionHandle,
+  type InspectableDerivedHandle,
   type InspectableQueryHandle,
+  type InspectableRefHandle,
   type InspectableStateHandle,
 } from "./resume-handle.js";
 import {
@@ -1197,7 +1200,10 @@ export interface ComponentAction<
   Args extends ReadonlyArray<unknown>,
   A,
   E,
-> extends Portable.InspectableExecutable<Args, A, E, any> {
+> extends
+  Portable.InspectableExecutable<Args, A, E, any>,
+  InspectableActionHandle<A, E>
+{
   (...args: Args): void;
   run(...args: Args): void;
   runEffect(...args: Args): Effect.Effect<A, E>;
@@ -1336,8 +1342,20 @@ export function state<A>(
   });
 }
 
-export function derived<A>(fn: () => A): Effect.Effect<Atom.ReadonlyAtom<A>> {
-  return Effect.sync(() => Atom.derived(() => fn()));
+/** Recomputed component-local value with read-only resumability inspection. */
+export type DerivedAtom<A> = Atom.ReadonlyAtom<A> & InspectableDerivedHandle<A>;
+
+export function derived<A>(fn: () => A): Effect.Effect<DerivedAtom<A>> {
+  return Effect.gen(function* () {
+    const lifetime = yield* setupLifetime("Component.derived");
+    const atom = Atom.derived(() => fn());
+    return annotateHandle(atom, {
+      kind: "derived",
+      read: () => atom(),
+      isDisposed: lifetime.isDisposed,
+      recomputed: true,
+    });
+  });
 }
 
 /**
@@ -1535,6 +1553,9 @@ export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
 ): Effect.Effect<ComponentAction<Args, A, E>, never, R> {
   return Effect.gen(function* () {
     const isPortable = Portable.isBoundCode(executable);
+    const actionReactivityKeys = options?.reactivityKeys === undefined
+      ? []
+      : normalizeReactivityKeys(options.reactivityKeys);
     const inspection: Portable.ExecutableInspection<Args, A, E, any> =
       isPortable
         ? {
@@ -1603,6 +1624,14 @@ export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
       );
     out.result = handle.result;
     out.pending = handle.pending;
+    annotateHandle<typeof out, A, E>(out, {
+      kind: "action",
+      isDisposed: lifetime.isDisposed,
+      ...(isPortable
+        ? { executable: executable as Portable.AnyBoundCode }
+        : {}),
+      reactivityKeys: actionReactivityKeys,
+    });
     return Portable.annotateExecutable(out, inspection);
     });
   });
@@ -1656,16 +1685,25 @@ export function optimistic<A>(source: Atom.WritableAtom<A>): OptimisticBuilder<A
 
 export type ComponentRef<T> = { current: T | null };
 
-export function ref<T>(): Effect.Effect<ComponentRef<T>> {
+/** Host-bound component ref with read-only resumability inspection. */
+export type RefHandle<T> = ComponentRef<T> & InspectableRefHandle<T>;
+
+export function ref<T>(): Effect.Effect<RefHandle<T>> {
   return Effect.gen(function* () {
     const ref: ComponentRef<T> = { current: null };
+    const lifetime = yield* setupLifetime("Component.ref");
     const scope = yield* Effect.serviceOption(Scope.Scope);
     if (scope._tag === "Some") {
       yield* Scope.addFinalizer(scope.value, Effect.sync(() => {
         ref.current = null;
       }));
     }
-    return ref;
+    return annotateHandle(ref, {
+      kind: "ref",
+      read: () => ref.current,
+      isDisposed: lifetime.isDisposed,
+      hostBound: true,
+    });
   });
 }
 
@@ -2093,12 +2131,10 @@ function copyRouteDecorations(
     (targetRoute as RoutedComponentInternals<any, any, any, unknown, unknown> & { [Route.RouteLoaderMetaSymbol]: typeof loaderMeta })[Route.RouteLoaderMetaSymbol] = loaderMeta;
   }
 
-  targetRoute.__routeLoader = sourceRoute.__routeLoader;
-  targetRoute.__routeLoaderOptions = sourceRoute.__routeLoaderOptions;
-  targetRoute.__routeLoaderError = sourceRoute.__routeLoaderError;
-  targetRoute.__routeTitle = sourceRoute.__routeTitle;
-  targetRoute.__routeMetaExtra = sourceRoute.__routeMetaExtra;
-  targetRoute.__routeGuards = sourceRoute.__routeGuards;
+  for (const field of Route.RouteDecorationFields) {
+    (targetRoute as Record<string, unknown>)[field] =
+      (sourceRoute as unknown as Record<string, unknown>)[field];
+  }
 }
 
 function toComponentLike<Source extends Component<any, any, any, any, any>, Props, Req, E, Bindings, SlotContract = SlotContractOf<Source>>(

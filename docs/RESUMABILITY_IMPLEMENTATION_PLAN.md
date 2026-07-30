@@ -25,9 +25,11 @@ compiler directive seam, and 8c.4 **plus** 8c.5 and 8c.6. Source suite is
 
 | Milestone | What is actually left |
 | --- | --- |
-| M0 | SSR-order characterization for nested renders, exception paths, and request-context cleanup; the fallback contract is unrecorded; the intentionally-red E2E baseline was never added |
-| M2 | Only event/action descriptors exist — state, query, derived and ref handle descriptors are missing, as is SSR collector integration for them |
 | M8c | **COMPLETE** — 8c.0–8c.8 all landed; 8c.7 returned GO |
+
+**M0, M1 and M2 are now complete too** (2026-07-30). M1 item 4 turned out never
+to have been done despite the milestone reading complete, and the gap had already
+dropped `__routeTransition` and `__routeSitemapParams` from every wrapper.
 
 **Not started:** **M8d** structural targets (keyed lists, branch replacement —
 gated on 8c.7's go/no-go); M9 (deferred, blocked by `DQ-099`, with item 2
@@ -471,7 +473,28 @@ an external package would use.
 
 ### Milestone 0 — Ratify invariants and pin the current ABI
 
-Status: in progress
+Status: **complete (2026-07-30).** Items 3–4 are pinned by
+`src/__tests__/ssr-characterization.test.ts` (15 tests), item 5 is recorded in
+[`RESUMABILITY_SSR_CONTRACT.md`](RESUMABILITY_SSR_CONTRACT.md), and **item 6 is
+satisfied by obsolescence** — its acceptance was "the red test fails because the
+resume SPI is *absent*", and the SPI now exists and is proven by 110 resume tests
+plus 7/7 Chromium. A test engineered to fail would pin nothing.
+
+Three findings contradict this section's original prose, and the tests pin the
+code's actual behaviour:
+
+- **There is no ambient Effect `Scope` during SSR**, so "Scope finalization" is
+  not a lifecycle step. A caller-provided scope finalizes *after* the render
+  returns, at the caller's discretion.
+- **Nested `renderToString` restores the outer *virtual* document**, not the real
+  one; each render owns a distinct virtual document, so nesting is safe.
+- **`decodeManifest` accepts unknown code IDs** — decode validates *shape*, not
+  resolvability. An unknown ID surfaces only at dispatch, as
+  `dispatch-resolution-failure`.
+
+One genuine gap is recorded and not fixed: **opaque setup is the only fallback
+case that emits no diagnostic at all**, so the component silently contributes no
+snapshot while every other opaque path announces itself.
 
 Progress:
 
@@ -521,7 +544,18 @@ Acceptance:
 
 ### Milestone 1 — Metadata-only component and setup foundation
 
-Status: complete for the direct zero-argument event/action contract
+Status: **complete (2026-07-30).** The "direct zero-argument event/action
+contract" qualifier is retired — M2's portable actions take arguments, and
+M3–M8c have landed since it was written.
+
+Item 4 (centralized decoration copying) was **not** actually done despite this
+milestone reading as complete, and the gap had already bitten:
+`copyRouteDecorations` copied six `__route*` fields by hand while
+`RouteDecoratedComponent` declared eight, so **`__routeTransition` and
+`__routeSitemapParams` were silently dropped by every wrapper**. `src/Route.ts`
+now has a single declaration site (`RouteDecorationRecord` +
+`RouteDecorationFields`) with a compile-time exhaustiveness assertion, so adding
+a field without listing it is a type error.
 
 Progress:
 
@@ -566,7 +600,20 @@ Acceptance:
 
 ### Milestone 2 — Portable code and handle inspection protocols
 
-Status: in progress
+Status: **complete (2026-07-30).** Items 1–7 are all closed. The previous status
+was stale twice over: state/query descriptors and the SSR event/action collector
+landed with M3/M8, and `derived`/`ref`/`action` descriptors landed on 2026-07-30.
+
+Two decisions worth stating here rather than leaving only in code:
+
+- **Opacity is encoded by absence, not by a descriptor kind.** An opaque action
+  or query is one whose descriptor has **no `executable`**; `inspectHandle`
+  returns `undefined` for non-handles. A separate `"opaque"` kind was rejected
+  because it would give opacity two encodings.
+- **The conservative default is: no declared resume policy means no snapshot.**
+  A `bind` step without a `resume` option omits the key, the collector filters on
+  `step.resume !== undefined`, and the binding falls back to client activation.
+  This is a load-bearing safety property that previously lived only in code.
 
 Progress:
 

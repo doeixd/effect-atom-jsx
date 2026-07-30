@@ -417,7 +417,15 @@ type RoutedMetadataCarrier<P = unknown, Q = unknown, H = unknown, A = unknown, E
   readonly [RouteLoaderMetaSymbol]?: RouteLoaderMeta<A, E>;
 };
 
-type RouteDecoratedComponent<P = unknown, Q = unknown, H = unknown, A = unknown, E = unknown> = ComponentType<any, any, any, any, any> & RoutedMetadataCarrier<P, Q, H, A, E> & {
+/**
+ * The route decorations stamped directly onto a component value.
+ *
+ * This is the single declaration site for the string-keyed route decoration
+ * fields. `RouteDecorationFields` below must list every key of this type, and
+ * component wrappers copy the decorations by iterating that list — so adding a
+ * field here cannot silently be dropped by a wrapper.
+ */
+type RouteDecorationRecord<P = unknown, A = unknown, E = unknown> = {
   __routeLoader?: LoaderFn;
   __routeLoaderOptions?: LoaderOptions;
   __routeLoaderError?: LoaderErrorCases<any, any>;
@@ -427,6 +435,39 @@ type RouteDecoratedComponent<P = unknown, Q = unknown, H = unknown, A = unknown,
   __routeSitemapParams?: () => Effect.Effect<ReadonlyArray<any>>;
   __routeGuards?: ReadonlyArray<Effect.Effect<unknown, any, any>>;
 };
+
+/** Canonical, exhaustive list of the string-keyed route decoration fields. */
+export const RouteDecorationFields = [
+  "__routeLoader",
+  "__routeLoaderOptions",
+  "__routeLoaderError",
+  "__routeTitle",
+  "__routeMetaExtra",
+  "__routeTransition",
+  "__routeSitemapParams",
+  "__routeGuards",
+] as const satisfies ReadonlyArray<keyof RouteDecorationRecord>;
+
+/** Compile-time proof that `RouteDecorationFields` misses no decoration. */
+type _MissingRouteDecorationField = Exclude<
+  keyof RouteDecorationRecord,
+  typeof RouteDecorationFields[number]
+>;
+type _AssertNoMissingRouteDecorationField = [_MissingRouteDecorationField] extends [never] ? true
+  : { readonly __missingRouteDecorationFields: _MissingRouteDecorationField };
+const _assertRouteDecorationFieldsExhaustive: _AssertNoMissingRouteDecorationField = true;
+void _assertRouteDecorationFieldsExhaustive;
+
+/** Canonical, exhaustive list of the symbol-keyed route metadata carriers. */
+export const RouteDecorationSymbols = [
+  RouteMetaSymbol,
+  RouteLoaderMetaSymbol,
+] as const;
+
+type RouteDecoratedComponent<P = unknown, Q = unknown, H = unknown, A = unknown, E = unknown> =
+  & ComponentType<any, any, any, any, any>
+  & RoutedMetadataCarrier<P, Q, H, A, E>
+  & RouteDecorationRecord<P, A, E>;
 
 function pipeSelf<T>(self: T, fns: ReadonlyArray<(value: unknown) => unknown>): unknown {
   return fns.reduce<unknown>((acc, fn) => fn(acc), self);

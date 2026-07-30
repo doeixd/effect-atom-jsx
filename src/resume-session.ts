@@ -817,7 +817,7 @@ export function observeCommittedComponentBindings(
         bindingReactivityKey(componentId, name),
       );
     }
-    if (handle?.kind !== step.resume.kind) {
+    const mismatch = (): void => {
       recordFallbackDiagnostic(session, {
         code: "snapshot-handle-mismatch",
         componentId,
@@ -826,9 +826,12 @@ export function observeCommittedComponentBindings(
           ? `Binding "${componentId}/${name}" declared a state snapshot policy but did not produce a Component.state handle.`
           : `Binding "${componentId}/${name}" declared a query snapshot policy but did not produce a Component.query handle.`,
       });
-      continue;
-    }
+    };
     if (step.resume.kind === "state") {
+      if (handle === undefined || handle.kind !== "state") {
+        mismatch();
+        continue;
+      }
       try {
         component.bindings.push({
           kind: "state",
@@ -846,7 +849,11 @@ export function observeCommittedComponentBindings(
       }
       continue;
     }
-    if (handle.kind !== "query" || handle.executable === undefined) {
+    if (handle === undefined || handle.kind !== "query") {
+      mismatch();
+      continue;
+    }
+    if (handle.executable === undefined) {
       recordFallbackDiagnostic(session, {
         code: "opaque-query-executor",
         componentId,

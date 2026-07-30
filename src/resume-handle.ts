@@ -108,9 +108,64 @@ export interface QueryHandleInspection<A, E = unknown> {
   };
 }
 
+/**
+ * Read-only runtime capabilities published by a derived (computed) handle.
+ *
+ * Derived values are recomputed from their inputs on the client, so they are
+ * never snapshotted directly; the descriptor exists so that inspection is
+ * uniform across every setup handle kind.
+ */
+export interface DerivedHandleInspection<A> {
+  readonly kind: "derived";
+  readonly read: () => A;
+  readonly isDisposed: () => boolean;
+  /** Derived values are always recomputed, never restored from the wire. */
+  readonly recomputed: true;
+}
+
+/**
+ * Read-only runtime capabilities published by a component ref handle.
+ *
+ * Refs address host nodes and are therefore never portable: they always
+ * inspect as host-bound and require client re-binding.
+ */
+export interface RefHandleInspection<T> {
+  readonly kind: "ref";
+  readonly read: () => T | null;
+  readonly isDisposed: () => boolean;
+  /** Refs point at host objects and can never be serialized. */
+  readonly hostBound: true;
+}
+
+/**
+ * Read-only runtime capabilities published by a component action handle.
+ *
+ * `executable` is present only for portable action bodies; opaque action
+ * closures cannot be lazily reloaded and require fallback activation.
+ */
+export interface ActionHandleInspection<A = unknown, E = unknown> {
+  readonly kind: "action";
+  readonly isDisposed: () => boolean;
+  readonly executable?: Portable.AnyBoundCode;
+  /** Canonical semantic invalidation keys invalidated after success. */
+  readonly reactivityKeys: ReadonlyArray<string>;
+  readonly _A?: (_: never) => A;
+  readonly _E?: (_: never) => E;
+}
+
 export type HandleInspection<A = unknown, E = unknown> =
   | StateHandleInspection<A>
-  | QueryHandleInspection<A, E>;
+  | QueryHandleInspection<A, E>
+  | DerivedHandleInspection<A>
+  | RefHandleInspection<A>
+  | ActionHandleInspection<A, E>;
+
+/** Handle kinds that publish a synchronous readable value. */
+export type ReadableHandleInspection<A = unknown, E = unknown> =
+  | StateHandleInspection<A>
+  | QueryHandleInspection<A, E>
+  | DerivedHandleInspection<A>
+  | RefHandleInspection<A>;
 
 export interface InspectableHandle<A = unknown, E = unknown> {
   readonly [HandleInspectionTypeId]: () => HandleInspection<A, E>;
@@ -128,6 +183,24 @@ export interface InspectableQueryHandle<A = unknown, E = unknown>
   readonly [HandleKindTypeId]: "query";
 }
 
+export interface InspectableDerivedHandle<A = unknown>
+  extends InspectableHandle<A, never>
+{
+  readonly [HandleKindTypeId]: "derived";
+}
+
+export interface InspectableRefHandle<T = unknown>
+  extends InspectableHandle<T, never>
+{
+  readonly [HandleKindTypeId]: "ref";
+}
+
+export interface InspectableActionHandle<A = unknown, E = unknown>
+  extends InspectableHandle<A, E>
+{
+  readonly [HandleKindTypeId]: "action";
+}
+
 export function annotateHandle<Target extends object, A>(
   target: Target,
   inspection: StateHandleInspection<A>,
@@ -136,6 +209,18 @@ export function annotateHandle<Target extends object, A, E>(
   target: Target,
   inspection: QueryHandleInspection<A, E>,
 ): Target & InspectableQueryHandle<A, E>;
+export function annotateHandle<Target extends object, A>(
+  target: Target,
+  inspection: DerivedHandleInspection<A>,
+): Target & InspectableDerivedHandle<A>;
+export function annotateHandle<Target extends object, T>(
+  target: Target,
+  inspection: RefHandleInspection<T>,
+): Target & InspectableRefHandle<T>;
+export function annotateHandle<Target extends object, A, E>(
+  target: Target,
+  inspection: ActionHandleInspection<A, E>,
+): Target & InspectableActionHandle<A, E>;
 export function annotateHandle<Target extends object, A, E = unknown>(
   target: Target,
   inspection: HandleInspection<A, E>,
@@ -161,6 +246,15 @@ export function inspectHandle<A>(
 export function inspectHandle<A, E>(
   value: InspectableQueryHandle<A, E>,
 ): QueryHandleInspection<A, E>;
+export function inspectHandle<A>(
+  value: InspectableDerivedHandle<A>,
+): DerivedHandleInspection<A>;
+export function inspectHandle<T>(
+  value: InspectableRefHandle<T>,
+): RefHandleInspection<T>;
+export function inspectHandle<A, E>(
+  value: InspectableActionHandle<A, E>,
+): ActionHandleInspection<A, E>;
 export function inspectHandle<A, E>(
   value: InspectableHandle<A, E>,
 ): HandleInspection<A, E>;
