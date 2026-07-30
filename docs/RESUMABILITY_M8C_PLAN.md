@@ -1,8 +1,16 @@
 # Milestone 8c — Measurement and Non-Text Expression Widening
 
-Status: in progress — 8c.0 and 8c.1 are complete; the 8c.2 v4 schema,
-backwards-compatible collection, target scanner, and security fences are
-implemented, while installation patch strategies remain
+Status: **COMPLETE (2026-07-30).** All slices 8c.0–8c.8 have landed. The v4
+schema, scanner, fences, compiler directive seam, SSR registration seam, client
+attribute/class/style patch strategies, hardening, the Chromium proof, the
+post-widening measurement, and the diagnostics documentation are all done.
+
+914 source tests and 7/7 Chromium tests pass; `future/resumability` is **33/39**,
+with the remaining six being three M9 SPI specs and three M8d structural-target
+specs, both correctly deferred.
+
+**8c.7 returned GO**, so **M8d (structural expression targets) is unblocked**
+whenever it is scheduled.
 
 ## Goal
 
@@ -292,8 +300,8 @@ No-load, exact-once, disposal, and linear-payload invariants remain hard gates.
 
 ### 8c.2 — Ratify the Non-Text Target Protocol
 
-Status: in progress — wire format and scanner complete; installation patch
-strategy construction remains
+Status: complete (2026-07-30) — wire format, scanner, fences, and the client
+attribute/class/style patch strategies all landed.
 
 - Introduce a new manifest version whose expression entry has a discriminated
   target: text region, ordinary attribute, class string, or style property.
@@ -350,6 +358,9 @@ Exit: protocol schemas, backwards compatibility, scanner behavior, diagnostics,
 and size attribution are fully tested before compiler lowering uses them.
 
 ### 8c.3 — Establish the Compiler Directive Seam
+
+Status: complete (2026-07-30). See the `DQ-003` correction below — the ratified
+`use:` form proved unemittable and the seam is `ref`.
 
 - Teach the extraction transform to recognize `expr(...)` by JSX context.
 - Keep text lowering unchanged.
@@ -448,6 +459,8 @@ authored or duplicated.
 
 ### 8c.4 — Ordinary Attribute Vertical Slice
 
+Status: complete (2026-07-30).
+
 - Add the compiler-facing attribute-expression helper.
 - During SSR, evaluate once, apply the normal attribute helper, register the
   expression target, and attach the element marker.
@@ -488,6 +501,10 @@ Exit: a dormant attribute changes without setup/view execution and activation
 cannot double-own it.
 
 ### 8c.5 — Class and Style-Property Widening
+
+Status: complete (2026-07-30) — shipped with 8c.4 rather than after it: the
+registrar is kind-agnostic and the ordinary helpers already existed, so fencing
+class/style off would have cost more code than including them.
 
 - Add class-string support using the ordinary class helper.
 - Add one-style-property support using a shared style-property helper.
@@ -534,6 +551,11 @@ and lifecycle machinery; only patch strategy differs.
 
 ### 8c.6 — Race, Security, and Ownership Hardening
 
+Status: complete (2026-07-30) — all seven `hardening.spec.ts` specs went green
+the moment non-text installation worked, exactly as triage predicted (they shared
+one masking cause). Includes the tamper check that `installClient` previously
+missed.
+
 - Test malformed, missing, duplicate, unknown, and wrong-owner element markers.
 - Test target metadata tampering and forbidden names.
 - Test invalid expression output and schema decoding failures with recovery on
@@ -549,6 +571,49 @@ Exit: every failure is either a typed install error, a named diagnostic, or a
 documented activation fallback—never a silent patch to the wrong element.
 
 ### 8c.7 — Chromium Proof and Post-Widening Measurement
+
+Status: **complete (2026-07-30) — the gate returns GO.**
+
+**Chromium proof: 7/7 passing.** One browser test had to be corrected first — it
+asserted the literal ordinal identity `app/note-button.ts#$0`, which the M7
+content-hash change replaced. Browser tests are not in `npm test`, which is why
+the compiler slice updated five unit tests and missed this one. It now asserts
+the *shape* (`/^app\/note-button\.ts#\$[0-9a-z]+$/`) rather than the digest,
+so editing a marker's body no longer breaks a browser test.
+
+**Post-widening measurement (5 cold runs, 30 warm writes per kind, Chromium
+151.0.7922.34, Windows x64):**
+
+| Gate | Ceiling | Result | |
+| --- | --- | --- | --- |
+| density-24 dormant-vs-eager retained-heap gap | 204,800 B | **49,368 B** | PASS |
+| density-1→24 dormant growth vs eager growth | 1.10× | **0.6659×** | PASS |
+
+Dormant now grows **more slowly per expression than eager** (1,138 B/expr vs
+1,710 B/expr), which is the outcome the whole M8 bet was arguing for.
+
+**Payload cost of the widening**, which is the number this slice actually owed:
+
+| | raw | gzip |
+| --- | --- | --- |
+| density 1 | 511 → 523 B (+2.3%) | 303 → 314 B (+3.6%) |
+| density 24 | 8,186 → 8,474 B (+3.5%) | 766 → 777 B (+1.4%) |
+
+So attribute, class, and style-property targets cost **288 raw / 11 gzip bytes
+at density 24**. That is the honest price of 8c.
+
+**Do NOT read the heap numbers as a 73% improvement over the recorded baseline.**
+The baseline (`benchmarks/resumability/results/baseline-windows-chromium.json`)
+records **no measurement mode**; this run records
+`heapMeasurementMode: "jitless-forced-gc"`. Jitless removes the density-triggered
+V8 JIT code that M8c.1 found was being miscounted as expression slope — and it
+removes it from **both** arms, which is why eager's growth fell by a similar
+proportion. The gap and slope figures above are **within-run** comparisons and are
+therefore valid; the cross-run growth deltas are not. **Re-pin the recorded
+baseline from this run** so the next comparison is like-for-like.
+
+**Consequence: M8d is unblocked.** The gate said go, so keyed-list and
+branch-replacement targets may proceed when scheduled.
 
 - Extend the realistic fixture with text, attribute, class, and style-property
   expressions.
@@ -570,6 +635,24 @@ documented activation fallback—never a silent patch to the wrong element.
   - tighten payload/runtime cost before expanding the fence.
 
 ### 8c.8 — Documentation and Status Closure
+
+Status: **complete (2026-07-30).**
+
+`RESUMABILITY_GUIDE.md` gained a **Diagnostics reference** covering both
+families — all 9 collect codes and all 12 client codes — with the split stated
+explicitly, because knowing *which side* emitted a diagnostic is the first thing
+an operator needs: a collect diagnostic means *this was left out of the manifest
+and the page still works*; a client diagnostic means *something that should have
+resumed did not*.
+
+The audit gap that let `unsupported-expression-target` ship undocumented is also
+closed: `diagnostics.spec.ts` previously checked only client codes, so a
+server-side code could never fail it. It now audits collect codes as well, and
+asserts the two families are documented as distinct. Both new specs carry the
+same control as the original — a code that does not exist must **not** be found,
+or the check would pass against any non-empty document.
+
+With this, **Milestone 8c is complete.**
 
 - Update the resumability guide with supported target/value tables, examples,
   diagnostics, security fences, and the exact eager baseline definition.

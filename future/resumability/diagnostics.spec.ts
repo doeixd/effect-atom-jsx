@@ -419,4 +419,51 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     // found, or this spec would pass against any non-empty document.
     expect(guide.includes("no-such-diagnostic-code")).toBe(false);
   });
+
+  it("[M8c.8] documents every COLLECT diagnostic code it can emit", async () => {
+    const guide = await import("node:fs/promises").then((fs) =>
+      fs.readFile(
+        new URL("../../docs/RESUMABILITY_GUIDE.md", import.meta.url),
+        "utf8",
+      )
+    );
+    // The sibling spec above audits only *client* codes. That gap is how 8c.4's
+    // `unsupported-expression-target` shipped undocumented: it is emitted on the
+    // server during `Resume.collect`, so nothing checked it. Collect diagnostics
+    // are the contract that nothing opaque is silently serialized, which makes
+    // them at least as operator-facing as the client ones.
+    const codes = [
+      "opaque-event-handler",
+      "opaque-query-executor",
+      "unsupported-event-semantics",
+      "unsupported-query-semantics",
+      "unsupported-expression-output",
+      "unsupported-expression-target",
+      "missing-component-boundary",
+      "missing-expression-boundary",
+      "missing-snapshot-binding",
+    ];
+    const undocumented = codes.filter((code) => !guide.includes(code));
+    expect(undocumented).toEqual([]);
+    // Same control as above: the check must be capable of failing.
+    expect(guide.includes("no-such-collect-diagnostic")).toBe(false);
+  });
+
+  it("[M8c.8] the two diagnostic families are documented as distinct", async () => {
+    const guide = await import("node:fs/promises").then((fs) =>
+      fs.readFile(
+        new URL("../../docs/RESUMABILITY_GUIDE.md", import.meta.url),
+        "utf8",
+      )
+    );
+    // Knowing *which side* emitted a diagnostic is the first thing an operator
+    // needs: a collect diagnostic means "this was left out of the manifest, the
+    // page still works"; a client diagnostic means "something that should have
+    // resumed did not". Documenting the codes without that split would send
+    // someone hunting on the wrong side of the wire.
+    expect(guide).toMatch(/[Cc]ollect diagnostics/);
+    expect(guide).toMatch(/[Cc]lient diagnostics/);
+    expect(guide).toMatch(/Resume\.collect/);
+    expect(guide).toMatch(/Resume\.installClient/);
+  });
 });

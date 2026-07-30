@@ -57,7 +57,12 @@ test("compiler-extracted action resumes lazily with a generated identity", async
     };
     return Object.values(parsed.events ?? {}).map((entry) => entry.code.id);
   });
-  expect(manifestIds).toEqual(["app/note-button.ts#$0"]);
+  // The identity is content-hashed, not positional: the old `#$0` ordinal
+  // renumbered every later unassigned call as soon as an earlier one was added.
+  // Assert the shape and the owning module, not the digest — pinning the digest
+  // would make any edit to the marker's body a failing browser test.
+  expect(manifestIds).toHaveLength(1);
+  expect(manifestIds[0]).toMatch(/^app\/note-button\.ts#\$[0-9a-z]+$/);
 
   const button = page.getByTestId("extract-note");
   await expect(button).toBeVisible();

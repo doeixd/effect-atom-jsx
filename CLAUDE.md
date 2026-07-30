@@ -56,10 +56,11 @@ rejected alternative, the reason an approach failed.
 
 So do not write what the code or git history answers, the status of work in
 progress, what stops mattering when this task ends, or a memory already held
-(`recall` first when unsure). Write at an outcome, not mid-attempt.
+(`recall` first when unsure).
 
 A memory must stand alone months from now: name things specifically, resolve
-relative time and reference, one fact per memory.
+relative time and reference, one fact per memory. Point at the authoritative
+file or doc; do not restate it.
 
 Never record secrets, credentials, authentication material, or raw
 sensitive data.

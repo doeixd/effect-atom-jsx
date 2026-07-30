@@ -15,33 +15,47 @@ summary in this project mistook **277,208 bytes** for a failing gate — that
 figure is zero-expression installation measured against a *module-only page*, an
 attribution number, not a ceiling. Re-run after 8c.7's widening.
 
+**Updated 2026-07-30 (evening) — what landed today:** both `Element.ts`
+reactive-owner leaks (`on`, `observeEach`), M7's ordinal identity churn
+(content-hashed; the other two M7 defects were already fixed in-tree), the 8c.3
+compiler directive seam, and 8c.4 **plus** 8c.5 and 8c.6. Source suite is
+**914 passing**; `future/resumability` is **32/39**.
+
 **Partially done, and quietly incomplete:**
 
 | Milestone | What is actually left |
 | --- | --- |
 | M0 | SSR-order characterization for nested renders, exception paths, and request-context cleanup; the fallback contract is unrecorded; the intentionally-red E2E baseline was never added |
 | M2 | Only event/action descriptors exist — state, query, derived and ref handle descriptors are missing, as is SSR collector integration for them |
-| M7 | Three transform defects: hoist-placement TDZ, `this`/`arguments` escaping the module-closed check inside methods, and ordinal identity churn (`module#$0` renumbers when an earlier call is added) |
-| M8c.2 | Wire format and scanner are done; **installation still fails closed on every non-text target** |
+| M8c | **COMPLETE** — 8c.0–8c.8 all landed; 8c.7 returned GO |
 
-**Not started:** 8c.3–8c.8 (directive seam → attribute slice → class/style →
-hardening → Chromium proof and re-measure → docs); **M8d** structural targets
-(gated on 8c.7's go/no-go); M9 (deferred, and now blocked by `DQ-099`, with its
-item 2 separately blocked on M10 item 4); M10 beyond `extract.auto`; M11/M11b.
+**Not started:** **M8d** structural targets (keyed lists, branch replacement —
+gated on 8c.7's go/no-go); M9 (deferred, blocked by `DQ-099`, with item 2
+separately blocked on M10 item 4); M10 beyond `extract.auto`; M11/M11b.
 
-**Proven defects not yet fixed**, each with an executable spec already waiting:
+**Browser tests and the benchmark have both been re-run** (7/7 Chromium; both
+heap gates pass), and the recorded baseline is **re-pinned from the post-widening
+run**. Note the pre-jitless baseline is gone: cross-run *growth* comparisons
+against older numbers are invalid, since jitless-forced-gc strips V8 JIT code
+from both arms.
 
-1. `Element.Handle.on()` registers cleanup on the **reactive owner**, not the
-   ambient `Scope`, so listeners survive `dispose` and `Scope.close` on the
-   resume/reattach path. Fix first — every behaviour written before it lands
-   inherits it.
-2. `installClient` silently accepts a **tampered** manifest whose instance
-   carries a contradicting element marker.
-3. `DQ-099` — the validated-manifest memo is a process-global `WeakSet` keyed on
-   caller object identity, safe only because the decoder happens to return a copy.
+**Remaining known defects** (the two listener leaks and the `installClient`
+tamper gap are now fixed):
 
-**Suggested order:** (1) the listener leak, then (2) 8c.2's installation patch
-strategies — which converts the largest single block of red specs to green.
+1. `DQ-099` — the validated-manifest memo is a process-global `WeakSet` keyed on
+   caller object identity, safe only because the decoder happens to return a
+   copy. Blocking M9.
+2. `setAttr`/`setStyle` create bare `createEffect(...)` reactions tied to neither
+   an owner nor a `Scope`, so a `Style` attached through a scoped path keeps
+   recomputing after disposal (`DESIGN_IMPROVEMENT_NOTES.md` item 22b). Needs a
+   Scope-aware reaction primitive that does not exist yet.
+3. The expression attribute/style allowlist now exists in **three** copies
+   (runtime, schema, compiler); only two are compile-time linked.
+
+**Suggested order:** with 8c closed, the real choice is **M8d** (now permitted,
+small, extends what just shipped) versus **M11** (largest remaining, and the only
+thing that moves `future/streaming`'s 40 red specs). M0/M2's unfinished
+characterization is cheap and is a prerequisite for trusting either.
 
 Status: Milestones 0–7 and Milestone 8a–8b are implemented — the manual runtime protocol
 (Milestones 0–6 plus the exact-once boundary event handoff) and the

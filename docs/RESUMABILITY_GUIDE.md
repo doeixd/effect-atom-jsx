@@ -430,3 +430,53 @@ One-line comparison: pruning frameworks make a smart serializer send less;
 Affe makes serialization impossible without a declaration, sends addresses
 instead of code, and sends recompute instructions instead of values where it
 can.
+
+## Diagnostics reference
+
+Every diagnostic the protocol can hand an application, in one place. An operator
+who meets one of these in production should be able to find it here — that is
+the 8c.8 exit criterion, and `future/resumability/diagnostics.spec.ts` enforces
+it by reading this file.
+
+There are **two families**, and the distinction matters when you are debugging:
+
+- **Collect diagnostics** are emitted on the **server**, during
+  `Resume.collect(...)`. They mean *this thing could not be made resumable, so it
+  was left out of the manifest.* The page still renders and still works; it just
+  falls back to ordinary client behaviour for that piece. They are the contract
+  that nothing opaque is silently serialized.
+- **Client diagnostics** are emitted in the **browser**, during or after
+  `Resume.installClient(...)`. They mean *something that was supposed to resume
+  did not.* The runtime always fails toward a working page — falling back to
+  activation, or leaving SSR content in place — rather than toward a broken one.
+
+### Collect diagnostics (server, during `Resume.collect`)
+
+| Code | Meaning | Usual cause |
+| --- | --- | --- |
+| `opaque-event-handler` | A handler could not be addressed, so the event is not resumable. | An inline closure instead of `Resume.event(...)` over portable code. |
+| `opaque-query-executor` | A query's executor could not be addressed. | `Component.query(() => …)` with a plain thunk rather than `Portable.BoundCode`. |
+| `unsupported-event-semantics` | The event shape is outside the supported contract. | Handlers taking arguments; only the zero-argument contract is portable. |
+| `unsupported-query-semantics` | The query declares semantics the snapshot cannot express. | `retrySchedule` / `pollSchedule` — the query falls back to client-side execution. |
+| `unsupported-expression-output` | An expression produced a value the target cannot represent. | A structural value where a scalar is required; or `null`/`undefined` on a **text** target, which has no representation for absence (see `DQ-002`). |
+| `unsupported-expression-target` | The expression's target kind or name is not on the allowlist. | A fenced attribute (`href`, `onclick`), an unlisted style property, or a target kind with no patch strategy. Added by 8c.4; the served HTML omits the write entirely rather than emitting an unvalidated attribute. |
+| `missing-component-boundary` | An expression's owning component was dropped from the manifest. | The owner itself failed to serialize, so the expression is removed with it. |
+| `missing-expression-boundary` | An expression's SSR region could not be paired. | A text expression whose comment-pair region was not emitted. |
+| `missing-snapshot-binding` | A declared state binding produced no snapshot. | The binding's codec rejected the value, so the component stays dormant-incapable. |
+
+### Client diagnostics (browser, during/after `Resume.installClient`)
+
+| Code | Meaning | Usual cause |
+| --- | --- | --- |
+| `unknown-event-marker` | A DOM marker names an event the manifest does not contain. | Stale HTML against a newer manifest, or a tampered marker. Fails closed. |
+| `event-type-mismatch` | A marker's event type disagrees with the manifest entry. | Build skew, or tampering. |
+| `dispatch-resolution-failure` | The portable code for an event could not be loaded. | A missing or failed resolver entry; the chunk 404s or throws on import. |
+| `dispatch-execution-failure` | The loaded code ran and failed. | An application-level error inside the action itself. |
+| `event-handoff-failure` | An interaction could not be handed to its claiming owner. | The closest marker's boundary was disposed or failed mid-claim. |
+| `component-resumption-fallback` | Restoration failed, so the component was activated instead. | A snapshot that no longer decodes, or a failure inside the render callback — the region is rolled back to SSR content first, then mounted exactly once. |
+| `component-transition-mode-conflict` | An `activate()` joined an in-flight `resume()` (or vice versa) with a different mode. | Two callers racing one boundary. First-wins holds; the losing mode is reported rather than silently discarded. |
+| `component-query-refresh-failure` | A restored query's refresh failed. | The executor chunk failed to load, or the query itself errored. |
+| `expression-resolution-failure` | An expression's portable code could not be loaded. | Same causes as `dispatch-resolution-failure`, on the expression path. |
+| `expression-execution-failure` | An expression ran and failed, or produced an undecodable value. | An application error, or an encoded value the codec rejects. The last good DOM is kept and the next valid write recovers. |
+| `expression-patch-failure` | The value was computed but could not be written to the DOM. | The target element was removed, or ownership was lost between computation and write. |
+| `client-runtime-failure` | An unclassified failure inside the resume runtime. | Should be rare; treat an occurrence as a bug report rather than an expected condition. |

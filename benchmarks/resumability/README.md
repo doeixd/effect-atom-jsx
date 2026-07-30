@@ -126,3 +126,28 @@ fixed gap remains at or below 200 KB, the density-1-to-24 dormant growth remains
 at or below 110% of eager growth, and all deterministic lifecycle/network
 invariants remain hard gates. The unfavorable absolute result stays visible;
 the calibrated gates separate fixed protocol cost from per-expression scaling.
+
+## Baseline re-pinned 2026-07-30 (post-8c widening)
+
+The recorded baseline is now the **post-widening** run, taken after 8c.3–8c.6
+landed attribute, class, and style-property targets.
+
+**Why it was re-pinned, and what the old numbers do not mean.** The previous
+baseline recorded **no `heapMeasurementMode`**; this one records
+`jitless-forced-gc`. Jitless removes the density-triggered V8 JIT code that
+M8c.1 found was being miscounted as expression slope — and it removes it from
+**both** arms. So comparing *growth* figures across the two files is invalid, and
+will make the widening look like a large improvement that it is not. Only
+**within-run** figures (the dormant-vs-eager gap, and the slope ratio) are
+comparable across runs.
+
+8c.7 result on this baseline:
+
+| Gate | Ceiling | Result |
+| --- | --- | --- |
+| density-24 dormant-vs-eager retained-heap gap | 204,800 B | **49,368 B** |
+| density-1→24 dormant growth ÷ eager growth | 1.10× | **0.6659×** |
+
+Dormant grows **more slowly per expression than eager** (1,138 B/expr vs
+1,710 B/expr). The widening itself cost **288 raw / 11 gzip bytes at density 24**
+(8,186 → 8,474 raw; 766 → 777 gzip).
