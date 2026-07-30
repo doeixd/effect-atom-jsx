@@ -144,6 +144,16 @@ export interface ResumeSession {
   readonly expressions: Array<PendingExpression>;
   readonly diagnostics: Array<ResumeDiagnostic>;
   readonly observations: WeakMap<object, Readonly<Record<string, string>>>;
+  /**
+   * Handlers attached through the non-delegated branch of the runtime
+   * `addEventListener` ABI. The compiler's `$$name` convention only covers
+   * delegated events, so without this registry a portable handler on e.g.
+   * `blur` would leave no trace on the server element at all.
+   */
+  readonly directEventHandlers: WeakMap<
+    object,
+    Map<string, { readonly handler: unknown; readonly hasData: boolean }>
+  >;
   readonly componentIds: Map<unknown, string>;
   readonly renderedComponentIds: Set<string>;
   readonly componentBoundaryMarkers: Map<
@@ -196,6 +206,7 @@ export function makeResumeSession(): ResumeSession {
     expressions: [],
     diagnostics: [],
     observations: new WeakMap(),
+    directEventHandlers: new WeakMap(),
     componentIds: new Map(),
     renderedComponentIds: new Set(),
     componentBoundaryMarkers: new Map(),
@@ -992,6 +1003,39 @@ function flattenSetupSteps(
 }
 
 /**
+ * Record a handler attached through the non-delegated branch of the runtime
+ * `addEventListener` ABI so collection can see it.
+ *
+ * The compiler's `$$name` property convention is written only for delegated
+ * events, and `ServerElement.addEventListener` is a no-op, so a portable
+ * handler on a non-delegated event (`blur`, `focus`, `mouseenter`, custom
+ * events) would otherwise be collected nowhere and diagnosed nowhere.
+ *
+ * Off the collection path this is one `undefined` check and returns.
+ */
+export function observeDirectEventHandler(
+  target: object,
+  eventType: string,
+  handler: unknown,
+): void {
+  const session = activeSession;
+  if (session === undefined) return;
+  if (handler === undefined || handler === null) return;
+  let byType = session.directEventHandlers.get(target);
+  if (byType === undefined) {
+    byType = new Map();
+    session.directEventHandlers.set(target, byType);
+  }
+  if (byType.has(eventType)) return;
+  byType.set(
+    eventType,
+    Array.isArray(handler)
+      ? { handler: handler[0], hasData: true }
+      : { handler, hasData: false },
+  );
+}
+
+/**
  * Inspect the event properties emitted by the JSX compiler for one server
  * element. The no-session path is intentionally one branch and one shared
  * empty object.
@@ -1011,6 +1055,10 @@ export function observeServerEventTarget(
     : "unknown";
   const markers: Record<string, string> = {};
 
+  const observed: Array<
+    { readonly eventType: string; readonly handler: unknown; readonly hasData: boolean }
+  > = [];
+  const seenEventTypes = new Set<string>();
   for (const property of Object.getOwnPropertyNames(target)) {
     if (!property.startsWith("$$") || property.length <= 2) continue;
     if (
@@ -1022,10 +1070,28 @@ export function observeServerEventTarget(
     ) {
       continue;
     }
-
     const eventType = property.slice(2);
     const handler = record[property];
     if (handler === undefined || handler === null) continue;
+    seenEventTypes.add(eventType);
+    observed.push({
+      eventType,
+      handler,
+      hasData: Object.prototype.hasOwnProperty.call(target, `${property}Data`),
+    });
+  }
+  // Non-delegated handlers leave no `$$name` property, so they are read from
+  // the session-side registry instead. Delegated properties win on collision.
+  const direct = session.directEventHandlers.get(target);
+  if (direct !== undefined) {
+    for (const [eventType, entry] of direct) {
+      if (seenEventTypes.has(eventType)) continue;
+      seenEventTypes.add(eventType);
+      observed.push({ eventType, handler: entry.handler, hasData: entry.hasData });
+    }
+  }
+
+  for (const { eventType, handler, hasData } of observed) {
     if (!/^[a-z][a-z0-9-]*$/.test(eventType)) {
       recordFallbackDiagnostic(session, {
         code: "invalid-event-type",
@@ -1101,8 +1167,7 @@ export function observeServerEventTarget(
       continue;
     }
 
-    const dataProperty = `${property}Data`;
-    if (Object.prototype.hasOwnProperty.call(target, dataProperty)) {
+    if (hasData) {
       recordFallbackDiagnostic(session, {
         code: "event-data-unsupported",
         eventType,

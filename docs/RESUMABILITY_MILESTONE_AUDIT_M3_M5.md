@@ -160,3 +160,48 @@ the signal with the decoded value **before** `Hydration.hydrateEffect` runs, and
 renders under `options.runtime`'s registry. So the `Registry.make()` is
 **write-only scratch**, and the hydrate step is in practice a key-set *validator*
 rather than the value transport the item describes.
+
+---
+
+## Resolution (2026-07-30) — all three findings fixed
+
+| Finding | Outcome |
+| --- | --- |
+| **M3 F1** non-delegated events silently uncollected | **Fixed by collecting them.** A session-level `directEventHandlers` WeakMap plus `observeDirectEventHandler`, called *after* the `if (delegate) { … return }` block so the delegated fast path and the compiler ABI are untouched. No new diagnostic code was needed — the existing `opaque-event-handler` / `event-data-unsupported` / `invalid-event-type` codes now fire on a path where they previously could not. |
+| **M4** non-atomic install claim | **Fixed structurally.** The claim is minted outside the yielding work and check-and-set now happen with no yield between them, so the invariant is structural rather than guarded — the same move that closed `DQ-099`. `Effect.onExit` releases the claim on failure or interrupt, idempotently and only if the map still holds *this* token. |
+| **M5 #1** `addressable` terminality unenforced | **Fixed by preservation.** `registerComponentMetadataCopier` in `Component.ts` is drained by `copyComponentMetadata`, the single choke point every wrapper already funnels through; `Resume.ts` registers a copier that re-stamps both the symbol and the WeakMap entry. Ordering no longer matters. |
+
+### Two things learned that generalise
+
+**The M5 finding was confirmed, not contested.** The existing test
+`"does not carry addressability through a later component wrapper"` **encoded the
+defect as intended behaviour** — it asserted the loss by name. It is replaced by
+`"carries addressability through wrappers applied after addressable"`, plus a
+negative control that a component which never had an activation still does not
+get one. Both fail with the copier disabled.
+
+**A plain concurrency assertion does not catch a claim race here.**
+`Effect.all([install, install], { concurrency: "unbounded" })` passes against the
+*old* buggy code, because `installClient` has no true async boundary with a fake
+root, so the fibers never interleave. What has teeth is forcing the interleave: a
+`RacingRoot` whose `querySelectorAll` runs the second install from inside the
+first one's scan — precisely the old check/claim gap. Both fixes were verified by
+reverting them and confirming the new tests fail.
+
+This also calibrates the M4 finding: the defect is real, but the audit's
+"literally `Effect.all([installClient(a), installClient(a)])`" repro is only
+exploitable when something in the install path genuinely suspends (a real DOM or
+async resolver). Harder to hit than stated, not less real.
+
+### Still open from these audits
+
+- **`Element.on` handlers remain invisible to collection**, and that is *narrower
+  and separate* from M3 F1: `Element.Handle` is a **virtual** handle with its own
+  map and manual `emit`, backed by no DOM or server element, so there is no node
+  to mark. Making it collectable is a design decision about how a virtual handle
+  maps to an SSR target, not a patch.
+- **The type-level half of the M5 fix is not done.** Runtime addressability now
+  survives wrappers, but `AddressableComponent`'s brand is not carried through the
+  wrapper's return type, so `Resume.activationOf(Wrapped)` still needs a cast.
+  Carrying it would mean extending `PreserveRouteMetadata`.
+- M3 F2–F5 and M5 #2–#7 are unaddressed; see the sections above.

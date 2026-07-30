@@ -18,6 +18,7 @@ import {
   withComponentScope,
 } from "./component-scope.js";
 import {
+  observeDirectEventHandler,
   observeRenderedExpression,
   observeRenderedExpressionTarget,
   observeServerEventTarget,
@@ -713,6 +714,13 @@ export function addEventListener(
     }
     return;
   }
+
+  // The delegated branch above records `$$name` on the element, which is what
+  // SSR collection reads. Non-delegated handlers have no such trace — and
+  // `ServerElement.addEventListener` is a no-op — so they are registered with
+  // the collection session explicitly. Off the collection path this is a
+  // single `undefined` check.
+  observeDirectEventHandler(node, name, handler);
 
   if (Array.isArray(handler)) {
     const [listener, data] = handler;

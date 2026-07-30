@@ -940,6 +940,134 @@ describe("Resume client adapter", () => {
     await runtime.dispose();
   });
 
+  it("claims the root atomically so concurrent installs cannot both install", async () => {
+    // The duplicate guard used to read the registry before the boundary/marker
+    // scans and write its token only after the listeners were attached, so two
+    // installs on one root both passed the guard and every interaction
+    // dispatched twice. The claim is now taken in the same tick as the check.
+    const result = serverCollection("client-save");
+    class RacingRoot extends FakeRoot {
+      onScan: (() => void) | undefined = undefined;
+      clickListeners = 0;
+      override querySelectorAll(selector: string): FakeElement[] {
+        const onScan = this.onScan;
+        this.onScan = undefined;
+        onScan?.();
+        return super.querySelectorAll(selector);
+      }
+      override addEventListener(
+        type: string,
+        listener: EventListener,
+        options?: boolean | AddEventListenerOptions,
+      ): void {
+        if (type === "click") this.clickListeners += 1;
+        super.addEventListener(type, listener, options);
+      }
+      override removeEventListener(
+        type: string,
+        listener: EventListener,
+        options?: boolean | EventListenerOptions,
+      ): void {
+        if (type === "click") this.clickListeners -= 1;
+        super.removeEventListener(type, listener, options);
+      }
+    }
+    const root = new RacingRoot();
+    const target = root.element({ "data-af-event-click": "e0" });
+    const saves: string[] = [];
+    const runtime = ManagedRuntime.make(
+      Layer.succeed(SaveService, {
+        save: (label) =>
+          Effect.sync(() => {
+            saves.push(label);
+          }),
+      }),
+    );
+    const options = {
+      root: root as unknown as Document,
+      manifest: result.manifest,
+      expectedBuildId: TestBuildId,
+      resolverEntries: {
+        [ClientSaveCode.id]: ClientSaveCode,
+      },
+      runtime,
+    };
+
+    // Genuine concurrency: both fibers are started before either completes.
+    const attempt = Resume.installClient(options).pipe(
+      Effect.map((installation) => ({ ok: true, installation }) as const),
+      Effect.catch((error) => Effect.succeed({ ok: false, error } as const)),
+    );
+    const outcomes = await Effect.runPromise(
+      Effect.all([attempt, attempt], { concurrency: "unbounded" }),
+    );
+    const installed = outcomes.flatMap((outcome) =>
+      outcome.ok ? [outcome.installation] : []
+    );
+    const rejected = outcomes.flatMap((outcome) =>
+      outcome.ok ? [] : [outcome.error]
+    );
+    expect(installed.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    expect(rejected[0]?._tag).toBe("ResumeDuplicateClientInstallationError");
+
+    // And with the interleaving forced exactly into the old check/claim gap:
+    // a second install started from inside the first install's DOM scan.
+    let interleaved: unknown;
+    root.onScan = () => {
+      interleaved = Effect.runSync(
+        Resume.installClient(options).pipe(Effect.flip),
+      );
+    };
+    await Effect.runPromise(installed[0]!.dispose);
+    expect(root.clickListeners).toBe(0);
+    const reinstalled = Effect.runSync(Resume.installClient(options));
+    expect((interleaved as { readonly _tag: string })._tag).toBe(
+      "ResumeDuplicateClientInstallationError",
+    );
+    expect(root.clickListeners).toBe(1);
+
+    root.dispatch("click", target as unknown as FakeElement);
+    await vi.waitFor(() => {
+      expect(reinstalled.pending()).toBe(0);
+      expect(saves).toEqual(["client-save"]);
+    });
+
+    await Effect.runPromise(reinstalled.dispose);
+    await runtime.dispose();
+  });
+
+  it("releases the root claim when installation fails after claiming it", async () => {
+    const result = serverCollection();
+    const { root, domRoot } = clientRoot();
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const options = {
+      root: domRoot,
+      manifest: result.manifest,
+      expectedBuildId: TestBuildId,
+      resolverEntries: {
+        [ClientSaveCode.id]: ClientSaveCode,
+      },
+      runtime,
+    };
+    // Fails during marker validation, i.e. after the root has been claimed.
+    const failed = Effect.runSync(
+      Resume.installClient({ ...options, manifest: {
+        ...result.manifest,
+        events: {},
+      } }).pipe(Effect.flip),
+    );
+    expect(failed._tag).toBe("ResumeUnknownEventMarkerError");
+    expect(root.listensInCapture("click")).toBe(false);
+
+    // A failed install must not leave the root permanently unusable.
+    const installation = Effect.runSync(Resume.installClient(options));
+    expect(root.listensInCapture("click")).toBe(true);
+
+    await Effect.runPromise(installation.dispose);
+    await runtime.dispose();
+  });
+
   it("releases a scoped client installation with its caller Scope", async () => {
     const result = serverCollection();
     const { root, domRoot } = clientRoot();
@@ -1450,9 +1578,17 @@ describe("Resume state binding restoration", () => {
     ]);
   });
 
-  it("does not carry addressability through a later component wrapper", () => {
+  it("carries addressability through wrappers applied after addressable", () => {
+    // This used to assert the opposite: a wrapper applied after `addressable`
+    // dropped the activation, and the boundary shipped dormant with no
+    // diagnostic and failed permanently on the first click. `addressable` being
+    // terminal was convention only, so wrapper metadata copying now preserves
+    // the activation and the ordering no longer matters.
     const Props = Schema.Struct({
       label: Schema.String,
+    });
+    const slots = View.Slots.define({
+      root: { capability: Element.Capability.Container },
     });
     const Base = Component.make(
       Component.propsSchema(Props),
@@ -1466,16 +1602,69 @@ describe("Resume state binding restoration", () => {
         props: Props,
       }),
     );
-    const WrappedTooLate = Base.pipe(
-      Component.withDefinition({ name: "WrappedTooLate" }),
+    const wrapped = {
+      definition: Base.pipe(Component.withDefinition({ name: "WrappedLate" })),
+      slots: Base.pipe(Component.withSlots(slots)),
+    };
+
+    for (const [name, Wrapped] of Object.entries(wrapped)) {
+      const scope = Scope.makeUnsafe();
+      const result = collect(() =>
+        renderToString(() =>
+          Effect.runSync(
+            Component.renderEffect(Wrapped as typeof Base, {
+              label: "hello",
+            }).pipe(Scope.provide(scope)),
+          ),
+        ),
+      );
+      Effect.runSync(Scope.close(scope, Exit.void));
+
+      expect(
+        Resume.activationOf(Wrapped as typeof Base).id,
+        name,
+      ).toBe("test.resume.wrapper-order");
+      expect(result.manifest.version, name).toBe(2);
+      expect(result.manifest, name).toMatchObject({
+        components: {
+          c0: {
+            activation: {
+              id: "test.resume.wrapper-order",
+              captures: { label: "hello" },
+            },
+          },
+        },
+      });
+    }
+  });
+
+  it("does not invent an activation for a component that never had one", () => {
+    const slots = View.Slots.define({
+      root: { capability: Element.Capability.Container },
+    });
+    const Plain = Component.make(
+      Component.props<{ readonly label: string }>(),
+      Component.require<never>(),
+      ({ label }) => Effect.succeed({ label }),
+      (_props, bindings) => bindings.label,
+    ).pipe(
+      Component.withSlots(slots),
+      Component.withDefinition({ name: "PlainWrapped" }),
     );
+
+    expect(
+      (Plain as unknown as Record<symbol, unknown>)[
+        Resume.ComponentActivationTypeId
+      ],
+    ).toBeUndefined();
+
     const scope = Scope.makeUnsafe();
     const result = collect(() =>
       renderToString(() =>
         Effect.runSync(
-          Component.renderEffect(WrappedTooLate, {
-            label: "hello",
-          }).pipe(Scope.provide(scope)),
+          Component.renderEffect(Plain, { label: "hello" }).pipe(
+            Scope.provide(scope),
+          ),
         ),
       ),
     );
@@ -6545,5 +6734,130 @@ describe("Milestone 8c non-text expression targets", () => {
 
     await Effect.runPromise(installation.dispose);
     await runtime.dispose();
+  });
+});
+
+describe("Resume.collect — non-delegated (direct) event handlers", () => {
+  /**
+   * Deliberately omits the `delegate` argument so the runtime default
+   * (`delegate = false`) is exercised. The delegated path writes `$$name` on
+   * the element; this one writes nothing, which is what F1 of the M3 audit
+   * found to be silently uncollected.
+   */
+  function makeDirectElement(
+    eventType: string,
+    handler: RuntimeEventHandler,
+  ): Element {
+    const element = template("<button>Save")();
+    addEventListener(element, eventType, handler);
+    return element;
+  }
+
+  it("collects a portable handler on a non-delegated event", () => {
+    const action = makePortableAction();
+    const result = collect(() =>
+      renderToString(() => makeDirectElement("blur", Resume.event(action))),
+    );
+
+    expect(result.html).toBe('<button data-af-event-blur="e0">Save</button>');
+    expect(result.diagnostics).toEqual([]);
+    expect(Object.keys(result.manifest.events)).toEqual(["e0"]);
+    expect(Object.values(result.manifest.events)[0]).toMatchObject({
+      type: "blur",
+      invocation: "deferred-no-args",
+    });
+  });
+
+  it("collects a portable handler on a custom non-delegated event", () => {
+    const action = makePortableAction();
+    const result = collect(() =>
+      renderToString(() =>
+        makeDirectElement("mouseenter", Resume.event(action))
+      ),
+    );
+
+    expect(result.html).toBe(
+      '<button data-af-event-mouseenter="e0">Save</button>',
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(Object.values(result.manifest.events)[0]).toMatchObject({
+      type: "mouseenter",
+    });
+  });
+
+  it("diagnoses an opaque handler on a non-delegated event instead of dropping it silently", () => {
+    const opaque = Effect.runSync(Component.action(() => Effect.void));
+    const result = collect(() =>
+      renderToString(() => makeDirectElement("blur", opaque)),
+    );
+
+    expect(result.html).toBe("<button>Save</button>");
+    expect(result.manifest.events).toEqual({});
+    expect(result.diagnostics).toMatchObject([
+      { code: "opaque-event-handler", eventType: "blur", element: "button" },
+    ]);
+  });
+
+  it("diagnoses compiler-bound event data on a non-delegated event", () => {
+    const action = makePortableAction();
+    const result = collect(() =>
+      renderToString(() =>
+        makeDirectElement("blur", [
+          Resume.event(action) as unknown as (
+            data: unknown,
+            event: Event,
+          ) => unknown,
+          "payload",
+        ])
+      ),
+    );
+
+    expect(result.html).toBe("<button>Save</button>");
+    expect(result.manifest.events).toEqual({});
+    expect(result.diagnostics).toMatchObject([
+      { code: "event-data-unsupported", eventType: "blur" },
+    ]);
+  });
+
+  it("diagnoses a non-delegated event type the marker format cannot represent", () => {
+    const action = makePortableAction();
+    const result = collect(() =>
+      renderToString(() =>
+        makeDirectElement("DOMContentLoaded", Resume.event(action))
+      ),
+    );
+
+    expect(result.manifest.events).toEqual({});
+    expect(result.diagnostics).toMatchObject([
+      { code: "invalid-event-type", eventType: "DOMContentLoaded" },
+    ]);
+  });
+
+  it("keeps delegated and non-delegated handlers on one element distinct", () => {
+    const result = collect(() =>
+      renderToString(() => {
+        const element = template("<button>Save")();
+        addEventListener(
+          element,
+          "click",
+          Resume.event(makePortableAction("Click")),
+          true,
+        );
+        addEventListener(
+          element,
+          "blur",
+          Resume.event(makePortableAction("Blur")),
+        );
+        return element;
+      }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.html).toContain('data-af-event-click="e0"');
+    expect(result.html).toContain('data-af-event-blur="e1"');
+    expect(Object.keys(result.manifest.events)).toEqual(["e0", "e1"]);
+    const [first, second] = Object.values(result.manifest.events);
+    expect(first).toMatchObject({ type: "click" });
+    expect(second).toMatchObject({ type: "blur" });
   });
 });

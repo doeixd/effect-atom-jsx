@@ -1372,15 +1372,32 @@ export function addressable<Props, EncodedProps>(
       props: options.props as Schema.Codec<Component.PropsOf<C>, EncodedProps>,
       component,
     });
-    registerComponentActivation(component, activation);
-    Object.defineProperty(component, ComponentActivationTypeId, {
-      configurable: true,
-      enumerable: false,
-      value: activation,
-    });
+    stampComponentActivation(component, activation);
     return component as AddressableComponent<C, EncodedProps>;
   };
 }
+
+function stampComponentActivation(component: object, activation: any): void {
+  registerComponentActivation(component, activation);
+  Object.defineProperty(component, ComponentActivationTypeId, {
+    configurable: true,
+    enumerable: false,
+    value: activation,
+  });
+}
+
+// `addressable` used to be terminal by convention only: component wrappers such
+// as `Component.withSlots` build a new component object, which silently dropped
+// both the activation symbol and its registry entry, shipping a dormant
+// boundary that failed on the first click. Preserving the activation across
+// wrappers makes the ordering irrelevant rather than merely diagnosable.
+Component.registerComponentMetadataCopier((source, target) => {
+  const activation = (source as unknown as Record<symbol, unknown>)[
+    ComponentActivationTypeId
+  ];
+  if (activation === undefined) return;
+  stampComponentActivation(target, activation);
+});
 
 export function activationOf<
   C extends Component.Component<any, any, any, any, any>,
@@ -3795,6 +3812,39 @@ function mountActivatedComponent<
 export function installClient<R, ER>(
   options: ClientInstallOptions<R, ER>,
 ): Effect.Effect<ClientInstallation, ClientInstallError> {
+  return Effect.suspend(() => {
+    // The root claim is made synchronously, in the same tick as the duplicate
+    // check, so two concurrent installs on one root can never both pass the
+    // guard. If installation subsequently fails or is interrupted, the claim
+    // is released so the root does not become permanently unusable.
+    const installationToken = Symbol();
+    let claimed = false;
+    const releaseClaim = () => {
+      if (!claimed) return;
+      claimed = false;
+      if (activeClientInstallations.get(options.root) === installationToken) {
+        activeClientInstallations.delete(options.root);
+      }
+    };
+    return installClientClaimed(options, installationToken, () => {
+      if (activeClientInstallations.has(options.root)) return false;
+      activeClientInstallations.set(options.root, installationToken);
+      claimed = true;
+      return true;
+    }).pipe(
+      Effect.onExit((exit) =>
+        Exit.isSuccess(exit) ? Effect.void : Effect.sync(releaseClaim)
+      ),
+      Effect.withSpan("Resume.installClient"),
+    );
+  });
+}
+
+function installClientClaimed<R, ER>(
+  options: ClientInstallOptions<R, ER>,
+  installationToken: symbol,
+  claimRoot: () => boolean,
+): Effect.Effect<ClientInstallation, ClientInstallError> {
   return Effect.gen(function* () {
     const expectedBuildId = yield* decodeBuildId(options.expectedBuildId);
     const manifest = yield* validateManifestValue(
@@ -3808,7 +3858,7 @@ export function installClient<R, ER>(
         message: "The resume manifest belongs to a different client build.",
       });
     }
-    if (activeClientInstallations.has(options.root)) {
+    if (!claimRoot()) {
       return yield* new ResumeDuplicateClientInstallationError({
         message:
           "This DOM root already has an active resumability installation. Dispose it before installing another.",
@@ -3863,7 +3913,6 @@ export function installClient<R, ER>(
     return yield* Effect.try({
       try: () => {
         let disposed = false;
-        const installationToken = Symbol();
         const fibers = new Set<Fiber.Fiber<unknown, unknown>>();
         const processed = new WeakMap<Event, Set<string>>();
         const claimedInteractions = new WeakSet<Event>();
@@ -4916,8 +4965,6 @@ export function installClient<R, ER>(
             throw error;
           }
         }
-        activeClientInstallations.set(options.root, installationToken);
-
         interface WritableBindingTarget {
           readonly componentId: ComponentId;
           readonly binding: BindingName;
@@ -5179,7 +5226,7 @@ export function installClient<R, ER>(
           message: `Resume event listener installation failed: ${String(error)}`,
         }),
     });
-  }).pipe(Effect.withSpan("Resume.installClient"));
+  });
 }
 
 /**

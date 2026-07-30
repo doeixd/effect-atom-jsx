@@ -2106,11 +2106,45 @@ function copySlotContract(
   }
 }
 
+/**
+ * Metadata stamped onto a component *value* by another module (rather than
+ * carried in `InternalComponent`) which every component wrapper must preserve.
+ *
+ * This is the single registration site for that kind of metadata. Wrappers
+ * build a fresh component object and copy metadata through
+ * `copyComponentMetadata`, so any subsystem that stamps a component — e.g.
+ * `Resume.addressable`, which stamps a non-enumerable activation symbol and a
+ * module-private WeakMap entry — registers a copier here instead of relying on
+ * an unenforceable "must be applied last" convention.
+ */
+const componentMetadataCopiers: Array<
+  (
+    source: Component<any, any, any, any, any>,
+    target: Component<any, any, any, any, any>,
+  ) => void
+> = [];
+
+/**
+ * Register a copier that carries externally stamped component metadata across
+ * wrappers such as `withSlots`, `withBehavior`, and the route combinators.
+ */
+export function registerComponentMetadataCopier(
+  copy: (
+    source: Component<any, any, any, any, any>,
+    target: Component<any, any, any, any, any>,
+  ) => void,
+): void {
+  componentMetadataCopiers.push(copy);
+}
+
 function copyComponentMetadata(
   source: Component<any, any, any, any, any>,
   target: Component<any, any, any, any, any>,
 ): void {
   copySlotContract(source, target);
+  for (const copy of componentMetadataCopiers) {
+    copy(source, target);
+  }
 }
 
 function copyRouteDecorations(
