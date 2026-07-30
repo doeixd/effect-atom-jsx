@@ -230,17 +230,26 @@ describe("[SEC/M8c] Resume manifest boundary", () => {
   });
 
   it("re-validates a manifest object that was mutated after it passed validation", async () => {
-    // GREEN, but green by accident, which is why it is pinned here.
+    // GREEN, and as of 2026-07-30 green *by construction* rather than by
+    // accident. Keep it: it pins the invariant that makes it so.
     //
-    // `Resume.ts` memoizes validated manifests in a process-global
-    // `WeakSet<object>` and short-circuits `validateManifestValue` on identity
-    // *before* re-running the schema — a textbook time-of-check/time-of-use
-    // shape at the one boundary this whole family of errors exists to defend,
-    // and a process-global one at that. It is currently harmless only because
-    // `Schema.decodeUnknownEffect` returns a *copy*, so the object that gets
-    // remembered is never the caller's object. The day anyone makes that decode
-    // identity-preserving "for performance", this spec goes red and the hole
-    // opens. It is worth keeping exactly for that day.
+    // `Resume.ts` memoizes validated manifests and short-circuits
+    // `validateManifestValue` on identity before re-running the schema — a
+    // time-of-check/time-of-use shape at the one boundary this whole family of
+    // errors exists to defend. It used to be harmless *only* because
+    // `Schema.decodeUnknownEffect` happens to return a copy, so the remembered
+    // object was never the caller's (`DQ-099`).
+    //
+    // That dependence is gone. Memo membership is now granted **last**, only
+    // after the graph is deeply frozen, so "validated" implies "immutable" and
+    // validate-then-mutate-then-reuse is unrepresentable — including under an
+    // identity-preserving decoder.
+    //
+    // Note what was rejected: making the brand an own `Symbol` property, the
+    // literal reading of `DQ-099`'s recommendation, is **strictly weaker** than
+    // the private `WeakSet` it would replace, because
+    // `Object.getOwnPropertySymbols` makes such a brand forgeable onto any
+    // object. The type is branded; the runtime witness stays unforgeable.
     const Resume = await fromSrc("Resume", "installClient");
     const { ManagedRuntime, Layer } = await import("effect");
 

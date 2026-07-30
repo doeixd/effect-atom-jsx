@@ -1,9 +1,17 @@
 import * as babel from "@babel/core";
 import { describe, expect, it } from "vitest";
 import resumeExtractPlugin, {
+  expressionTargetAllowlists,
   type ResumeExtractEntry,
   type ResumeExtractOptions,
 } from "../compiler/resume-extract-plugin.js";
+import {
+  ExpressionAttributeNames,
+  ExpressionCustomStylePropertyPattern,
+  ExpressionNamedStylePropertyNames,
+  isExpressionAttributeName,
+  isExpressionStylePropertyName,
+} from "../resume-expression.js";
 import { expr, extract } from "../portable-extract.js";
 import { Effect, Schema } from "effect";
 
@@ -1325,5 +1333,59 @@ export const view = () => {
   it("produces identical output across repeated builds", () => {
     const body = `<div title={${exprCall("k0")}} class={${exprCall("k1")}} />`;
     expect(transformJsx(body)).toBe(transformJsx(body));
+  });
+});
+
+describe("resume-extract plugin allowlist parity", () => {
+  // 8c.3/8c.4 left the expression target allowlist in three places: the
+  // runtime source of truth (`resume-expression.ts`), the branded wire schemas
+  // (`Resume.ts`, linked to it at compile time), and the Babel plugin's
+  // deliberate build-time duplicate. The plugin copy is the only unlinked one,
+  // because a real import would pull `effect` and the reactivity runtime into
+  // the published plugin -- so it is checked here instead. A widening that
+  // touches only one side fails this test rather than shipping a compiler that
+  // emits targets the wire rejects (or, worse, rejects targets the wire
+  // accepts).
+  it("matches resume-expression.ts exactly", () => {
+    expect([...expressionTargetAllowlists.attributes].sort()).toEqual(
+      [...ExpressionAttributeNames].sort(),
+    );
+    expect([...expressionTargetAllowlists.styleProperties].sort()).toEqual(
+      [...ExpressionNamedStylePropertyNames].sort(),
+    );
+    expect(expressionTargetAllowlists.customStylePropertyPattern.source).toBe(
+      ExpressionCustomStylePropertyPattern.source,
+    );
+    expect(expressionTargetAllowlists.customStylePropertyPattern.flags).toBe(
+      ExpressionCustomStylePropertyPattern.flags,
+    );
+  });
+
+  it("agrees with the runtime predicates on every allowlisted name", () => {
+    for (const name of expressionTargetAllowlists.attributes) {
+      expect(isExpressionAttributeName(name)).toBe(true);
+    }
+    for (const name of expressionTargetAllowlists.styleProperties) {
+      expect(isExpressionStylePropertyName(name)).toBe(true);
+    }
+    // NEGATIVE CONTROL: a name neither side allows.
+    expect(isExpressionAttributeName("href")).toBe(false);
+    expect(expressionTargetAllowlists.attributes.has("href")).toBe(false);
+  });
+
+  it("keeps the plugin free of value imports", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile(
+      new URL("../compiler/resume-extract-plugin.ts", import.meta.url),
+      "utf8",
+    );
+    // The parity check above is only *necessary* because the plugin imports
+    // nothing but Babel types. If that ever stops being true, prefer a real
+    // import over the duplicate.
+    const imports = source.match(/^import .*$/gm) ?? [];
+    expect(imports.length).toBeGreaterThan(0);
+    for (const statement of imports) {
+      expect(statement.startsWith("import type ")).toBe(true);
+    }
   });
 });

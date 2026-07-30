@@ -1,6 +1,7 @@
 import { Effect, Exit, Scope } from "effect";
 import { describe, expect, it } from "vitest";
 import * as Element from "../Element.js";
+import { createRoot, createSignal, flush, onCleanup } from "../api.js";
 
 describe("Element", () => {
   it("makes text inputs focusable at runtime", () => {
@@ -191,5 +192,182 @@ describe("Element.collection observeEach scope ownership", () => {
     Effect.runSync(Scope.close(right, Exit.void));
     items.set([Element.focusable()]);
     expect(hits).toEqual(["left", "right", "right"]);
+  });
+});
+
+// ─── setAttr / setStyle reaction ownership ───────────────────────────────────
+//
+// These count *recomputations*, not final values. A leaked reaction leaves
+// plausible-looking final state — it is only visible as extra recomputes after
+// the owning lifetime ended. See DESIGN_IMPROVEMENT_NOTES item 22(b).
+
+describe("Element setAttr/setStyle reaction ownership", () => {
+  const runIn = <A>(scope: Scope.Scope, effect: Effect.Effect<A, never, Scope.Scope>): A =>
+    Effect.runSync(Effect.provideService(effect, Scope.Scope, scope));
+
+  it("stops recomputing a reactive attr after the owning scope closes", () => {
+    const target = Element.interactive();
+    const [count, setCount] = createSignal(0);
+    let recomputes = 0;
+
+    const scope = Scope.makeUnsafe();
+    runIn(scope, target.setAttr("data-count", () => {
+      recomputes += 1;
+      return count();
+    }));
+    expect(recomputes).toBe(1);
+
+    setCount(1);
+
+    flush();
+    expect(recomputes).toBe(2);
+    expect(target.getAttr("data-count")).toBe(1);
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+    setCount(2);
+    flush();
+    setCount(3);
+    flush();
+    expect(recomputes).toBe(2);
+    expect(target.getAttr("data-count")).toBe(1);
+  });
+
+  it("stops recomputing a reactive style after the owning scope closes", () => {
+    const target = Element.interactive();
+    const [width, setWidth] = createSignal(1);
+    let recomputes = 0;
+
+    const scope = Scope.makeUnsafe();
+    runIn(scope, target.setStyle("width", () => {
+      recomputes += 1;
+      return width();
+    }));
+    expect(recomputes).toBe(1);
+
+    setWidth(2);
+
+    flush();
+    expect(recomputes).toBe(2);
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+    setWidth(3);
+    flush();
+    expect(recomputes).toBe(2);
+    expect(target.getStyle("width")).toBe(2);
+  });
+
+  it("still tracks reactively and disposes with the reactive owner when no scope is present", () => {
+    const target = Element.interactive();
+    const [count, setCount] = createSignal(0);
+    let recomputes = 0;
+
+    const dispose = createRoot((d) => {
+      Effect.runSync(target.setAttr("data-count", () => {
+        recomputes += 1;
+        return count();
+      }));
+      return d;
+    });
+
+    expect(recomputes).toBe(1);
+    setCount(1);
+    flush();
+    expect(recomputes).toBe(2);
+    expect(target.getAttr("data-count")).toBe(1);
+
+    dispose();
+    setCount(2);
+    flush();
+    expect(recomputes).toBe(2);
+  });
+
+  it("does not double-dispose when both a reactive owner and a scope are present", () => {
+    const target = Element.interactive();
+    const [count, setCount] = createSignal(0);
+    let recomputes = 0;
+    let cleanups = 0;
+
+    const scope = Scope.makeUnsafe();
+    const disposeOwner = createRoot((d) => {
+      runIn(scope, target.setStyle("width", () => {
+        recomputes += 1;
+        onCleanup(() => {
+          cleanups += 1;
+        });
+        return count();
+      }));
+      return d;
+    });
+
+    expect(recomputes).toBe(1);
+
+    // Scope first, then owner, then scope again: teardown runs exactly once.
+    Effect.runSync(Scope.close(scope, Exit.void));
+    expect(cleanups).toBe(1);
+    disposeOwner();
+    Effect.runSync(Scope.close(scope, Exit.void));
+    expect(cleanups).toBe(1);
+
+    setCount(1);
+
+    flush();
+    expect(recomputes).toBe(1);
+  });
+
+  it("keeps sibling scopes independent for reactions on the same handle", () => {
+    const target = Element.interactive();
+    const [count, setCount] = createSignal(0);
+    let left = 0;
+    let right = 0;
+
+    const leftScope = Scope.makeUnsafe();
+    const rightScope = Scope.makeUnsafe();
+    runIn(leftScope, target.setAttr("data-left", () => {
+      left += 1;
+      return count();
+    }));
+    runIn(rightScope, target.setAttr("data-right", () => {
+      right += 1;
+      return count();
+    }));
+    expect([left, right]).toEqual([1, 1]);
+
+    Effect.runSync(Scope.close(leftScope, Exit.void));
+    setCount(1);
+    flush();
+    expect([left, right]).toEqual([1, 2]);
+
+    Effect.runSync(Scope.close(rightScope, Exit.void));
+    setCount(2);
+    flush();
+    expect([left, right]).toEqual([1, 2]);
+  });
+
+  it("keeps working on the SSR-shaped path with neither a scope nor a reactive owner", () => {
+    const target = Element.interactive();
+    const [count, setCount] = createSignal(0);
+    let recomputes = 0;
+
+    // No ambient Effect Scope and no reactive owner — this is the SSR shape
+    // pinned by ssr-characterization.test.ts. Behaviour must be unchanged:
+    // the reaction runs and stays live (nothing owns it to dispose it).
+    Effect.runSync(target.setAttr("data-count", () => {
+      recomputes += 1;
+      return count();
+    }));
+    expect(recomputes).toBe(1);
+    expect(target.getAttr("data-count")).toBe(0);
+
+    setCount(1);
+
+    flush();
+    expect(recomputes).toBe(2);
+    expect(target.getAttr("data-count")).toBe(1);
+  });
+
+  it("sets a non-function attr value without creating a reaction", () => {
+    const target = Element.interactive();
+    Effect.runSync(target.setAttr("role", "button"));
+    expect(target.getAttr("role")).toBe("button");
   });
 });

@@ -749,6 +749,29 @@ describe("Resume client adapter", () => {
     );
   }
 
+  it("only ever memoizes a manifest it has already frozen (DQ-099)", () => {
+    // The validation memo used to be keyed on caller-supplied object identity
+    // and was safe only because `Schema.decodeUnknownEffect` returns a copy --
+    // an accident of the decoder, not an invariant. The memo now admits an
+    // object only *after* the whole graph has been deeply frozen, so
+    // "validated" implies "immutable" and validate-then-mutate-then-reuse is
+    // unrepresentable even if decoding ever became identity-preserving.
+    const result = serverCollection();
+    const decoded = Effect.runSync(
+      Resume.decodeManifest(result.serializedManifest, TestBuildId).pipe(
+        Effect.provide(Serialization.layer),
+      ),
+    );
+
+    expect(Object.isFrozen(decoded)).toBe(true);
+    // The witness is not a property, so holding a validated manifest does not
+    // let anyone mint one: there is no symbol or key to copy onto a look-alike.
+    expect(Object.getOwnPropertySymbols(decoded)).toEqual([]);
+    const lookAlike = { ...decoded };
+    expect(Object.isFrozen(lookAlike)).toBe(false);
+    expect(Object.getOwnPropertySymbols(lookAlike)).toEqual([]);
+  });
+
   it("decodes manifests against an independent client build identity", () => {
     const result = serverCollection();
     const decoded = Effect.runSync(

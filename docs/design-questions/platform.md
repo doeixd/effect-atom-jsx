@@ -72,75 +72,8 @@ still resolves. The decision and its rejected alternatives live in
 | DQ-088 | `Schema.Tuple` in core plus an authored `argNames`, so the HTTP/MCP struct projection is declared and checkable rather than positional-only. | `AGENT_NATIVE_NOTES.md` §10 |
 | DQ-089 | Export `ReservedIdentityPrefix`/`isReservedIdentityKey`; enforce at **normalization** (the shared seam) so every `af:` family is covered. Derivation stays exempt — `cacheKey` legitimately consumes `af:binding:*`. | `AGENT_NATIVE_NOTES.md` §10 |
 | DQ-090 | **No markup-bearing node kind exists** in the spec IR; text carries `value`, never `html`. Makes the security property true by construction rather than by validation. | `AGENT_NATIVE_NOTES.md` §10 |
+| DQ-099 | Memo membership is granted **last**, after the graph is deeply frozen, so "validated" implies "immutable" and the decoder-copy dependence is gone. The type is branded; the runtime witness stays a private `WeakSet`. **The literal recommendation — an own `Symbol` brand — was rejected as strictly weaker**, since `Object.getOwnPropertySymbols` makes it forgeable. Per-installation scoping not adopted: three public entry points have no installation, and freeze-before-admit makes the global lifetime inert. | `Resume.ts`; rationale in `future/security/trust-boundary.spec.ts` |
 
-
-## DQ-099 — Is the validated-manifest memo keyed on caller-supplied object identity, and what guarantees the memoized object is unreachable by the caller?
-
-- **Severity:** blocking
-- **Owning plan:** `docs/RESUMABILITY_IMPLEMENTATION_PLAN.md` (M9 hardening) — trust boundary
-- **Raised:** 2026-07-30, while building `future/security/` (cross-cutting seam probe)
-- **Blocks specs:** `future/security/trust-boundary.spec.ts` (currently **green**, with a comment explaining why that greenness is accidental)
-
-**What I was doing.** Probing the trust boundary for TOCTOU: anywhere a value is
-validated once and trusted later, ask what could change in between.
-
-**What is undecided.** `src/Resume.ts` keeps a **process-global**
-`validatedManifests: WeakSet<object>` and short-circuits `validateManifestValue`
-on **object identity** before re-running the schema. Two properties are
-undecided and currently only hold by accident:
-
-1. **Why is the memoized object unreachable by the caller?** Today it is,
-   because `Schema.decodeUnknownEffect` returns a *copy* — so the object put into
-   the WeakSet is never the one the caller holds. That is an **incidental
-   property of the decoder, not a designed invariant**. Make the decode
-   identity-preserving as an optimisation and this silently becomes a
-   time-of-check/time-of-use hole at the wire boundary: validate, mutate, reuse.
-2. **Why is the memo process-global rather than per-installation?** Nothing about
-   the trust decision is process-wide.
-
-The same class appears a second time: `src/dom.ts`'s
-`setRequestEvent`/`getRequestEvent` is a bare module-level global. `renderRequest`
-save/restores it, but any host that calls `setRequestEvent` itself around an async
-boundary gets a cross-request context bleed, and there is **no scoping API** to do
-it correctly.
-
-**Why it matters.** This is the same shape as the two proven bleeds already found
-(`installedTransport`, and the pre-R2 head store): security-relevant state held
-process-globally, correct only under assumptions nobody wrote down. It is
-`blocking` for M9's hardening pass because M9 is where the trust boundary is
-supposed to be audited and frozen.
-
-**Options.**
-
-1. **Make the invariant explicit and enforced.** Document that the memo key must
-   be a decoder-owned object, and add an assertion/test that decode never returns
-   its input by reference. *Cost:* one test plus a written invariant. *Buys:*
-   the current performance behaviour, with the accident converted into a
-   guarantee.
-2. **Key the memo on a branded token rather than object identity.** Validation
-   returns an opaque `ValidatedManifest` brand; only that type is accepted
-   downstream. *Cost:* touches every downstream signature. *Buys:* TOCTOU becomes
-   unrepresentable rather than merely prevented — no reliance on decoder
-   behaviour at all.
-3. **Scope the memo per installation and drop the global.** *Cost:* loses cross-
-   installation reuse (probably irrelevant). *Buys:* removes the process-global,
-   consistent with R2's de-globalization direction.
-
-**Recommendation.** **Option 2**, with option 3 folded in (the brand makes the
-memo's scope an implementation detail, so make it per-installation while you are
-there). This project's repeated lesson is that "safe because of how the other
-component happens to behave" does not survive refactoring — the transport bleed,
-the shared slot handles, and the reactive-owner cleanup were all that shape.
-Option 1 is the cheap interim if M9 is far off, but it leaves the guarantee
-resting on a decoder implementation detail. Separately, give
-`setRequestEvent`/`getRequestEvent` a scoped API or delete the global.
-
-**What I did in the meantime.** Nothing assumed. The security spec asserts
-today's (safe) behaviour and comments that its greenness depends on the decoder
-returning a copy.
-
-**Related.** `DQ-089` (identity reservation), `DQ-033` (the proven transport
-bleed of the same class), `DQ-091` (single-flight boundary validation).
 
 
 ## DQ-091 — What validates the single-flight boundary, and do the loader and mutation channels share one projection?

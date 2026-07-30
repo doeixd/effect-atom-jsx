@@ -154,10 +154,15 @@ const directiveExportName = "resumeExprDirective";
 /**
  * The conservative first-slice target allowlists (Milestone 8c.2).
  *
- * `src/Resume.ts` owns the authoritative schemas; these literals are a
+ * `src/resume-expression.ts` owns the authoritative arrays and `src/Resume.ts`
+ * links them to the wire schemas at compile time; these literals are a
  * deliberate build-time duplicate so the Babel plugin keeps importing nothing
- * but Babel types. Any widening must change both, and the manifest schema is
- * the one that fails closed on the wire.
+ * but Babel types (a real import would drag `effect`, `Portable`, and the
+ * reactivity runtime into the published plugin). Divergence is not left to
+ * discipline: they are exported below and
+ * `src/__tests__/resume-extract-plugin.test.ts` fails if either list drifts
+ * from `resume-expression.ts`. The manifest schema is still the one that fails
+ * closed on the wire.
  */
 const allowedExpressionAttributeNames: ReadonlySet<string> = new Set([
   "aria-description",
@@ -178,6 +183,17 @@ const allowedExpressionStyleProperties: ReadonlySet<string> = new Set([
   "width",
 ]);
 const customStylePropertyPattern = /^--[a-z][a-z0-9-]*$/;
+
+/**
+ * The build-time copy of the allowlists, exported solely so the drift test can
+ * compare it against `resume-expression.ts`. Exporting the values adds no
+ * imports and no runtime dependencies to the plugin.
+ */
+export const expressionTargetAllowlists = {
+  attributes: allowedExpressionAttributeNames,
+  styleProperties: allowedExpressionStyleProperties,
+  customStylePropertyPattern,
+} as const;
 
 /** The discriminated manifest-v4 target the directive receives verbatim. */
 type ExpressionTargetLiteral =

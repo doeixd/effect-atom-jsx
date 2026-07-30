@@ -1,5 +1,5 @@
 import { Effect, Option, Scope } from "effect";
-import { createEffect, onCleanup } from "./api.js";
+import { createDisposableEffect, onCleanup } from "./api.js";
 import * as MetadataToken from "./MetadataToken.js";
 
 type EventHandler = (event: unknown) => void;
@@ -154,6 +154,28 @@ function makeHandle<T extends string>(tag: T): Handle & { readonly kind: T } {
   const styles = new Map<string, unknown>();
   const listeners: ListenerMap = new Map();
 
+  /**
+   * Create a reactive reaction whose lifetime is owned by the ambient Effect
+   * `Scope` when one is present, falling back to the reactive render owner.
+   *
+   * Without this, a reaction created outside a render owner (behavior/style
+   * attachment through a scoped path, resume reattachment) would be permanent:
+   * unlike a leaked listener, it keeps recomputing on every dependency change
+   * for the life of the process.
+   *
+   * The reaction is always parented to the ambient reactive owner, so the
+   * ordinary DOM mount path is unchanged. `dispose` is idempotent, so when both
+   * an owner and a Scope are present the teardown still runs exactly once.
+   */
+  const reaction = (run: () => void): Effect.Effect<void> =>
+    Effect.flatMap(Effect.serviceOption(Scope.Scope), (maybeScope) => {
+      const dispose = createDisposableEffect(run);
+      if (Option.isSome(maybeScope)) {
+        return Scope.addFinalizer(maybeScope.value, Effect.sync(dispose));
+      }
+      return Effect.void;
+    });
+
   const base: Handle & { readonly kind: T } = {
     kind: tag,
     id: `el-${Math.random().toString(36).slice(2, 10)}`,
@@ -201,24 +223,21 @@ function makeHandle<T extends string>(tag: T): Handle & { readonly kind: T } {
       }
     },
     setAttr(name, value) {
+      if (typeof value === "function") {
+        return reaction(() => {
+          attrs.set(name, (value as () => unknown)());
+        });
+      }
       return Effect.sync(() => {
-        if (typeof value === "function") {
-          createEffect(() => {
-            attrs.set(name, (value as () => unknown)());
-          });
-        } else {
-          attrs.set(name, value);
-        }
+        attrs.set(name, value);
       });
     },
     getAttr(name) {
       return attrs.get(name);
     },
     setStyle(prop, value) {
-      return Effect.sync(() => {
-        createEffect(() => {
-          styles.set(prop, value());
-        });
+      return reaction(() => {
+        styles.set(prop, value());
       });
     },
     setStyleOnce(prop, value) {

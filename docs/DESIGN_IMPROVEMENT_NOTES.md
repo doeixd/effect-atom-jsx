@@ -545,3 +545,27 @@ store, `Slots.define`'s shared handles, `Element.on`, and now these two (plus
 `DQ-099`'s validated-manifest memo as the non-reactive cousin). When adding any
 API that acquires a resource, the question to ask first is *"what closes this
 when there is no render owner?"* — because the resume/reattach path never has one.
+
+### 22 — update (2026-07-30): both halves fixed, and the pattern now has a primitive
+
+(a) `collection().observeEach` and (b) `setAttr`/`setStyle` are both fixed.
+
+The fix for (b) introduced **`api.ts`'s `createDisposableEffect(fn, initial)`** —
+it parents a dedicated `Owner` to the ambient reactive owner, runs `createEffect`
+under it, and returns a disposer. `Element.ts` wraps that with a `reaction`
+helper that additionally registers `Scope.addFinalizer` when an ambient `Scope`
+exists. Exactly-once disposal needed no extra bookkeeping: `Owner.dispose()`
+already guards on its own flag and detaches from its parent, so whichever of the
+Scope finalizer or the parent-owner teardown fires first does the work and the
+second is a structural no-op.
+
+**Eight bare `createEffect` calls remain elsewhere and have not been audited:**
+`src/Registry.ts:65`, `src/AtomRef.ts:78`, `src/Atom.ts:1793` and `:2360`,
+`src/Component.ts:1309`, and `src/effect-ts.ts:1365`, `:1464`, `:1480`.
+
+`effect-ts.ts:1464`/`:1480` are the most likely to share the defect — they are the
+signal/memo `listener` subscriptions, i.e. the Effect-facing bridge, and so are
+the ones most plausibly invoked from a scoped path rather than from a render
+owner. Each needs the same question asked of it: *what disposes this when there
+is no render owner?* `createDisposableEffect` now exists to fix any of them the
+same way.

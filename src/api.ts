@@ -55,6 +55,36 @@ export function createEffect<T>(fn: (prev: T | undefined) => T, initialValue?: T
 }
 
 /**
+ * Create a reactive side-effect that can also be disposed explicitly.
+ *
+ * Behaves exactly like {@link createEffect} with respect to ownership — the
+ * reaction is created under a dedicated {@link Owner} parented to the ambient
+ * owner, so a render owner still tears it down — but additionally returns a
+ * dispose function for callers whose lifetime is governed by something other
+ * than the reactive owner tree (e.g. an Effect `Scope`).
+ *
+ * Disposal is idempotent and safe to combine with owner-driven disposal:
+ * whichever happens first wins, and the second is a no-op.
+ *
+ * @example
+ * const dispose = createDisposableEffect(() => console.log(count()));
+ * dispose(); // stops recomputing
+ */
+export function createDisposableEffect<T>(
+  fn: (prev: T | undefined) => T,
+  initialValue?: T,
+): () => void {
+  const owner = new Owner(getOwner());
+  runWithOwner(owner, () => {
+    createEffect(fn, initialValue);
+  });
+  // `Owner.dispose()` guards on its own `_disposed` flag and detaches itself
+  // from its parent, so an explicit dispose after (or before) owner-driven
+  // disposal runs the computation teardown exactly once.
+  return () => owner.dispose();
+}
+
+/**
  * Register a cleanup callback that runs before the next effect execution
  * or when the current owner is disposed.
  */

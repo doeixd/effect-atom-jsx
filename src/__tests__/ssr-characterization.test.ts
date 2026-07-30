@@ -384,10 +384,16 @@ describe("Nested renders, exceptions, and request context (Milestone 0, item 4)"
 });
 
 describe("Resume fallback contract (Milestone 0, item 5)", () => {
-  it("emits no manifest entry and no diagnostic for opaque setup", () => {
-    // A raw setup function is intentionally opaque. Nothing about it is
-    // resumable, so it contributes no component snapshot — and, crucially, no
-    // diagnostic either. Opaque setup is a *silent* fall back to activation.
+  it("emits no manifest entry but does diagnose opaque setup", () => {
+    // CHANGED DELIBERATELY (M9 hardening). This test used to pin
+    // `diagnostics == []` and describe opaque setup as "a *silent* fall back
+    // to activation". That silence was the defect this characterization pass
+    // found, not a contract worth keeping: opaque setup was the only fallback
+    // case that announced nothing, so "why is my component not resumable?"
+    // could not be answered from the diagnostics alone. It now emits
+    // `opaque-component-setup`, consistent with `opaque-event-handler` and
+    // `opaque-query-executor`. The manifest half of the contract — v1, no
+    // component snapshot — is unchanged and still pinned below.
     const Card = Component.make(
       Component.props<{}>(),
       Component.require<never>(),
@@ -403,7 +409,16 @@ describe("Resume fallback contract (Milestone 0, item 5)", () => {
 
     expect(result.html).toBe("Save");
     expect(result.manifest.version).toBe(1);
-    expect(result.diagnostics).toEqual([]);
+    expect(result.diagnostics).toEqual([
+      {
+        code: "opaque-component-setup",
+        phase: "collect",
+        severity: "warning",
+        disposition: "fallback-required",
+        reason:
+          'Component "OpaqueSetupCard" has opaque setup, contributes no resume snapshot, and requires fallback activation.',
+      },
+    ]);
     expect((result.manifest as { components?: unknown }).components).toBe(
       undefined,
     );

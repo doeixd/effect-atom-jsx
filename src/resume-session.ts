@@ -35,6 +35,7 @@ import {
 } from "./resume-event.js";
 
 export type ResumeDiagnosticCode =
+  | "opaque-component-setup"
   | "opaque-event-handler"
   | "event-data-unsupported"
   | "invalid-event-type"
@@ -755,7 +756,24 @@ export function observeCommittedComponentBindings(
     )
     : [];
   const activationCode = componentActivations.get(componentValue);
-  if (resumableSteps.length === 0 && activationCode === undefined) return;
+  if (resumableSteps.length === 0 && activationCode === undefined) {
+    // Opaque setup is a fallback case like any other: the component cannot be
+    // introspected, so it contributes no snapshot and leaves the manifest at
+    // v1. Every other opaque or failing path announces itself; this one used
+    // to be silent, which made "why is my component not resumable?"
+    // unanswerable from the diagnostics alone. A *named* plan with no
+    // resumable steps is not a fallback — it simply has nothing to resume —
+    // so it stays quiet.
+    if (plan.kind === "opaque") {
+      recordFallbackDiagnostic(session, {
+        code: "opaque-component-setup",
+        reason: definitionName === undefined
+          ? "A component has opaque setup, contributes no resume snapshot, and requires fallback activation."
+          : `Component "${definitionName}" has opaque setup, contributes no resume snapshot, and requires fallback activation.`,
+      });
+    }
+    return;
+  }
 
   const componentId = `c${session.nextComponentId}`;
   session.nextComponentId += 1;

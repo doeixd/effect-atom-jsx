@@ -367,9 +367,53 @@ function expressionTargetOf(entry: ExpressionEntry): ExpressionTarget {
       };
 }
 
+/**
+ * Runtime witness that a manifest graph crossed the full schema boundary.
+ *
+ * Membership is only ever granted to an object this module has *also* deeply
+ * frozen (`rememberValidatedManifest`) or itself derived from such an object
+ * (`brandManifest`, used only for the internal binding-override view). That is
+ * what makes the memo sound: "validated" now implies "immutable", so
+ * validate-then-mutate-then-reuse is unrepresentable *regardless* of whether
+ * `Schema.decodeUnknownEffect` happens to return a copy of its input. The old
+ * memo relied on that decoder detail; this one does not (see `DQ-099`).
+ *
+ * A `WeakSet` rather than a marker property on purpose: an own symbol is
+ * recoverable through `Object.getOwnPropertySymbols`, so a marker property
+ * would be forgeable by anyone holding a validated manifest. The set is not
+ * reachable from outside this module at all.
+ */
 const validatedManifests = new WeakSet<object>();
 
-function rememberValidatedManifest(manifest: Manifest): Manifest {
+declare const ValidatedManifestTypeId: unique symbol;
+
+/**
+ * A manifest that has already crossed the full schema boundary, satisfied the
+ * plain-JSON graph check, and been deeply frozen.
+ *
+ * `ValidatedManifest` is a subtype of `Manifest`, so it flows into every
+ * existing manifest-shaped API unchanged; the reverse never holds without
+ * going through {@link validateManifestValue}. Internal call sites that must
+ * not re-decode (mount, restoration overrides, the installation coordinator)
+ * demand this type rather than trusting caller-supplied object identity.
+ */
+export type ValidatedManifest = Manifest & {
+  readonly [ValidatedManifestTypeId]: "@effect-atom-jsx/Resume/ValidatedManifest";
+};
+
+/**
+ * Attach the validation brand without re-walking the graph.
+ *
+ * Only for manifest views this module derives from an already-validated
+ * manifest (see `manifestWithBindingOverrides`), never for caller-supplied
+ * values.
+ */
+function brandManifest(manifest: Manifest): ValidatedManifest {
+  validatedManifests.add(manifest);
+  return manifest as ValidatedManifest;
+}
+
+function rememberValidatedManifest(manifest: Manifest): ValidatedManifest {
   const pending: object[] = [manifest];
   const seen = new WeakSet<object>();
   while (pending.length > 0) {
@@ -406,11 +450,13 @@ function rememberValidatedManifest(manifest: Manifest): Manifest {
       // are not part of the manifest's validated protocol structure.
     }
   }
-  validatedManifests.add(manifest);
-  return manifest;
+  // Deliberately last: membership is granted only once the whole graph is
+  // frozen, so a caller can never observe a "validated" manifest that is still
+  // mutable -- the property the old identity-keyed memo lacked.
+  return brandManifest(manifest);
 }
 
-function isValidatedManifest(value: unknown): value is Manifest {
+function isValidatedManifest(value: unknown): value is ValidatedManifest {
   return typeof value === "object"
     && value !== null
     && validatedManifests.has(value);
@@ -419,7 +465,7 @@ function isValidatedManifest(value: unknown): value is Manifest {
 function validateManifestValue(
   value: unknown,
   context: string,
-): Effect.Effect<Manifest, ResumeManifestDecodeError> {
+): Effect.Effect<ValidatedManifest, ResumeManifestDecodeError> {
   if (isValidatedManifest(value)) return Effect.succeed(value);
   return Schema.decodeUnknownEffect(ManifestSchema)(value).pipe(
     Effect.flatMap((manifest) => {
@@ -1812,7 +1858,7 @@ export function decodeManifest(
   expectedBuildId: string,
   options: DecodeManifestOptions = {},
 ): Effect.Effect<
-  Manifest,
+  ValidatedManifest,
   ManifestDecodeError,
   Serialization.SerializationService
 > {
@@ -1876,17 +1922,18 @@ function restoreStateBindingsInScope<Props, Req, E, Bindings, Slots>(
   componentIdValue: string,
   propsValue: Props | undefined,
   providedScope?: Scope.Scope,
-  manifestIsValidated = false,
 ): Effect.Effect<
   RestoredStateBindings<Bindings, Req>,
   StateBindingRestoreError,
   Req
 > {
   return Effect.gen(function* () {
-    const validatedManifest =
-      manifestIsValidated || isValidatedManifest(manifest)
-      ? manifest
-      : yield* validateManifestValue(manifest, "state restoration");
+    // A `ValidatedManifest` short-circuits here; anything else crosses the
+    // full schema boundary. There is no caller-supplied-identity fast path.
+    const validatedManifest = yield* validateManifestValue(
+      manifest,
+      "state restoration",
+    );
     const componentId = yield* Schema.decodeUnknownEffect(ComponentId)(
       componentIdValue,
     ).pipe(
@@ -3326,13 +3373,13 @@ function validateExpressionDependencyMetadata(
 }
 
 function manifestWithBindingOverrides(
-  manifest: Manifest,
+  manifest: ValidatedManifest,
   componentId: ComponentId,
   overrides: ReadonlyMap<
     ComponentId,
     ReadonlyMap<BindingName, unknown>
   >,
-): Manifest {
+): ValidatedManifest {
   if (manifest.version === 1 || overrides.size === 0) return manifest;
   const componentOverrides = overrides.get(componentId);
   const component = manifest.components[componentId];
@@ -3351,7 +3398,11 @@ function manifestWithBindingOverrides(
       };
     }
   }
-  return {
+  // Library-derived from an already-validated manifest, so it inherits the
+  // brand without re-decoding. It is deliberately *not* deep-frozen: the
+  // override values are live client state, not wire data, and this view never
+  // escapes restoration for `componentId`.
+  return brandManifest({
     ...manifest,
     // This internal view is consumed only by restoration for `componentId`.
     // Keeping a one-component record avoids cloning every boundary whenever a
@@ -3362,7 +3413,7 @@ function manifestWithBindingOverrides(
         bindings,
       },
     },
-  };
+  });
 }
 
 function findBoundaryReplayTarget(
@@ -3513,7 +3564,7 @@ function mountRestoredComponent<
   boundary: ComponentBoundary,
   component: C,
   props: Component.PropsOf<C>,
-  manifest: Manifest,
+  manifest: ValidatedManifest,
   runtime: ManagedRuntime.ManagedRuntime<any, any>,
   resolver: Portable.ResolverService,
   report: (diagnostic: ClientDiagnostic) => void,
@@ -3547,7 +3598,6 @@ function mountRestoredComponent<
         componentId,
         props,
         scope,
-        true,
       );
       // The render callback runs inside a reactive computation, which swallows
       // throws. Capture the first failure so a failed restored render becomes
