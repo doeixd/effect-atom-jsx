@@ -1,4 +1,4 @@
-import { Effect, Layer, PubSub, Schema, ServiceMap, Stream } from "effect";
+import { Effect, Layer, PubSub, Schema, Context, Stream } from "effect";
 
 export const EventChannelTypeId: unique symbol = Symbol.for("effect-atom-jsx/EventChannel") as typeof EventChannelTypeId;
 
@@ -6,7 +6,7 @@ interface ChannelService<Name extends string> {
   readonly _eventChannel: Name;
 }
 
-type ChannelTag<Name extends string, A> = ServiceMap.Key<ChannelService<Name>, PubSub.PubSub<A>>;
+type ChannelTag<Name extends string, A> = Context.Key<ChannelService<Name>, PubSub.PubSub<A>>;
 
 export interface EventChannel<Name extends string, A> {
   readonly [EventChannelTypeId]: typeof EventChannelTypeId;
@@ -33,7 +33,7 @@ export function channel<const Name extends string>(name: Name): EventChannel<Nam
   const event: EventChannel<Name, unknown> = {
     [EventChannelTypeId]: EventChannelTypeId,
     name,
-    tag: ServiceMap.Service<ChannelService<Name>, PubSub.PubSub<unknown>>(`Event/${name}`),
+    tag: Context.Service<ChannelService<Name>, PubSub.PubSub<unknown>>(`Event/${name}`),
     pipe: ((...fns: ReadonlyArray<(self: EventChannel<Name, unknown>) => unknown>) => {
       return fns.reduce<unknown>((value, fn) => fn(value as EventChannel<Name, unknown>), event);
     }) as EventChannel<Name, unknown>["pipe"],

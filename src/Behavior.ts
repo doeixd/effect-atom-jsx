@@ -1,6 +1,7 @@
-import { Effect } from "effect";
+import { Effect, Exit, Scope } from "effect";
 import * as Component from "./Component.js";
 import * as Element from "./Element.js";
+import * as Portable from "./Portable.js";
 import * as View from "./View.js";
 
 const BehaviorTypeId: unique symbol = Symbol.for("effect-atom-jsx/Behavior");
@@ -27,6 +28,38 @@ export interface Behavior<Elements, Bindings, Req, E> {
   };
   readonly run: (elements: Elements) => Effect.Effect<Bindings, E, Req>;
   readonly metadata?: BehaviorMetadata<Elements>;
+  /**
+   * Optional portable attachment descriptor. Behaviors without one are opaque
+   * closures and require fallback activation on a resumed client.
+   */
+  readonly attachment?: BehaviorAttachment;
+}
+
+/**
+ * Declarative portability record carried by a behavior value.
+ *
+ * A portable attachment lists the bound code references whose execution
+ * reproduces the behavior's `run` in document order. Composition preserves
+ * portability only when every member is portable.
+ */
+export type BehaviorAttachment =
+  | {
+    readonly kind: "portable";
+    readonly executables: ReadonlyArray<Portable.AnyBoundCode>;
+  }
+  | {
+    readonly kind: "opaque";
+  };
+
+const opaqueAttachment: BehaviorAttachment = Object.freeze({
+  kind: "opaque",
+}) as BehaviorAttachment;
+
+/** Read the declarative attachment record; absent metadata reads as opaque. */
+export function inspectAttachment(
+  behavior: Behavior<any, any, any, any>,
+): BehaviorAttachment {
+  return behavior.attachment ?? opaqueAttachment;
 }
 
 /** Extract the element map required by a behavior. */
@@ -217,6 +250,84 @@ export function make<Elements, Bindings = {}, Req = never, E = never>(
   };
 }
 
+/**
+ * Create a behavior from a portable, addressable attachment executable.
+ *
+ * The bound code receives the selected elements as its single argument and
+ * returns the contributed bindings. The behavior records a portable
+ * attachment descriptor, so a resumed client can reattach it by resolving the
+ * code identity instead of replaying the component that originally composed
+ * it.
+ */
+export function portable<
+  Captures,
+  EncodedCaptures,
+  Elements,
+  Bindings,
+  E,
+  Req,
+>(
+  executable: Portable.BoundCode<
+    Captures,
+    EncodedCaptures,
+    readonly [Elements],
+    Bindings,
+    E,
+    Req
+  >,
+  metadata?: BehaviorMetadata<Elements>,
+): Behavior<Elements, Bindings, Req, E> {
+  return {
+    ...make<Elements, Bindings, Req, E>(
+      (elements) => Portable.execute(executable, elements),
+      metadata,
+    ),
+    attachment: Object.freeze({
+      kind: "portable",
+      executables: Object.freeze([executable as Portable.AnyBoundCode]),
+    }) as BehaviorAttachment,
+  };
+}
+
+/**
+ * Attached behavior handle owned by `attachScoped`.
+ *
+ * Listeners and resources acquired by the behavior live in a fresh Scope that
+ * is independent of any component setup scope; `dispose` releases exactly that
+ * Scope.
+ */
+export interface AttachedBehavior<Bindings> {
+  readonly bindings: Bindings;
+  readonly dispose: Effect.Effect<void>;
+}
+
+/**
+ * Run a behavior against already-available elements in a fresh attachment
+ * Scope.
+ *
+ * This is the reattachment path for restored/resumed components: the base
+ * component setup is not rerun, and every resource the behavior acquires is
+ * released by `dispose` (or automatically if attachment itself fails).
+ */
+export function attachScoped<Elements, Bindings, Req, E>(
+  behavior: Behavior<Elements, Bindings, Req, E>,
+  elements: Elements,
+): Effect.Effect<AttachedBehavior<Bindings>, E, Exclude<Req, Scope.Scope>> {
+  return Effect.gen(function* () {
+    const scope = yield* Scope.make();
+    const bindings = yield* (
+      behavior.run(elements) as Effect.Effect<Bindings, E, Req | Scope.Scope>
+    ).pipe(
+      Scope.provide(scope),
+      Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause))),
+    );
+    return {
+      bindings,
+      dispose: Effect.suspend(() => Scope.close(scope, Exit.void)),
+    };
+  }) as Effect.Effect<AttachedBehavior<Bindings>, E, Exclude<Req, Scope.Scope>>;
+}
+
 function slotContractRecordFrom(input: SlotContractInput): SlotContractRecord {
   if (typeof input === "object" && input !== null && "bound" in input) {
     const out: Record<string, View.Slot.Any> = {};
@@ -352,15 +463,30 @@ export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any>
     ...(metadataProvides === undefined ? {} : { provides: metadataProvides }),
     ...(metadataEmits === undefined ? {} : { emits: metadataEmits }),
   };
-  return make((elements) =>
-    Effect.gen(function* () {
-      const out: Record<string, unknown> = {};
-      for (const behavior of behaviors) {
-        const next = yield* behavior.run(elements);
-        Object.assign(out, next);
-      }
-      return out;
-    }), metadata);
+  const attachments = behaviors.map(inspectAttachment);
+  const attachment: BehaviorAttachment =
+    attachments.every((entry) => entry.kind === "portable")
+      ? Object.freeze({
+        kind: "portable",
+        executables: Object.freeze(
+          attachments.flatMap((entry) =>
+            entry.kind === "portable" ? entry.executables : []
+          ),
+        ),
+      }) as BehaviorAttachment
+      : opaqueAttachment;
+  return {
+    ...make((elements) =>
+      Effect.gen(function* () {
+        const out: Record<string, unknown> = {};
+        for (const behavior of behaviors) {
+          const next = yield* behavior.run(elements);
+          Object.assign(out, next);
+        }
+        return out;
+      }), metadata),
+    attachment,
+  };
 }
 
 export function decorator<Elements, Bindings, Req, E>(
@@ -615,6 +741,9 @@ export const Behavior = {
   TypeId: BehaviorTypeId,
   make,
   forSlots,
+  portable,
+  inspectAttachment,
+  attachScoped,
   compose,
   decorator,
   attach,

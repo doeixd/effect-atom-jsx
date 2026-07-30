@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Deferred, Effect, Layer, PubSub, ServiceMap, Stream } from "effect";
+import { Deferred, Effect, Layer, PubSub, Context, Stream } from "effect";
 import * as Component from "../Component.js";
 import * as Reactivity from "../Reactivity.js";
 
@@ -11,7 +11,7 @@ type FileDrop = {
 // Phase-0 baseline: this is deliberately direct Effect PubSub wiring. The
 // eventual Event contract must remove meaningful boilerplate from this shape
 // without changing its delivery or scope semantics.
-const FileDropped = ServiceMap.Service<PubSub.PubSub<FileDrop>>("event-spike/FileDropped");
+const FileDropped = Context.Service<PubSub.PubSub<FileDrop>>("event-spike/FileDropped");
 const FileDroppedLive = Layer.effect(FileDropped, PubSub.sliding<FileDrop>(16));
 const Files = Reactivity.Key.family("files");
 

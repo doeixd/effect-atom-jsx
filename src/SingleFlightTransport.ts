@@ -1,4 +1,4 @@
-import { Effect, ServiceMap } from "effect";
+import { Effect, Context } from "effect";
 
 /**
  * Pluggable transport contract for transparent single-flight mutations.
@@ -19,4 +19,4 @@ export interface SingleFlightTransportService {
 }
 
 /** Runtime service tag used by mutation handles to discover single-flight support. */
-export const SingleFlightTransportTag = ServiceMap.Service<SingleFlightTransportService>("SingleFlightTransport");
+export const SingleFlightTransportTag = Context.Service<SingleFlightTransportService>("SingleFlightTransport");

@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import {
   invalidateReactivityRuntime,
   isReactivityKeyWitness,
@@ -79,7 +79,7 @@ export interface ReactivityService {
   readonly lastInvalidated?: () => Effect.Effect<ReadonlyArray<ReactivityKey>>;
 }
 
-export const ReactivityTag = ServiceMap.Service<ReactivityService>("Reactivity");
+export const ReactivityTag = Context.Service<ReactivityService>("Reactivity");
 
 /**
  * Mark an Effectful read as participating in Reactivity-driven dependency capture.

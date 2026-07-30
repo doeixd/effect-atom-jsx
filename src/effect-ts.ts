@@ -36,7 +36,7 @@ import {
   Exit,
   Fiber,
   ManagedRuntime,
-  ServiceMap,
+  Context,
   Scope,
   Layer,
   Schedule,
@@ -49,7 +49,17 @@ import {
 import { Signal } from "./signal.js";
 import { Computation } from "./computation.js";
 import { Owner, getOwner, runWithOwner } from "./owner.js";
-import { createSignal, createEffect, onCleanup, type Accessor, createContext, useContext, untrack, flush } from "./api.js";
+import {
+  contextMap,
+  createSignal,
+  createEffect,
+  onCleanup,
+  type Accessor,
+  createContext,
+  useContext,
+  untrack,
+  flush,
+} from "./api.js";
 import { createMemo } from "./api.js";
 import { render } from "./dom.js";
 import {
@@ -125,6 +135,47 @@ export type MutationSupersededError = {
 
 export type BridgeError = ResultLoadingError | ResultDefectError;
 export type MutationFailure<E> = E | ResultDefectError;
+
+/**
+ * Optional handlers collected by `Result.builder(...)`.
+ *
+ * Every handler is optional; `render()` returns `undefined` when the variant
+ * that occurred has no handler. Two documented fallbacks keep short builders
+ * total:
+ *
+ * - `Refreshing` falls back to the handler for the variant it wraps, so a
+ *   builder with only `onSuccess` still renders during a refresh.
+ * - `Stale` and `Defect` fall back to `onFailure` — `Stale` with its typed
+ *   error, `Defect` with a `ResultDefectError` envelope.
+ */
+export interface ResultBuilderHandlers<A, E, R> {
+  onLoading?: () => R;
+  onRefreshing?: (previous: Success<A> | Failure<E> | Defect) => R;
+  onSuccess?: (value: A) => R;
+  onStale?: (error: E, data: A) => R;
+  onFailure?: (error: E | ResultDefectError) => R;
+  onDefect?: (cause: string, rawCause: Cause.Cause<unknown>) => R;
+}
+
+/** Fluent matcher returned by `Result.builder(...)`. */
+export interface ResultBuilder<A, E, R> {
+  onLoading<R2>(f: () => R2): ResultBuilder<A, E, R | R2>;
+  onRefreshing<R2>(f: (previous: Success<A> | Failure<E> | Defect) => R2): ResultBuilder<A, E, R | R2>;
+  onSuccess<R2>(f: (value: A) => R2): ResultBuilder<A, E, R | R2>;
+  onStale<R2>(f: (error: E, data: A) => R2): ResultBuilder<A, E, R | R2>;
+  onFailure<R2>(f: (error: E | ResultDefectError) => R2): ResultBuilder<A, E, R | R2>;
+  onDefect<R2>(f: (cause: string, rawCause: Cause.Cause<unknown>) => R2): ResultBuilder<A, E, R | R2>;
+  render(): R | undefined;
+}
+
+/** Success values of a tuple of results, as a tuple. */
+export type ResultAllValues<T extends ReadonlyArray<Result<any, any>>> = {
+  [K in keyof T]: T[K] extends Result<infer X, any> ? X : never;
+};
+
+/** Union of the error channels of a tuple of results. */
+export type ResultAllError<T extends ReadonlyArray<Result<any, any>>> =
+  T[number] extends Result<any, infer XE> ? XE : never;
 
 export const Result = {
   /** Singleton Loading value. */
@@ -300,6 +351,146 @@ export const Result = {
     }
     throw new Error("Result is Loading");
   },
+
+  /**
+   * Fluent, partial matcher for rendering `Result` values.
+   *
+   * Prefer this over positional `match` when a call site only cares about some
+   * variants: handlers are optional and `render()` returns `undefined` for an
+   * unhandled variant, so adding a state later does not break existing code.
+   *
+   * Two fallbacks keep short builders total (see {@link ResultBuilderHandlers}):
+   * `Refreshing` delegates to the handler of the variant it wraps, and
+   * `Stale`/`Defect` delegate to `onFailure` when their own handler is absent.
+   *
+   * @example
+   * const view = Result.builder(users())
+   *   .onLoading(() => "loading…")
+   *   .onFailure((e) => `error: ${String(e)}`)
+   *   .onSuccess((list) => list.length)
+   *   .render()
+   */
+  builder: <A, E, R = never>(r: Result<A, E>): ResultBuilder<A, E, R> => {
+    const handlers: ResultBuilderHandlers<A, E, any> = {};
+
+    const renderSettled = (
+      settled: Success<A> | Failure<E> | Stale<A, E> | Defect,
+    ): R | undefined => {
+      switch (settled._tag) {
+        case "Success":
+          return handlers.onSuccess?.(settled.value);
+        case "Failure":
+          return handlers.onFailure?.(settled.error);
+        case "Stale":
+          return handlers.onStale !== undefined
+            ? handlers.onStale(settled.error, settled.data)
+            : handlers.onFailure?.(settled.error);
+        case "Defect":
+          return handlers.onDefect !== undefined
+            ? handlers.onDefect(settled.cause, settled.rawCause)
+            : handlers.onFailure?.({ _tag: "ResultDefectError", defect: settled.cause });
+      }
+    };
+
+    const api: ResultBuilder<A, E, R> = {
+      onLoading: (f) => {
+        handlers.onLoading = f;
+        return api as any;
+      },
+      onRefreshing: (f) => {
+        handlers.onRefreshing = f;
+        return api as any;
+      },
+      onSuccess: (f) => {
+        handlers.onSuccess = f;
+        return api as any;
+      },
+      onStale: (f) => {
+        handlers.onStale = f;
+        return api as any;
+      },
+      onFailure: (f) => {
+        handlers.onFailure = f;
+        return api as any;
+      },
+      onDefect: (f) => {
+        handlers.onDefect = f;
+        return api as any;
+      },
+      render: () => {
+        if (r._tag === "Loading") return handlers.onLoading?.();
+        if (r._tag === "Refreshing") {
+          return handlers.onRefreshing !== undefined
+            ? handlers.onRefreshing(r.previous)
+            : renderSettled(r.previous);
+        }
+        return renderSettled(r);
+      },
+    };
+
+    return api;
+  },
+
+  /**
+   * Combine a tuple of results into one result of a tuple.
+   *
+   * Short-circuit priority is `Defect > Failure > Stale > Loading >
+   * Refreshing > Success`: the most-informative bad news wins, and an
+   * in-flight state only surfaces once nothing has failed.
+   *
+   * `Stale` and `Refreshing` keep their data when *every* input still has data
+   * available (`getData`), so keep-stale-on-failure composes; otherwise they
+   * degrade to `Failure` and `Loading` respectively.
+   *
+   * @example
+   * const combined = Result.all([userResult, prefsResult])
+   * // Result<[User, Prefs], UserError | PrefsError>
+   */
+  all: <const T extends ReadonlyArray<Result<any, any>>>(
+    results: T,
+  ): Result<ResultAllValues<T>, ResultAllError<T>> => {
+    type Out = Result<ResultAllValues<T>, ResultAllError<T>>;
+
+    let firstStale: Stale<any, any> | undefined;
+    let firstRefreshing = false;
+    let anyLoading = false;
+
+    for (const r of results) {
+      if (r._tag === "Defect") return r as Out;
+    }
+    for (const r of results) {
+      if (r._tag === "Failure") return Result.failure(r.error) as Out;
+      if (r._tag === "Stale") firstStale ??= r;
+      if (r._tag === "Loading") anyLoading = true;
+      if (r._tag === "Refreshing") firstRefreshing = true;
+    }
+
+    // `data` is present for Success, Stale, and Refreshing(Success) alike, so a
+    // full tuple means every input can still contribute a value.
+    const data: Array<unknown> = [];
+    let complete = true;
+    for (const r of results) {
+      const d = Result.getData(r);
+      if (Option.isNone(d)) {
+        complete = false;
+        break;
+      }
+      data.push(d.value);
+    }
+
+    if (firstStale !== undefined) {
+      return (complete
+        ? Result.stale(firstStale.error, data as unknown as ResultAllValues<T>)
+        : Result.failure(firstStale.error)) as Out;
+    }
+    if (anyLoading) return Result.loading as Out;
+    if (firstRefreshing) {
+      return (complete
+        ? Result.refreshing(Result.success(data as unknown as ResultAllValues<T>))
+        : Result.loading) as Out;
+    }
+    return Result.success(data as unknown as ResultAllValues<T>) as Out;
+  },
 } as const;
 
 function previousFromResult<A, E>(
@@ -325,8 +516,34 @@ function getAmbientManagedRuntime(): ManagedRuntime.ManagedRuntime<unknown, unkn
   return useContext(ManagedRuntimeContext);
 }
 
+function withManagedRuntimeContext<A>(
+  managed: ManagedRuntime.ManagedRuntime<unknown, unknown>,
+  fn: () => A,
+): A {
+  const owner = getOwner();
+  if (owner === null) return fn();
+  let map = contextMap.get(owner);
+  if (map === undefined) {
+    map = new Map();
+    contextMap.set(owner, map);
+  }
+  const key = ManagedRuntimeContext.id;
+  const hadPrevious = map.has(key);
+  const previous = map.get(key);
+  map.set(key, managed);
+  try {
+    return fn();
+  } finally {
+    if (hadPrevious) {
+      map.set(key, previous);
+    } else {
+      map.delete(key);
+    }
+  }
+}
+
 type RuntimeLike<R, ER = never> =
-  | ServiceMap.ServiceMap<R>
+  | Context.Context<R>
   | ManagedRuntime.ManagedRuntime<R, ER>;
 
 export type { RuntimeLike };
@@ -344,7 +561,7 @@ function runForkWithRuntime<R, A, E>(
     return runtime.runFork(scopedEffect);
   }
   if (runtime !== undefined) {
-    return Effect.runForkWith(runtime as ServiceMap.ServiceMap<R>)(scopedEffect);
+    return Effect.runForkWith(runtime as Context.Context<R>)(scopedEffect);
   }
   return Effect.runFork(scopedEffect as Effect.Effect<A, E, never>) as Fiber.Fiber<A, E | unknown>;
 }
@@ -355,7 +572,7 @@ function runForkWithRuntime<R, A, E>(
  * The runtime is provided by `mount(...)`.
  *
  * @example
- * const Api = ServiceMap.Service<{ readonly get: () => Effect.Effect<number> }>("Api")
+ * const Api = Context.Service<{ readonly get: () => Effect.Effect<number> }>("Api")
  *
  * function Widget() {
  *   const api = useService(Api)
@@ -363,7 +580,7 @@ function runForkWithRuntime<R, A, E>(
  *   return <Async result={query.result()} loading={() => "Loading..."} success={(n) => n} />
  * }
  */
-export function useService<I, S>(tag: ServiceMap.Key<I, S>): S {
+export function useService<I, S>(tag: Context.Key<I, S>): S {
   const runtime = getAmbientManagedRuntime();
   if (runtime === null) {
     throw new Error(
@@ -442,12 +659,12 @@ export function invalidate(keyOrKeys: QueryKey<any> | ReadonlyArray<QueryKey<any
  * @example
  * const { api, clock } = useServices({ api: Api, clock: Clock })
  */
-export function useServices<T extends Record<string, ServiceMap.Key<any, any>>>(
+export function useServices<T extends Record<string, Context.Key<any, any>>>(
   tags: T,
-): { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never } {
-  const out = {} as { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never };
+): { [K in keyof T]: T[K] extends Context.Key<any, infer S> ? S : never } {
+  const out = {} as { [K in keyof T]: T[K] extends Context.Key<any, infer S> ? S : never };
   for (const key in tags) {
-    out[key] = useService(tags[key]) as { [K in keyof T]: T[K] extends ServiceMap.Key<any, infer S> ? S : never }[typeof key];
+    out[key] = useService(tags[key]) as { [K in keyof T]: T[K] extends Context.Key<any, infer S> ? S : never }[typeof key];
   }
   return out;
 }
@@ -579,14 +796,21 @@ export function atomEffect<A, E, R>(
   return result;
 }
 
-export interface QueryEffectOptions<R> {
-  runtime?: RuntimeLike<R, unknown>;
+export interface QueryEffectOptions<
+  R,
+  E = unknown,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+> {
+  runtime?: RuntimeLike<R | RetryR | PollR, unknown>;
   key?: QueryKey<any> | ReadonlyArray<QueryKey<any>>;
   name?: string;
   /** Optional retry policy for typed query failures. */
-  retrySchedule?: Schedule.Schedule<unknown, any, any>;
+  retrySchedule?: Schedule.Schedule<unknown, NoInfer<E>, RetryError, RetryR>;
   /** Optional polling schedule that invalidates the query key on each tick. */
-  pollSchedule?: Schedule.Schedule<unknown, any, any>;
+  pollSchedule?: Schedule.Schedule<unknown, unknown, PollError, PollR>;
   onTransition?: (event: {
     readonly name?: string;
     readonly phase: "start" | "success" | "failure" | "defect";
@@ -662,10 +886,25 @@ const queryGet: QueryGet = Object.assign(
  * Uses the ambient ManagedRuntime from `mount(...)` when available.
  * If no ambient runtime is present, returns a `Defect` result with guidance.
  */
-function queryEffect<A, E, R>(
+function queryEffect<
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
   fn: () => Effect.Effect<A, E, R>,
-  options?: QueryEffectOptions<R>,
-): Accessor<Result<A, E>> {
+  options?: QueryEffectOptions<
+    R,
+    E,
+    RetryError,
+    RetryR,
+    PollError,
+    PollR
+  >,
+): Accessor<Result<A, E | RetryError>> {
   const keys = normalizeQueryKeys(options?.key);
   const emitTransition = (
     phase: "start" | "success" | "failure" | "defect",
@@ -686,10 +925,13 @@ function queryEffect<A, E, R>(
     const startedAt = Date.now();
     trackQueryKeys(keys);
     emitTransition("start", startedAt);
-    let effect = fn();
-    if (options?.retrySchedule !== undefined) {
-      effect = effect.pipe(Effect.retry(options.retrySchedule as Schedule.Schedule<any, any, any>));
-    }
+    const effect: Effect.Effect<
+      A,
+      E | RetryError,
+      R | RetryR
+    > = options?.retrySchedule === undefined
+      ? fn()
+      : Effect.retry(fn(), options.retrySchedule);
     return effect.pipe(
       Effect.tap(() => Effect.sync(() => emitTransition("success", startedAt))),
       Effect.tapError((_) => Effect.sync(() => emitTransition("failure", startedAt))),
@@ -697,13 +939,18 @@ function queryEffect<A, E, R>(
     );
   };
 
-  const startPolling = (runtimeArg: RuntimeLike<R, unknown> | undefined): void => {
+  const startPolling = (
+    runtimeArg: RuntimeLike<R | RetryR | PollR, unknown> | undefined,
+  ): void => {
     if (options?.pollSchedule === undefined || keys.length === 0) return;
     const pollEffect = FxStream.runForEach(
       FxStream.fromSchedule(options.pollSchedule),
       () => Effect.sync(() => invalidate(keys)),
-    ).pipe(Effect.catchCause(() => Effect.void));
-    const pollFiber = runForkWithRuntime(runtimeArg, pollEffect as Effect.Effect<void, never, R>);
+    ).pipe(Effect.ignoreCause);
+    const pollFiber = runForkWithRuntime(
+      runtimeArg,
+      pollEffect as Effect.Effect<void, never, R | RetryR | PollR>,
+    );
     onCleanup(() => {
       Effect.runFork(Fiber.interrupt(pollFiber));
     });
@@ -718,34 +965,79 @@ function queryEffect<A, E, R>(
   }
   const ambient = getAmbientManagedRuntime();
   if (ambient === null) {
-    const [result] = createSignal<Result<A, E>>(
+    const [result] = createSignal<Result<A, E | RetryError>>(
       Result.defect(
         "[effect-atom-jsx] queryEffect(fn) requires an ambient ManagedRuntime. Use mount(..., layer) or pass { runtime }.",
       ),
     );
     return result;
   }
-  startPolling(ambient as unknown as RuntimeLike<R, unknown>);
+  startPolling(
+    ambient as unknown as RuntimeLike<R | RetryR | PollR, unknown>,
+  );
   return atomEffect(
     () => wrapped(),
-    ambient as unknown as RuntimeLike<R, unknown>,
+    ambient as unknown as RuntimeLike<R | RetryR | PollR, unknown>,
   );
 }
 
-export type DefineQueryOptions<A, R> = Omit<QueryEffectOptions<R>, "key"> & {
+export type DefineQueryOptions<
+  A,
+  R,
+  E = unknown,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+> = Omit<
+  QueryEffectOptions<R, E, RetryError, RetryR, PollError, PollR>,
+  "key"
+> & {
   key?: QueryKey<A>;
   name?: string;
-  onTransition?: QueryEffectOptions<R>["onTransition"];
+  onTransition?: QueryEffectOptions<R, E>["onTransition"];
 };
 
-export function defineQuery<A, E, R>(
+export function defineQuery<
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
   fn: (get: QueryGet) => Effect.Effect<A, E, R>,
-  options?: DefineQueryOptions<A, R>,
-): QueryRef<A, E>;
-export function defineQuery<A, E, R>(
+  options?: DefineQueryOptions<
+    A,
+    R,
+    E,
+    RetryError,
+    RetryR,
+    PollError,
+    PollR
+  >,
+): QueryRef<A, E | RetryError>;
+export function defineQuery<
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
   fn: () => Effect.Effect<A, E, R>,
-  options?: DefineQueryOptions<A, R>,
-): QueryRef<A, E>;
+  options?: DefineQueryOptions<
+    A,
+    R,
+    E,
+    RetryError,
+    RetryR,
+    PollError,
+    PollR
+  >,
+): QueryRef<A, E | RetryError>;
 /**
  * Create a keyed query bundle for ergonomic query + invalidation wiring.
  *
@@ -759,10 +1051,26 @@ export function defineQuery<A, E, R>(
  *   return api.profile(userId)
  * })
  */
-export function defineQuery<A, E, R>(
+export function defineQuery<
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
   fn: (() => Effect.Effect<A, E, R>) | ((get: QueryGet) => Effect.Effect<A, E, R>),
-  options?: DefineQueryOptions<A, R>,
-): QueryRef<A, E> {
+  options?: DefineQueryOptions<
+    A,
+    R,
+    E,
+    RetryError,
+    RetryR,
+    PollError,
+    PollR
+  >,
+): QueryRef<A, E | RetryError> {
   const key = options?.key ?? createQueryKey<A>(options?.name);
   const run = (): Effect.Effect<A, E, R> =>
     (fn as (get: QueryGet) => Effect.Effect<A, E, R>)(queryGet);
@@ -870,11 +1178,12 @@ export function createOptimistic<T>(source: () => T): OptimisticRef<T> {
   return optimistic;
 }
 
-type TypedCatch<E> = Schema.Schema<E> | ((error: unknown) => error is E);
+type TypedCatch<E> = Schema.Codec<E, unknown> | ((error: unknown) => error is E);
 
 function matchesTypedCatch<E>(matcher: TypedCatch<E>, error: unknown): error is E {
-  if (typeof matcher === "function") {
-    return matcher(error);
+  // Schemas can be functions at runtime; prefer Schema.isSchema over typeof.
+  if (typeof matcher === "function" && !Schema.isSchema(matcher)) {
+    return (matcher as (value: unknown) => value is E)(error);
   }
   const decode = Schema.decodeUnknownSync(matcher as any);
   try {
@@ -1230,11 +1539,26 @@ export function scopedRootEffect<T>(
 /**
  * Effect constructor for scope-bound queries.
  */
-export function scopedQueryEffect<A, E, R>(
+export function scopedQueryEffect<
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
   scope: Scope.Closeable,
   fn: () => Effect.Effect<A, E, R>,
-  options?: QueryEffectOptions<R>,
-): Effect.Effect<Accessor<Result<A, E>>> {
+  options?: QueryEffectOptions<
+    R,
+    E,
+    RetryError,
+    RetryR,
+    PollError,
+    PollR
+  >,
+): Effect.Effect<Accessor<Result<A, E | RetryError>>> {
   return scopedRootEffect(scope, () => queryEffect(fn, options));
 }
 
@@ -1353,42 +1677,86 @@ export function mountWithManagedRuntime(
   fn: () => unknown,
   container: Element,
   managed: ManagedRuntime.ManagedRuntime<any, any>,
-  options?: { readonly ownsRuntime?: boolean },
+  options?: {
+    readonly ownsRuntime?: boolean;
+    readonly scope?: Scope.Closeable;
+    readonly ownsScope?: boolean;
+  },
 ): () => void {
   const ownsRuntime = options?.ownsRuntime ?? false;
-  const maybeReactivity = managed.runSync(
-    Effect.match(Effect.service(ReactivityTag), {
-      onFailure: () => null,
-      onSuccess: (service) => service,
-    }) as Effect.Effect<any, never, never>,
-  ) as import("./Reactivity.js").ReactivityService | null;
-  const restoreReactivity = installReactivityService(maybeReactivity);
-  const maybeSingleFlightTransport = managed.runSync(
-    Effect.match(Effect.service(SingleFlightTransportTag as any), {
-      onFailure: () => null,
-      onSuccess: (service) => service,
-    }) as Effect.Effect<any, never, never>,
-  ) as SingleFlightTransportService | null;
-  const restoreSingleFlightTransport = installSingleFlightTransport(maybeSingleFlightTransport);
-  const rootScope = Scope.makeUnsafe();
-  const disposeRender = render(
-    () => ManagedRuntimeContext.Provider({
-      value: managed as ManagedRuntime.ManagedRuntime<unknown, unknown>,
-      children: withComponentScope(rootScope, fn),
-    }),
-    container,
+  const ownsScope = options?.ownsScope ?? true;
+  const maybeReactivityOption = managed.runSync(
+    Effect.serviceOption(ReactivityTag),
   );
+  const maybeReactivity = Option.isSome(maybeReactivityOption)
+    ? maybeReactivityOption.value
+    : null;
+  const restoreReactivity = installReactivityService(maybeReactivity);
+  const maybeSingleFlightTransportOption = managed.runSync(
+    Effect.serviceOption(SingleFlightTransportTag),
+  );
+  const maybeSingleFlightTransport = Option.isSome(
+      maybeSingleFlightTransportOption
+    )
+    ? maybeSingleFlightTransportOption.value
+    : null;
+  const restoreSingleFlightTransport = installSingleFlightTransport(maybeSingleFlightTransport);
+  const rootScope = options?.scope ?? Scope.makeUnsafe();
+  const disposeOwnedRuntime = (): void => {
+    if (!ownsRuntime) return;
+    void managed.dispose().catch((error) => {
+      console.error(
+        "[effect-atom-jsx] mount: failed to dispose ManagedRuntime:",
+        error,
+      );
+    });
+  };
+  const cleanup = (disposeRender?: () => void): void => {
+    let failed = false;
+    let failure: unknown;
+    const attempt = (finalizer: () => void): void => {
+      try {
+        finalizer();
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          failure = error;
+        }
+      }
+    };
+    if (disposeRender !== undefined) attempt(disposeRender);
+    if (ownsScope) attempt(() => closeComponentScope(rootScope));
+    // Ambient services are stacks: release them in reverse installation order.
+    attempt(restoreSingleFlightTransport);
+    attempt(restoreReactivity);
+    disposeOwnedRuntime();
+    if (failed) throw failure;
+  };
 
-  return () => {
-    disposeRender();
-    closeComponentScope(rootScope);
-    restoreReactivity();
-    restoreSingleFlightTransport();
-    if (ownsRuntime) {
-      void managed.dispose().catch((err) => {
-        console.error("[effect-atom-jsx] mount: failed to dispose ManagedRuntime:", err);
-      });
+  let disposeRender: () => void;
+  try {
+    disposeRender = render(
+      () =>
+        withManagedRuntimeContext(
+          managed as ManagedRuntime.ManagedRuntime<unknown, unknown>,
+          () => withComponentScope(rootScope, fn),
+        ),
+      container,
+    );
+  } catch (error) {
+    try {
+      cleanup();
+    } catch {
+      // Preserve the mount failure; cleanup is still attempted exhaustively.
     }
+    throw error;
+  }
+
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    cleanup(disposeRender);
   };
 }
 

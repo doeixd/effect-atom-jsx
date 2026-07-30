@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import * as Component from "./Component.js";
 import * as Element from "./Element.js";
 import * as MetadataToken from "./MetadataToken.js";
@@ -72,7 +72,7 @@ export interface PlatformService {
   readonly onDiagnostic?: (diagnostic: StyleDiagnostic) => void;
 }
 
-export const PlatformTag = ServiceMap.Service<PlatformService>("StylePlatform");
+export const PlatformTag = Context.Service<PlatformService>("StylePlatform");
 
 /** Resolved global styles published by `Style.globalLayer`. */
 export interface GlobalStyleSheet {
@@ -86,7 +86,7 @@ export interface GlobalStyleService {
   readonly apply?: (sheet: GlobalStyleSheet) => Effect.Effect<void>;
 }
 
-export const GlobalStyleTag = ServiceMap.Service<GlobalStyleService>("StyleGlobal");
+export const GlobalStyleTag = Context.Service<GlobalStyleService>("StyleGlobal");
 
 /** Layer returned by `Style.platform`, branded with its metadata for typing. */
 export type PlatformLayer<Metadata extends StylePlatformMetadata = StylePlatformMetadata> =

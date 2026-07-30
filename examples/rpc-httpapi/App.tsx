@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import { AtomRpc, AtomHttpApi, MatchTag, createMount } from "effect-atom-jsx";
 
 // ─── AtomRpc Example ──────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ type AppRpcs = {
   updateUser: { payload: { id: string; name: string }; success: { ok: boolean }; error: string };
 };
 
-const RpcService = ServiceMap.Service<AtomRpc.AtomRpcClient<AppRpcs>>("RpcService");
+const RpcService = Context.Service<AtomRpc.AtomRpcClient<AppRpcs>>("RpcService");
 
 const mockRpcBackend = async (method: string, payload: any) => {
   await new Promise((r) => setTimeout(r, 600)); // fake delay
@@ -81,7 +81,7 @@ type AppHttpApi = {
   };
 };
 
-const HttpApiService = ServiceMap.Service<AtomHttpApi.AtomHttpApiClient<AppHttpApi>>("HttpApiService");
+const HttpApiService = Context.Service<AtomHttpApi.AtomHttpApiClient<AppHttpApi>>("HttpApiService");
 
 const HttpApiClient = AtomHttpApi.Tag()<"HttpApiClient", AppHttpApi>("HttpApiClient", {
   call: (group, endpoint, request) => Effect.tryPromise({

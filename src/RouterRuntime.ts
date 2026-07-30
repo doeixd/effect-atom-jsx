@@ -1,4 +1,4 @@
-import { Effect, Fiber, Layer, ServiceMap } from "effect";
+import { Effect, Fiber, Layer, Context } from "effect";
 import * as Route from "./Route.js";
 import type { Result as CoreResultType } from "./effect-ts.js";
 import * as ServerRoute from "./ServerRoute.js";
@@ -186,9 +186,9 @@ export interface NavigationService {
   readonly cancel: RouterRuntimeInstance["cancel"];
 }
 
-export const HistoryTag = ServiceMap.Service<HistoryService>("History");
-export const NavigationTag = ServiceMap.Service<NavigationService>("Navigation");
-export const RouterRuntimeTag = ServiceMap.Service<RouterRuntimeInstance>("RouterRuntime");
+export const HistoryTag = Context.Service<HistoryService>("History");
+export const NavigationTag = Context.Service<NavigationService>("Navigation");
+export const RouterRuntimeTag = Context.Service<RouterRuntimeInstance>("RouterRuntime");
 
 /** Configuration for a router runtime instance. */
 export interface RouterRuntimeConfig {
@@ -291,10 +291,8 @@ function isUnifiedAppRoute(node: AppRouteNode<any, any, any, any, any, any> | An
   return Route.UnifiedRouteSymbol in node;
 }
 
-function nodePath(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
-  return isUnifiedAppRoute(node)
-    ? Route.fullPathOf(node, node)
-    : Route.fullPathOf(node, node);
+function nodePath(root: AppRouteNode<any, any, any, any, any, any> | AnyRoute, node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
+  return Route.fullPathOf(root, node);
 }
 
 function nodeExact(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): boolean | undefined {
@@ -303,17 +301,18 @@ function nodeExact(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute):
     : node.kind === "index" ? true : node.options.exact;
 }
 
-function nodeId(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
+function nodeId(root: AppRouteNode<any, any, any, any, any, any> | AnyRoute, node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
   return isUnifiedAppRoute(node)
-    ? node[Route.UnifiedRouteSymbol].meta.id ?? nodePath(node)
-    : node.options.id ?? nodePath(node);
+    ? node[Route.UnifiedRouteSymbol].meta.id ?? nodePath(root, node)
+    : node.options.id ?? nodePath(root, node);
 }
 
 function matchedAppNodes(
+  root: AppRouteNode<any, any, any, any, any, any> | AnyRoute,
   nodes: ReadonlyArray<AppRouteNode<any, any, any, any, any, any> | AnyRoute>,
   pathname: string,
 ): ReadonlyArray<AppRouteNode<any, any, any, any, any, any> | AnyRoute> {
-  return nodes.filter((node) => nodePath(node).length > 0 && Route.matchPattern(nodePath(node), pathname, nodeExact(node)));
+  return nodes.filter((node) => nodePath(root, node).length > 0 && Route.matchPattern(nodePath(root, node), pathname, nodeExact(node)));
 }
 
 function routeResultEntriesToMaps(
@@ -366,13 +365,14 @@ function createSnapshot(state: {
   lastDispatchResult: RouterRuntimeOutcome | null;
   restoreScrollPosition: number | false | null;
   preventScrollReset: boolean;
+  appRoot: AppRouteNode<any, any, any, any, any, any> | AnyRoute;
   appNodes: ReadonlyArray<AppRouteNode<any, any, any, any, any, any> | AnyRoute>;
   serverRoutes: ReadonlyArray<ServerRouteNode<any, any, any, any>>;
 }): RouterRuntimeSnapshot {
   const pathname = state.location.pathname;
   const appMatches = state.appNodes
-    .filter((node) => nodePath(node).length > 0 && Route.matchPattern(nodePath(node), pathname, nodeExact(node)))
-    .map((node) => nodeId(node));
+    .filter((node) => nodePath(state.appRoot, node).length > 0 && Route.matchPattern(nodePath(state.appRoot, node), pathname, nodeExact(node)))
+    .map((node) => nodeId(state.appRoot, node));
   const matchedServer = ServerRoute.find(state.serverRoutes, "GET", pathname, { kind: "document" })
     ?? ServerRoute.find(state.serverRoutes, "GET", pathname);
   const serverMatch = matchedServer?.key ?? matchedServer?.path ?? null;
@@ -532,6 +532,7 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       },
       restoreScrollPosition,
       preventScrollReset,
+      appRoot: config.app,
       appNodes,
       serverRoutes,
     });
@@ -721,6 +722,7 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       },
       restoreScrollPosition,
       preventScrollReset,
+      appRoot: config.app,
       appNodes,
       serverRoutes,
     })),

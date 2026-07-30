@@ -1,4 +1,4 @@
-import { Effect, Schema, ServiceMap } from "effect";
+import { Effect, Schema, Context } from "effect";
 import * as Component from "../Component.js";
 import * as Portable from "../Portable.js";
 
@@ -11,7 +11,7 @@ interface SaveError {
   readonly message: string;
 }
 
-const Api = ServiceMap.Service<ApiService>("PortableActionTypeTest/Api");
+const Api = Context.Service<ApiService>("PortableActionTypeTest/Api");
 
 const SaveCode = Portable.code<
   { readonly prefix: string },

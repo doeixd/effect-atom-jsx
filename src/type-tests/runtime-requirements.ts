@@ -1,8 +1,8 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import * as Atom from "../Atom.js";
 
-const Api = ServiceMap.Service<{ readonly load: () => Effect.Effect<number> }>("Api");
-const Db = ServiceMap.Service<{ readonly read: () => Effect.Effect<string> }>("Db");
+const Api = Context.Service<{ readonly load: () => Effect.Effect<number> }>("Api");
+const Db = Context.Service<{ readonly read: () => Effect.Effect<string> }>("Db");
 
 const runtime = Atom.runtime(Layer.succeed(Api, { load: () => Effect.succeed(1) }));
 

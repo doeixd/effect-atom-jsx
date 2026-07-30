@@ -1,99 +1,101 @@
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  Ref,
+  Schema,
+} from "effect";
+import { jsonValueIssue } from "./wire-json.js";
+import { makeResourceCacheIdentity } from "./cache-identity.js";
 
-export const CodeTypeId: unique symbol = Symbol.for("effect-atom-jsx/Portable/Code");
-export const BoundCodeTypeId: unique symbol = Symbol.for("effect-atom-jsx/Portable/BoundCode");
+export const CodeTypeId: unique symbol = Symbol.for(
+  "effect-atom-jsx/Portable/Code",
+);
+export const BoundCodeTypeId: unique symbol = Symbol.for(
+  "effect-atom-jsx/Portable/BoundCode",
+);
 export const ExecutableInspectionTypeId: unique symbol = Symbol.for(
   "effect-atom-jsx/Portable/ExecutableInspection",
 );
 
 /** Stable logical code identity. This is an address, never executable source. */
-export const CodeId = Schema.String
-  .check(Schema.isNonEmpty())
-  .pipe(Schema.brand("@effect-atom-jsx/Portable/CodeId"));
+export const CodeId = Schema.String.check(Schema.isNonEmpty()).pipe(
+  Schema.brand("@effect-atom-jsx/Portable/CodeId"),
+);
 export type CodeId = typeof CodeId.Type;
 
 /** Deployment/build identity used to reject stale manifests. */
-export const BuildId = Schema.String
-  .check(Schema.isNonEmpty())
-  .pipe(Schema.brand("@effect-atom-jsx/Portable/BuildId"));
+export const BuildId = Schema.String.check(Schema.isNonEmpty()).pipe(
+  Schema.brand("@effect-atom-jsx/Portable/BuildId"),
+);
 export type BuildId = typeof BuildId.Type;
 
-export class PortableCodeNotFoundError
-  extends Schema.TaggedErrorClass<PortableCodeNotFoundError>(
-    "@effect-atom-jsx/PortableCodeNotFoundError",
-  )("PortableCodeNotFoundError", {
-    id: CodeId,
-    reason: Schema.String,
-  })
-{
+export class PortableCodeNotFoundError extends Schema.TaggedErrorClass<PortableCodeNotFoundError>(
+  "@effect-atom-jsx/PortableCodeNotFoundError",
+)("PortableCodeNotFoundError", {
+  id: CodeId,
+  reason: Schema.String,
+}) {
   override get message(): string {
     return this.reason;
   }
 }
 
-export class PortableCodeLoadError
-  extends Schema.TaggedErrorClass<PortableCodeLoadError>(
-    "@effect-atom-jsx/PortableCodeLoadError",
-  )("PortableCodeLoadError", {
-    id: CodeId,
-    reason: Schema.String,
-  })
-{
+export class PortableCodeLoadError extends Schema.TaggedErrorClass<PortableCodeLoadError>(
+  "@effect-atom-jsx/PortableCodeLoadError",
+)("PortableCodeLoadError", {
+  id: CodeId,
+  reason: Schema.String,
+}) {
   override get message(): string {
     return this.reason;
   }
 }
 
-export class PortableCodeIdentityMismatchError
-  extends Schema.TaggedErrorClass<PortableCodeIdentityMismatchError>(
-    "@effect-atom-jsx/PortableCodeIdentityMismatchError",
-  )("PortableCodeIdentityMismatchError", {
-    requested: CodeId,
-    loaded: CodeId,
-    reason: Schema.String,
-  })
-{
+export class PortableCodeIdentityMismatchError extends Schema.TaggedErrorClass<PortableCodeIdentityMismatchError>(
+  "@effect-atom-jsx/PortableCodeIdentityMismatchError",
+)("PortableCodeIdentityMismatchError", {
+  requested: CodeId,
+  loaded: CodeId,
+  reason: Schema.String,
+}) {
   override get message(): string {
     return this.reason;
   }
 }
 
-export class PortableBuildMismatchError
-  extends Schema.TaggedErrorClass<PortableBuildMismatchError>(
-    "@effect-atom-jsx/PortableBuildMismatchError",
-  )("PortableBuildMismatchError", {
-    id: CodeId,
-    expected: BuildId,
-    actual: BuildId,
-    reason: Schema.String,
-  })
-{
+export class PortableBuildMismatchError extends Schema.TaggedErrorClass<PortableBuildMismatchError>(
+  "@effect-atom-jsx/PortableBuildMismatchError",
+)("PortableBuildMismatchError", {
+  id: CodeId,
+  expected: BuildId,
+  actual: BuildId,
+  reason: Schema.String,
+}) {
   override get message(): string {
     return this.reason;
   }
 }
 
-export class PortableCaptureEncodeError
-  extends Schema.TaggedErrorClass<PortableCaptureEncodeError>(
-    "@effect-atom-jsx/PortableCaptureEncodeError",
-  )("PortableCaptureEncodeError", {
-    id: CodeId,
-    reason: Schema.String,
-  })
-{
+export class PortableCaptureEncodeError extends Schema.TaggedErrorClass<PortableCaptureEncodeError>(
+  "@effect-atom-jsx/PortableCaptureEncodeError",
+)("PortableCaptureEncodeError", {
+  id: CodeId,
+  reason: Schema.String,
+}) {
   override get message(): string {
     return this.reason;
   }
 }
 
-export class PortableCaptureDecodeError
-  extends Schema.TaggedErrorClass<PortableCaptureDecodeError>(
-    "@effect-atom-jsx/PortableCaptureDecodeError",
-  )("PortableCaptureDecodeError", {
-    id: CodeId,
-    reason: Schema.String,
-  })
-{
+export class PortableCaptureDecodeError extends Schema.TaggedErrorClass<PortableCaptureDecodeError>(
+  "@effect-atom-jsx/PortableCaptureDecodeError",
+)("PortableCaptureDecodeError", {
+  id: CodeId,
+  reason: Schema.String,
+}) {
   override get message(): string {
     return this.reason;
   }
@@ -118,10 +120,7 @@ export interface Code<
   readonly id: CodeId;
   readonly buildId: BuildId;
   readonly captures: Schema.Codec<Captures, EncodedCaptures>;
-  readonly run: (
-    captures: Captures,
-    ...args: Args
-  ) => Effect.Effect<A, E, R>;
+  readonly run: (captures: Captures, ...args: Args) => Effect.Effect<A, E, R>;
 }
 
 export type AnyCode = Code<any, any, ReadonlyArray<any>, any, any, any>;
@@ -137,10 +136,7 @@ export interface CodeOptions<
   readonly id: string;
   readonly buildId: string;
   readonly captures: Schema.Codec<Captures, EncodedCaptures>;
-  readonly run: (
-    captures: Captures,
-    ...args: Args
-  ) => Effect.Effect<A, E, R>;
+  readonly run: (captures: Captures, ...args: Args) => Effect.Effect<A, E, R>;
 }
 
 /**
@@ -180,7 +176,14 @@ export interface BoundCode<
   readonly captures: Captures;
 }
 
-export type AnyBoundCode = BoundCode<any, any, ReadonlyArray<any>, any, any, any>;
+export type AnyBoundCode = BoundCode<
+  any,
+  any,
+  ReadonlyArray<any>,
+  any,
+  any,
+  any
+>;
 
 export type ExecutableInspection<
   Args extends ReadonlyArray<unknown>,
@@ -189,12 +192,32 @@ export type ExecutableInspection<
   R,
 > =
   | {
-    readonly kind: "portable";
-    readonly executable: BoundCode<any, any, Args, A, E, R>;
-  }
+      readonly kind: "portable";
+      readonly executable: BoundCode<any, any, Args, A, E, R>;
+      readonly execution?:
+        | {
+            readonly kind: "component-action";
+            readonly hasReactivityKeys: boolean;
+            readonly hasTransitionObserver: boolean;
+            readonly concurrency?:
+              | "switch"
+              | "queue"
+              | "drop"
+              | {
+                  readonly max: number;
+                };
+            readonly detached: boolean;
+          }
+        | {
+            readonly kind: "component-query";
+            readonly hasRetry: boolean;
+            readonly hasPoll: boolean;
+            readonly reactivityKeys: ReadonlyArray<string>;
+          };
+    }
   | {
-    readonly kind: "opaque";
-  };
+      readonly kind: "opaque";
+    };
 
 export interface InspectableExecutable<
   Args extends ReadonlyArray<unknown>,
@@ -202,7 +225,12 @@ export interface InspectableExecutable<
   E,
   R,
 > {
-  readonly [ExecutableInspectionTypeId]: () => ExecutableInspection<Args, A, E, R>;
+  readonly [ExecutableInspectionTypeId]: () => ExecutableInspection<
+    Args,
+    A,
+    E,
+    R
+  >;
 }
 
 export function bind<
@@ -229,9 +257,11 @@ export function bind<
 }
 
 export function isBoundCode(value: unknown): value is AnyBoundCode {
-  return (typeof value === "object" || typeof value === "function")
-    && value !== null
-    && (value as Partial<AnyBoundCode>)[BoundCodeTypeId] === BoundCodeTypeId;
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    (value as Partial<AnyBoundCode>)[BoundCodeTypeId] === BoundCodeTypeId
+  );
 }
 
 export function execute<
@@ -265,12 +295,7 @@ export function annotateExecutable<
   return target as Target & InspectableExecutable<Args, A, E, R>;
 }
 
-export function inspectExecutable<
-  Args extends ReadonlyArray<unknown>,
-  A,
-  E,
-  R,
->(
+export function inspectExecutable<Args extends ReadonlyArray<unknown>, A, E, R>(
   value: InspectableExecutable<Args, A, E, R>,
 ): ExecutableInspection<Args, A, E, R>;
 export function inspectExecutable(
@@ -280,16 +305,18 @@ export function inspectExecutable(
   value: unknown,
 ): ExecutableInspection<ReadonlyArray<unknown>, unknown, unknown, unknown> {
   if (
-    (typeof value === "object" || typeof value === "function")
-    && value !== null
-    && ExecutableInspectionTypeId in value
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    ExecutableInspectionTypeId in value
   ) {
-    return (value as InspectableExecutable<
-      ReadonlyArray<unknown>,
-      unknown,
-      unknown,
-      unknown
-    >)[ExecutableInspectionTypeId]();
+    return (
+      value as InspectableExecutable<
+        ReadonlyArray<unknown>,
+        unknown,
+        unknown,
+        unknown
+      >
+    )[ExecutableInspectionTypeId]();
   }
   return { kind: "opaque" };
 }
@@ -318,6 +345,27 @@ export interface Descriptor<
   };
 }
 
+/**
+ * Derive the canonical cache identity for one portable descriptor.
+ *
+ * The descriptor supplies the executable identity axes and the canonical
+ * reactivity keys supply its invalidation identity. Cache lookup and
+ * single-flight coordination must use this same derived key; it is never
+ * duplicated in a wire manifest.
+ */
+export function cacheKey(
+  descriptor: Descriptor,
+  reactivityKeys: ReadonlyArray<string> = [],
+): string {
+  const resourceId =
+    `${descriptor.kind}:${descriptor.version}:${descriptor.buildId}:${descriptor.id}`;
+  const canonicalReactivityKeys = [...new Set(reactivityKeys)].sort();
+  return makeResourceCacheIdentity(resourceId, {
+    captures: descriptor.captures,
+    reactivityKeys: canonicalReactivityKeys,
+  }).key;
+}
+
 export function describe<
   Captures,
   EncodedCaptures,
@@ -328,27 +376,33 @@ export function describe<
 >(
   executable: BoundCode<Captures, EncodedCaptures, Args, A, E, R>,
 ): Effect.Effect<Descriptor<Args, A, E, R>, PortableCaptureEncodeError> {
-  return Schema.encodeEffect(executable.code.captures)(executable.captures).pipe(
+  return Schema.encodeEffect(executable.code.captures)(
+    executable.captures,
+  ).pipe(
     Effect.flatMap((captures) => {
-      const issue = jsonValueIssue(captures);
+      const issue = jsonValueIssue(captures, "Portable capture");
       return issue === undefined
         ? Effect.succeed({
-          version: 1 as const,
-          kind: "portable.code" as const,
-          id: executable.code.id,
-          buildId: executable.code.buildId,
-          captures,
-        })
-        : Effect.fail(new PortableCaptureEncodeError({
-          id: executable.code.id,
-          reason: issue,
-        }));
+            version: 1 as const,
+            kind: "portable.code" as const,
+            id: executable.code.id,
+            buildId: executable.code.buildId,
+            captures,
+          })
+        : Effect.fail(
+            new PortableCaptureEncodeError({
+              id: executable.code.id,
+              reason: issue,
+            }),
+          );
     }),
-    Effect.catch((error) =>
-      Effect.fail(new PortableCaptureEncodeError({
-        id: executable.code.id,
-        reason: String(error),
-      }))
+    Effect.catchTag("SchemaError", (error) =>
+      Effect.fail(
+        new PortableCaptureEncodeError({
+          id: executable.code.id,
+          reason: String(error),
+        }),
+      ),
     ),
   );
 }
@@ -359,7 +413,14 @@ export function decodeDescriptor(
   return Schema.decodeUnknownEffect(DescriptorSchema)(input);
 }
 
-export type CodeLoader = () => Effect.Effect<AnyCode, PortableCodeLoadError>;
+/**
+ * Effect-native lazy code loader.
+ *
+ * Loader failures and defects are normalized to `PortableCodeLoadError` at
+ * the resolver boundary, so dynamic imports can use `Effect.tryPromise`
+ * without hand-authoring protocol errors.
+ */
+export type CodeLoader = () => Effect.Effect<AnyCode, unknown>;
 
 export interface ResolverService {
   readonly load: (
@@ -370,17 +431,16 @@ export interface ResolverService {
   >;
 }
 
-export const Resolver = ServiceMap.Service<ResolverService>(
+export const Resolver = Context.Service<ResolverService>(
   "effect-atom-jsx/Portable/Resolver",
 );
 
-export type ResolverEntries = Readonly<
-  Record<string, AnyCode | CodeLoader>
->;
+export type ResolverEntries = Readonly<Record<string, AnyCode | CodeLoader>>;
 
 /**
- * Build one resolver instance. Lazy loaders are memoized within the instance so
- * concurrent or repeated events share the same module request.
+ * Build one resolver instance. Concurrent callers share one loader attempt;
+ * successful code is retained for the resolver lifetime, while a failed
+ * attempt returns to idle so a later interaction can retry.
  */
 export function makeResolver(
   entries: ResolverEntries,
@@ -391,19 +451,133 @@ export function makeResolver(
       Effect.Effect<AnyCode, PortableCodeLoadError>
     >();
     for (const [id, entry] of Object.entries(entries)) {
-      const load = typeof entry === "function"
-        ? yield* Effect.cached(entry())
-        : Effect.succeed(entry);
+      if (typeof entry !== "function") {
+        resolvedEntries.set(id, Effect.succeed(entry));
+        continue;
+      }
+      const attempt: Effect.Effect<AnyCode, PortableCodeLoadError> = Effect.try({
+        try: entry,
+        catch: (error) =>
+          new PortableCodeLoadError({
+            id: id as CodeId,
+            reason: `Portable code "${id}" loader threw before returning an Effect: ${String(error)}`,
+        }),
+      }).pipe(
+        Effect.flatten,
+        Effect.mapError((error) =>
+          error instanceof PortableCodeLoadError
+            ? error
+            : new PortableCodeLoadError({
+                id: id as CodeId,
+                reason: `Portable code "${id}" loader failed: ${String(error)}`,
+              })
+        ),
+        Effect.catchDefect((defect) =>
+          Effect.fail(
+            new PortableCodeLoadError({
+              id: id as CodeId,
+              reason: `Portable code "${id}" loader failed unexpectedly: ${String(defect)}`,
+            }),
+          ),
+        ),
+      );
+      type LoaderState =
+        | { readonly _tag: "Idle" }
+        | {
+            readonly _tag: "Loading";
+            readonly deferred: Deferred.Deferred<
+              AnyCode,
+              PortableCodeLoadError
+            >;
+          }
+        | { readonly _tag: "Loaded"; readonly code: AnyCode };
+      type LoaderDecision =
+        | {
+            readonly _tag: "Await";
+            readonly effect: Effect.Effect<
+              AnyCode,
+              PortableCodeLoadError
+            >;
+          }
+        | {
+            readonly _tag: "Load";
+            readonly deferred: Deferred.Deferred<
+              AnyCode,
+              PortableCodeLoadError
+            >;
+          }
+        | { readonly _tag: "Loaded"; readonly code: AnyCode };
+      const state = yield* Ref.make<LoaderState>({ _tag: "Idle" });
+      const load: Effect.Effect<
+        AnyCode,
+        PortableCodeLoadError
+      > = Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const observed = yield* Ref.get(state);
+          if (observed._tag === "Loaded") return observed.code;
+          if (observed._tag === "Loading") {
+            return yield* restore(Deferred.await(observed.deferred));
+          }
+          const candidate = yield* Deferred.make<
+            AnyCode,
+            PortableCodeLoadError
+          >();
+          const decision = yield* Ref.modify(
+            state,
+            (
+              current,
+            ): readonly [LoaderDecision, LoaderState] => {
+              switch (current._tag) {
+                case "Loaded":
+                  return [
+                    { _tag: "Loaded", code: current.code },
+                    current,
+                  ];
+                case "Loading":
+                  return [
+                    {
+                      _tag: "Await",
+                      effect: Deferred.await(current.deferred),
+                    },
+                    current,
+                  ];
+                case "Idle":
+                  return [
+                    { _tag: "Load", deferred: candidate },
+                    { _tag: "Loading", deferred: candidate },
+                  ];
+              }
+            },
+          );
+          if (decision._tag === "Loaded") return decision.code;
+          if (decision._tag === "Await") {
+            return yield* restore(decision.effect);
+          }
+
+          const exit = yield* Effect.exit(restore(attempt));
+          yield* Ref.set(
+            state,
+            Exit.isSuccess(exit)
+              ? { _tag: "Loaded", code: exit.value }
+              : { _tag: "Idle" },
+          );
+          yield* Deferred.done(decision.deferred, exit);
+          if (Exit.isSuccess(exit)) return exit.value;
+          return yield* Effect.failCause(exit.cause);
+        })
+      );
       resolvedEntries.set(id, load);
     }
     return {
       load: (id) => {
         const load = resolvedEntries.get(id);
         if (load === undefined) {
-          return Effect.fail(new PortableCodeNotFoundError({
-            id,
-            reason: `No portable code is registered for "${id}".`,
-          }));
+          return Effect.fail(
+            new PortableCodeNotFoundError({
+              id,
+              reason: `No portable code is registered for "${id}".`,
+            }),
+          );
         }
         return load;
       },
@@ -417,23 +591,13 @@ export function resolverLayer(
   return Layer.effect(Resolver)(makeResolver(entries));
 }
 
-export interface ResolvedCode<
-  Args extends ReadonlyArray<unknown>,
-  A,
-  E,
-  R,
-> {
+export interface ResolvedCode<Args extends ReadonlyArray<unknown>, A, E, R> {
   readonly id: CodeId;
   readonly buildId: BuildId;
   readonly run: (...args: Args) => Effect.Effect<A, E, R>;
 }
 
-export function resolve<
-  Args extends ReadonlyArray<unknown>,
-  A,
-  E,
-  R,
->(
+export function resolve<Args extends ReadonlyArray<unknown>, A, E, R>(
   descriptor: Descriptor<Args, A, E, R>,
 ): Effect.Effect<
   ResolvedCode<Args, A, E, R>,
@@ -444,28 +608,30 @@ export function resolve<
     const resolver = yield* Resolver;
     const definition = yield* resolver.load(descriptor.id);
     if (definition.id !== descriptor.id) {
-      return yield* Effect.fail(new PortableCodeIdentityMismatchError({
+      return yield* new PortableCodeIdentityMismatchError({
         requested: descriptor.id,
         loaded: definition.id,
         reason: `Portable code "${descriptor.id}" resolved to "${definition.id}".`,
-      }));
+      });
     }
     if (definition.buildId !== descriptor.buildId) {
-      return yield* Effect.fail(new PortableBuildMismatchError({
+      return yield* new PortableBuildMismatchError({
         id: descriptor.id,
         expected: definition.buildId,
         actual: descriptor.buildId,
         reason: `Portable code "${descriptor.id}" belongs to a different build.`,
-      }));
+      });
     }
-    const captures = yield* Schema.decodeUnknownEffect(
-      definition.captures,
-    )(descriptor.captures).pipe(
-      Effect.catch((error) =>
-        Effect.fail(new PortableCaptureDecodeError({
-          id: descriptor.id,
-          reason: String(error),
-        }))
+    const captures = yield* Schema.decodeUnknownEffect(definition.captures)(
+      descriptor.captures,
+    ).pipe(
+      Effect.catchTag("SchemaError", (error) =>
+        Effect.fail(
+          new PortableCaptureDecodeError({
+            id: descriptor.id,
+            reason: String(error),
+          }),
+        ),
       ),
     );
     return {
@@ -491,70 +657,9 @@ export const Portable = {
   isBoundCode,
   inspectExecutable,
   describe,
+  cacheKey,
   decodeDescriptor,
   makeResolver,
   resolverLayer,
   resolve,
 } as const;
-
-function jsonValueIssue(value: unknown): string | undefined {
-  const seen = new WeakSet<object>();
-  const visit = (current: unknown, path: string): string | undefined => {
-    if (
-      current === null
-      || typeof current === "string"
-      || typeof current === "boolean"
-    ) {
-      return undefined;
-    }
-    if (typeof current === "number") {
-      return Number.isFinite(current)
-        ? undefined
-        : `Portable capture ${path} must be a finite JSON number.`;
-    }
-    if (typeof current !== "object") {
-      return `Portable capture ${path} is not JSON-safe (${typeof current}).`;
-    }
-    if (seen.has(current)) {
-      return `Portable capture ${path} contains a cycle.`;
-    }
-    seen.add(current);
-    if (Array.isArray(current)) {
-      for (let index = 0; index < current.length; index += 1) {
-        const issue = visit(current[index], `${path}[${index}]`);
-        if (issue !== undefined) {
-          seen.delete(current);
-          return issue;
-        }
-      }
-      seen.delete(current);
-      return undefined;
-    }
-    const prototype = Object.getPrototypeOf(current);
-    if (prototype !== Object.prototype && prototype !== null) {
-      seen.delete(current);
-      return `Portable capture ${path} must encode to a plain JSON object.`;
-    }
-    for (const key of Reflect.ownKeys(current)) {
-      if (typeof key !== "string") {
-        seen.delete(current);
-        return `Portable capture ${path} contains a symbol key.`;
-      }
-      const issue = visit(
-        (current as Record<string, unknown>)[key],
-        `${path}.${key}`,
-      );
-      if (issue !== undefined) {
-        seen.delete(current);
-        return issue;
-      }
-    }
-    seen.delete(current);
-    return undefined;
-  };
-  try {
-    return visit(value, "$");
-  } catch (error) {
-    return `Portable captures could not be inspected as JSON: ${String(error)}`;
-  }
-}

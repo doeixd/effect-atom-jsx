@@ -8,7 +8,7 @@ import {
   Scope,
   Schema,
   Stream as FxStream,
-  ServiceMap,
+  Context,
 } from "effect";
 import { createEffect, createSignal, onCleanup, useContext, type Accessor, type Setter } from "./api.js";
 import { Owner, getOwner, runWithOwner } from "./owner.js";
@@ -18,6 +18,18 @@ import * as Element from "./Element.js";
 import * as Portable from "./Portable.js";
 import * as Route from "./Route.js";
 import * as View from "./View.js";
+import {
+  annotateHandle,
+  type AnyBindingSnapshotPolicy,
+  type BindingResumePolicy,
+  type InspectableQueryHandle,
+  type InspectableStateHandle,
+} from "./resume-handle.js";
+import {
+  observeCommittedComponentBindings,
+  observeRenderedComponentBoundary,
+  withRenderedComponentOwner,
+} from "./resume-session.js";
 import {
   defineMutation,
   defineQuery,
@@ -30,6 +42,7 @@ import {
   type RuntimeLike,
 } from "./effect-ts.js";
 import { currentComponentScope } from "./component-scope.js";
+import { normalizeReactivityKeys } from "./reactivity-runtime.js";
 
 export const ComponentTypeId: unique symbol = Symbol.for("effect-atom-jsx/Component");
 
@@ -91,6 +104,7 @@ export interface SetupStepInspection {
   readonly name?: string;
   readonly kind: SetupStepKind;
   readonly plan?: SetupPlan;
+  readonly resume?: AnyBindingSnapshotPolicy;
 }
 
 /** Inspectable setup shape. Raw setup functions are intentionally opaque. */
@@ -151,6 +165,7 @@ export interface Setup<Props, Bindings, E = never, R = never> extends Pipeable<S
   bind<const Name extends string, A, E2, R2>(
     name: NoDuplicateName<Bindings, Name>,
     f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E2, R2>,
+    options?: BindOptions<A>,
   ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E | E2, R | R2>;
   value<const Name extends string, A>(
     name: NoDuplicateName<Bindings, Name>,
@@ -171,6 +186,10 @@ export type SetupRequirementsOf<T> = T extends Setup<any, any, any, infer R> ? R
 type SetupSource<Props, Bindings, E, R> =
   | ((props: Props) => Effect.Effect<Bindings, E, R>)
   | Setup<Props, Bindings, E, R>;
+
+export interface BindOptions<A> {
+  readonly resume?: BindingResumePolicy<A>;
+}
 
 /** Any authored slot contract accepted by component/style/behavior APIs. */
 export type AnySlotContract = View.Slots.Any | Record<string, View.Slot.Any>;
@@ -217,7 +236,7 @@ type PropsSpec<Props> = {
 };
 
 type RequirementSpec<Req> = {
-  readonly tags: ReadonlyArray<ServiceMap.Key<any, any>>;
+  readonly tags: ReadonlyArray<Context.Key<any, any>>;
   readonly _Req?: (_: Req) => Req;
 };
 
@@ -241,10 +260,36 @@ export interface SlotsComponentTransformDescriptor {
   readonly portability: "portable";
 }
 
+/**
+ * A behavior attachment recorded by `Component.withBehavior(...)`.
+ *
+ * `portability` reflects the behavior's declarative attachment record:
+ * portable attachments list the code identities whose resolution reproduces
+ * the behavior on a resumed client; opaque attachments require fallback
+ * activation.
+ */
+export interface BehaviorComponentTransformDescriptor {
+  readonly kind: "component.withBehavior";
+  readonly phase: "setup";
+  readonly portability: "portable" | "opaque";
+  readonly codeIds?: ReadonlyArray<string>;
+  /**
+   * Runtime-only reattachment recipe. This is deliberately not a wire
+   * descriptor: the component activation entry already loads the authored
+   * component module, and restoration invokes this recipe without rerunning
+   * the component's base setup.
+   */
+  readonly reattach?: (
+    bindings: unknown,
+    props: unknown,
+  ) => Effect.Effect<unknown, unknown, unknown>;
+}
+
 /** Inspectable metadata for a wrapper that changes component execution. */
 export type ComponentTransformDescriptor =
   | OpaqueComponentTransformDescriptor
-  | SlotsComponentTransformDescriptor;
+  | SlotsComponentTransformDescriptor
+  | BehaviorComponentTransformDescriptor;
 
 /** Immutable, read-only definition metadata retained by a component value. */
 export interface ComponentDefinition {
@@ -368,11 +413,19 @@ function makeSetup<Props, Bindings, E, R>(
     },
     effect,
     plan: setupPlanFromSteps(steps),
-    bind: (name: string, f: (input: SetupInput<Props, Bindings>) => Effect.Effect<unknown, unknown, unknown>) =>
+    bind: (
+      name: string,
+      f: (input: SetupInput<Props, Bindings>) => Effect.Effect<unknown, unknown, unknown>,
+      options?: BindOptions<unknown>,
+    ) =>
       makeSetup<Props, any, any, any>([
         ...steps,
         {
-          inspection: { kind: "binding", name },
+          inspection: {
+            kind: "binding",
+            name,
+            ...(options?.resume === undefined ? {} : { resume: options.resume }),
+          },
           run: (input) =>
             f(input as unknown as SetupInput<Props, Bindings>).pipe(
               Effect.map((value) => ({ [name]: value })),
@@ -450,7 +503,7 @@ function toComponent<Props, Req, E, Bindings, SlotContract = SlotsFromBindings<B
 
     const fiber = runForkWithAmbient(
       Effect.all({
-        bindings: internal.setup(props),
+        bindings: runComponentSetup(out, internal, props),
         platform: Effect.serviceOption(View.PlatformTag),
         diagnostics: Effect.serviceOption(DiagnosticsReporterTag),
       }).pipe(
@@ -571,7 +624,7 @@ export function propsSchema<SchemaProps>(schema: Schema.Schema<SchemaProps>): Pr
  * Tags are metadata for authoring and tooling; the Effect requirement type is
  * still the source of truth and is preserved through setup and wrappers.
  */
-export function require<Req = never>(...tags: ReadonlyArray<ServiceMap.Key<any, any>>): RequirementSpec<Req> {
+export function require<Req = never>(...tags: ReadonlyArray<Context.Key<any, any>>): RequirementSpec<Req> {
   return { tags };
 }
 
@@ -584,10 +637,11 @@ export function setup<Props = {}>(): Setup<Props, {}, never, never> {
 export function bind<const Name extends string, Props = any, Bindings = any, A = unknown, E = never, R = never>(
   name: Name,
   f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E, R>,
+  options?: BindOptions<A>,
 ): <E0, R0>(
   source: Setup<Props, Bindings, E0, R0> & (Name extends keyof Bindings ? never : unknown),
 ) => Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E0 | E, R0 | R> {
-  return (source) => source.bind(name as any, f as any) as any;
+  return (source) => source.bind(name as any, f as any, options as any) as any;
 }
 
 /** Add a synchronous binding to a setup builder. */
@@ -863,7 +917,7 @@ export function validateRenderedSlotContract<Props, Req, E, Bindings, Slots>(
 ): Effect.Effect<readonly ComponentDiagnostic[], E, Req> {
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
-  return i.setup(parsed).pipe(
+  return runComponentSetup(component, i, parsed).pipe(
     Effect.map((bindings) => {
       const result = i.view === undefined
         ? typeof (parsed as RenderPropChildren<Bindings>).children === "function"
@@ -892,10 +946,10 @@ type DiagnosticsReporterService = {
 
 /**
  * Well-known service id shared with `Diagnostics.ReporterTag`. Effect
- * ServiceMap resolves by string id, so Component can auto-report without
+ * Context resolves by string id, so Component can auto-report without
  * importing Diagnostics (avoids a Component ↔ Diagnostics cycle).
  */
-const DiagnosticsReporterTag = ServiceMap.Service<DiagnosticsReporterService>("DiagnosticsReporter");
+const DiagnosticsReporterTag = Context.Service<DiagnosticsReporterService>("DiagnosticsReporter");
 
 function toAutoReportDiagnostics(
   component: Component<any, any, any, any, any>,
@@ -957,7 +1011,7 @@ function renderViewResult(
     }
     reportDevDiagnostics(component, result, bindings, diagnosticsReporter);
   }
-  return View.node(result);
+  return observeRenderedComponentBoundary(View.node(result), bindings);
 }
 
 function invokeCommittedView<Props, Req, E, Bindings>(
@@ -965,11 +1019,32 @@ function invokeCommittedView<Props, Req, E, Bindings>(
   propsValue: Props,
   bindings: Bindings,
 ): unknown {
-  if (internal.view === undefined) {
-    const renderProp = (propsValue as RenderPropChildren<Bindings>).children;
-    return typeof renderProp === "function" ? renderProp(bindings) : null;
-  }
-  return internal.view(propsValue, bindings);
+  return withRenderedComponentOwner(bindings, () => {
+    if (internal.view === undefined) {
+      const renderProp = (propsValue as RenderPropChildren<Bindings>).children;
+      return typeof renderProp === "function" ? renderProp(bindings) : null;
+    }
+    return internal.view(propsValue, bindings);
+  });
+}
+
+function runComponentSetup<Props, Req, E, Bindings>(
+  component: Component<Props, Req, E, Bindings, any>,
+  internal: InternalComponent<Props, Req, E, Bindings>,
+  propsValue: Props,
+): Effect.Effect<Bindings, E, Req> {
+  return internal.setup(propsValue).pipe(
+    Effect.map((bindings) => {
+      observeCommittedComponentBindings(
+        component,
+        internal.definition.name,
+        internal.definition.setupPlan,
+        propsValue,
+        bindings,
+      );
+      return bindings;
+    }),
+  );
 }
 
 function committedView<Slots>(
@@ -993,7 +1068,7 @@ export function setupEffect<Props, Req, E, Bindings, SlotContract>(
 ): Effect.Effect<Bindings, E, Req> {
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
-  return i.setup(parsed);
+  return runComponentSetup(component, i, parsed);
 }
 
 export function renderEffect<Props, Req, E, Bindings, SlotContract>(
@@ -1002,7 +1077,7 @@ export function renderEffect<Props, Req, E, Bindings, SlotContract>(
 ): Effect.Effect<unknown, E, Req> {
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
-  return i.setup(parsed).pipe(
+  return runComponentSetup(component, i, parsed).pipe(
     Effect.flatMap((bindings) =>
       Effect.all({
         platform: Effect.serviceOption(View.PlatformTag),
@@ -1030,7 +1105,7 @@ export function renderViewEffect<Props, Req, E, Bindings, Slots>(
 ): Effect.Effect<View.View<View.NormalizeSlots<Slots>> | undefined, E, Req> {
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
-  return i.setup(parsed).pipe(
+  return runComponentSetup(component, i, parsed).pipe(
     Effect.map((bindings) => {
       const result = invokeCommittedView(i, parsed, bindings);
       return committedView<Slots>(component, result);
@@ -1103,7 +1178,7 @@ export function inspect<Props, Req, E, Bindings, SlotContract>(
   return Object.freeze({
     definition: i.definition,
     parseProps: (input: unknown) => i.props.parse(input),
-    setup: (propsValue: Props) => i.setup(propsValue),
+    setup: (propsValue: Props) => runComponentSetup(component, i, propsValue),
     render: (propsValue: Props, bindings: Bindings) => {
       const result = invokeCommittedView(i, propsValue, bindings);
       return renderViewResult(component, result, bindings, undefined, undefined);
@@ -1236,18 +1311,28 @@ export function effect<T>(
   });
 }
 
+/** Writable component-local state with read-only resumability inspection. */
+export type StateAtom<A> = Atom.WritableAtom<A> & InspectableStateHandle<A>;
+
 /** Allocate a component-scoped writable atom during setup. */
-export function state<A>(initial: A): Effect.Effect<Atom.WritableAtom<A>> {
+export function state<A>(
+  initial: A,
+): Effect.Effect<StateAtom<A>> {
   return Effect.gen(function* () {
     const lifetime = yield* setupLifetime("Component.state");
     const [getValue, setValue] = createSignal(initial);
-    return Atom.writable(
+    const atom = Atom.writable(
       () => getValue(),
       (_ctx, value: A) => {
         lifetime.assertLive();
         setValue(() => value);
       },
     );
+    return annotateHandle(atom, {
+      kind: "state",
+      read: getValue,
+      isDisposed: lifetime.isDisposed,
+    });
   });
 }
 
@@ -1261,22 +1346,162 @@ export function derived<A>(fn: () => A): Effect.Effect<Atom.ReadonlyAtom<A>> {
  * The returned atom has `Atom.ResultAtom<A, E>` semantics and participates in
  * the component's runtime/layer context.
  */
-export function query<A, E, R>(
+export interface QueryOptions<
+  E = unknown,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+> {
+  readonly name?: string;
+  /**
+   * Semantic keys that rerun the query after invalidation and are preserved in
+   * resumability metadata for client-side revalidation.
+   */
+  readonly reactivityKeys?: Atom.ReactivityKeysInput;
+  readonly retrySchedule?: Schedule.Schedule<
+    unknown,
+    NoInfer<E>,
+    RetryError,
+    RetryR
+  >;
+  readonly pollSchedule?: Schedule.Schedule<
+    unknown,
+    unknown,
+    PollError,
+    PollR
+  >;
+}
+
+/** Read-only component query result atom with resumability inspection. */
+export type QueryAtom<A, E> =
+  & Atom.ReadonlyAtom<Result<A, E>, E>
+  & InspectableQueryHandle<A, E>;
+
+export function query<
+  Captures,
+  EncodedCaptures,
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
+  executable: Portable.BoundCode<Captures, EncodedCaptures, readonly [], A, E, R>,
+  options?: QueryOptions<E, RetryError, RetryR, PollError, PollR>,
+): Effect.Effect<
+  QueryAtom<A, E | RetryError>,
+  never,
+  R | RetryR | PollR
+>;
+export function query<
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
   effect: () => Effect.Effect<A, E, R>,
-  options?: {
-    readonly name?: string;
-    readonly retrySchedule?: Schedule.Schedule<unknown, any, any>;
-    readonly pollSchedule?: Schedule.Schedule<unknown, any, any>;
-  },
-): Effect.Effect<Atom.ReadonlyAtom<Result<A, E>, E>, never, R> {
+  options?: QueryOptions<E, RetryError, RetryR, PollError, PollR>,
+): Effect.Effect<
+  QueryAtom<A, E | RetryError>,
+  never,
+  R | RetryR | PollR
+>;
+export function query<
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
+  executableOrEffect:
+    | (() => Effect.Effect<A, E, R>)
+    | Portable.BoundCode<any, any, readonly [], A, E, R>,
+  options?: QueryOptions<E, RetryError, RetryR, PollError, PollR>,
+): Effect.Effect<
+  QueryAtom<A, E | RetryError>,
+  never,
+  R | RetryR | PollR
+> {
   return Effect.gen(function* () {
-    const runtimeContext = yield* Effect.services<R>();
-    return yield* setupReactiveOwner(() =>
-      defineQuery(effect, {
-        ...options,
-        runtime: runtimeContext as RuntimeLike<R, unknown>,
-      }).result as Atom.ReadonlyAtom<Result<A, E>, E>
-    );
+    const isPortable = Portable.isBoundCode(executableOrEffect);
+    const reactivityKeys = options?.reactivityKeys === undefined
+      ? []
+      : normalizeReactivityKeys(options.reactivityKeys);
+    const execute: () => Effect.Effect<A, E, R> = isPortable
+      ? () =>
+        Portable.execute(
+          executableOrEffect as Portable.BoundCode<any, any, readonly [], A, E, R>,
+        )
+      : executableOrEffect as () => Effect.Effect<A, E, R>;
+    const run = (): Effect.Effect<A, E, R> => {
+      if (reactivityKeys.length > 0) {
+        Atom.trackReactivity(reactivityKeys);
+      }
+      return execute();
+    };
+    const lifetime = yield* setupLifetime("Component.query");
+    const runtimeContext = yield* Effect.context<R | RetryR | PollR>();
+    return yield* setupReactiveOwner(() => {
+      const atom = defineQuery<
+        A,
+        E,
+        R,
+        RetryError,
+        RetryR,
+        PollError,
+        PollR
+      >(run, {
+        name: options?.name,
+        retrySchedule: options?.retrySchedule,
+        pollSchedule: options?.pollSchedule,
+        runtime: runtimeContext as RuntimeLike<
+          R | RetryR | PollR,
+          unknown
+        >,
+      }).result as Atom.ReadonlyAtom<Result<A, E | RetryError>, E | RetryError>;
+      if (isPortable) {
+        Portable.annotateExecutable(atom, {
+          kind: "portable",
+          executable: executableOrEffect as Portable.BoundCode<
+            any,
+            any,
+            readonly [],
+            A,
+            E,
+            R
+          >,
+          execution: {
+            kind: "component-query",
+            hasRetry: options?.retrySchedule !== undefined,
+            hasPoll: options?.pollSchedule !== undefined,
+            reactivityKeys,
+          },
+        });
+      }
+      return annotateHandle<typeof atom, A, E | RetryError>(atom, {
+        kind: "query",
+        read: () => atom(),
+        isDisposed: lifetime.isDisposed,
+        ...(isPortable
+          ? {
+            executable: executableOrEffect as Portable.AnyBoundCode,
+          }
+          : {}),
+        reactivityKeys,
+        semantics: {
+          hasRetry: options?.retrySchedule !== undefined,
+          hasPoll: options?.pollSchedule !== undefined,
+        },
+      });
+    });
   });
 }
 
@@ -1315,6 +1540,15 @@ export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
         ? {
           kind: "portable",
           executable: executable as Portable.BoundCode<any, any, Args, A, E, R>,
+          execution: {
+            kind: "component-action",
+            hasReactivityKeys: options?.reactivityKeys !== undefined,
+            hasTransitionObserver: options?.onTransition !== undefined,
+            ...(options?.concurrency === undefined
+              ? {}
+              : { concurrency: options.concurrency }),
+            detached: options?.detached === true,
+          },
         }
         : { kind: "opaque" };
     const fn: (...args: Args) => Effect.Effect<A, E, R> = isPortable
@@ -1325,7 +1559,7 @@ export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
         )
       : executable as (...args: Args) => Effect.Effect<A, E, R>;
     const lifetime = yield* setupLifetime("Component.action");
-    const runtimeContext = yield* Effect.services<R>();
+    const runtimeContext = yield* Effect.context<R>();
     return yield* setupReactiveOwner(() => {
     const handle = defineMutation<Args, E, R>(
       (args) => fn(...args),
@@ -1386,7 +1620,7 @@ export function optimistic<A>(source: Atom.WritableAtom<A>): OptimisticBuilder<A
     spec: Atom.OptimisticActionSpec<A, Input, Success, E, R>,
     ) => Effect.gen(function* () {
       const lifetime = yield* setupLifetime("Component.optimistic");
-      const runtimeContext = yield* Effect.services<R>();
+      const runtimeContext = yield* Effect.context<R>();
       return yield* setupReactiveOwner(() => {
         const handle = Atom.optimistic(source, runtimeContext as RuntimeLike<R, unknown>).action(spec);
         const out = ((input: Input) => {
@@ -1810,6 +2044,7 @@ type RouteBindings<P, Q, H> = {
   readonly __routeInner: unknown;
   readonly __routeCtx: Route.RouteContext<P, Q, H>;
   readonly __routeHeadId: string;
+  readonly __routeHeadStore: Route.RouteHeadStore;
   readonly __routePattern: string;
 };
 
@@ -1833,18 +2068,24 @@ function copySlotContract(
   }
 }
 
-function copyRouteDecorations(
+function copyComponentMetadata(
   source: Component<any, any, any, any, any>,
   target: Component<any, any, any, any, any>,
 ): void {
   copySlotContract(source, target);
+}
+
+function copyRouteDecorations(
+  source: Component<any, any, any, any, any>,
+  target: Component<any, any, any, any, any>,
+): void {
+  copyComponentMetadata(source, target);
   const sourceRoute = asRoutedComponent(source);
   const targetRoute = asRoutedComponent(target);
 
   const meta = sourceRoute[Route.RouteMetaSymbol];
   if (meta) {
     setRoutedMeta(target, meta);
-    Route.registerRoute(target, meta);
   }
 
   const loaderMeta = sourceRoute[Route.RouteLoaderMetaSymbol];
@@ -1943,7 +2184,12 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
       setup: (props) => Effect.gen(function* () {
         const router = yield* Route.RouterTag;
         const parentPrefix = "";
-        const headId = Route.createRouteHeadId();
+        // Head state is resolved once, here: on the server this is the
+        // per-request store provided by `renderRequest`; on the client it is
+        // the document store. Closing over it scopes every later head write
+        // (including atom-subscription callbacks) to this render's owner.
+        const headStore = yield* Route.currentRouteHeadStore;
+        const headId = Route.createRouteHeadId(headStore);
 
         const fullPattern = Route.resolvePattern(parentPrefix, pattern);
         const routeMatched = yield* derived(() => Route.matchPattern(fullPattern, router.url().pathname, options?.exact));
@@ -2011,8 +2257,8 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
         }
 
         if (!routeMatched()) {
-          Route.removeRouteHead(headId);
-          return { __routeMatched: routeMatched, __routeInner: null, __routeCtx: ctx, __routeHeadId: headId, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
+          Route.removeRouteHead(headStore, headId);
+          return { __routeMatched: routeMatched, __routeInner: null, __routeCtx: ctx, __routeHeadId: headId, __routeHeadStore: headStore, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
         }
 
         const wrappedRoute = asRoutedComponent<P, Q, H, unknown, unknown>(wrapped);
@@ -2047,7 +2293,7 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
                 const handler = cases[tag] ?? cases._;
                 if (handler) {
                   const fallbackView = handler(loaderResult.error, paramsAtom());
-                  return { __routeMatched: routeMatched, __routeInner: { __routeLoaderErrorView: fallbackView }, __routeCtx: ctx, __routeHeadId: headId, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
+                  return { __routeMatched: routeMatched, __routeInner: { __routeLoaderErrorView: fallbackView }, __routeCtx: ctx, __routeHeadId: headId, __routeHeadStore: headStore, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
                 }
               }
               throw loaderResult.error;
@@ -2077,13 +2323,13 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
           | undefined = wrappedRoute.__routeMetaExtra;
         const applyHead = () => {
           if (!routeMatched()) {
-            Route.removeRouteHead(headId);
+            Route.removeRouteHead(headStore, headId);
             return;
           }
           const loaderDataForHead = loaderDataAtom ? loaderDataAtom() : undefined;
           // Head callbacks receive the unified Result model (matching the
           // tree-render path and Route.loaderResult()); the cache is FetchResult.
-          const loaderResultForHead = Route.toUnifiedLoaderResult(loaderResultAtom ? loaderResultAtom() : undefined);
+          const loaderResultForHead = loaderResultAtom ? loaderResultAtom() : undefined;
           const titleResolved = routeTitle === undefined
             ? undefined
             : typeof routeTitle === "function"
@@ -2095,7 +2341,7 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
               ? routeMetaExtra(paramsAtom(), loaderDataForHead, loaderResultForHead)
               : routeMetaExtra;
 
-          Route.setRouteHead({
+          Route.setRouteHead(headStore, {
             id: headId,
             depth: fullPattern.split("/").filter(Boolean).length,
             title: titleResolved,
@@ -2120,16 +2366,16 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
             for (const unsubscribe of headUnsubscribers) {
               unsubscribe();
             }
-            Route.removeRouteHead(headId);
+            Route.removeRouteHead(headStore, headId);
           })).pipe(Scope.provide(componentScope));
         }
 
-        return { __routeMatched: routeMatched, __routeInner: inner, __routeCtx: ctxWithLoader, __routeHeadId: headId, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
+        return { __routeMatched: routeMatched, __routeInner: inner, __routeCtx: ctxWithLoader, __routeHeadId: headId, __routeHeadStore: headStore, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
       }),
       view: (props, bindings: RouteBindings<P, Q, H>) => {
         if (!bindings.__routeMatched()) {
           if (bindings.__routeHeadId) {
-            Route.removeRouteHead(String(bindings.__routeHeadId));
+            Route.removeRouteHead(bindings.__routeHeadStore, String(bindings.__routeHeadId));
           }
           return null;
         }
@@ -2145,7 +2391,7 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
       },
     }) as unknown as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
 
-    copySlotContract(component, wrapped);
+    copyComponentMetadata(component, wrapped);
     const meta: Route.RouteMeta<P, Q, H> = {
       pattern,
       fullPattern: Route.resolvePattern("", pattern),
@@ -2153,10 +2399,8 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
       querySchema: options?.query,
       hashSchema: options?.hash,
       exact: options?.exact,
-      id: Route.createRouteId(),
     };
     setRoutedMeta<P, Q, H>(wrapped, meta);
-    Route.registerRoute(wrapped, meta);
     return wrapped as unknown as Component<Props, Exclude<Req, Route.RouteContext<any, any, any>> | Route.RouterService, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract> & Route.RoutedComponent<P, Q, H>;
   };
 }
@@ -2189,6 +2433,29 @@ export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bin
 ) => Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract> {
   return (component) => {
     const i = internals(component);
+    const attachment = behavior.attachment;
+    const descriptor: BehaviorComponentTransformDescriptor =
+      attachment?.kind === "portable"
+        ? {
+          kind: "component.withBehavior",
+          phase: "setup",
+          portability: "portable",
+          codeIds: attachment.executables.map((executable) => executable.code.id),
+          reattach: (bindings, props) =>
+            Effect.gen(function* () {
+              const current = bindings as Bindings;
+              const elements = selectElements(current, props as Props);
+              const added = yield* behavior.run(elements);
+              return merge
+                ? merge(current, added)
+                : { ...(current as any), ...(added as any) };
+            }),
+        }
+        : {
+          kind: "component.withBehavior",
+          phase: "setup",
+          portability: "opaque",
+        };
     return toComponentLike(component, {
       ...i,
       setup: (props) => Effect.gen(function* () {
@@ -2200,6 +2467,8 @@ export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bin
         }
         return { ...(base as any), ...(added as any) };
       }) as any,
+    }, {
+      setup: descriptor,
     }) as Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract>;
   };
 }

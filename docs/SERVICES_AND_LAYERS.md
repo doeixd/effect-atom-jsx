@@ -101,7 +101,7 @@ means `Req = never` and the component mounts anywhere.
 
 **How do setup helpers see services provided later in the pipe?**
 Capture-at-setup: `Component.query`, `Component.action`, and
-`Component.optimistic(...).action(...)` capture the setup-time `ServiceMap`
+`Component.optimistic(...).action(...)` capture the setup-time `Context`
 when the handle is created and use it for every later run. An action invoked
 long after setup returned still executes against the services the component
 was built with — including ones supplied by `withLayer`. Corollary: layers

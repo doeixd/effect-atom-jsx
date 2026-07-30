@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Option, Scope } from "effect";
 import { createEffect, onCleanup } from "./api.js";
 import * as MetadataToken from "./MetadataToken.js";
 
@@ -168,11 +168,30 @@ function makeHandle<T extends string>(tag: T): Handle & { readonly kind: T } {
       });
     },
     on(event, handler) {
-      return base.listen(event, handler).pipe(Effect.tap((cleanup) => Effect.sync(() => {
-        onCleanup(() => {
-          cleanup();
-        });
-      })), Effect.asVoid);
+      // Removal is owned by the ambient Effect `Scope` when one is present, so
+      // listeners acquired outside a reactive render owner (behavior
+      // reattachment / resume, `Component.setupEffect`) are still removed on
+      // scope close. The reactive owner is only the fallback for callers that
+      // run without a Scope (e.g. plain render owners).
+      return base.listen(event, handler).pipe(
+        Effect.flatMap((cleanup) =>
+          Effect.flatMap(Effect.serviceOption(Scope.Scope), (maybeScope) => {
+            let removed = false;
+            const removeOnce = () => {
+              if (removed) return;
+              removed = true;
+              cleanup();
+            };
+            if (Option.isSome(maybeScope)) {
+              return Scope.addFinalizer(maybeScope.value, Effect.sync(removeOnce));
+            }
+            return Effect.sync(() => {
+              onCleanup(removeOnce);
+            });
+          })
+        ),
+        Effect.asVoid,
+      );
     },
     emit(event, eventData) {
       const set = listeners.get(event);
@@ -311,7 +330,12 @@ export function collection<E extends Handle>(initial: ReadonlyArray<E> = []): Co
       return Effect.forEach(current, (item, index) => f(item, index)).pipe(Effect.asVoid);
     },
     observeEach(f) {
-      return Effect.sync(() => {
+      // Teardown is owned by the ambient Effect `Scope` when one is present, so
+      // observers registered outside a reactive render owner (behavior
+      // reattachment / resume, `Component.setupEffect`) are still released on
+      // scope close. The reactive owner is only the fallback for callers that
+      // run without a Scope.
+      return Effect.flatMap(Effect.serviceOption(Scope.Scope), (maybeScope) => {
         const observer = {
           run: f,
           cleanups: new Set<Cleanup>(),
@@ -319,12 +343,27 @@ export function collection<E extends Handle>(initial: ReadonlyArray<E> = []): Co
         observers.add(observer);
         runObserver(observer);
 
-        onCleanup(() => {
+        // Exactly-once at two levels: `disposed` guards the teardown itself,
+        // and per-item cleanups are drained out of the live set (which
+        // `runObserver` also drains on every re-run, so an item removed before
+        // scope close was already released and is no longer reachable here).
+        let disposed = false;
+        const disposeOnce = () => {
+          if (disposed) return;
+          disposed = true;
           observers.delete(observer);
-          for (const cleanup of observer.cleanups) {
+          const pending = [...observer.cleanups];
+          observer.cleanups.clear();
+          for (const cleanup of pending) {
             cleanup();
           }
-          observer.cleanups.clear();
+        };
+
+        if (Option.isSome(maybeScope)) {
+          return Scope.addFinalizer(maybeScope.value, Effect.sync(disposeOnce));
+        }
+        return Effect.sync(() => {
+          onCleanup(disposeOnce);
         });
       });
     },

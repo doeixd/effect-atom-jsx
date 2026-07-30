@@ -62,6 +62,27 @@ describe("RouterRuntime", () => {
     expect(snapshot.matchedServerRoute).toBe("GET:/users/*");
   });
 
+  it("matches nested route nodes by their joined path", () => {
+    const Users = Route.page("/users/:userId", Component.from<{}>(() => null));
+    const Settings = Route.page("settings", Component.from<{}>(() => null));
+    const app = Route.layout(Component.from<{}>(() => null)).pipe(
+      Route.children([Route.mount(Users, [Settings])]),
+    );
+    const runtime = RouterRuntime.create({
+      app,
+      history: RouterRuntime.createMemoryHistory("/"),
+    });
+
+    Effect.runSync(runtime.initialize());
+    Effect.runSync(runtime.navigate("/users/1/settings"));
+    const snapshot = Effect.runSync(runtime.snapshot());
+
+    expect(snapshot.location.pathname).toBe("/users/1/settings");
+    expect(snapshot.appMatches).toContain("/users/:userId/settings");
+    expect(snapshot.appMatches).not.toContain("settings");
+    expect(snapshot.appMatches).not.toContain("/settings");
+  });
+
   it("supports route-node navigation by reference", () => {
     const UserPage = Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
       Route.path("/users/:userId")(Component.from<{}>(() => null)),

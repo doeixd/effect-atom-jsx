@@ -1,0 +1,198 @@
+/**
+ * Press behavior — normalized activation (pointer + keyboard + virtual).
+ *
+ * Semantics inspired by react-aria `usePress` (not a port of that code).
+ *
+ * @see docs/kit-research/behaviors/press.md
+ */
+import { Effect, Schema } from "effect";
+import * as Atom from "../Atom.js";
+import * as Behavior from "../Behavior.js";
+import * as Component from "../Component.js";
+import type * as Element from "../Element.js";
+
+export const PressOptions = Schema.Struct({
+  /** When true, do not move focus to the target on pointer press. */
+  preventFocusOnPress: Schema.optionalKey(Schema.Boolean),
+  /** Track `isPressed` atom for styling. Default true. */
+  trackPressed: Schema.optionalKey(Schema.Boolean),
+});
+
+export type PressOptions = typeof PressOptions.Type;
+
+export type PressConfig = PressOptions & {
+  readonly onPress?: () => void;
+  readonly onPressStart?: () => void;
+  readonly onPressEnd?: () => void;
+  readonly isDisabled?: () => boolean;
+};
+
+export type PressBindings = {
+  readonly isPressed: Atom.WritableAtom<boolean>;
+  readonly press: () => void;
+};
+
+type PointerLike = {
+  readonly pointerId?: number;
+  readonly pointerType?: string;
+  readonly button?: number;
+  readonly preventDefault?: () => void;
+};
+
+type KeyLike = {
+  readonly key?: string;
+  readonly preventDefault?: () => void;
+  readonly repeat?: boolean;
+};
+
+type ClickLike = {
+  readonly detail?: number;
+  readonly pointerType?: string;
+};
+
+// TODO(kit): widened so resolved options stay `boolean` rather than the
+// literal defaults; revisit when the kit settles its options contract.
+const defaultOptions: Required<PressOptions> = {
+  preventFocusOnPress: false,
+  trackPressed: true,
+};
+
+function decodeOptions(config: PressConfig): typeof defaultOptions {
+  const partial = Schema.decodeUnknownSync(PressOptions)({
+    preventFocusOnPress: config.preventFocusOnPress,
+    trackPressed: config.trackPressed,
+  });
+  return {
+    preventFocusOnPress:
+      partial.preventFocusOnPress ?? defaultOptions.preventFocusOnPress,
+    trackPressed: partial.trackPressed ?? defaultOptions.trackPressed,
+  };
+}
+
+/**
+ * Attach press handlers to an interactive element.
+ *
+ * Keyboard: Enter / Space. Pointer: primary button down+up on target.
+ * Cancels if pointer leaves before up. Virtual click (detail 0) fires once.
+ */
+export const press = (config: PressConfig = {}) => {
+  const options = decodeOptions(config);
+
+  // TODO(kit): `Behavior` is not pipeable; use the applied `provides` form.
+  return Behavior.provides({
+    isPressed: Behavior.binding<"isPressed", Atom.WritableAtom<boolean>>("isPressed"),
+  })(
+    Behavior.make<
+    { readonly target: Element.Interactive },
+    PressBindings,
+    never,
+    never
+  >((elements) =>
+    Effect.gen(function* () {
+      const isPressed = yield* Component.state(false);
+      let pointerDown = false;
+      let activePointerId: number | undefined;
+      let ignoreClickUntil = 0;
+
+      const disabled = (): boolean => config.isDisabled?.() === true;
+
+      const setPressed = (value: boolean): void => {
+        if (options.trackPressed) isPressed.set(value);
+      };
+
+      const firePress = (): void => {
+        if (disabled()) return;
+        config.onPress?.();
+      };
+
+      const start = (): void => {
+        if (disabled()) return;
+        setPressed(true);
+        config.onPressStart?.();
+      };
+
+      const end = (didPress: boolean): void => {
+        setPressed(false);
+        config.onPressEnd?.();
+        if (didPress) firePress();
+      };
+
+      yield* elements.target.on("pointerdown", (raw) => {
+        const event = raw as PointerLike;
+        if (disabled()) return;
+        if (event.button !== undefined && event.button !== 0) return;
+        pointerDown = true;
+        activePointerId = event.pointerId;
+        start();
+        if (options.preventFocusOnPress) {
+          event.preventDefault?.();
+        }
+        // Suppress following synthetic click after real pointer press.
+        ignoreClickUntil = Date.now() + 50;
+      });
+
+      yield* elements.target.on("pointerup", (raw) => {
+        const event = raw as PointerLike;
+        if (!pointerDown) return;
+        if (
+          activePointerId !== undefined &&
+          event.pointerId !== undefined &&
+          event.pointerId !== activePointerId
+        ) {
+          return;
+        }
+        pointerDown = false;
+        activePointerId = undefined;
+        end(true);
+      });
+
+      yield* elements.target.on("pointerleave", () => {
+        if (!pointerDown) return;
+        pointerDown = false;
+        activePointerId = undefined;
+        end(false);
+      });
+
+      yield* elements.target.on("keydown", (raw) => {
+        const event = raw as KeyLike;
+        if (disabled() || event.repeat) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault?.();
+        start();
+      });
+
+      yield* elements.target.on("keyup", (raw) => {
+        const event = raw as KeyLike;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        if (!isPressed() && !options.trackPressed) {
+          // keydown may have been missed
+          firePress();
+          return;
+        }
+        if (options.trackPressed && !isPressed()) return;
+        event.preventDefault?.();
+        end(true);
+      });
+
+      yield* elements.target.on("click", (raw) => {
+        const event = raw as ClickLike;
+        if (disabled()) return;
+        if (Date.now() < ignoreClickUntil) return;
+        // Virtual / SR click often has detail 0
+        if (event.detail === 0 || event.pointerType === "virtual") {
+          firePress();
+        }
+      });
+
+      return {
+        isPressed,
+        press: () => {
+          if (disabled()) return;
+          start();
+          end(true);
+        },
+      } satisfies PressBindings;
+    }),
+    ),
+  );
+};

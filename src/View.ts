@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import * as Element from "./Element.js";
 import * as MetadataToken from "./MetadataToken.js";
 import type * as SafeHtml from "./SafeHtml.js";
@@ -816,7 +816,7 @@ export interface PlatformService {
   readonly onDiagnostic?: (diagnostic: ViewDiagnostic) => void;
 }
 
-export const PlatformTag = ServiceMap.Service<PlatformService>("ViewPlatform");
+export const PlatformTag = Context.Service<PlatformService>("ViewPlatform");
 
 export type PlatformLayer<Metadata extends PlatformMetadata = PlatformMetadata> =
   & Layer.Layer<PlatformService>

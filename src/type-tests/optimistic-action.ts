@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import * as Atom from "../Atom.js";
 import * as Component from "../Component.js";
 import type { BridgeError, MutationSupersededError } from "../effect-ts.js";
@@ -13,7 +13,7 @@ type Expect<T extends true> = T;
 type Api = {
   readonly save: (next: number) => Effect.Effect<{ readonly confirmed: number }, { readonly _tag: "SaveError" }>;
 };
-const Api = ServiceMap.Service<Api>("Api");
+const Api = Context.Service<Api>("Api");
 
 const count = Atom.make(0);
 

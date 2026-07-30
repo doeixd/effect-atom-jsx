@@ -1,5 +1,5 @@
 import { Atom, Component, Reactivity, Route, WithLayer } from "../../src/index.js";
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Effect, Layer, Schema, Context } from "effect";
 
 type User = {
   readonly id: string;
@@ -19,7 +19,7 @@ const usersState = Atom.value<ReadonlyArray<User>>([
 
 const usersStore = usersState.pipe(Atom.withReactivity(["users"]));
 
-const UsersService = ServiceMap.Service<{
+const UsersService = Context.Service<{
   readonly list: () => Effect.Effect<ReadonlyArray<User>>;
   readonly byId: (id: string) => Effect.Effect<User>;
   readonly rename: (input: SaveUserInput) => Effect.Effect<User>;

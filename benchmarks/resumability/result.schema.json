@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effect-atom-jsx.dev/schemas/resumability-m8c1-result-v2.json",
+  "title": "effect-atom-jsx Milestone 8c.1 benchmark result",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "benchmark",
+    "generatedAt",
+    "buildId",
+    "browser",
+    "environment",
+    "config",
+    "fixtures",
+    "alignedComparators",
+    "attribution"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "benchmark": { "const": "effect-atom-jsx/resumability-m8c1" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "buildId": { "type": "string" },
+    "browser": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "chromium" },
+        "version": { "type": "string" }
+      }
+    },
+    "environment": { "type": "object" },
+    "config": {
+      "type": "object",
+      "required": ["coldRuns", "warmWritesPerKind"],
+      "properties": {
+        "coldRuns": { "type": "integer", "minimum": 1 },
+        "warmWritesPerKind": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "file",
+          "mode",
+          "density",
+          "payload",
+          "samples",
+          "summary"
+        ],
+        "properties": {
+          "file": { "type": "string" },
+          "mode": {
+            "enum": ["eager-rerender", "dormant-resume"]
+          },
+          "density": { "enum": [1, 24] },
+          "payload": {
+            "type": "object",
+            "required": [
+              "manifestUtf8Bytes",
+              "markerUtf8Bytes",
+              "combinedRawBytes",
+              "combinedGzipBytes",
+              "documentRawBytes",
+              "documentGzipBytes"
+            ]
+          },
+          "samples": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "runIndex",
+                "navigationToReadyMs",
+                "coldInteractionToPatchMs",
+                "coldTextNodesReused",
+                "warmSharedMs",
+                "warmIndependentMs",
+                "network",
+                "ownership",
+                "lifecycle",
+                "heap"
+              ]
+            }
+          },
+          "summary": { "type": "object" }
+        }
+      }
+    },
+    "alignedComparators": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["file", "mode", "density", "payload", "samples", "summary"],
+        "properties": {
+          "mode": { "const": "eager-rerender-shared-runtime" },
+          "density": { "enum": [1, 24] }
+        }
+      }
+    },
+    "attribution": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["density", "stages"],
+        "properties": {
+          "density": { "enum": [0, 1, 24] },
+          "stages": {
+            "type": "array",
+            "minItems": 11,
+            "maxItems": 11,
+            "items": {
+              "type": "object",
+              "required": [
+                "stage",
+                "samples",
+                "summary",
+                "deltaFromModulesMedianBytes"
+              ],
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "modules",
+                    "runtime",
+                    "serialization",
+                    "json",
+                    "guard",
+                    "schema",
+                    "manifest",
+                    "runtime-manifest",
+                    "resolver",
+                    "scans",
+                    "installed"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

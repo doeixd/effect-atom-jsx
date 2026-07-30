@@ -66,29 +66,37 @@ const UserDetail = Component.make(
 const searchLink = Route.link(SearchPage);
 const userLink = Route.link(UserDetail);
 
+// Routes do not self-register: preload/prefetch resolve the app's routes from
+// an explicitly provided route source.
+const appRoutes = Route.registry([SearchPage, UserDetail]);
+
 export function App() {
   return (
-    <WithLayer layer={Route.Router.Browser}>
+    <WithLayer layer={Route.routeSourceLayer(appRoutes)}>
       {() => (
-        <main style="font-family: ui-sans-serif, system-ui; margin: 0 auto; max-width: 760px; padding: 24px;">
-          <h1>Router Typed Links</h1>
+      <WithLayer layer={Route.Router.Browser}>
+        {() => (
+          <main style="font-family: ui-sans-serif, system-ui; margin: 0 auto; max-width: 760px; padding: 24px;">
+            <h1>Router Typed Links</h1>
 
-          <p>
-            <Route.Link
-              to={searchLink}
-              params={{}}
-              query={{ page: 2, sort: "name", search: "alice" }}
-              class={(active) => active ? "active" : ""}
-              preload="hover"
-            >
-              Search Alice
-            </Route.Link>
-            {" · "}
-            <Route.Link to={userLink} params={{ userId: "alice" }}>Alice Profile</Route.Link>
-          </p>
+            <p>
+              <Route.Link
+                to={searchLink}
+                params={{}}
+                query={{ page: 2, sort: "name", search: "alice" }}
+                class={(active) => active ? "active" : ""}
+                preload="hover"
+              >
+                Search Alice
+              </Route.Link>
+              {" · "}
+              <Route.Link to={userLink} params={{ userId: "alice" }}>Alice Profile</Route.Link>
+            </p>
 
-          <Route.Switch children={[SearchPage({}), UserDetail({})]} fallback={<p>No route matched.</p>} />
-        </main>
+            <Route.Switch children={[SearchPage({}), UserDetail({})]} fallback={<p>No route matched.</p>} />
+          </main>
+        )}
+      </WithLayer>
       )}
     </WithLayer>
   );

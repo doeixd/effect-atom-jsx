@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import * as Atom from "../Atom.js";
 import * as FetchResult from "../Result.js";
 import type { BridgeError } from "../effect-ts.js";
@@ -16,7 +16,7 @@ type EffectRequirements<T> = T extends Effect.Effect<any, any, infer R> ? R : ne
 type AuthError = { readonly _tag: "AuthError" };
 type HttpError = { readonly _tag: "HttpError" };
 type Api = { readonly load: () => Effect.Effect<number, HttpError> };
-const Api = ServiceMap.Service<Api>("Api");
+const Api = Context.Service<Api>("Api");
 
 const runtime = Atom.runtime(Layer.empty);
 

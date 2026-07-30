@@ -7,7 +7,7 @@
  * lookup/layer sites). Full user-theme-parametric `Style.slot` property types
  * are not required for v1 — keep `Style.tokenColor(...)` default-typed.
  */
-import { Layer, ServiceMap } from "effect";
+import { Layer, Context } from "effect";
 import * as Atom from "./Atom.js";
 import { defaultThemeTokens, type ThemeTokenSchema, type ThemeTokens, type TokenPathOf } from "./style-types.js";
 
@@ -18,7 +18,7 @@ export interface ThemeService {
   readonly resolve: (token: string) => string;
 }
 
-export const Theme = ServiceMap.Service<ThemeService>("Theme");
+export const Theme = Context.Service<ThemeService>("Theme");
 
 /**
  * User-defined theme contract.

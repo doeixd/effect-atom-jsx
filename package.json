@@ -87,6 +87,10 @@
       "import": "./dist/Behavior.js",
       "types": "./dist/Behavior.d.ts"
     },
+    "./Machine": {
+      "import": "./dist/Machine.js",
+      "types": "./dist/Machine.d.ts"
+    },
     "./Element": {
       "import": "./dist/Element.js",
       "types": "./dist/Element.d.ts"
@@ -143,6 +147,10 @@
       "import": "./dist/Portable.js",
       "types": "./dist/Portable.d.ts"
     },
+    "./Resume": {
+      "import": "./dist/Resume.js",
+      "types": "./dist/Resume.d.ts"
+    },
     "./Diagnostics": {
       "import": "./dist/Diagnostics.js",
       "types": "./dist/Diagnostics.d.ts"
@@ -166,6 +174,18 @@
     "./Registry": {
       "import": "./dist/Registry.js",
       "types": "./dist/Registry.d.ts"
+    },
+    "./portable-extract": {
+      "import": "./dist/portable-extract.js",
+      "types": "./dist/portable-extract.d.ts"
+    },
+    "./compiler/resume-extract-plugin": {
+      "import": "./dist/compiler/resume-extract-plugin.js",
+      "types": "./dist/compiler/resume-extract-plugin.d.ts"
+    },
+    "./compiler/resume-extract-vite": {
+      "import": "./dist/compiler/resume-extract-vite.js",
+      "types": "./dist/compiler/resume-extract-vite.d.ts"
     },
     "./package.json": {
       "default": "./package.json"
@@ -203,29 +223,48 @@
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:future": "vitest run --config vitest.future.config.ts",
+    "test:all": "npm test && npm run test:future",
+    "test:future:watch": "vitest --config vitest.future.config.ts",
+    "typecheck:future": "tsc --noEmit -p tsconfig.future.json",
+    "test:browser": "npm run build && npm run build:resumable-example && npm run build:extract-example && playwright test",
+    "build:resumable-example": "node examples/resumable-action/build.mjs",
+    "preview:resumable-example": "vite preview --config examples/resumable-action/vite.config.ts",
+    "build:extract-example": "node examples/resumable-extract/build.mjs",
+    "preview:extract-example": "vite preview --config examples/resumable-extract/vite.config.ts",
+    "build:resumability-benchmark": "node examples/resumability-benchmark/build.mjs",
+    "preview:resumability-benchmark": "vite preview --config examples/resumability-benchmark/vite.config.ts",
+    "bench:resumability": "npm run build && npm run build:resumability-benchmark && node benchmarks/resumability/run.mjs",
+    "bench:resumability:verify": "node benchmarks/resumability/verify.mjs bench-results/resumability/latest.json",
     "bench": "vitest bench --run",
     "bench:ci": "vitest bench --run --outputJson bench-results.json",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "typecheck:examples": "tsc --noEmit -p tsconfig.examples.json",
-    "typecheck:all": "npm run typecheck && npm run typecheck:tests && npm run typecheck:examples",
+    "typecheck:browser": "tsc --noEmit -p tsconfig.browser.json",
+    "typecheck:effect": "effect-tsgo diagnostics --project tsconfig.build.json",
+    "typecheck:all": "npm run typecheck && npm run typecheck:tests && npm run typecheck:examples && npm run typecheck:browser && npm run typecheck:effect",
     "check": "npm run typecheck:all && npm run test",
     "prepack": "npm run build"
   },
   "dependencies": {
-    "effect": "^4.0.0-beta.29"
+    "@typeonce/effect-machine": "0.1.0",
+    "effect": "4.0.0-beta.102"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",
     "@babel/preset-typescript": "^7.24.0",
+    "@effect/tsgo": "^0.24.3",
+    "@playwright/test": "^1.62.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
     "babel-plugin-jsx-dom-expressions": "^0.39.0",
     "jest": "^30.2.0",
     "typescript": "^7.0.2",
+    "vite": "^7.3.6",
     "vitest": "^4.0.18"
   },
   "peerDependencies": {
-    "effect": "^4.0.0-beta.29"
+    "effect": "4.0.0-beta.102"
   }
 }

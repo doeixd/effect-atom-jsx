@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 
 export interface Todo {
   readonly id: string;
@@ -21,7 +21,7 @@ export interface TodoApi {
   readonly clearCompleted: () => Effect.Effect<number, TodoError>;
 }
 
-export const TodoApi = ServiceMap.Service<TodoApi>("TodoApi");
+export const TodoApi = Context.Service<TodoApi>("TodoApi");
 
 export function createInMemoryTodoApi(initial: ReadonlyArray<Todo> = []): TodoApi {
   let todos = [...initial];

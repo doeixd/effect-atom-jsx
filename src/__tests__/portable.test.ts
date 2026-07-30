@@ -1,4 +1,4 @@
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Effect, Layer, Schema, Context } from "effect";
 import { describe, expect, it } from "vitest";
 import * as Component from "../Component.js";
 import * as Portable from "../Portable.js";
@@ -7,7 +7,7 @@ interface MathService {
   readonly add: (left: number, right: number) => number;
 }
 
-const MathService = ServiceMap.Service<MathService>(
+const MathService = Context.Service<MathService>(
   "effect-atom-jsx/test/PortableMath",
 );
 
@@ -66,6 +66,32 @@ describe("Portable code", () => {
     expect(
       Effect.runSync(resolved.run(3).pipe(Effect.provide(ClientMath))),
     ).toBe(7);
+  });
+
+  it("derives stable cache identity from code, build, and canonical captures", () => {
+    const left = {
+      version: 1 as const,
+      kind: "portable.code" as const,
+      id: AddCode.id,
+      buildId: AddCode.buildId,
+      captures: { nested: { second: 2, first: 1 }, label: "same" },
+    };
+    const right = {
+      ...left,
+      captures: { label: "same", nested: { first: 1, second: 2 } },
+    };
+    const changed = {
+      ...right,
+      captures: { label: "different", nested: { first: 1, second: 2 } },
+    };
+    const nullCaptures = { ...left, captures: null };
+    const emptyCaptures = { ...left, captures: {} };
+
+    expect(Portable.cacheKey(left)).toBe(Portable.cacheKey(right));
+    expect(Portable.cacheKey(left)).not.toBe(Portable.cacheKey(changed));
+    expect(Portable.cacheKey(nullCaptures)).not.toBe(
+      Portable.cacheKey(emptyCaptures),
+    );
   });
 
   it("integrates with Component.action while ordinary closures remain opaque", async () => {
@@ -149,10 +175,24 @@ describe("Portable code", () => {
   });
 
   it("memoizes lazy code loading within one resolver instance", () => {
+    let loaderCalls = 0;
     let loads = 0;
     const descriptor = Effect.runSync(
       Portable.describe(Portable.bind(AddCode, { base: 1 })),
     );
+    const resolver = Effect.runSync(
+      Portable.makeResolver({
+        [AddCode.id]: () => {
+          loaderCalls += 1;
+          return Effect.sync(() => {
+            loads += 1;
+            return AddCode;
+          });
+        },
+      }),
+    );
+    expect(loaderCalls).toBe(0);
+
     const program = Effect.all(
       [
         Portable.resolve(descriptor),
@@ -163,17 +203,57 @@ describe("Portable code", () => {
 
     Effect.runSync(
       program.pipe(
-        Effect.provide(Portable.resolverLayer({
-          [AddCode.id]: () =>
-            Effect.sync(() => {
-              loads += 1;
-              return AddCode;
-            }),
-        })),
+        Effect.provideService(Portable.Resolver, resolver),
       ),
     );
 
+    expect(loaderCalls).toBe(1);
     expect(loads).toBe(1);
+  });
+
+  it("turns a synchronous lazy-loader throw into a typed load error", () => {
+    const descriptor = Effect.runSync(
+      Portable.describe(Portable.bind(AddCode, { base: 1 })),
+    );
+    const resolver = Effect.runSync(
+      Portable.makeResolver({
+        [AddCode.id]: () => {
+          throw new Error("module loader exploded");
+        },
+      }),
+    );
+    const error = Effect.runSync(
+      Portable.resolve(descriptor).pipe(
+        Effect.flip,
+        Effect.provideService(Portable.Resolver, resolver),
+      ),
+    );
+
+    expect(error._tag).toBe("PortableCodeLoadError");
+    expect(error.message).toContain("module loader exploded");
+  });
+
+  it("normalizes loader Effect failures and defects", () => {
+    const descriptor = Effect.runSync(
+      Portable.describe(Portable.bind(AddCode, { base: 1 })),
+    );
+    const resolveWith = (loader: Portable.CodeLoader) =>
+      Effect.runSync(
+        Portable.resolve(descriptor).pipe(
+          Effect.flip,
+          Effect.provide(
+            Portable.resolverLayer({ [AddCode.id]: loader }),
+          ),
+        ),
+      );
+
+    const failure = resolveWith(() => Effect.fail("network failure"));
+    const defect = resolveWith(() => Effect.die("import rejection"));
+
+    expect(failure._tag).toBe("PortableCodeLoadError");
+    expect(failure.message).toContain("network failure");
+    expect(defect._tag).toBe("PortableCodeLoadError");
+    expect(defect.message).toContain("import rejection");
   });
 
   it("rejects encoded captures that are not JSON-safe", () => {
@@ -189,5 +269,40 @@ describe("Portable code", () => {
 
     expect(error._tag).toBe("PortableCaptureEncodeError");
     expect(error.message).toContain("not JSON-safe");
+  });
+
+  it("rejects values JSON would alter without invoking accessors", () => {
+    const UnsafeCode = Portable.code({
+      id: "test.lossy-capture",
+      buildId: "test-build-1",
+      captures: Schema.Unknown,
+      run: () => Effect.void,
+    });
+    let getterCalls = 0;
+    const accessorBacked = {};
+    Object.defineProperty(accessorBacked, "secret", {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return "value";
+      },
+    });
+    const arrayWithSideProperty = [1] as number[] & { extra?: unknown };
+    arrayWithSideProperty.extra = "discarded";
+
+    const accessorError = Effect.runSync(
+      Portable.describe(
+        Portable.bind(UnsafeCode, accessorBacked),
+      ).pipe(Effect.flip),
+    );
+    const arrayError = Effect.runSync(
+      Portable.describe(
+        Portable.bind(UnsafeCode, arrayWithSideProperty),
+      ).pipe(Effect.flip),
+    );
+
+    expect(getterCalls).toBe(0);
+    expect(accessorError.message).toContain("accessor-backed");
+    expect(arrayError.message).toContain("JSON would discard");
   });
 });

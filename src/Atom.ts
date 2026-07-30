@@ -1056,6 +1056,12 @@ export interface SingleFlightClientOptions<Input> {
   readonly url?: string | ((input: Input) => string);
   /** Disable automatic loader cache hydration for returned payloads. */
   readonly hydrate?: boolean;
+  /**
+   * Route source (tree root or `Route.registry([...])`) whose loader identities
+   * the returned payload hydrates against. Defaults to the injected
+   * `Route.RouteSourceTag`; without either, hydration is skipped.
+   */
+  readonly app?: unknown;
   /** Optional fetch override for the built-in fetch fallback / fetch transport adapter. */
   readonly fetch?: (input: string, init?: { readonly method?: string; readonly headers?: Record<string, string>; readonly body?: string }) => Promise<{ readonly json: () => Promise<unknown> }>;
 }
@@ -1181,7 +1187,13 @@ function runSingleFlightWithTransport<Input, A>(
       } as const);
     }
     if (config?.hydrate !== false) {
-      yield* Route.hydrateSingleFlightPayload(response.payload as import("./Route.js").SingleFlightPayload<unknown>);
+      const source = yield* Route.resolveRouteSource(config?.app as import("./Route.js").RouteSource | undefined);
+      if (source !== undefined) {
+        yield* Route.hydrateSingleFlightPayload(
+          response.payload as import("./Route.js").SingleFlightPayload<unknown>,
+          source,
+        );
+      }
     }
     return response.payload.mutation;
   });
@@ -1214,6 +1226,7 @@ function runSingleFlightWithDirectFetch<Input, A>(
         {
           fetch: options.fetch,
           hydrate: options.hydrate,
+          app: options.app as import("./Route.js").RouteSource | undefined,
         },
       ));
       return payload.mutation;

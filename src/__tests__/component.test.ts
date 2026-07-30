@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { Effect, Exit, Layer, Schema, Scope, ServiceMap } from "effect";
+import { Effect, Exit, Layer, Schema, Scope, Context } from "effect";
 import { createRoot, flush } from "../api.js";
+import * as Atom from "../Atom.js";
 import * as Behavior from "../Behavior.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
@@ -560,7 +561,7 @@ describe("Component", () => {
 
   it("runs component actions with the setup runtime context", async () => {
     type Api = { readonly save: (n: number) => Effect.Effect<number> };
-    const Api = ServiceMap.Service<Api>("ComponentActionApi");
+    const Api = Context.Service<Api>("ComponentActionApi");
 
     const Counter = Component.make(
       Component.props<{}>(),
@@ -589,7 +590,7 @@ describe("Component", () => {
 
   it("runs component queries with the setup runtime context", async () => {
     type Api = { readonly load: () => Effect.Effect<string> };
-    const Api = ServiceMap.Service<Api>("ComponentQueryApi");
+    const Api = Context.Service<Api>("ComponentQueryApi");
 
     const User = Component.make(
       Component.props<{}>(),
@@ -620,9 +621,39 @@ describe("Component", () => {
     }
   });
 
+  it("reruns component queries when a semantic reactivity key is invalidated", async () => {
+    let runs = 0;
+    const Query = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () =>
+        Effect.gen(function* () {
+          const value = yield* Component.query(
+            () => Effect.sync(() => ++runs),
+            { reactivityKeys: ["component-query:test"] },
+          );
+          return { value };
+        }),
+      () => null,
+    );
+    const scope = Scope.makeUnsafe();
+    const bindings = Effect.runSync(
+      Component.setupEffect(Query, {}).pipe(Scope.provide(scope)),
+    );
+
+    await Effect.runPromise(Effect.sleep("5 millis"));
+    expect(bindings.value()).toMatchObject({ _tag: "Success", value: 1 });
+
+    Atom.invalidateReactivity(["component-query:test"]);
+    await Effect.runPromise(Effect.sleep("5 millis"));
+    expect(bindings.value()).toMatchObject({ _tag: "Success", value: 2 });
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+  });
+
   it("runs component optimistic actions with the setup runtime context", async () => {
     type Api = { readonly save: (n: number) => Effect.Effect<{ readonly confirmed: number }> };
-    const Api = ServiceMap.Service<Api>("ComponentOptimisticApi");
+    const Api = Context.Service<Api>("ComponentOptimisticApi");
 
     const Counter = Component.make(
       Component.props<{}>(),

@@ -17,19 +17,60 @@ import {
   forkComponentScope,
   withComponentScope,
 } from "./component-scope.js";
+import {
+  observeRenderedExpression,
+  observeRenderedExpressionTarget,
+  observeServerEventTarget,
+} from "./resume-session.js";
+import {
+  inspectExpression,
+  type ExpressionTargetValue,
+  type ResumableExpression,
+} from "./resume-expression.js";
+import {
+  registerActivationEventTarget,
+  replayTargetAttribute,
+} from "./resume-event.js";
 
 /**
- * Create a reusable DOM template from an HTML string.
- * Called once at module load time per unique JSX tree shape.
- * The returned node is cloned by the compiled output: `_tmpl$.cloneNode(true)`.
+ * Create the lazy clone factory required by `babel-plugin-jsx-dom-expressions`.
+ *
+ * The compiler calls `template(...)` at module evaluation time and invokes the
+ * returned function while rendering. Deferring DOM access keeps compiled
+ * modules importable on the server before `renderToString` installs its virtual
+ * document.
  */
-export function template(html: string): Element {
-  const t = document.createElement("template");
-  t.innerHTML = html;
-  const node = (t.content.firstChild ?? t.content) as Element;
-  // Detach so it can be cleanly cloned.
-  node.remove?.();
-  return node;
+export function template(
+  html: string,
+  _isCustomElement?: boolean,
+  _isSVG?: boolean,
+  _hasCustomElement?: boolean,
+): () => Element {
+  const browserTemplates = new WeakMap<Document, Node>();
+  let serverTemplate: ServerNode | undefined;
+
+  return () => {
+    if (_ssrMode) {
+      if (serverTemplate === undefined) {
+        serverTemplate = parseHTML(html)[0] ?? new ServerDocumentFragment();
+      }
+      return serverTemplate.cloneNode(true) as unknown as Element;
+    }
+
+    if (typeof document === "undefined") {
+      throw new Error(
+        "[effect-atom-jsx/template] cannot instantiate a DOM template without a document or active SSR render.",
+      );
+    }
+    let reusable = browserTemplates.get(document);
+    if (reusable === undefined) {
+      const templateElement = document.createElement("template") as HTMLTemplateElement;
+      templateElement.innerHTML = html;
+      reusable = templateElement.content.firstChild ?? templateElement.content;
+      browserTemplates.set(document, reusable);
+    }
+    return reusable.cloneNode(true) as Element;
+  };
 }
 
 // ─── insert ───────────────────────────────────────────────────────────────────
@@ -44,18 +85,30 @@ type Child = string | number | boolean | null | undefined | Node | Child[];
  */
 export function insert(
   parent: Element,
-  accessor: Child | (() => Child),
+  accessor: unknown | (() => unknown),
   marker: Node | null = null,
   current: Node | Node[] | null = null,
 ): Node | Node[] | null {
   if (typeof accessor === "function") {
+    const childAccessor = accessor as () => Child;
     let currentNodes: Node | Node[] | null = current;
+    const resumableExpression = inspectExpression(accessor) === undefined
+      ? undefined
+      : accessor as ResumableExpression;
+    const expressionInsertion = {};
     new Computation(() => {
-      currentNodes = insertExpression(parent, (accessor as () => Child)(), currentNodes, marker);
+      const value = resumableExpression === undefined
+        ? childAccessor()
+        : observeRenderedExpression(
+          resumableExpression,
+          expressionInsertion,
+          childAccessor,
+        ) as Child;
+      currentNodes = insertExpression(parent, value, currentNodes, marker);
     });
     return currentNodes;
   }
-  return insertExpression(parent, accessor, current, marker);
+  return insertExpression(parent, accessor as Child, current, marker);
 }
 
 function toNode(val: Child): Node | null {
@@ -85,6 +138,13 @@ function insertExpression(
     }
     if (current.length > 0) {
       if (newNode) {
+        if (
+          current[0]?.nodeName === "#text"
+          && newNode.nodeName === "#text"
+        ) {
+          current[0].textContent = newNode.textContent;
+          return current[0];
+        }
         parent.replaceChild(newNode, current[0]);
       } else {
         parent.removeChild(current[0]);
@@ -97,6 +157,10 @@ function insertExpression(
 
   if (current instanceof Node) {
     if (newNode) {
+      if (current.nodeName === "#text" && newNode.nodeName === "#text") {
+        current.textContent = newNode.textContent;
+        return current;
+      }
       parent.replaceChild(newNode, current);
     } else {
       parent.removeChild(current);
@@ -176,13 +240,11 @@ export function spread(
   isSVG = false,
   skipChildren = false,
 ): void {
-  if (typeof accessor === "function") {
-    new Computation(() => {
-      applyProps(node, accessor(), isSVG, skipChildren);
-    });
-  } else {
-    applyProps(node, accessor, isSVG, skipChildren);
-  }
+  const previous: Record<string, unknown> = {};
+  new Computation(() => {
+    const props = typeof accessor === "function" ? accessor() : accessor;
+    applyProps(node, props ?? {}, isSVG, skipChildren, previous);
+  });
 }
 
 function applyProps(
@@ -190,17 +252,30 @@ function applyProps(
   props: Record<string, unknown>,
   isSVG: boolean,
   skipChildren: boolean,
+  previous: Record<string, unknown>,
 ): void {
+  for (const key of Object.keys(previous)) {
+    if (key in props || (skipChildren && key === "children")) continue;
+    setProp(node, key, null, isSVG, previous[key]);
+    delete previous[key];
+  }
   for (const [key, value] of Object.entries(props)) {
     if (skipChildren && key === "children") continue;
-    setProp(node, key, value, isSVG);
+    const stateful = key === "style" || key === "classList"
+      || key.startsWith("on");
+    if (!stateful && previous[key] === value) continue;
+    previous[key] = setProp(node, key, value, isSVG, previous[key]);
   }
 }
 
 // ─── Prop/attribute setters ───────────────────────────────────────────────────
 
-/** Set an attribute or DOM property on a node. */
-export function attr(node: Element, name: string, value: unknown): void {
+/** Set an ordinary attribute, removing it for nullish values. */
+export function setAttribute(
+  node: Element,
+  name: string,
+  value?: unknown,
+): void {
   if (value == null) {
     node.removeAttribute(name);
   } else {
@@ -208,24 +283,156 @@ export function attr(node: Element, name: string, value: unknown): void {
   }
 }
 
+/** Backwards-compatible runtime alias for {@link setAttribute}. */
+export const attr = setAttribute;
+
+/** Set a namespaced attribute, removing it for nullish values. */
+export function setAttributeNS(
+  node: Element,
+  namespace: string,
+  name: string,
+  value?: unknown,
+): void {
+  if (value == null) {
+    node.removeAttributeNS(namespace, name);
+  } else {
+    node.setAttributeNS(namespace, name, String(value));
+  }
+}
+
+/** Toggle a boolean attribute using presence semantics. */
+export function setBoolAttribute(
+  node: Element,
+  name: string,
+  value: unknown,
+): void {
+  if (value) node.setAttribute(name, "");
+  else node.removeAttribute(name);
+}
+
 /** Set a DOM property (not attribute) on a node. */
-export function prop(node: Element, name: string, value: unknown): void {
+export function setProperty(node: Element, name: string, value: unknown): void {
   (node as unknown as Record<string, unknown>)[name] = value;
 }
 
-function setProp(node: Element, name: string, value: unknown, isSVG: boolean): void {
-  if (name === "style") {
-    style(node as HTMLElement, value as Record<string, string>);
+/** Backwards-compatible runtime alias for {@link setProperty}. */
+export const prop = setProperty;
+
+/** Apply the compiler's HTML class-string semantics. */
+export function className(node: Element, value: unknown): void {
+  if (value == null) node.removeAttribute("class");
+  else (node as HTMLElement).className = String(value);
+}
+
+interface SpreadEventState {
+  readonly kind: "spread-event";
+  readonly source: unknown;
+  readonly listener: EventListenerOrEventListenerObject;
+  readonly capture: boolean;
+}
+
+function setSpreadEvent(
+  node: Element,
+  name: string,
+  value: unknown,
+  previous: unknown,
+  capture: boolean,
+): SpreadEventState | undefined {
+  if (
+    typeof previous === "object"
+    && previous !== null
+    && (previous as Partial<SpreadEventState>).kind === "spread-event"
+    && (previous as SpreadEventState).source === value
+    && (previous as SpreadEventState).capture === capture
+  ) {
+    return previous as SpreadEventState;
+  }
+  if (
+    typeof previous === "object"
+    && previous !== null
+    && (previous as Partial<SpreadEventState>).kind === "spread-event"
+  ) {
+    const event = previous as SpreadEventState;
+    node.removeEventListener(name, event.listener, event.capture);
+  }
+  if (value == null) return undefined;
+
+  const listener: EventListenerOrEventListenerObject = Array.isArray(value)
+    ? ((event: Event) => {
+      const [handler, data] = value as [
+        (data: unknown, event: Event) => unknown,
+        unknown,
+      ];
+      handler.call(node, data, event);
+    })
+    : value as EventListenerOrEventListenerObject;
+  node.addEventListener(name, listener, capture);
+  return { kind: "spread-event", source: value, listener, capture };
+}
+
+const svgNamespaces: Readonly<Record<string, string>> = {
+  xlink: "http://www.w3.org/1999/xlink",
+  xml: "http://www.w3.org/XML/1998/namespace",
+  xmlns: "http://www.w3.org/2000/xmlns/",
+};
+
+function setProp(
+  node: Element,
+  name: string,
+  value: unknown,
+  isSVG: boolean,
+  previous?: unknown,
+): unknown {
+  if (name === "children") {
+    return insert(
+      node,
+      value,
+      null,
+      previous as Node | Node[] | null | undefined ?? null,
+    );
+  } else if (name === "ref") {
+    if (typeof value === "function" && value !== previous) {
+      use(value as (element: Element) => unknown, node);
+    }
+  } else if (name === "style") {
+    return style(node as HTMLElement, value as StyleValue, previous as StyleState);
   } else if (name === "classList") {
-    classList(node, value as Record<string, boolean>);
+    return classList(
+      node,
+      value as ClassListValue,
+      previous as Record<string, boolean> | undefined,
+    );
+  } else if (name === "class" || name === "className") {
+    if (isSVG) setAttribute(node, "class", value);
+    else className(node, value);
+  } else if (name.startsWith("oncapture:")) {
+    return setSpreadEvent(
+      node,
+      name.slice("oncapture:".length),
+      value,
+      previous,
+      true,
+    );
+  } else if (name.startsWith("on:")) {
+    return setSpreadEvent(
+      node,
+      name.slice("on:".length),
+      value,
+      previous,
+      false,
+    );
   } else if (name.startsWith("on") && name.length > 2) {
     const eventName = name.slice(2).toLowerCase();
-    addEventListener(node, eventName, value as RuntimeEventHandler);
+    return setSpreadEvent(node, eventName, value, previous, false);
   } else if (!isSVG && name in node) {
-    prop(node, name, value);
+    setProperty(node, name, value);
   } else {
-    attr(node, name, value);
+    const colon = isSVG ? name.indexOf(":") : -1;
+    const namespace = colon > 0 ? svgNamespaces[name.slice(0, colon)] : undefined;
+    if (namespace === undefined) setAttribute(node, name, value);
+    else setAttributeNS(node, namespace, name, value);
   }
+  return value;
 }
 
 // ─── classList ────────────────────────────────────────────────────────────────
@@ -236,41 +443,229 @@ function setProp(node: Element, name: string, value: unknown, isSVG: boolean): v
  */
 export function classList(
   node: Element,
-  value: Record<string, boolean>,
+  value: ClassListValue,
   prev: Record<string, boolean> = {},
 ): Record<string, boolean> {
+  const next = value ?? {};
   for (const name of Object.keys(prev)) {
-    if (!value[name]) node.classList.remove(name);
-  }
-  for (const name of Object.keys(value)) {
-    if (value[name] !== prev[name]) {
-      if (value[name]) node.classList.add(name);
-      else node.classList.remove(name);
+    if (!next[name]) {
+      toggleClassKey(node, name, false);
+      delete prev[name];
     }
   }
-  return value;
+  for (const name of Object.keys(next)) {
+    const enabled = Boolean(next[name]);
+    if (enabled !== prev[name]) {
+      toggleClassKey(node, name, enabled);
+      if (enabled) prev[name] = true;
+      else delete prev[name];
+    }
+  }
+  return prev;
+}
+
+type ClassListValue = Record<string, boolean | null | undefined> | null | undefined;
+
+function toggleClassKey(node: Element, key: string, enabled: boolean): void {
+  for (const name of key.trim().split(/\s+/)) {
+    if (name !== "") node.classList.toggle(name, enabled);
+  }
 }
 
 // ─── style ────────────────────────────────────────────────────────────────────
 
-/** Reactively set inline styles. */
+type StylePropertyValue = string | number | null | undefined;
+type StyleRecord = Record<string, StylePropertyValue>;
+type StyleValue = string | StyleRecord | null | undefined;
+type StyleState = string | Record<string, string> | undefined;
+
+/** Set one inline style property using nullish removal semantics. */
+export function setStyleProperty(
+  node: HTMLElement,
+  name: string,
+  value: StylePropertyValue,
+): void {
+  if (value == null) node.style.removeProperty(name);
+  else node.style.setProperty(name, String(value));
+}
+
+/** Reactively set inline styles and return the state for the next diff. */
 export function style(
   node: HTMLElement,
-  value: string | Record<string, string>,
-  prev?: string | Record<string, string>,
-): void {
+  value: StyleValue,
+  prev?: StyleState,
+): StyleState {
+  if (value == null || value === "") {
+    if (prev !== undefined) setAttribute(node, "style", undefined);
+    return undefined;
+  }
   if (typeof value === "string") {
     node.style.cssText = value;
-    return;
+    return value;
   }
-  if (typeof prev === "object") {
-    for (const key of Object.keys(prev)) {
-      if (!(key in value)) node.style.removeProperty(key);
+  if (typeof prev === "string") {
+    node.style.cssText = "";
+    prev = undefined;
+  }
+  const state = prev ?? {};
+  for (const key of Object.keys(state)) {
+    if (value[key] == null) {
+      node.style.removeProperty(key);
+      delete state[key];
     }
   }
   for (const [key, val] of Object.entries(value)) {
-    node.style.setProperty(key, val);
+    if (val == null || state[key] === String(val)) continue;
+    const normalized = String(val);
+    node.style.setProperty(key, normalized);
+    state[key] = normalized;
   }
+  return state;
+}
+
+// ─── Resumable non-text expression targets ────────────────────────────────────
+
+/**
+ * Attach one resumable expression to one non-text target on a host element.
+ *
+ * The ordinary mutation helper is called *inside* the resumable path, so there
+ * is no second DOM-mutation implementation that could drift from the ordinary
+ * one on nullish removal or coercion (Decision 7 of
+ * `docs/RESUMABILITY_M8C_PLAN.md`). Registration is delegated to the single
+ * `observeRenderedExpressionTarget` registrar, which owns target validation and
+ * installation-marker accumulation.
+ */
+function attachExpressionTarget<ElementType extends Element>(
+  node: ElementType,
+  expression: unknown,
+  target: ExpressionTargetValue,
+  write: (node: ElementType, value: unknown) => void,
+): void {
+  const resumable = inspectExpression(expression) === undefined
+    ? undefined
+    : expression as ResumableExpression;
+  const accessor = typeof expression === "function"
+    ? expression as () => unknown
+    : () => expression;
+  if (resumable === undefined) {
+    new Computation(() => {
+      write(node, accessor());
+    });
+    return;
+  }
+  const registration = {};
+  new Computation(() => {
+    const observed = observeRenderedExpressionTarget(
+      node,
+      resumable,
+      registration,
+      target,
+      accessor,
+    );
+    if (observed.write) write(node, observed.value);
+  });
+}
+
+/**
+ * Compiler-facing helper: bind a resumable expression to one allowlisted
+ * ordinary attribute.
+ */
+export function exprAttribute(
+  node: Element,
+  expression: unknown,
+  name: string,
+): void {
+  attachExpressionTarget(
+    node,
+    expression,
+    { kind: "attribute", name },
+    (element, value) => setAttribute(element, name, value),
+  );
+}
+
+/** Compiler-facing helper: bind a resumable expression to the class string. */
+export function exprClass(node: Element, expression: unknown): void {
+  attachExpressionTarget(
+    node,
+    expression,
+    { kind: "class" },
+    (element, value) => className(element, value),
+  );
+}
+
+/**
+ * Compiler-facing helper: bind a resumable expression to one allowlisted
+ * inline style property.
+ */
+export function exprStyleProperty(
+  node: HTMLElement,
+  expression: unknown,
+  name: string,
+): void {
+  attachExpressionTarget(
+    node,
+    expression,
+    { kind: "style-property", name },
+    (element, value) =>
+      setStyleProperty(element, name, value as StylePropertyValue),
+  );
+}
+
+/**
+ * Compiler entry point for resumable non-text targets.
+ *
+ * Called **eagerly** from the generated `ref` callback with the host element
+ * and a plain array of `[boundExpression, target]` pairs — one call per host
+ * element, which is what keeps the generated code and the single
+ * `data-af-expr` marker in agreement by construction. This is not a
+ * dom-expressions directive and receives no accessor.
+ */
+export function resumeExprDirective(
+  node: Element,
+  pairs: ReadonlyArray<readonly [expression: unknown, target: ExpressionTargetValue]>,
+): void {
+  for (const [expression, target] of pairs) {
+    switch (target.kind) {
+      case "attribute":
+        exprAttribute(node, expression, target.name);
+        break;
+      case "class":
+        exprClass(node, expression);
+        break;
+      case "style-property":
+        exprStyleProperty(node as HTMLElement, expression, target.name);
+        break;
+      case "text":
+        throw new TypeError(
+          "[effect-atom-jsx] A text expression target is inserted, not attached to a host element.",
+        );
+    }
+  }
+}
+
+/**
+ * Invoke a compiler-emitted ref or directive outside reactive tracking.
+ *
+ * Directive arguments are accessors chosen by the JSX compiler; the runtime
+ * intentionally passes them through without evaluating them.
+ */
+export function use<ElementType extends Element>(
+  fn: (element: ElementType) => unknown,
+  element: ElementType,
+): unknown;
+export function use<ElementType extends Element, Argument>(
+  fn: (element: ElementType, argument: Argument) => unknown,
+  element: ElementType,
+  argument: Argument,
+): unknown;
+export function use(
+  fn: (element: Element, argument?: unknown) => unknown,
+  element: Element,
+  argument?: unknown,
+): unknown {
+  return runUntracked(() =>
+    arguments.length < 3 ? fn(element) : fn(element, argument)
+  );
 }
 
 // ─── Event delegation ─────────────────────────────────────────────────────────
@@ -298,6 +693,14 @@ export function addEventListener(
   handler: RuntimeEventHandler,
   delegate = false,
 ): void {
+  const activationTargetKey = registerActivationEventTarget(
+    node,
+    name,
+    Array.isArray(handler) ? handler[0] : handler,
+  );
+  if (activationTargetKey !== undefined) {
+    node.setAttribute(replayTargetAttribute(name), activationTargetKey);
+  }
   if (delegate) {
     const key = `$$${name}`;
     const record = node as unknown as Record<string, unknown>;
@@ -536,6 +939,14 @@ class ServerNode {
   textContent = "";
   nextSibling: ServerNode | null = null;
 
+  get firstChild(): ServerNode | null {
+    return this.childNodes[0] ?? null;
+  }
+
+  get lastChild(): ServerNode | null {
+    return this.childNodes[this.childNodes.length - 1] ?? null;
+  }
+
   appendChild(child: ServerNode): ServerNode {
     child.parentNode = this;
     this.childNodes.push(child);
@@ -618,8 +1029,16 @@ class ServerElement extends ServerNode {
     this._attrs[name] = value;
   }
 
+  setAttributeNS(_namespace: string, name: string, value: string): void {
+    this.setAttribute(name, value);
+  }
+
   removeAttribute(name: string): void {
     delete this._attrs[name];
+  }
+
+  removeAttributeNS(_namespace: string, name: string): void {
+    this.removeAttribute(name);
   }
 
   getAttribute(name: string): string | null {
@@ -705,6 +1124,7 @@ class ServerElement extends ServerNode {
     const styleStr = Object.entries(this._style).map(([k, v]) => `${k}: ${v}`).join("; ");
     const attrs = { ...this._attrs };
     if (styleStr) attrs["style"] = styleStr;
+    Object.assign(attrs, observeServerEventTarget(this));
 
     for (const [k, v] of Object.entries(attrs)) {
       attrStr += ` ${k}="${escapeHTML(v)}"`;
@@ -890,6 +1310,16 @@ function createServerDocument(): unknown {
 let _ssrMode = false;
 let _serverDoc: unknown = null;
 
+function serverValueToHTML(value: unknown): string {
+  if (value instanceof ServerNode) {
+    return value.toHTML();
+  }
+  if (Array.isArray(value)) {
+    return value.map(serverValueToHTML).join("");
+  }
+  return value == null ? "" : String(value);
+}
+
 /**
  * Render a component tree to an HTML string on the server.
  *
@@ -933,18 +1363,7 @@ export function renderToString(fn: () => unknown): string {
       result = fn();
     });
 
-    let html = "";
-    if (result instanceof ServerNode) {
-      html = (result as ServerNode).toHTML();
-    } else if (Array.isArray(result)) {
-      html = (result as unknown[])
-        .map((r) => (r instanceof ServerNode ? (r as ServerNode).toHTML() : String(r ?? "")))
-        .join("");
-    } else if (result != null) {
-      html = String(result);
-    }
-
-    return html;
+    return serverValueToHTML(result);
   } finally {
     try {
       // Dispose on both success and failure; SSR only needs one snapshot.

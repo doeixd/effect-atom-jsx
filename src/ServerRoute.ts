@@ -1,6 +1,5 @@
 import { Cause, Effect, Option, Schema } from "effect";
 import * as Route from "./Route.js";
-import type { RouterRuntimeInstance } from "./RouterRuntime.js";
 import type { AnyRoute, AppRouteNode } from "./Route.js";
 
 export const ServerRouteNodeSymbol: unique symbol = Symbol.for("effect-atom-jsx/ServerRouteNode");
@@ -640,15 +639,6 @@ export function toResponse(result: DispatchResult | Route.RenderRequestResult): 
   };
 }
 
-/** Dispatch a request through a RouterRuntime instance. */
-export function dispatchWithRuntime(
-  runtime: RouterRuntimeInstance,
-  request: Request,
-  options?: { readonly layer?: import("effect").Layer.Layer<any> },
-): Effect.Effect<DispatchResult, unknown> {
-  return runtime.dispatchRequest(request, options);
-}
-
 /** Execute a typed server route using request/response services from the environment. */
 export function executeFromServices<T extends AnyServerRouteNode>(
   route: T,
@@ -690,7 +680,6 @@ export const ServerRoute = {
   runDocument,
   dispatch,
   toResponse,
-  dispatchWithRuntime,
   redirect,
   notFound,
   ServerRouteNodeSymbol,

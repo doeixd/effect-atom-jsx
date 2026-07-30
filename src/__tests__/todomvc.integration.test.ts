@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { Effect, Layer, ManagedRuntime, ServiceMap } from "effect";
+import { Effect, Layer, ManagedRuntime, Context } from "effect";
 import {
   defineMutation,
   createOptimistic,
@@ -32,7 +32,7 @@ type TodoApi = {
   readonly toggle: (id: string) => Effect.Effect<void, ApiError>;
 };
 
-const TodoApi = ServiceMap.Service<TodoApi>("TodoApi:Integration");
+const TodoApi = Context.Service<TodoApi>("TodoApi:Integration");
 const tick = (ms = 0) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Poll until `predicate` holds or timeout — avoids fixed-tick flake on Refreshing. */

@@ -18,15 +18,16 @@
  * runtime dependency (`effect`) and gives validation + versioning at the
  * boundary rather than eval-on-hydrate.
  *
- * `ResultWire` is the canonical loader-result wire schema: a flat, JSON-safe
- * projection of the stale-while-revalidate result shape. It is the schema the
- * router serializes loader data through, and the seam the internal `Result`
- * migration (Finding-5 step 2) swaps its transform behind.
+ * The loader-result wire projection itself lives in `./result-wire.js`, which is
+ * the single canonical place that knows the flat DTO. This module keeps the
+ * *string* layer (HTML escaping, `encodeSync`/`decodeSync`, the convenience
+ * result codecs, and the injectable service) and re-exports the schema and the
+ * projection functions so existing import paths keep working.
  */
 
-import { Effect, Layer, Schema, ServiceMap } from "effect";
-import { Result as CoreResult, type Result as CoreResultType } from "./effect-ts.js";
-import * as FetchResult from "./Result.js";
+import { Effect, Layer, Schema, SchemaIssue, Context, Option } from "effect";
+import { type Result as CoreResultType } from "./effect-ts.js";
+import { ResultWire, ResultWireRecord, toWire, fromWire, type ResultWireValue } from "./result-wire.js";
 
 /**
  * Escape a JSON string so it is safe to embed inside an HTML `<script>` tag.
@@ -52,98 +53,40 @@ export function escapeJsonForHtml(json: string): string {
   });
 }
 
-// ─── Loader-result wire schema ──────────────────────────────────────────────
+// ─── Loader-result wire projection (re-exported) ────────────────────────────
+//
+// Canonical definitions live in `./result-wire.js` — the only module that
+// constructs or interprets the flat DTO. These re-exports preserve the historic
+// `Serialization.*` import paths (docs, router, tests).
 
-const SuccessWire = Schema.Struct({
-  _tag: Schema.Literal("Success"),
-  value: Schema.Unknown,
-  waiting: Schema.Boolean,
-  timestamp: Schema.Number,
-});
+export {
+  /** Canonical loader-result wire schema. @see result-wire.js */
+  ResultWire,
+  /** Wire schema for a full loader-data payload keyed by route id. */
+  ResultWireRecord,
+} from "./result-wire.js";
+
+export type { ResultWireValue } from "./result-wire.js";
 
 /**
- * Flat, JSON-safe wire projection of a core loader `Result`.
+ * Project a core `Result` to its flat, JSON-safe wire shape.
  *
- * `value` and `error` are `Unknown` (structural passthrough) because the router
- * serializes results for many routes whose payload types are not known at this
- * layer; routes that declare a loader schema get validated through their own
- * schema upstream. The shape is deliberately settled-and-serializable — no
- * `Cause`/`Exit` — which is why the wire holds this rather than a core
- * `Result` directly.
+ * Re-export of `resultWire.toWire`; see `./result-wire.js` for the frozen
+ * field mapping.
  */
-export const ResultWire = Schema.Union([
-  Schema.Struct({
-    _tag: Schema.Literal("Initial"),
-    waiting: Schema.Boolean,
-  }),
-  SuccessWire,
-  Schema.Struct({
-    _tag: Schema.Literal("Failure"),
-    error: Schema.Unknown,
-    waiting: Schema.Boolean,
-    previousSuccess: Schema.NullOr(SuccessWire),
-  }),
-]);
+export const resultToWire: (
+  result: CoreResultType<unknown, unknown>,
+  now?: () => number,
+) => ResultWireValue = toWire;
 
-/** Wire schema for a full loader-data payload keyed by route id. */
-export const ResultWireRecord = Schema.Record(Schema.String, ResultWire);
-
-/** The flat, JSON-safe wire shape a loader `Result` is projected to. */
-export type ResultWireValue = typeof ResultWire.Type;
-
-// ─── Core `Result` ↔ flat wire projection ───────────────────────────────────
-//
-// The loader cache and orchestration hold core `Result` (which carries
-// `Cause`/`Exit`, not JSON-safe). At the wire boundary it is projected to the
-// flat DTO above and back. The mapping is exactly `FetchResult.fromResult` /
-// `toResult`, kept explicit here rather than special-casing the generic codec.
-
-/** Project a core `Result` to its flat, JSON-safe wire shape. */
-export function resultToWire(result: CoreResultType<unknown, unknown>): ResultWireValue {
-  switch (result._tag) {
-    case "Loading":
-      return FetchResult.initial(true);
-    case "Refreshing":
-      switch (result.previous._tag) {
-        case "Success":
-          return FetchResult.success(result.previous.value, { waiting: true });
-        case "Failure":
-          return FetchResult.failure(result.previous.error, { waiting: true });
-        case "Defect":
-          return FetchResult.failure({ defect: result.previous.cause }, { waiting: true });
-      }
-    // eslint-disable-next-line no-fallthrough
-    case "Success":
-      return FetchResult.success(result.value);
-    case "Failure":
-      return FetchResult.failure(result.error);
-    case "Stale":
-      return FetchResult.failure(result.error, {
-        previousSuccess: FetchResult.success(result.data),
-      });
-    case "Defect":
-      return FetchResult.failure({ defect: result.cause });
-  }
-}
-
-/** Rehydrate a core `Result` from its flat wire shape. */
-export function resultFromWire(wire: ResultWireValue): CoreResultType<unknown, unknown> {
-  switch (wire._tag) {
-    case "Initial":
-      return FetchResult.toResult(wire);
-    case "Success":
-      return FetchResult.toResult(wire);
-    case "Failure":
-      if (
-        wire.waiting === false
-        && wire.previousSuccess !== null
-        && !(typeof wire.error === "object" && wire.error !== null && "defect" in wire.error)
-      ) {
-        return CoreResult.stale(wire.error, wire.previousSuccess.value);
-      }
-      return FetchResult.toResult(wire);
-  }
-}
+/**
+ * Rehydrate a core `Result` from its flat wire shape.
+ *
+ * Re-export of `resultWire.fromWire`; decode is lenient by contract.
+ */
+export const resultFromWire: (
+  wire: ResultWireValue,
+) => CoreResultType<unknown, unknown> = fromWire;
 
 // ─── Pure synchronous codec ─────────────────────────────────────────────────
 
@@ -211,7 +154,7 @@ export interface SerializationService {
   ) => Effect.Effect<T, Schema.SchemaError>;
 }
 
-export const Tag = ServiceMap.Service<SerializationService>("Serialization");
+export const Tag = Context.Service<SerializationService>("Serialization");
 
 const schemaCodec: SerializationService = {
   serialize: (schema, value) =>
@@ -219,8 +162,32 @@ const schemaCodec: SerializationService = {
       Effect.map((encoded) => escapeJsonForHtml(JSON.stringify(encoded))),
     ),
   deserialize: (schema, wire) =>
-    Effect.suspend(() => Schema.decodeUnknownEffect(schema)(JSON.parse(wire) as unknown)),
+    parseJson(wire).pipe(Effect.flatMap(Schema.decodeUnknownEffect(schema))),
 };
+
+/**
+ * `JSON.parse` in the typed error channel.
+ *
+ * A syntax error in an untrusted wire payload is an ordinary boundary failure,
+ * not a bug, so it must not escape as a defect. It is surfaced as a
+ * `Schema.SchemaError` — the same channel a structural mismatch uses — so that
+ * callers which already handle decode failure (e.g. `Resume.decodeManifest`'s
+ * `catchTag("SchemaError", ...)`) see malformed JSON as a typed failure without
+ * needing to widen their error unions.
+ */
+function parseJson(wire: string): Effect.Effect<unknown, Schema.SchemaError> {
+  return Effect.try({
+    try: () => JSON.parse(wire) as unknown,
+    catch: (cause) =>
+      new Schema.SchemaError(
+        new SchemaIssue.InvalidValue(Option.some(wire), {
+          message: `Malformed JSON wire payload: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`,
+        }),
+      ),
+  });
+}
 
 /**
  * Default `Serialization` layer: Effect-`Schema`-backed JSON codec with

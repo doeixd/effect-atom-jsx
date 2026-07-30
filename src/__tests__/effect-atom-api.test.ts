@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Effect } from "effect";
 import { Exit, Option, Schema } from "effect";
-import { Layer, ServiceMap } from "effect";
+import { Layer, Context } from "effect";
 import { Stream } from "effect";
 import { Schedule } from "effect";
 import * as Atom from "../Atom.js";
@@ -601,7 +601,7 @@ describe("effect-atom style API", () => {
   });
 
   it("supports Atom.runtime(...).atom for Layer-backed services", async () => {
-    const Greeting = ServiceMap.Service<{ readonly value: string }>("Greeting");
+    const Greeting = Context.Service<{ readonly value: string }>("Greeting");
     const rt = Atom.runtime(Layer.succeed(Greeting, { value: "hello" }));
 
     const greetingAtom = rt.atom(
@@ -619,7 +619,7 @@ describe("effect-atom style API", () => {
   });
 
   it("supports Atom.runtime(...).atom factory with get/result composition", async () => {
-    const Greeting = ServiceMap.Service<{ readonly value: string }>("Greeting");
+    const Greeting = Context.Service<{ readonly value: string }>("Greeting");
     const rt = Atom.runtime(Layer.succeed(Greeting, { value: "hello" }));
 
     const suffix = Atom.make("!");

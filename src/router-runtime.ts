@@ -1,5 +1,6 @@
-import { Effect } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { Result as CoreResult, type Result as CoreResultType } from "./effect-ts.js";
+import { makeResourceCacheIdentity } from "./cache-identity.js";
 import {
   beginReactivityReadCapture,
   getInstalledReactivityService,
@@ -29,48 +30,134 @@ export interface LoaderSelection {
   readonly reactivityKeys: ReadonlyArray<string>;
 }
 
-const cache = new Map<string, LoaderCacheEntry>();
-const reactivityToCache = new Map<string, Set<string>>();
-const reactivitySubscriptions = new Map<string, () => void>();
+// ─── Loader cache store (injectable, no module-global cache) ─────────────────
+//
+// R2: the loader cache is a *value*. A process-wide default store preserves
+// today's client behavior (one cache per browser document), while a server
+// render creates one store per request so concurrent renders never observe each
+// other's loader data. Effect call sites resolve the store from context
+// (`LoaderCacheTag`); synchronous call sites resolve it from the ambient store
+// installed by `runInLoaderCacheStore` (the same dynamic-scope mechanism the
+// resume session uses), falling back to the default store.
 
-function markStaleByReactivityKey(key: string): void {
-  const cacheKeys = reactivityToCache.get(key);
-  if (!cacheKeys) return;
-  for (const cacheKey of cacheKeys) {
-    const existing = cache.get(cacheKey);
-    if (!existing) continue;
-    cache.set(cacheKey, { ...existing, staleAt: 0 });
+/** A loader cache instance: entries plus its reactivity-key indexes. */
+export interface LoaderCacheStore {
+  readonly cache: Map<string, LoaderCacheEntry>;
+  readonly reactivityToCache: Map<string, Set<string>>;
+  readonly reactivitySubscriptions: Map<string, () => void>;
+}
+
+// Live stores are tracked weakly: reactivity invalidation must reach every
+// store that is still in use, without pinning per-request stores in memory.
+const trackedStores = new Set<WeakRef<LoaderCacheStore>>();
+
+function forEachLoaderCacheStore(f: (store: LoaderCacheStore) => void): void {
+  for (const ref of [...trackedStores]) {
+    const store = ref.deref();
+    if (store === undefined) {
+      trackedStores.delete(ref);
+      continue;
+    }
+    f(store);
   }
 }
 
-function ensureReactivitySubscription(key: string): void {
-  if (reactivitySubscriptions.has(key)) return;
+/** Create an isolated loader cache store (one per server request, typically). */
+export function makeLoaderCacheStore(): LoaderCacheStore {
+  const store: LoaderCacheStore = {
+    cache: new Map(),
+    reactivityToCache: new Map(),
+    reactivitySubscriptions: new Map(),
+  };
+  trackedStores.add(new WeakRef(store));
+  return store;
+}
+
+/** The process-wide default store; this is the client/document-level cache. */
+export const defaultLoaderCacheStore: LoaderCacheStore = makeLoaderCacheStore();
+
+/** Injectable loader cache service. */
+export const LoaderCacheTag = Context.Service<LoaderCacheStore>("LoaderCache");
+
+/**
+ * Default loader-cache layer: the process-wide store, i.e. exactly today's
+ * client behavior. Pass a store to scope the cache (per request, per test).
+ */
+export function loaderCacheLayer(store: LoaderCacheStore = defaultLoaderCacheStore): Layer.Layer<LoaderCacheStore> {
+  return Layer.succeed(LoaderCacheTag, store);
+}
+
+let ambientLoaderCacheStore: LoaderCacheStore | undefined;
+
+/**
+ * Install `store` as the ambient loader cache for the duration of a
+ * synchronous evaluation (server render). Nested/synchronous call sites that
+ * cannot read Effect context resolve through this.
+ */
+export function runInLoaderCacheStore<A>(store: LoaderCacheStore, evaluate: () => A): A {
+  const previous = ambientLoaderCacheStore;
+  ambientLoaderCacheStore = store;
+  try {
+    return evaluate();
+  } finally {
+    ambientLoaderCacheStore = previous;
+  }
+}
+
+/** Resolve the loader cache for synchronous call sites. */
+export function resolveLoaderCacheStore(store?: LoaderCacheStore): LoaderCacheStore {
+  return store ?? ambientLoaderCacheStore ?? defaultLoaderCacheStore;
+}
+
+/**
+ * Resolve the loader cache inside an Effect: the provided service wins, then
+ * the ambient store, then the default store. Never adds a requirement, so
+ * loader plumbing keeps its `R = never` signatures.
+ */
+export const currentLoaderCacheStore: Effect.Effect<LoaderCacheStore> = Effect.serviceOption(LoaderCacheTag).pipe(
+  Effect.map((option) => (option._tag === "Some" ? option.value : resolveLoaderCacheStore())),
+);
+
+function markStaleByReactivityKey(store: LoaderCacheStore, key: string): void {
+  const cacheKeys = store.reactivityToCache.get(key);
+  if (!cacheKeys) return;
+  for (const cacheKey of cacheKeys) {
+    const existing = store.cache.get(cacheKey);
+    if (!existing) continue;
+    store.cache.set(cacheKey, { ...existing, staleAt: 0 });
+  }
+}
+
+function ensureReactivitySubscription(store: LoaderCacheStore, key: string): void {
+  if (store.reactivitySubscriptions.has(key)) return;
   const service = getInstalledReactivityService();
   if (service === null) return;
   const unsubscribe = Effect.runSync(service.subscribe([key], () => {
-    markStaleByReactivityKey(key);
+    markStaleByReactivityKey(store, key);
   }));
-  reactivitySubscriptions.set(key, unsubscribe);
+  store.reactivitySubscriptions.set(key, unsubscribe);
 }
 
-function resetReactivitySubscriptions(): void {
-  for (const unsubscribe of reactivitySubscriptions.values()) {
+function resetReactivitySubscriptions(store: LoaderCacheStore): void {
+  for (const unsubscribe of store.reactivitySubscriptions.values()) {
     unsubscribe();
   }
-  reactivitySubscriptions.clear();
-  for (const key of reactivityToCache.keys()) {
-    ensureReactivitySubscription(key);
+  store.reactivitySubscriptions.clear();
+  for (const key of store.reactivityToCache.keys()) {
+    ensureReactivitySubscription(store, key);
   }
 }
 
 onReactivityServiceChange(() => {
-  resetReactivitySubscriptions();
+  forEachLoaderCacheStore(resetReactivitySubscriptions);
 });
 
 onReactivityInvalidation((keys) => {
-  for (const key of keys) {
-    markStaleByReactivityKey(key);
-  }
+  forEachLoaderCacheStore((store) => {
+    for (const key of keys) {
+      markStaleByReactivityKey(store, key);
+    }
+  });
 });
 
 export function durationToMillis(input: DurationInput, fallbackMs: number): number {
@@ -88,27 +175,21 @@ export function durationToMillis(input: DurationInput, fallbackMs: number): numb
   return fallbackMs;
 }
 
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
-}
-
 export function makeLoaderCacheKey(routeId: string, params: unknown): { readonly key: string; readonly paramsKey: string } {
-  const paramsKey = stableStringify(params ?? {});
+  const identity = makeResourceCacheIdentity(routeId, params ?? {});
   return {
-    key: `${routeId}::${paramsKey}`,
-    paramsKey,
+    key: identity.key,
+    paramsKey: identity.parametersKey,
   };
 }
 
-export function getLoaderCacheEntry(routeId: string, params: unknown): LoaderCacheEntry | undefined {
+export function getLoaderCacheEntry(routeId: string, params: unknown, store?: LoaderCacheStore): LoaderCacheEntry | undefined {
+  const target = resolveLoaderCacheStore(store);
   const { key } = makeLoaderCacheKey(routeId, params);
-  const found = cache.get(key);
+  const found = target.cache.get(key);
   if (!found) return undefined;
   if (Date.now() > found.expiresAt) {
-    cache.delete(key);
+    target.cache.delete(key);
     return undefined;
   }
   return found;
@@ -122,7 +203,8 @@ export function setLoaderCacheEntry(routeId: string, params: unknown, result: Co
   readonly staleTime?: DurationInput;
   readonly cacheTime?: DurationInput;
   readonly reactivityKeys?: ReactivityKeysInput;
-}): LoaderCacheEntry {
+}, store?: LoaderCacheStore): LoaderCacheEntry {
+  const target = resolveLoaderCacheStore(store);
   const now = Date.now();
   const staleTime = durationToMillis(options?.staleTime, 0);
   const cacheTime = durationToMillis(options?.cacheTime, 30 * 60_000);
@@ -137,26 +219,34 @@ export function setLoaderCacheEntry(routeId: string, params: unknown, result: Co
     expiresAt: now + cacheTime,
     reactivityKeys: options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : [],
   };
-  cache.set(key, entry);
+  target.cache.set(key, entry);
 
   for (const rk of entry.reactivityKeys) {
-    const set = reactivityToCache.get(rk) ?? new Set<string>();
+    const set = target.reactivityToCache.get(rk) ?? new Set<string>();
     set.add(key);
-    reactivityToCache.set(rk, set);
-    ensureReactivitySubscription(rk);
+    target.reactivityToCache.set(rk, set);
+    ensureReactivitySubscription(target, rk);
   }
   return entry;
 }
 
-export function invalidateLoaderCacheByKeys(keys: ReadonlyArray<string>): void {
+export function invalidateLoaderCacheByKeys(keys: ReadonlyArray<string>, store?: LoaderCacheStore): void {
+  if (store === undefined) {
+    forEachLoaderCacheStore((target) => {
+      for (const key of keys) {
+        markStaleByReactivityKey(target, key);
+      }
+    });
+    return;
+  }
   for (const key of keys) {
-    markStaleByReactivityKey(key);
+    markStaleByReactivityKey(store, key);
   }
 }
 
-export function invalidateLoaderReactivity(keys: ReactivityKeysInput): void {
+export function invalidateLoaderReactivity(keys: ReactivityKeysInput, store?: LoaderCacheStore): void {
   const normalized = normalizeReactivityKeys(keys);
-  invalidateLoaderCacheByKeys(normalized);
+  invalidateLoaderCacheByKeys(normalized, store);
   invalidateReactivityRuntime(normalized);
 }
 
@@ -164,8 +254,9 @@ export function collectLoaderReactivityKeys(
   routeId: string,
   params: unknown,
   options?: { readonly fallback?: ReactivityKeysInput },
+  store?: LoaderCacheStore,
 ): ReadonlyArray<string> {
-  const existing = getLoaderCacheEntry(routeId, params);
+  const existing = getLoaderCacheEntry(routeId, params, store);
   if (existing?.reactivityKeys.length) {
     return existing.reactivityKeys;
   }
@@ -181,14 +272,15 @@ export function matchesLoaderReactivity(
   return loaderKeys.some((key) => invalidated.has(key));
 }
 
-export function clearLoaderCache(routeId?: string): void {
+export function clearLoaderCache(routeId?: string, store?: LoaderCacheStore): void {
+  const target = resolveLoaderCacheStore(store);
   if (!routeId) {
-    cache.clear();
-    reactivityToCache.clear();
+    target.cache.clear();
+    target.reactivityToCache.clear();
     return;
   }
-  for (const [k, v] of cache.entries()) {
-    if (v.routeId === routeId) cache.delete(k);
+  for (const [k, v] of target.cache.entries()) {
+    if (v.routeId === routeId) target.cache.delete(k);
   }
 }
 
@@ -204,41 +296,55 @@ export function runCachedLoader<A, E>(
     readonly timeout?: DurationInput;
   },
 ): Effect.Effect<CoreResultType<A, E>, never> {
-  const existing = getLoaderCacheEntry(routeId, params);
-  if (existing && isFresh(existing)) {
-    return Effect.succeed(existing.result as CoreResultType<A, E>);
-  }
+  return currentLoaderCacheStore.pipe(Effect.flatMap((store) => {
+    const existing = getLoaderCacheEntry(routeId, params, store);
+    if (existing && isFresh(existing)) {
+      return Effect.succeed(existing.result as CoreResultType<A, E>);
+    }
 
-  if (existing && options?.staleWhileRevalidate && existing.result._tag === "Success") {
-    const stale = CoreResult.refreshing(existing.result as CoreResultType<A, E> & { readonly _tag: "Success" });
-    Effect.runFork(
-      executeAndCache(routeId, params, run, options).pipe(Effect.asVoid),
-    );
-    return Effect.succeed(stale as CoreResultType<A, E>);
-  }
+    if (existing && options?.staleWhileRevalidate && existing.result._tag === "Success") {
+      const stale = CoreResult.refreshing(existing.result as CoreResultType<A, E> & { readonly _tag: "Success" });
+      // Forked inside Effect rather than via `Effect.runFork`, so the refresh
+      // is an ordinary fiber in the runtime rather than an escaped promise.
+      // It is deliberately *detached*: `Effect.forkChild` would tie its
+      // lifetime to the requesting loader fiber, which completes immediately
+      // with the stale value and would therefore cancel every refresh. Making
+      // the refresh participate in navigation supersession needs the navigation
+      // scope threaded down to loaders — that arrives with R3/R4's single
+      // navigation stack; see the R2 handoff notes.
+      return Effect.forkDetach(
+        executeAndCache(routeId, params, run, options, store).pipe(Effect.asVoid),
+      ).pipe(Effect.as(stale as CoreResultType<A, E>));
+    }
 
-  return executeAndCache(routeId, params, run, options);
+    return executeAndCache(routeId, params, run, options, store);
+  }));
 }
 
 function executeAndCache<A, E>(
   routeId: string,
   params: unknown,
   run: Effect.Effect<A, E>,
-  options?: {
+  options: {
     readonly staleTime?: DurationInput;
     readonly cacheTime?: DurationInput;
     readonly reactivityKeys?: ReactivityKeysInput;
     readonly timeout?: DurationInput;
-  },
+  } | undefined,
+  store: LoaderCacheStore,
 ): Effect.Effect<CoreResultType<A, E>, never> {
   const optionKeys = options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : [];
+  const timeoutMs = durationToMillis(options?.timeout, 0);
+  const timedRun = timeoutMs > 0
+    ? run.pipe(Effect.timeout(timeoutMs))
+    : run;
   return Effect.sync(() => beginReactivityReadCapture()).pipe(
-    Effect.flatMap((capture) => run.pipe(
+    Effect.flatMap((capture) => timedRun.pipe(
       Effect.exit,
       Effect.map((exit) => {
         const out = CoreResult.fromExit(exit) as CoreResultType<A, E>;
         const mergedKeys = [...new Set([...optionKeys, ...capture.end()])];
-        setLoaderCacheEntry(routeId, params, out, { ...options, reactivityKeys: mergedKeys });
+        setLoaderCacheEntry(routeId, params, out, { ...options, reactivityKeys: mergedKeys }, store);
         return out;
       }),
       Effect.ensuring(Effect.sync(() => {

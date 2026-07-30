@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
-import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime, Option, Schema, Schedule } from "effect";
+import { Effect, Exit, Scope, Cause, Layer, Context, ManagedRuntime, Option, Schema, Schedule } from "effect";
 import {
   atomEffect,
   defineQuery,
@@ -347,7 +347,7 @@ describe("atomEffect — Effect.gen", () => {
 });
 
 describe("atomEffect — runtime compatibility", () => {
-  const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
+  const Greeting = Context.Service<{ readonly prefix: string }>("Greeting");
 
   it("accepts ManagedRuntime as the runtime argument", async () => {
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "hello" }));
@@ -374,7 +374,7 @@ describe("atomEffect — runtime compatibility", () => {
 
 describe("useService / defineQuery (ambient runtime behavior)", () => {
   it("useService(tag) throws when no ambient ManagedRuntime is present", () => {
-    const Name = ServiceMap.Service<{ readonly value: string }>("Name");
+    const Name = Context.Service<{ readonly value: string }>("Name");
     expect(() => useService(Name)).toThrow(/outside of an ambient runtime/i);
   });
 
@@ -394,7 +394,7 @@ describe("useService / defineQuery (ambient runtime behavior)", () => {
   });
 
   it("resourceWith(runtime, fn) runs with explicit managed runtime", async () => {
-    const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
+    const Greeting = Context.Service<{ readonly prefix: string }>("Greeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "yo" }));
 
     let result!: () => AsyncResultType<string, never>;
@@ -414,18 +414,18 @@ describe("useService / defineQuery (ambient runtime behavior)", () => {
   });
 
   it("useService(tag) throws without ambient runtime", () => {
-    const Name = ServiceMap.Service<{ readonly value: string }>("Name");
+    const Name = Context.Service<{ readonly value: string }>("Name");
     expect(() => useService(Name)).toThrow(/outside of an ambient runtime/i);
   });
 
   it("useServices throws without ambient runtime", () => {
-    const A = ServiceMap.Service<{ readonly value: string }>("A");
-    const B = ServiceMap.Service<{ readonly n: number }>("B");
+    const A = Context.Service<{ readonly value: string }>("A");
+    const B = Context.Service<{ readonly n: number }>("B");
     expect(() => useServices({ a: A, b: B })).toThrow(/outside of an ambient runtime/i);
   });
 
   it("useService reports missing service key clearly", () => {
-    const Missing = ServiceMap.Service<{ readonly value: string }>("Missing");
+    const Missing = Context.Service<{ readonly value: string }>("Missing");
     const harness = withTestLayer(Layer.empty);
     expect(() => harness.run(() => useService(Missing))).toThrow(/useService\(Missing\): service not found/i);
   });
@@ -456,7 +456,7 @@ describe("query keys / defineQuery", () => {
   });
 
   it("defineQuery runs with explicit runtime", async () => {
-    const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
+    const Greeting = Context.Service<{ readonly prefix: string }>("Greeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "hey" }));
 
     let result!: () => AsyncResultType<string, never>;
@@ -504,7 +504,7 @@ describe("query keys / defineQuery", () => {
   });
 
   it("defineQuery accepts explicit runtime", async () => {
-    const Svc = ServiceMap.Service<{ readonly value: string }>("Svc");
+    const Svc = Context.Service<{ readonly value: string }>("Svc");
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { value: "ok" }));
     const query = createRoot(() => defineQuery(
       () => Effect.service(Svc).pipe(Effect.map((s) => s.value)),
@@ -552,6 +552,31 @@ describe("query keys / defineQuery", () => {
 
     await tick(40);
     expect(query.result()).toEqual(AsyncResult.success(3));
+    await runtime.dispose();
+  });
+
+  it("defineQuery surfaces retry-schedule failures", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const retrySchedule = Schedule.recurs(1).pipe(
+      Schedule.addDelay(() =>
+        Effect.fail("retry-schedule-failed" as const)
+      ),
+    );
+    const query = createRoot(() =>
+      defineQuery(
+        () => Effect.fail("query-failed" as const),
+        {
+          name: "schedule-failure",
+          runtime,
+          retrySchedule,
+        },
+      )
+    );
+
+    await tick(20);
+    expect(query.result()).toEqual(
+      AsyncResult.failure("retry-schedule-failed"),
+    );
     await runtime.dispose();
   });
 
@@ -718,7 +743,7 @@ describe("strict aliases", () => {
   });
 
   it("defineMutation injects runtime", async () => {
-    const Svc = ServiceMap.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("Svc");
+    const Svc = Context.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("Svc");
     let saved = 0;
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { save: (n) => Effect.sync(() => { saved = n; }) }));
 
@@ -863,7 +888,7 @@ describe("defineMutation", () => {
   });
 
   it("requires runtime when action effect needs services", async () => {
-    const Greeting = ServiceMap.Service<{ readonly prefix: string }>("ActionGreeting");
+    const Greeting = Context.Service<{ readonly prefix: string }>("ActionGreeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "ok" }));
 
     const action = defineMutation(
@@ -909,7 +934,7 @@ describe("defineMutation", () => {
   });
 
   it("defineMutation supports explicit runtime option", async () => {
-    const Svc = ServiceMap.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("AliasSvc");
+    const Svc = Context.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("AliasSvc");
     let saved = 0;
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { save: (n) => Effect.sync(() => { saved = n; }) }));
 
@@ -1385,7 +1410,7 @@ describe("createFrame / Frame", () => {
 
 describe("WithLayer", () => {
   it("renders fallback while layer is unresolved", () => {
-    const layer = Layer.succeed(ServiceMap.Service<{ readonly v: number }>("Tmp"), { v: 1 });
+    const layer = Layer.succeed(Context.Service<{ readonly v: number }>("Tmp"), { v: 1 });
     const r = WithLayer({ layer, fallback: () => "loading", children: () => "ok" });
     expect(r === "loading" || r === "ok" || r === null).toBe(true);
   });
@@ -1482,7 +1507,7 @@ describe("scopedRoot", () => {
 
 describe("layerContext", () => {
   it("binds layer cleanup to component scope finalizers", async () => {
-    const Tmp = ServiceMap.Service<{ readonly value: number }>("TmpLayer");
+    const Tmp = Context.Service<{ readonly value: number }>("TmpLayer");
     const delayedLayer = Layer.effect(Tmp, Effect.succeed({ value: 1 }).pipe(Effect.delay("80 millis")));
     const scope = Scope.makeUnsafe();
     let rendered = 0;

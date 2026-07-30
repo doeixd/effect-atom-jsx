@@ -18,7 +18,7 @@ For authored slot-based components, use the slot-contract path in
 - **`QueryRef`** — Async read handle from `defineQuery`. Bundles `result`, `pending`, `latest`, `effect`, and invalidation APIs into one ergonomic object.
 - **`Mutation handle`** — Async write handle from `Atom.optimistic(...).action(...)`, `Atom.runtime(...).action(...)`, or callback-style `defineMutation(...)`. Exposes `run`, `effect`, `runEffect`, `result`, and `pending`; optimistic handles also expose `value`, `committed`, `optimistic`, `hasOptimistic`, `rollback`, and `clear`.
 - **`Action handle`** — Runtime-bound mutation handle from `Atom.action` / `Atom.runtime(...).action`. The preferred way to express mutations when you have Effect-native code.
-- **`Result`** — The six-state async type (`Loading`, `Refreshing`, `Success`, `Failure`, `Stale`, `Defect`). Distinguishing *initial load*, *revalidation*, *failed refresh with data*, typed failures, and defects makes UI states explicit rather than derived.
+- **`Result`** — The six-state async type (`Loading`, `Refreshing`, `Success`, `Failure`, `Stale`, `Defect`). Distinguishing _initial load_, _revalidation_, _failed refresh with data_, typed failures, and defects makes UI states explicit rather than derived.
 - **`Effect`** (from the `effect` package) — A typed program `Effect<A, E, R>`. The `.effect(...)` methods on query/mutation handles convert reactive state into composable Effect values.
 - **`BridgeError`** — Tagged errors emitted when you compose a reactive atom into an Effect pipeline and the atom is still `Loading` (`ResultLoadingError`) or has a `Defect` (`ResultDefectError`). Makes the gap between reactive state and Effect's error channel explicit.
 - **`MutationSupersededError`** — Emitted when a newer mutation run interrupts an earlier one. Lets Effect pipelines react to cancellation rather than silently dropping results.
@@ -56,8 +56,8 @@ const users = rt.atom(usersEffect);
 
 ```ts
 const rt = Atom.runtime(ApiLive);
-rt.atom(effect)    // RReq extends R — type-checked at creation
-rt.action(fn)      // same requirement safety
+rt.atom(effect); // RReq extends R — type-checked at creation
+rt.action(fn); // same requirement safety
 ```
 
 **Writable vs read-only:**
@@ -80,7 +80,7 @@ This library is built on Effect's dependency injection system. Services are type
 
 ### Core Concept
 
-A **service** is a typed interface declared as a `Context.Tag` or `ServiceMap.Service`. An **Effect** that requires a service declares it in its `R` type parameter. A **layer** (`Layer<ROut, E, RIn>`) is a recipe that constructs services — it can itself require other services (`RIn`) and it produces one or more services (`ROut`).
+A **service** is a typed interface declared as a `Context.Service` key. An **Effect** that requires a service declares it in its `R` type parameter. A **layer** (`Layer<ROut, E, RIn>`) is a recipe that constructs services — it can itself require other services (`RIn`) and it produces one or more services (`ROut`).
 
 ```
 Layer<ApiService, never, HttpClient>
@@ -104,9 +104,9 @@ Key-based invalidation and subscription. Used internally by single-flight to dec
 
 **Available layers:**
 
-| Layer | Description |
-|-------|-------------|
-| `Reactivity.live` | Auto-flushing via microtask scheduler. Use in production. |
+| Layer             | Description                                                |
+| ----------------- | ---------------------------------------------------------- |
+| `Reactivity.live` | Auto-flushing via microtask scheduler. Use in production.  |
 | `Reactivity.test` | Manual flush with `lastInvalidated` capture. Use in tests. |
 
 ```ts
@@ -129,12 +129,12 @@ URL state and navigation. Provides a reactive `url` atom and imperative navigati
 
 **Available layers:**
 
-| Layer | Description |
-|-------|-------------|
-| `Route.Router.Browser` | Wraps the browser History API. Listens to `popstate`. Use in client-rendered apps. |
-| `Route.Router.Hash` | Hash-based routing (`#/path`). Listens to `hashchange`. Use when you can't control server routing. |
-| `Route.Router.Server(request)` | Static URL from an incoming request. Use during SSR. |
-| `Route.Router.Memory(initial?)` | In-memory history stack. Use in tests and Node environments. |
+| Layer                           | Description                                                                                        |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `Route.Router.Browser`          | Wraps the browser History API. Listens to `popstate`. Use in client-rendered apps.                 |
+| `Route.Router.Hash`             | Hash-based routing (`#/path`). Listens to `hashchange`. Use when you can't control server routing. |
+| `Route.Router.Server(request)`  | Static URL from an incoming request. Use during SSR.                                               |
+| `Route.Router.Memory(initial?)` | In-memory history stack. Use in tests and Node environments.                                       |
 
 ```ts
 // Browser app
@@ -145,7 +145,11 @@ const ssrLayer = (req: Request) =>
   Layer.mergeAll(ApiLive, Reactivity.live, Route.Router.Server(req));
 
 // Tests
-const testLayer = Layer.mergeAll(ApiLive, Reactivity.test, Route.Router.Memory("/users/1"));
+const testLayer = Layer.mergeAll(
+  ApiLive,
+  Reactivity.test,
+  Route.Router.Memory("/users/1"),
+);
 ```
 
 ---
@@ -166,8 +170,8 @@ Transport contract for mutation single-flight. When present, `Atom.action(...)` 
 
 **Available layers:**
 
-| Layer | Description |
-|-------|-------------|
+| Layer                                        | Description                                                                    |
+| -------------------------------------------- | ------------------------------------------------------------------------------ |
 | `Route.FetchSingleFlightTransport(options?)` | Default HTTP fetch-based transport. Sends requests to the configured endpoint. |
 
 ```ts
@@ -187,10 +191,10 @@ When `SingleFlightTransportService` is present in the layer passed to `mount()`,
 
 These three services form a cohesive group and are always provided together via `RouterRuntime.toLayer(runtime, history)`. They exist as separate tags so individual pieces of the router can declare narrower requirements.
 
-| Tag | Provides |
-|-----|----------|
-| `RouterRuntime.HistoryTag` | `location()`, `push(to)`, `replace(to)`, `go(delta)` |
-| `RouterRuntime.NavigationTag` | `navigate(...)`, `submit(...)`, `fetch(...)`, `revalidate(...)`, `cancel(...)` |
+| Tag                              | Provides                                                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `RouterRuntime.HistoryTag`       | `location()`, `push(to)`, `replace(to)`, `go(delta)`                                                    |
+| `RouterRuntime.NavigationTag`    | `navigate(...)`, `submit(...)`, `fetch(...)`, `revalidate(...)`, `cancel(...)`                          |
 | `RouterRuntime.RouterRuntimeTag` | Full runtime instance: `snapshot()`, `subscribe()`, `initialize()`, and all navigation/dispatch methods |
 
 ```ts
@@ -209,9 +213,9 @@ Design tokens and theme mode. Optional — only required if you use `Style.token
 
 **Available layers:**
 
-| Layer | Description |
-|-------|-------------|
-| `Theme.ThemeLight` | Default light-mode tokens. |
+| Layer                            | Description                              |
+| -------------------------------- | ---------------------------------------- |
+| `Theme.ThemeLight`               | Default light-mode tokens.               |
 | `Theme.layer(tokens, { mode? })` | Layer from a user-declared token object. |
 
 ```ts
@@ -238,11 +242,11 @@ Provided automatically by `Route.renderRequest(...)` and `ServerRoute.dispatch(.
 
 ```ts
 // Inside server component setup or server route handler:
-const url = yield* Route.serverUrl;           // from ServerRequestTag
-const req = yield* Route.serverRequest;       // from ServerRequestTag
-yield* Route.setStatus(404);                  // writes to ServerResponseTag
-yield* Route.setHeader("Cache-Control", "no-store");
-yield* Route.serverRedirect("/login");
+const url = yield * Route.serverUrl; // from ServerRequestTag
+const req = yield * Route.serverRequest; // from ServerRequestTag
+yield * Route.setStatus(404); // writes to ServerResponseTag
+yield * Route.setHeader("Cache-Control", "no-store");
+yield * Route.serverRedirect("/login");
 ```
 
 These tags are never part of your app's `mount()` layer — they are scoped to a single request/response cycle.
@@ -287,10 +291,10 @@ mount(() => <App />, document.getElementById("root")!);
 // Module-level: declare requirements, bind layer once
 const rt = Atom.runtime(ApiLive);
 export const currentUser = rt.atom(
-  Effect.service(UserApi).pipe(Effect.flatMap(api => api.me()))
+  Effect.service(UserApi).pipe(Effect.flatMap((api) => api.me())),
 );
 export const saveProfile = rt.action((input: ProfileInput) =>
-  Effect.service(UserApi).pipe(Effect.flatMap(api => api.save(input)))
+  Effect.service(UserApi).pipe(Effect.flatMap((api) => api.save(input))),
 );
 ```
 
@@ -340,9 +344,7 @@ const UserCard = Component.make(
 
 ```ts
 // Provide a mock API to just this component tree
-const TestableUserCard = UserCard.pipe(
-  Component.withLayer(MockUserApiLive),
-);
+const TestableUserCard = UserCard.pipe(Component.withLayer(MockUserApiLive));
 ```
 
 If the parent already provides the required services (via `mount()` or a parent `Component.withLayer`), no additional wiring is needed.
@@ -378,6 +380,7 @@ Your services (you define requirements):
 ### Common Composition Patterns
 
 **Minimal browser app:**
+
 ```ts
 const AppLayer = Layer.mergeAll(
   ApiLive,
@@ -388,6 +391,7 @@ mount(() => <App />, document.getElementById("root")!, AppLayer);
 ```
 
 **With single-flight mutations:**
+
 ```ts
 const AppLayer = Layer.mergeAll(
   ApiLive,
@@ -398,6 +402,7 @@ const AppLayer = Layer.mergeAll(
 ```
 
 **With theme:**
+
 ```ts
 const AppLayer = Layer.mergeAll(
   ApiLive,
@@ -408,6 +413,7 @@ const AppLayer = Layer.mergeAll(
 ```
 
 **Test setup (no browser APIs, manual flush):**
+
 ```ts
 const TestLayer = Layer.mergeAll(
   MockApiLive,
@@ -418,6 +424,7 @@ const harness = new TestHarness(TestLayer);
 ```
 
 **SSR per-request layer:**
+
 ```ts
 function handleRequest(req: Request) {
   const layer = Layer.mergeAll(
@@ -430,6 +437,7 @@ function handleRequest(req: Request) {
 ```
 
 **Global observability (applied to all atom runtimes):**
+
 ```ts
 // app/bootstrap.ts — runs once at startup
 Atom.runtime.addGlobalLayer(OtelTracingLive);
@@ -442,7 +450,7 @@ Atom.runtime.addGlobalLayer(StructuredLogLive);
 
 Effect-native component primitive with typed props, requirements, and errors. Components are Effect programs: their setup phase is an Effect generator that acquires resources, declares local state, runs queries, and wires actions — all in one composable unit.
 
-The key insight is that `Component.make` separates *setup* (an Effect that runs once per mount and returns bindings) from *view* (a reactive function of props and bindings). Setup is where you acquire services, register cleanup, and express async intent. View is purely reactive.
+The key insight is that `Component.make` separates _setup_ (an Effect that runs once per mount and returns bindings) from _view_ (a reactive function of props and bindings). Setup is where you acquire services, register cleanup, and express async intent. View is purely reactive.
 
 - `Component.make(props, require, setup, view)`
 - `Component.headless(props, require, setup)` — setup-only, no view (for logic reuse)
@@ -454,7 +462,9 @@ The key insight is that `Component.make` separates *setup* (an Effect that runs 
 - setup/render bridges: `Component.setupEffect(component, props)`, `Component.renderEffect(component, props)`, and `Component.renderViewEffect(component, props)`
 - **setup builder** (pipeable authoring layer over setup-as-Effect):
   - `Component.setup<Props>()` — start a named binding builder
-  - `Component.bind(name, effect)` — add an Effect-created binding
+  - `Component.bind(name, effect, options?)` — add an Effect-created binding;
+    advanced resumability adapters may attach a schema-backed state snapshot
+    policy through `options.resume`
   - `Component.value(name, fn)` — add a pure setup value
   - `Component.doEffect(effect)` — run setup work without adding a binding
   - `Component.use(fragment)` — merge a reusable setup fragment
@@ -464,9 +474,19 @@ The key insight is that `Component.make` separates *setup* (an Effect that runs 
   - `Component.effect(fn)` — setup-scoped reactive effect with cleanup support; its reactive owner is disposed with the setup scope
   - `Component.state(initial)` — component-instance-local writable atom; when a
     setup scope is present, writes after scope close throw instead of mutating
-    stale local state
+    stale local state. Its `Component.StateAtom<A>` result retains `A` through
+    `Resume.inspectHandle(...)`.
   - `Component.derived(fn)` — local derived atom
-  - `Component.query(effect, options?)` — local async query, auto-managed lifetime. Queries capture the setup service map so async work can use services supplied by component layers, and query owners are disposed with the setup scope.
+  - `Component.query(effectOrPortableCode, options?)` — local async query,
+    auto-managed lifetime. Queries capture the setup service map so async work
+    can use services supplied by component layers, and query owners are
+    disposed with the setup scope. `options.reactivityKeys` accepts canonical
+    `Reactivity.Key` witnesses or dynamic string keys and reruns the live query
+    on invalidation. Retry-schedule errors join the query's typed `Result`
+    error, and retry/poll schedule service requirements join the setup Effect's
+    requirements. Portable executors preserve normalized keys in resume
+    snapshots; `Portable.cacheKey(descriptor, reactivityKeys)` derives their
+    stable server/client cache and single-flight identity.
   - `Component.action(fn, options?)` — local action, auto-managed lifetime. Returned handles are callable and expose `run(...)`, `runEffect(...)`, `effect(...)`, `result`, and `pending`; action handles capture the setup service map so later runs can use services supplied by component layers, and reject runs after setup scope close.
   - `Component.optimistic(source).action(spec)` — component-local optimistic action over setup-owned state; captures the setup service map like `Component.action(...)` and rejects mutating operations after setup scope close.
   - `Component.ref<T>()` — DOM or imperative ref; `.current` is cleared when the setup scope closes
@@ -489,12 +509,13 @@ The key insight is that `Component.make` separates *setup* (an Effect that runs 
 const Counter = Component.make(
   Component.props<{ readonly start: number }>(),
   Component.require<never>(),
-  ({ start }) => Effect.gen(function* () {
-    // Setup runs once — acquire state, queries, actions here
-    const [count, setCount] = yield* Component.signal(start);
-    const doubled = yield* Component.derived(() => count() * 2);
-    return { count, setCount, doubled };
-  }),
+  ({ start }) =>
+    Effect.gen(function* () {
+      // Setup runs once — acquire state, queries, actions here
+      const [count, setCount] = yield* Component.signal(start);
+      const doubled = yield* Component.derived(() => count() * 2);
+      return { count, setCount, doubled };
+    }),
   // View is a reactive function — runs whenever its atom reads change
   (_props, { doubled }) => doubled(),
 );
@@ -504,9 +525,11 @@ The same setup can be authored as a pipeable named-binding builder:
 
 ```ts
 const CounterSetup = Component.setup<{ readonly start: number }>()
-  .bind("count", ({ props }) => Component.state(props.start))
+  .bind("count", ({ props }) => Component.state(props.start), {
+    resume: Resume.snapshotState(Schema.Number),
+  })
   .bind("doubled", ({ bindings }) =>
-    Component.derived(() => bindings.count() * 2)
+    Component.derived(() => bindings.count() * 2),
   );
 
 const Counter = Component.make(
@@ -656,12 +679,9 @@ The `Element.*` constructors define what capability a slot needs (is it interact
 const NeedsInput = Behavior.events({
   input: [View.Event.Input, View.Event.Focus],
 })(
-  Behavior.make<
-    { readonly input: Element.TextInput },
-    {},
-    never,
-    never
-  >(({ input }) => input.on("input", () => undefined).pipe(Effect.as({}))),
+  Behavior.make<{ readonly input: Element.TextInput }, {}, never, never>(
+    ({ input }) => input.on("input", () => undefined).pipe(Effect.as({})),
+  ),
 );
 
 const Field = View.Slot.make("field", {
@@ -681,15 +701,18 @@ Behavior.validateAttachmentBySlots(
 ```
 
 **Element capability constructors:**
+
 - `Element.interactive()` / `Element.container()` / `Element.focusable()` / `Element.textInput()` / `Element.draggable()`
 - `Element.collection(items)` — `forEach` and `observeEach` for dynamic collection lifecycle
 - `Element.Capability.make(name, { extends })` — define a branded capability witness with optional parent capabilities
 
 **`Component` slot integration:**
+
 - `Component.withBehavior(behavior, selectElements, merge?)`
 - `Component.slotInteractive()` / `Component.slotContainer()` / `Component.slotFocusable()` / `Component.slotTextInput()` / `Component.slotDraggable()` / `Component.slotCollection(items?)`
 
 **Built-in behaviors:**
+
 - `Behaviors.disclosure` — open/close toggle with accessibility
 - `Behaviors.selection(options?)` — single/multi select with keyboard navigation
 - `Behaviors.searchFilter(options)` — live search/filter over a collection
@@ -699,6 +722,7 @@ Behavior.validateAttachmentBySlots(
 - `Behaviors.combobox(options)` — combined input + dropdown behavior
 
 **Headless factory helpers:**
+
 - `Composables.createCombobox(options)` — composable combobox without a Component
 
 <br />
@@ -708,6 +732,7 @@ Behavior.validateAttachmentBySlots(
 Typed style composition that treats CSS as data. Styles are assembled as structured slot objects, not string templates, so they can be composed, overridden, and attached to component slots safely.
 
 **Style composition primitives:**
+
 - `Style.slot`, `Style.compose`, `Style.when`, `Style.whenBinding`, `Style.states`, `Style.responsive`
 - `Style.whenBinding(binding, predicateOrValue, style)` includes a style piece only when a setup/behavior binding matches. Pass either a binding name or a `Behavior.binding(...)` witness; authored `Style.make(...)` attachment preserves the binding name and rejects components that do not expose the referenced binding.
 - animated: `Style.animation`, `Style.keyframes`, `Style.transition`
@@ -719,6 +744,7 @@ Typed style composition that treats CSS as data. Styles are assembled as structu
 - global style service: `Style.GlobalStyleTag`, `Style.resolveGlobal`, `Style.globalLayer(global, { apply? })`
 
 **Style maps and attachment:**
+
 - `Style.make` — create a style map (slot name → style)
 - `Style.forSlots(slots)` — create an authored style map over a `View.Slots` contract
 - `Style.attachToSlots(style, slots)` — attach authored styles to the same slot contract
@@ -744,10 +770,7 @@ const style = Style.make({
 
 Style.validatePlatform(style, {
   name: "web",
-  properties: [
-    Style.Property.Color,
-    BackdropFilter,
-  ],
+  properties: [Style.Property.Color, BackdropFilter],
 });
 
 const WebStylePlatform = Style.platform(
@@ -760,36 +783,39 @@ const WebStylePlatform = Style.platform(
   },
 );
 
-type Supported =
-  Style.Property.NamesOf<[
-    typeof Style.Property.Color,
-    typeof BackdropFilter,
-  ]>; // "color" | "backdropFilter"
+type Supported = Style.Property.NamesOf<
+  [typeof Style.Property.Color, typeof BackdropFilter]
+>; // "color" | "backdropFilter"
 ```
 
 When `WebStylePlatform` is provided to a component using `Style.attach(...)`,
 unsupported properties are reported through `onDiagnostic` during setup.
 
 **Variants and recipes** — type-safe prop-driven style variation:
+
 - `Style.variants`, `Style.recipe`
 - `Style.VariantProps<T>`, `Style.RecipeProps<T>` — infer prop types from a recipe
 
 **Design tokens:**
+
 - `Style.tokenColor`, `Style.tokenSpacing`, `Style.tokenFontSize`
 - `Style.override`, `Style.Provider` — runtime token overrides at subtree boundaries
 
 **Theme service:**
+
 - `Theme.Theme` service key — inject into Effect layer for system theme access
 - `Theme.ThemeLight` — default layer
 - `Theme.define(tokens)` / `Theme.defineTokens(tokens)` / `Theme.layer(tokens, opts?)` — user-declared token schemas with typed paths
 - `Theme.lookupToken(tokens, path)` — resolve a token path to a value
 
 **Utility helpers (`src/style-utils.ts`):**
+
 - `StyleUtils.padded`, `StyleUtils.rounded`, `StyleUtils.elevated`, `StyleUtils.bordered`
 - `StyleUtils.textStyle`, `StyleUtils.flexRow`, `StyleUtils.flexCol`
 - `StyleUtils.interactive`, `StyleUtils.truncated`
 
 **Styled composables (`src/styled-composables.ts`):**
+
 - `StyledComposables.createStyledCombobox` — styled + behaviors wired together
 
 Example: `examples/styled-combobox/App.tsx`
@@ -801,16 +827,22 @@ Example: `examples/styled-combobox/App.tsx`
 Routing uses route nodes as the app-first golden path. Constructors create route identity, and pipe helpers attach orthogonal metadata, loading, and behavior:
 
 ```ts
-const Home = Route.index(HomePage).pipe(Route.id("home"))
+const Home = Route.index(HomePage).pipe(Route.id("home"));
 
 const User = Route.page("/users/:userId", UserPage).pipe(
   Route.id("users.detail"),
   Route.paramsSchema(Schema.Struct({ userId: Schema.String })),
-  Route.querySchema(Schema.Struct({ tab: Schema.optional(Schema.Union([Schema.Literal("profile"), Schema.Literal("settings")])) })),
+  Route.querySchema(
+    Schema.Struct({
+      tab: Schema.optional(
+        Schema.Union([Schema.Literal("profile"), Schema.Literal("settings")]),
+      ),
+    }),
+  ),
   Route.loader((params) => Effect.succeed({ id: params.userId, name: "Ada" })),
   Route.title((params, user) => `${params.userId}:${user?.name ?? "loading"}`),
   Route.meta((params, user) => ({ description: user?.id ?? params.userId })),
-)
+);
 
 export const AppRoutes = Route.define(
   Route.layout(AppShell).pipe(
@@ -822,10 +854,10 @@ export const AppRoutes = Route.define(
       ]),
     ]),
   ),
-)
+);
 
-const href = Route.link(User)
-href({ userId: "ada" }, { query: { tab: "profile" }, hash: "activity" })
+const href = Route.link(User);
+href({ userId: "ada" }, { query: { tab: "profile" }, hash: "activity" });
 ```
 
 The key design goal is that route metadata accumulates on a first-class route node, with strong inference flowing through the pipe chain. Use `Route.componentOf(node)` when an API needs the materialized routed component behind a node.
@@ -835,6 +867,7 @@ Component-first `Component.pipe(Route.path(...))` routes remain available for co
 Component wrappers like `Component.withLoading(...)`, `Component.withSpan(...)`, and `Component.withLayer(...)` preserve route metadata and extraction behavior, so helpers like `Route.link(...)` and `Route.ParamsOf<T>` survive more safe composition chains.
 
 **Route-node golden path:**
+
 - `Route.page(path, component)` — create a page route node
 - `Route.layout(component)` — create a layout route node
 - `Route.index(component)` — create an index route node that matches its parent exactly
@@ -843,12 +876,14 @@ Component wrappers like `Component.withLoading(...)`, `Component.withSpan(...)`,
 - `Route.componentOf(node)` — extract/materialize the routed component represented by a node
 
 **Shared route pipes:**
+
 - `Route.paramsSchema`, `Route.querySchema`, `Route.hashSchema` — replace raw URL inference with decoded schema output
 - `Route.id` — assign a stable route id for linking, loaders, SSR payloads, and diagnostics
 - `Route.loader`, `Route.title`, `Route.meta`, `Route.guard`, `Route.transition` — accumulate route behavior and metadata on the same route value
 - `Route.path(pattern)` — compatibility component-first route constructor
 
 **Route accessors (inside components):**
+
 - `Route.params` — typed URL params atom
 - `Route.query` — typed query string atom
 - `Route.hash` — typed hash atom
@@ -857,57 +892,73 @@ Component wrappers like `Component.withLoading(...)`, `Component.withSpan(...)`,
 - `Route.loaderResult` — loader result atom (`Result` union, for explicit state handling)
 
 **Pattern utilities:**
+
 - `Route.matchPattern`, `Route.extractParams`, `Route.resolvePattern`, `Route.matches(pattern)`
 
 **Links:**
+
 - `Route.link(routeNodeOrRoutedComponent)` — create a typed link helper for a route node, unified route, or routed component
 - `Route.Link` — generic link component
 
 **Query sync:**
+
 - `Route.queryAtom(key, schema, { default })` — atom backed by a URL query parameter; writes update the URL, reads come from it
 
 **Loader infrastructure:**
+
 - `Route.loader` — declare loader data and loader effect on a route
 - `Route.loaderError`, `Route.prefetch`, `Route.reload`, `Route.action`
-- `Route.runMatchedLoaders` — run all matched loaders; accepts either a `URL` or `(root, url)`
+- `Route.runMatchedLoaders(source, url, options?)` — run all matched loaders. `source` is a route tree root or an explicit `Route.registry([...])`; there is no global route set
 
 **Extraction helpers:**
+
 - `Route.RouteNodeParamsOf<T>`, `Route.RouteNodeQueryOf<T>`, `Route.RouteNodeHashOf<T>`, `Route.RouteNodeLoaderDataOf<T>`, `Route.RouteNodeLoaderErrorOf<T>`
 - Aliases: `Route.ParamsOf<T>`, `Route.QueryOf<T>`, `Route.HashOf<T>`, `Route.LoaderDataOf<T>`, `Route.LoaderErrorOf<T>`
 
 **Route tree introspection/validation:**
+
 - `Route.nodes(...)`, `Route.parentOf(...)`, `Route.ancestorsOf(...)`, `Route.depthOf(...)`, `Route.routeChainOf(...)`, `Route.fullPathOf(...)`, `Route.paramNamesOf(...)`
 - `Route.validateTree(...)` — validate the route tree; reports conflicting sibling patterns
 
 **Metadata precedence:**
+
 - Title: deepest matched route wins
 - Meta: merged root → leaf (deeper keys override parent)
 - Callback forms for `Route.title` / `Route.meta` receive `(params, loaderData, loaderResult)`
 - Route head callbacks stay reactive after setup and recompute on match/params/loader changes
 
 **Extra route pipes/utilities:**
+
 - `Route.guard`, `Route.title`, `Route.meta`, `Route.transition`
 - `Route.lazy(importer, { loading? })` — demand-load a component, expose `preload()`, and update through signals when the module resolves
-- `Route.Switch`, `Route.collect`, `Route.collectAll`, `Route.validateLinks`
+- `Route.Switch`, `Route.collect`, `Route.collectAll(source)`, `Route.validateLinks`
+- `Route.registry([...])`, `Route.isRouteRegistry`, `Route.RouteSourceTag`, `Route.routeSourceLayer(source)` — explicit route sources; `routeSourceLayer` is what makes `RouterService.preload` resolvable
 
 **SSR/SSG loader helpers:**
+
 - `Route.serializeLoaderData`, `Route.deserializeLoaderData`, `Route.streamDeferredLoaderScripts`
-- `Route.collectSitemapEntries`, `Route.sitemapParams` — sitemap collection accepts either `baseUrl` alone or `(root, baseUrl)` for explicit trees
+- `Route.collectSitemapEntries(source, baseUrl?)`, `Route.sitemapParams`
+- `Route.LoaderHandoff` / `Route.LoaderHandoffEntry`, `Route.loaderHandoffVersion`, `Route.loaderHandoffGlobalKey`, `Route.loaderHandoffNotifyKey` — the versioned streamed-loader envelope (replaces `window.__LOADER_DATA__` / `window.__HYDRATE_ROUTE__`)
+- `Route.readLoaderHandoff`, `Route.hydrateLoaderHandoff(source, options?)`, `Route.onLoaderHandoffEntry(handler)` — read, apply, and observe that envelope; decoding validates through the `Serialization` service, so a bad payload is a typed `SchemaError`
 
 **Head/meta utilities:**
+
 - `Route.mergeRouteMetaChain`, `Route.resolveRouteHead`, `Route.applyRouteHeadToDocument`
+- `Route.RouteHeadStore`, `Route.makeRouteHeadStore`, `Route.RouteHeadTag`, `Route.currentRouteHeadStore`, `Route.clientRouteHeadStore`, `Route.resolveRouteHeadOf(store)` — head state is per-request on the server and per-owner on the client; `Route.setRouteHead` / `Route.removeRouteHead` / `Route.createRouteHeadId` all take the store
 
 **Router layers:**
+
 - `Route.Router.Browser`, `Route.Router.Hash`, `Route.Router.Server(request)`, `Route.Router.Memory(initial?)`
 
 **Streaming:**
+
 - `Route.runStreamingNavigation` — orchestrate streamed navigation responses
 
 ---
 
 ### Single-Flight
 
-Single-flight solves the **double round-trip problem**. A normal mutation flow requires two network requests: one to execute the mutation, and a second to reload the route data that changed. With single-flight, a single request carries both the mutation execution *and* the refreshed loader payloads back to the client. The client seeds its loader cache directly from the response — no second fetch, no loading flash.
+Single-flight solves the **double round-trip problem**. A normal mutation flow requires two network requests: one to execute the mutation, and a second to reload the route data that changed. With single-flight, a single request carries both the mutation execution _and_ the refreshed loader payloads back to the client. The client seeds its loader cache directly from the response — no second fetch, no loading flash.
 
 ```
 Without single-flight:
@@ -937,7 +988,8 @@ When `Atom.action` has a `singleFlight` option, every `run(input)` call checks f
 
 ```ts
 const saveUser = Atom.action(
-  (input: { readonly id: string; readonly name: string }) => api.saveUser(input),
+  (input: { readonly id: string; readonly name: string }) =>
+    api.saveUser(input),
   {
     reactivityKeys: { users: ["list"], user: ["by-id", "profile"] },
     singleFlight: {
@@ -950,6 +1002,7 @@ const saveUser = Atom.action(
 ```
 
 The transport sends a **request envelope**:
+
 ```ts
 {
   name?: string;    // optional mutation name for server-side routing
@@ -965,10 +1018,11 @@ The transport sends a **request envelope**:
 ```ts
 // server/routes/users.ts
 const saveUserHandler = Route.singleFlight(
-  (input: { readonly id: string; readonly name: string }) => api.saveUser(input),
+  (input: { readonly id: string; readonly name: string }) =>
+    api.saveUser(input),
   {
-    target: (result) => `/users/${result.id}`,  // URL for loader matching
-    setLoaders: Route.seedLoader(UserRoute),     // seed cache directly
+    target: (result) => `/users/${result.id}`, // URL for loader matching
+    setLoaders: Route.seedLoader(UserRoute), // seed cache directly
   },
 );
 ```
@@ -976,6 +1030,7 @@ const saveUserHandler = Route.singleFlight(
 Internally, `Route.singleFlight` is composed from two lower-level pieces — understanding them explains what happens at each step:
 
 **`Route.actionSingleFlight(fn, options)`** — the mutation runner:
+
 1. Begins capturing reactivity invalidations (via `Reactivity.tracked`).
 2. Executes the mutation function.
 3. Collects any invalidation keys the mutation emitted.
@@ -984,6 +1039,7 @@ Internally, `Route.singleFlight` is composed from two lower-level pieces — und
 6. Returns a `SingleFlightPayload`.
 
 **`Route.createSingleFlightHandler(run, options)`** — the request/response adapter:
+
 1. Receives the request envelope from the client.
 2. Provides a `Route.Router.Server(url)` layer to the runner so loaders resolve against the right URL.
 3. Wraps the result in a `SingleFlightResponse` envelope: `{ ok: true, payload }` or `{ ok: false, error }`.
@@ -994,7 +1050,7 @@ The most important decision `actionSingleFlight` makes is which matched loaders 
 
 - Each loader, when it runs, reads atoms/queries that are registered with reactivity keys. These reads are captured automatically.
 - The mutation, when it runs (or via `reactivityKeys` options on `Atom.action`), emits invalidation keys.
-- `runMatchedLoaders` filters candidates: a loader only runs if its captured keys *intersect* with the mutation's invalidated keys.
+- `runMatchedLoaders` filters candidates: a loader only runs if its captured keys _intersect_ with the mutation's invalidated keys.
 
 ```
 Mutation invalidates:  ["user:123", "users:list"]
@@ -1004,15 +1060,16 @@ UserListRoute loader depends on: ["users:list"]     ✓ runs (intersection)
 StatsRoute loader depends on:    ["stats"]          ✗ skipped (no intersection)
 ```
 
-**Fallback:** if the mutation emits *no* invalidation keys (nothing was captured), the system falls back to running *all* matched loaders for the target URL. This is the safe default — it's better to over-fetch than to silently serve stale data.
+**Fallback:** if the mutation emits _no_ invalidation keys (nothing was captured), the system falls back to running _all_ matched loaders for the target URL. This is the safe default — it's better to over-fetch than to silently serve stale data.
 
 You can override loader selection with the `revalidate` option:
+
 ```ts
 Route.singleFlight(fn, {
-  revalidate: "none",      // skip all loaders (use only setLoaders seeding)
-  revalidate: "all",       // always run all matched loaders
-  revalidate: "reactivity" // default: reactivity-key-driven (with fallback to all)
-})
+  revalidate: "none", // skip all loaders (use only setLoaders seeding)
+  revalidate: "all", // always run all matched loaders
+  revalidate: "reactivity", // default: reactivity-key-driven (with fallback to all)
+});
 ```
 
 **4. Response payload structure**
@@ -1057,16 +1114,16 @@ When you already have an explicit route tree, `Route.actionSingleFlight(...)` an
 
 #### Loader Seeding APIs
 
-When a loader runs on the server, it's the default path — it re-fetches data fresh. But if the mutation result *already contains* the data the loader would return, you can short-circuit by seeding the cache directly and skipping the loader entirely. These are the three seeding APIs, ordered from most to least automatic:
+When a loader runs on the server, it's the default path — it re-fetches data fresh. But if the mutation result _already contains_ the data the loader would return, you can short-circuit by seeding the cache directly and skipping the loader entirely. These are the three seeding APIs, ordered from most to least automatic:
 
-**`Route.seedLoader(route, select?)`** — use when the mutation result *is* (or closely matches) the loader payload. No `setLoaders` boilerplate:
+**`Route.seedLoader(route, select?)`** — use when the mutation result _is_ (or closely matches) the loader payload. No `setLoaders` boilerplate:
 
 ```ts
 // mutation result IS the user object
-setLoaders: Route.seedLoader(UserRoute)
+setLoaders: Route.seedLoader(UserRoute);
 
 // mutation result needs a projection
-setLoaders: Route.seedLoader(UserRoute, (result) => result.user)
+setLoaders: Route.seedLoader(UserRoute, (result) => result.user);
 ```
 
 **`Route.setLoaderData(route, data)`** — explicitly wrap data in a `Success` result and seed it:
@@ -1075,7 +1132,7 @@ setLoaders: Route.seedLoader(UserRoute, (result) => result.user)
 setLoaders: (result) => [
   Route.setLoaderData(UserRoute, result.user),
   Route.setLoaderData(PermissionsRoute, result.permissions),
-]
+];
 ```
 
 **`Route.setLoaderResult(route, result)`** — provide the full `Result` value. Use when you want to seed a `Failure` or `Loading` state explicitly:
@@ -1084,15 +1141,15 @@ setLoaders: (result) => [
 setLoaders: (result) =>
   result.deleted
     ? [Route.setLoaderResult(UserRoute, Result.failure(new NotFoundError()))]
-    : [Route.setLoaderData(UserRoute, result.user)]
+    : [Route.setLoaderData(UserRoute, result.user)];
 ```
 
 **`Route.seedLoaderResult(route, fn)`** — project the mutation result to a `Result` (convenience form of `setLoaderResult`):
 
 ```ts
 setLoaders: Route.seedLoaderResult(UserRoute, (result) =>
-  result.ok ? Result.success(result.data) : Result.failure(result.error)
-)
+  result.ok ? Result.success(result.data) : Result.failure(result.error),
+);
 ```
 
 ---
@@ -1101,11 +1158,11 @@ setLoaders: Route.seedLoaderResult(UserRoute, (result) =>
 
 Three server APIs at increasing levels of abstraction:
 
-| API | Combines | Use when |
-|-----|----------|----------|
-| `Route.singleFlight(fn, opts)` | `actionSingleFlight` + `createSingleFlightHandler` | Always — the recommended path |
-| `Route.actionSingleFlight(fn, opts)` | mutation runner + reactivity capture + loader selection | You need the runner separate from the HTTP adapter |
-| `Route.createSingleFlightHandler(run, opts)` | HTTP request/response wrapping | You have a custom runner and need to adapt it to the transport protocol |
+| API                                          | Combines                                                | Use when                                                                |
+| -------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `Route.singleFlight(fn, opts)`               | `actionSingleFlight` + `createSingleFlightHandler`      | Always — the recommended path                                           |
+| `Route.actionSingleFlight(fn, opts)`         | mutation runner + reactivity capture + loader selection | You need the runner separate from the HTTP adapter                      |
+| `Route.createSingleFlightHandler(run, opts)` | HTTP request/response wrapping                          | You have a custom runner and need to adapt it to the transport protocol |
 
 `Route.mutationSingleFlight` is the variant for `defineMutation`-style mutations (same semantics, different input shape).
 
@@ -1121,12 +1178,12 @@ The transport is the piece that moves the request envelope from client to server
 
 ```ts
 // Simple: all single-flight requests go to the same endpoint
-Route.FetchSingleFlightTransport({ endpoint: "/_sf" })
+Route.FetchSingleFlightTransport({ endpoint: "/_sf" });
 
 // Per-action routing via the request name
 Route.FetchSingleFlightTransport({
-  endpoint: (request) => request.name ? `/_sf/${request.name}` : "/_sf",
-})
+  endpoint: (request) => (request.name ? `/_sf/${request.name}` : "/_sf"),
+});
 ```
 
 **Custom transport** — implement the service interface to use any transport:
@@ -1147,9 +1204,9 @@ The transport interface only knows about request/response envelopes. It doesn't 
 
 #### How It Connects to the RouterRuntime
 
-The router runtime does *not* automatically revalidate loaders after a mutation. Single-flight is the mechanism — the payload from the server *is* the revalidation. After `hydrateSingleFlightPayload` seeds the loader cache, components that depend on those loaders re-render from the cache.
+The router runtime does _not_ automatically revalidate loaders after a mutation. Single-flight is the mechanism — the payload from the server _is_ the revalidation. After `hydrateSingleFlightPayload` seeds the loader cache, components that depend on those loaders re-render from the cache.
 
-For mutations that *don't* use single-flight, you call `router.revalidate()` explicitly to re-run all matched loaders for the current URL.
+For mutations that _don't_ use single-flight, you call `router.revalidate()` explicitly to re-run all matched loaders for the current URL.
 
 ```ts
 // Single-flight: revalidation is implicit — payload seeds the cache
@@ -1164,22 +1221,23 @@ router.revalidate();
 
 #### Decision Guide
 
-| Scenario | What to use |
-|----------|-------------|
-| Mutation result IS the loader data | `seedLoader(Route)` |
-| Mutation returns partial data matching loader shape | `seedLoader(Route, select)` |
-| Multiple loaders to seed from one result | `setLoaders: (r) => [setLoaderData(A, r.a), setLoaderData(B, r.b)]` |
-| Mutation may produce a failure that should be shown as route error | `setLoaderResult(Route, Result.failure(...))` |
-| Skip all loaders, seed only | `revalidate: "none"` + `setLoaders` |
-| Always revalidate all matched loaders | `revalidate: "all"` |
-| Let reactivity decide (default) | omit `revalidate` |
-| Transport via HTTP fetch | `Route.FetchSingleFlightTransport(...)` in layer |
-| Transport via custom RPC | Custom `Layer.succeed(Route.SingleFlightTransportTag, ...)` |
-| Force single-flight (fail if no transport) | `singleFlight: { mode: "force", ... }` |
+| Scenario                                                           | What to use                                                         |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| Mutation result IS the loader data                                 | `seedLoader(Route)`                                                 |
+| Mutation returns partial data matching loader shape                | `seedLoader(Route, select)`                                         |
+| Multiple loaders to seed from one result                           | `setLoaders: (r) => [setLoaderData(A, r.a), setLoaderData(B, r.b)]` |
+| Mutation may produce a failure that should be shown as route error | `setLoaderResult(Route, Result.failure(...))`                       |
+| Skip all loaders, seed only                                        | `revalidate: "none"` + `setLoaders`                                 |
+| Always revalidate all matched loaders                              | `revalidate: "all"`                                                 |
+| Let reactivity decide (default)                                    | omit `revalidate`                                                   |
+| Transport via HTTP fetch                                           | `Route.FetchSingleFlightTransport(...)` in layer                    |
+| Transport via custom RPC                                           | Custom `Layer.succeed(Route.SingleFlightTransportTag, ...)`         |
+| Force single-flight (fail if no transport)                         | `singleFlight: { mode: "force", ... }`                              |
 
 Full guides (archived deep-dives): `docs/archive/SINGLE_FLIGHT.md`, `docs/archive/SINGLE_FLIGHT_COMPARISON.md`, `docs/archive/SINGLE_FLIGHT_TRANSPORT.md`
 
 **Async rendering contract:**
+
 - Prefer `Route.loaderResult` (returns `Result` union) with `Async`, `Loading`, `Errored`, `MatchTag` rather than route-specific loading components. This keeps the async control-flow consistent with the rest of the library.
 
 Examples: `examples/router-basic/`, `examples/router-typed-links/`, `examples/router-single-flight/`, `examples/router-single-flight-fetch/`
@@ -1191,6 +1249,7 @@ Examples: `examples/router-basic/`, `examples/router-typed-links/`, `examples/ro
 Server-side route handlers with typed request decoding, schema-based params/form/body, and structured response encoding.
 
 **Route definition:**
+
 - `ServerRoute.action`, `ServerRoute.document`, `ServerRoute.json`, `ServerRoute.resource`, `ServerRoute.method`
 - `ServerRoute.path`, `ServerRoute.params`, `ServerRoute.query`, `ServerRoute.headers`, `ServerRoute.cookies`
 - `ServerRoute.form`, `ServerRoute.body`, `ServerRoute.response`
@@ -1198,16 +1257,19 @@ Server-side route handlers with typed request decoding, schema-based params/form
 - `ServerRoute.define` — finalize a server route definition
 
 **Document rendering:**
+
 - `ServerRoute.documentRenderer`, `ServerRoute.generatedPath`
 - `ServerRoute.runDocument(...)` — run a document route within a runtime
 - `ServerRoute.document(app)` accepts unified route roots directly
 
 **Graph helpers:**
+
 - `ServerRoute.nodes(...)`, `ServerRoute.validate(...)` — validates overlapping document patterns and invalid decode wiring
 - `ServerRoute.matches(...)`, `ServerRoute.find(...)`
 - `ServerRoute.byKey(...)`, `ServerRoute.identity(...)` — observability helpers
 
 **Execution:**
+
 - `ServerRoute.execute(route, request)` — Schema-based params/form/body decoding + basic response encoding
 - `ServerRoute.executeWithServices(...)`, `ServerRoute.executeFromServices(...)` — service-native variants
 - `ServerRoute.dispatch(routes, request, { layer? })` — full route dispatch with loader payload output
@@ -1215,10 +1277,12 @@ Server-side route handlers with typed request decoding, schema-based params/form
 - `ServerRoute.toResponse(...)` — convert dispatch results to a generic response shape (`status`, `headers`, `body`/`html`, redirect, notFound)
 
 **Control flow:**
+
 - `ServerRoute.redirect(...)`, `ServerRoute.notFound()`
 - `Route.ServerResponseTag` — shape responses from inside handlers
 
 **Structured metadata:**
+
 - `ServerRouteMeta<...>` — carries typed metadata aligned with runtime fields; keeps helper typing consistent
 
 ---
@@ -1233,6 +1297,7 @@ The runtime that ties history, navigation state, loaders, and server dispatch to
 - Service tags: `RouterRuntime.HistoryTag`, `RouterRuntime.NavigationTag`, `RouterRuntime.RouterRuntimeTag`, `RouterRuntime.toLayer(...)`
 
 **Snapshot fields:**
+
 - Matched loader results during init/navigation/revalidation
 - `lastActionOutcome`, `lastFetchOutcome`, `lastDocumentResult`, `lastDispatchResult`
 - Unified `phase`-based task objects: `navigation`, `revalidation`, `requestState`, `dispatchState`, fetcher `state`
@@ -1241,6 +1306,7 @@ The runtime that ties history, navigation state, loaders, and server dispatch to
 - `matchedServerRoute` — server-route observability/debugging
 
 **Execution model:**
+
 - `submit(...)` / `fetch(...)` can execute typed `ServerRoute` handlers directly when passed a server route node
 - Repeated navigation/fetch work enters `cancelled` state before the next task begins
 - In-flight task registry guards against stale superseded writes
@@ -1252,7 +1318,7 @@ The runtime that ties history, navigation state, loaders, and server dispatch to
 
 ## Reactivity (`src/Reactivity.ts`)
 
-Library-owned reactivity service for key-based invalidation and subscription. This sits above the signal graph — it's a semantic layer that lets async operations declare *what data they touch* so invalidation can be driven by intent rather than atom identity.
+Library-owned reactivity service for key-based invalidation and subscription. This sits above the signal graph — it's a semantic layer that lets async operations declare _what data they touch_ so invalidation can be driven by intent rather than atom identity.
 
 A query that reads `users:list` can be invalidated by any mutation that also declares `users:list` as a reactivity key — even if they share no atom reference. This makes cache invalidation composable across module boundaries.
 
@@ -1286,6 +1352,7 @@ Reactivity.tracked(fetchUser(id), { keys: [user(id)] });
 - Hierarchy matches the record-form convention: a child expands to ancestors + self for both tracking and invalidation, so invalidating the parent reaches child observers and vice versa
 
 **Atom helpers:**
+
 - `Atom.invalidateReactivity(keys)` — invalidate reactivity keys
 - `Atom.trackReactivity(keys)` — track which keys are accessed during a read
 - `Atom.withReactivity(keys)` — register reactivity keys for an atom
@@ -1296,7 +1363,7 @@ Reactivity.tracked(fetchUser(id), { keys: [user(id)] });
 
 ## Atom (`src/Atom.ts`)
 
-The core reactive state primitive. Atoms are plain objects with `read`/`write` methods backed by the signal graph. They are *callable* — `atom()` reads the current value and registers a reactive dependency in whatever computation is running. This makes JSX natural: `<div>{count()}</div>` is just a function call that the reactive runtime intercepts.
+The core reactive state primitive. Atoms are plain objects with `read`/`write` methods backed by the signal graph. They are _callable_ — `atom()` reads the current value and registers a reactive dependency in whatever computation is running. This makes JSX natural: `<div>{count()}</div>` is just a function call that the reactive runtime intercepts.
 
 **Why callable reads?** Compared to property access (`atom.value`), a call is visually explicit — you can see at a glance where reactive tracking happens. Compared to hooks, there's no ordering constraint; atoms can be read conditionally or in loops.
 
@@ -1304,7 +1371,7 @@ The core reactive state primitive. Atoms are plain objects with `read`/`write` m
 
 - **`Atom.make(value)`** — create a writable atom with an initial value
 - **`Atom.make((get) => ...)`** — create a derived (read-only) atom; `get(other)` reads and tracks dependencies
-- **`Atom.value(value)`** — explicit writable constructor, including function-valued atoms. Use this when you want to *store* a function as data rather than treat it as a derived getter.
+- **`Atom.value(value)`** — explicit writable constructor, including function-valued atoms. Use this when you want to _store_ a function as data rather than treat it as a derived getter.
 - **`Atom.derived((get) => ...)`** — explicit derived constructor (same as `Atom.make(fn)` but unambiguous)
 - **`Atom.readable(read, refresh?)`** — low-level read-only atom constructor
 - **`Atom.writable(read, write, refresh?)`** — low-level writable atom constructor
@@ -1318,18 +1385,21 @@ The core reactive state primitive. Atoms are plain objects with `read`/`write` m
 - **`atom.pipe(...)`** — pipeable atom transformations (effect-style composition)
 
 **Async policies** (pipeable):
+
 - **`Atom.withOptimistic(atom)`** / **`Atom.withOptimistic()`** — optimistic overlays with `setOptimistic`, `clearOptimistic`, `isOptimisticPending`, `withEffect(...)`
 - **`Atom.withRetry(atom, schedule)`** / **`Atom.withRetry(schedule)`** — retry policy for async result atoms
 - **`Atom.withPolling(atom, schedule)`** / **`Atom.withPolling(schedule)`** — polling policy
 - **`Atom.withStaleTime(atom, duration)`** / **`Atom.withStaleTime(duration)`** — auto-refresh after stale duration
 
 **Actions:**
+
 - **`Atom.action(effect, options?)`** / **`Atom.action(runtime, effect, options?)`** — create a linear action handle from an Effect function. Actions serialize concurrent calls (later calls supersede earlier ones). Options: `name`, `reactivityKeys`, `onSuccess`, `onError`, `onTransition`.
   - Handle shape: callable + `run(input)` + `runEffect(input)` + `effect(input)` + `result()` + `pending()`
   - `runEffect(input)` preserves success output type `A` for Effect composition
   - `reactivityKeys` invalidates the declared keys after a successful run
 
 **Other constructors:**
+
 - **`Atom.effect(fn)`** — standalone async Effect atom (no runtime required; for simple async without services)
 - **`Atom.pull(stream, options?)`** — pull-based stream pagination; call `set(void 0)` to pull next chunk
 - **`Atom.projection(derive, initial, options?)`** — mutable derived projection; mutate draft or return next value with keyed reconciliation
@@ -1349,17 +1419,18 @@ const callback = Atom.value((n: number) => n + 1);
 const todoById = Atom.family((id: string) => Atom.make({ id, done: false }));
 
 // Schema-validated family values: member reads return Exit<T, SchemaError>
-const ageByUser = Atom.family(
-  (id: string) => Atom.value(id.length),
-  { schema: Schema.Int },
-);
+const ageByUser = Atom.family((id: string) => Atom.value(id.length), {
+  schema: Schema.Int,
+});
 
 // Runtime: bind Effect layer once, derive many atoms safely
 const runtime = Atom.runtime(MyLayer);
 const userAtom = runtime.atom(
-  Effect.service(UserApi).pipe(Effect.flatMap((api) => api.me()))
+  Effect.service(UserApi).pipe(Effect.flatMap((api) => api.me())),
 );
-const increment = runtime.action((n: number) => Effect.sync(() => console.log(n)));
+const increment = runtime.action((n: number) =>
+  Effect.sync(() => console.log(n)),
+);
 
 // Projection: mutable computed view with draft mutation
 const selectedMap = Atom.projection((draft: Record<string, boolean>) => {
@@ -1397,9 +1468,9 @@ Effect helpers (all support data-first `Atom.set(atom, value)` and data-last `At
 - Aliases for Effect-first naming: `Atom.getEffect`, `Atom.resultEffect`, `Atom.setEffect`, `Atom.updateEffect`, `Atom.modifyEffect`
 
 ```ts
-count();                         // 0 — reactive read
-count.update((n) => n + 1);      // sync write
-const prev = count.modify((n) => [n, n + 1]);  // read-modify-write
+count(); // 0 — reactive read
+count.update((n) => n + 1); // sync write
+const prev = count.modify((n) => [n, n + 1]); // read-modify-write
 
 // Effect helpers for pipelines
 Effect.runSync(Atom.get(count));
@@ -1448,7 +1519,7 @@ const updatedState = Atom.Stream.applyChunk(initialState, newItem);
 
 ## AtomSchema (`src/AtomSchema.ts`)
 
-Schema-validated form fields backed by atoms. The core idea is that a form field has two representations: the *raw input* (what the user typed, possibly invalid) and the *parsed value* (the typed output if validation passes). `ValidatedAtom` holds both as atoms, so you can bind the input to a UI element and read the parsed value only when you need it.
+Schema-validated form fields backed by atoms. The core idea is that a form field has two representations: the _raw input_ (what the user typed, possibly invalid) and the _parsed value_ (the typed output if validation passes). `ValidatedAtom` holds both as atoms, so you can bind the input to a UI element and read the parsed value only when you need it.
 
 `AtomSchema.struct` lets you compose multiple fields into a typed form model with unified `isValid`, `touch`, and `reset` behavior — without writing per-field boilerplate.
 
@@ -1470,21 +1541,21 @@ const field = AtomSchema.makeInitial(Schema.Int, 25);
 field.isValid(); // true
 field.input.set(1.5);
 field.isValid(); // false — 1.5 is not an Int
-field.reset();   // back to 25
+field.reset(); // back to 25
 ```
 
 ### ValidatedAtom\<A, I\>
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `input` | `Writable<I, I>` | Raw input atom (writes mark field as touched) |
-| `result` | `Atom<Exit<A, SchemaError>>` | Parse result |
-| `error` | `Atom<Option<SchemaError>>` | Validation error or `None` |
-| `value` | `Atom<Option<A>>` | Parsed value or `None` |
-| `isValid` | `Atom<boolean>` | `true` when input passes validation |
-| `touched` | `Atom<boolean>` | `true` after first write |
-| `dirty` | `Atom<boolean>` | `true` when input differs from initial |
-| `reset()` | `() => void` | Restore initial value, clear touched |
+| Property  | Type                         | Description                                   |
+| --------- | ---------------------------- | --------------------------------------------- |
+| `input`   | `Writable<I, I>`             | Raw input atom (writes mark field as touched) |
+| `result`  | `Atom<Exit<A, SchemaError>>` | Parse result                                  |
+| `error`   | `Atom<Option<SchemaError>>`  | Validation error or `None`                    |
+| `value`   | `Atom<Option<A>>`            | Parsed value or `None`                        |
+| `isValid` | `Atom<boolean>`              | `true` when input passes validation           |
+| `touched` | `Atom<boolean>`              | `true` after first write                      |
+| `dirty`   | `Atom<boolean>`              | `true` when input differs from initial        |
+| `reset()` | `() => void`                 | Restore initial value, clear touched          |
 
 ### Types
 
@@ -1505,7 +1576,12 @@ Structured debug logging for atom reads and writes using Effect's Logger. Wraps 
 
 ```ts
 const traced = AtomLogger.tracedWritable(count, "count");
-const snap = Effect.runSync(AtomLogger.snapshot([["count", count], ["name", name]]));
+const snap = Effect.runSync(
+  AtomLogger.snapshot([
+    ["count", count],
+    ["name", name],
+  ]),
+);
 ```
 
 <br />
@@ -1523,17 +1599,17 @@ A centralized read/write/subscribe context for atoms. Useful when you need to ma
 
 ### Registry Instance Methods
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `get(atom)` | `<A>(atom: Atom<A>) => A` | Read current value |
-| `set(atom, value)` | `<R,W>(atom: Writable<R,W>, value: W) => void` | Write a value |
-| `update(atom, fn)` | `<R>(atom: Writable<R,R>, fn: (v: R) => R) => void` | Update from previous |
-| `modify(atom, fn)` | `<R,W,A>(atom: Writable<R,W>, fn: (v: R) => [A, W]) => A` | Read-modify-write |
-| `subscribe(atom, fn)` | `<A>(atom: Atom<A>, fn: (v: A) => void) => () => void` | Subscribe to changes |
-| `mount(atom)` | `<A>(atom: Atom<A>) => () => void` | Keep atom alive (run effects) |
-| `refresh(atom)` | `<A>(atom: Atom<A>) => void` | Force-invalidate |
-| `reset()` | `() => void` | Dispose mounted owners and clear registry |
-| `dispose()` | `() => void` | Clean up all subscriptions |
+| Method                | Signature                                                 | Description                               |
+| --------------------- | --------------------------------------------------------- | ----------------------------------------- |
+| `get(atom)`           | `<A>(atom: Atom<A>) => A`                                 | Read current value                        |
+| `set(atom, value)`    | `<R,W>(atom: Writable<R,W>, value: W) => void`            | Write a value                             |
+| `update(atom, fn)`    | `<R>(atom: Writable<R,R>, fn: (v: R) => R) => void`       | Update from previous                      |
+| `modify(atom, fn)`    | `<R,W,A>(atom: Writable<R,W>, fn: (v: R) => [A, W]) => A` | Read-modify-write                         |
+| `subscribe(atom, fn)` | `<A>(atom: Atom<A>, fn: (v: A) => void) => () => void`    | Subscribe to changes                      |
+| `mount(atom)`         | `<A>(atom: Atom<A>) => () => void`                        | Keep atom alive (run effects)             |
+| `refresh(atom)`       | `<A>(atom: Atom<A>) => void`                              | Force-invalidate                          |
+| `reset()`             | `() => void`                                              | Dispose mounted owners and clear registry |
+| `dispose()`           | `() => void`                                              | Clean up all subscriptions                |
 
 ### Types
 
@@ -1545,7 +1621,12 @@ A centralized read/write/subscribe context for atoms. Useful when you need to ma
 
 A three-state result type (`Initial`, `Success`, `Failure`) for advanced compatibility and explicit waiting semantics.
 
-> **Note:** Core async APIs now use `Result` from `effect-ts`. `FetchResult` is an advanced compatibility model with conversion helpers. For new code, prefer `Result`.
+> **Deprecated — scheduled for deletion.** Core async APIs use `Result` from
+> `effect-ts`, which is now a capability superset: `Result.builder` and
+> `Result.all` have been ported to it (with `onInitial` renamed to `onLoading`),
+> and the flat wire DTO this model used to double as now lives in
+> `src/result-wire.ts`. Do not use `FetchResult` in new code — see
+> `docs/RESULT_UNIFICATION_PLAN.md`.
 
 ### Constructors
 
@@ -1598,25 +1679,25 @@ Per-property reactive access to objects and arrays. Use `AtomRef` when you have 
 
 ### AtomRef Instance
 
-| Method | Description |
-|--------|-------------|
-| `ref()` | Read current value (callable — reactive tracking) |
-| `get()` | Read current value (method form) |
-| `prop(key)` | Get a reactive ref for a single property |
-| `set(value)` | Replace the entire object |
-| `update(fn)` | Update via a function |
-| `modify(fn)` | Read-modify-write and return a computed value |
-| `subscribe(fn)` | Subscribe to changes |
-| `value` | Current snapshot (non-reactive) |
+| Method          | Description                                       |
+| --------------- | ------------------------------------------------- |
+| `ref()`         | Read current value (callable — reactive tracking) |
+| `get()`         | Read current value (method form)                  |
+| `prop(key)`     | Get a reactive ref for a single property          |
+| `set(value)`    | Replace the entire object                         |
+| `update(fn)`    | Update via a function                             |
+| `modify(fn)`    | Read-modify-write and return a computed value     |
+| `subscribe(fn)` | Subscribe to changes                              |
+| `value`         | Current snapshot (non-reactive)                   |
 
 ### Collection Instance
 
-| Method | Description |
-|--------|-------------|
-| `push(item)` | Append an item |
-| `insertAt(index, item)` | Insert at position |
-| `remove(ref)` | Remove by item ref identity |
-| `toArray()` | Get current items array |
+| Method                  | Description                 |
+| ----------------------- | --------------------------- |
+| `push(item)`            | Append an item              |
+| `insertAt(index, item)` | Insert at position          |
+| `remove(ref)`           | Remove by item ref identity |
+| `toArray()`             | Get current items array     |
 
 ### Types
 
@@ -1646,6 +1727,159 @@ Hydration.hydrate(registry, state, { count: countAtom });
 ### Types
 
 - `Hydration.DehydratedAtom`, `Hydration.DehydratedAtomValue`, `Hydration.HydrateOptions`, `Hydration.HydrationError`
+
+<br />
+
+## Resumability (`Resume`, `effect-atom-jsx/Resume`)
+
+Advanced protocols for restoring supported executable relationships and
+component state without replaying component setup. Ordinary components and
+closures remain valid; unsupported bindings fail closed so an adapter can
+activate the whole component.
+
+- `Resume.event(action)` — mark a zero-argument portable component action as a
+  deferred resumable event.
+- `Resume.activationEvent(targetKey, Resume.MouseEventProjection, handler)` —
+  declare an activation-required event. The capture listener retains only the
+  predefined Schema-backed projection, waits for the closest dormant boundary
+  to commit, and replays through the keyed active listener exactly once.
+  Incompatible event types (for example `keydown` with the mouse projection)
+  are rejected during collection and again during client installation.
+- `Resume.addressable({ id, buildId, props })(component)` — make a fully
+  composed component explicitly addressable from schema-encoded props. This
+  must be the terminal component combinator so SSR and client activation refer
+  to the same component.
+- `Resume.activationOf(component)` — retrieve an addressable component's
+  inferred portable entry for registration in the client resolver.
+- `Resume.componentActivation({ id, buildId, props, component })` — low-level
+  portable entry constructor for generated or framework-owned integrations.
+- `Resume.collect(render, options)` — collect SSR event markers, supported
+  committed state bindings, and explicit compiler-extracted text-expression
+  regions into a versioned, schema-validated manifest. New expression
+  collections use manifest v4's discriminated target record.
+- `Resume.decodeManifest(serialized, expectedBuildId, options?)` — enforce the
+  client payload-size ceiling, validate a v1/v2/v3/v4 manifest, and compare it
+  with the independently supplied client build.
+- `Resume.installClient(options)` — install the delegated portable-action
+  adapter without running component setup or view. It validates the manifest
+  again, uses capture listeners so non-bubbling events are observable, and
+  rejects a second active installation on the same root. The returned
+  installation exposes its validated `boundaries` map,
+  `boundaryState(componentId)`, the restore-first `resume(componentId)`
+  Effect, explicit `activate(componentId)`, and the low-level
+  `writeBinding(componentId, binding, schema, value)` adapter hook. The schema
+  infers and encodes the domain value, so application code does not cast wire
+  values. `writeBindingEncoded(componentId, binding, encodedValue)` is the
+  explicit framework-adapter escape hatch. A dormant state write updates the
+  existing snapshot and lazily invalidates only dependent text expressions;
+  query, active, missing, disposed, and encoding failures remain distinct
+  typed errors.
+- `Resume.installClientScoped(options)` — scoped form of `installClient`;
+  releasing the caller Scope disposes listeners, transitions, and activated
+  component scopes.
+- `Resume.scanComponentBoundaries(root, manifest)` — discover paired component
+  comments and validate their manifest identity, uniqueness, completeness,
+  and nesting.
+- `Resume.scanExpressionBoundaries(root, manifest)` — perform the same
+  validation for legacy-v3 and v4 text `af:expr` comment-pair regions. Client
+  installation indexes their dependency keys without loading expression
+  modules and releases component-owned subscribers before activation.
+- `Resume.scanExpressionTargets(root, manifest)` — validate all v4 text and
+  element targets, their marker/manifest bijection, target kind, and closest
+  component owner. One element may carry several document-local IDs through
+  `data-af-expr`; markers are removed only after the complete scan succeeds.
+  A v4 `{ kind: "text" }` target implies the existing comment-pair region;
+  attribute and style-property names use conservative schema allowlists.
+  Non-text installation remains explicitly unsupported until the corresponding
+  patch strategies are enabled.
+- `PortableExtract.expr(render, options)` infers capture and dependency tuple
+  types from their codecs; `bind` and `deps` are checked inputs and cannot
+  widen those inferred domains. Active rendering reads state dependencies
+  inside the reactive accessor. Collection verifies that each dependency codec
+  can decode the exact encoded snapshot the dormant client will receive.
+- `Resume.snapshotState(schema)` — declare how a named `Component.state`
+  binding is encoded and validated.
+- `Resume.inspectHandle(value)` — inspect supported state-handle capabilities
+  without exposing private signal/owner state.
+- `Resume.restoreStateBindings(component, manifest, componentId, props?)` —
+  validate a complete state/query component snapshot before allocation, then
+  create fresh client-owned handles, Registry, portable behavior attachments,
+  and Scope. The result contains `bindings`, `queries`, `registry`, and an
+  idempotent `dispose` Effect. The props argument is inferred and required when
+  the component has required props; components accepting `{}` or only optional
+  props may omit it.
+- `Resume.restoreStateBindingsScoped(component, manifest, componentId,
+  props?)` — scoped form with the same inferred props contract; fresh handles
+  are invalidated when the caller Scope closes.
+
+Manifest v2 component records declare `region: { kind: "comment-pair" }`.
+During collection, the matching rendered output is surrounded by
+`<!--af:component:cN:start-->` and `<!--af:component:cN:end-->`. Paired
+sentinels represent element, fragment, text-only, and empty component output
+without conflating a slot or element root with component ownership.
+Explicitly addressable records also carry an `activation` portable descriptor.
+Activation replaces only the nodes between the validated markers, runs the
+component under the caller-owned `ManagedRuntime`, and does not publish
+`Active` until async setup and the initial view mount have committed. It
+disposes nested activated regions before their owner and is closed by the
+installation without closing the caller runtime.
+
+Collection diagnostics include `phase`, `severity`, and `disposition`.
+Unsupported collection paths currently use
+`disposition: "fallback-required"`.
+
+```ts
+const Counter = Component.make(
+  Component.props<{}>(),
+  Component.require<never>(),
+  Component.setup<{}>().bind("count", () => Component.state(0), {
+    resume: Resume.snapshotState(Schema.Number),
+  }),
+  (_props, bindings) => bindings.count(),
+);
+
+const restored = yield * Resume.restoreStateBindings(Counter, manifest, "c0");
+
+Component.renderWithBindings(Counter, {}, restored.bindings);
+yield * restored.dispose;
+```
+
+```ts
+const Props = Schema.Struct({ id: Schema.String });
+const Card = Component.make(
+  Component.propsSchema(Props),
+  Component.require<never>(),
+  ({ id }) => Effect.succeed({ id }),
+  (_props, bindings) => bindings.id,
+);
+
+export const AddressableCard = Card.pipe(
+  // Put style, behavior, definition, and layer wrappers before this call.
+  Resume.addressable({
+    id: "app.card",
+    buildId: BuildId,
+    props: Props,
+  }),
+);
+
+export const CardActivation = Resume.activationOf(AddressableCard);
+
+// The client resolver maps "app.card" to CardActivation.
+yield * installation.activate("c0");
+```
+
+The current restoration slice accepts named schema-backed state/query bindings,
+canonical `Component.withSlots(...)` transforms, and portable behavior
+transforms in authored order. The boundary transaction validates first,
+allocates everything in one child Scope, and commits ownership only after
+render/listener attachment succeeds. Documented restoration failures close
+that Scope before optional activation; defects are terminal. No server atom,
+Scope, owner, setter, listener, or finalizer is transferred.
+
+`Portable.makeResolver(...)` keeps loader callbacks lazy, memoizes the returned
+Effect once per resolver, and normalizes synchronous throws, typed failures,
+and defects (including rejected dynamic imports) to
+`PortableCodeLoadError`.
 
 <br />
 
@@ -1692,8 +1926,11 @@ For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOUR
 - **`atomEffect(fn, runtime?)`** — low-level reactive async computation. Tracks signal dependencies, interrupts previous fiber on re-run. Useful when you need direct control over the reactive graph.
 - **`defineQuery(fn, options?)`** — ergonomic keyed query bundle. Returns `{ key, result, pending, latest, effect, invalidate, refresh }`. The preferred API when you need caching, invalidation, or observability.
   - `options.onTransition` — emits `{ phase: start|success|failure|defect, name? }` for observability
-  - `options.retrySchedule` — retries typed failures with an Effect `Schedule` before settling to `Failure`
-  - `options.pollSchedule` — invalidates the query key on a schedule for polling-style refresh
+  - `options.retrySchedule` — retries typed failures with an Effect `Schedule`
+    before settling to `Failure`; schedule failures remain in the inferred
+    query error type
+  - `options.pollSchedule` — invalidates the query key on a schedule for
+    polling-style refresh; schedule requirements are preserved
   - `options.observe` — emits metrics events `{ kind, phase, name?, startedAt, finishedAt?, durationMs? }`
 - **`scopedQueryEffect(scope, fn, options?)`** — Effect constructor variant for scope-bound query accessors
   > **Import from:** `effect-atom-jsx/advanced`
@@ -1709,28 +1946,26 @@ For practical usage patterns and edge cases, see [`docs/ACTION_EFFECT_USE_RESOUR
 
 Three async APIs serve different use cases. The right choice depends on whether you need services, invalidation, or just a reactive async value:
 
-| API | Returns | Runtime | Dependencies | Use Case |
-|-----|---------|---------|--------------|----------|
-| **`Atom.effect(fn)`** | `Atom<Result>` | No | None | Simple async without services |
-| **`Atom.query(fn, runtime?)`** | `Atom<Result>` | Optional | Effect services | Service-based query with DI |
-| **`atomEffect(fn, runtime?)`** | `Signal<Result>` | Optional | Signal reads | Low-level reactive effects in Computation contexts |
-| **`defineQuery(fn, options?)`** | `QueryRef` | Optional | All of the above | Keyed queries with invalidation, observability, polling |
+| API                             | Returns          | Runtime  | Dependencies     | Use Case                                                |
+| ------------------------------- | ---------------- | -------- | ---------------- | ------------------------------------------------------- |
+| **`Atom.effect(fn)`**           | `Atom<Result>`   | No       | None             | Simple async without services                           |
+| **`Atom.query(fn, runtime?)`**  | `Atom<Result>`   | Optional | Effect services  | Service-based query with DI                             |
+| **`atomEffect(fn, runtime?)`**  | `Signal<Result>` | Optional | Signal reads     | Low-level reactive effects in Computation contexts      |
+| **`defineQuery(fn, options?)`** | `QueryRef`       | Optional | All of the above | Keyed queries with invalidation, observability, polling |
 
 ```ts
 // No services needed → Atom.effect
-const posts = Atom.effect(() => fetch('/posts').then(r => r.json()));
+const posts = Atom.effect(() => fetch("/posts").then((r) => r.json()));
 // posts() → Result<PostList, FetchError>
 
 // Needs an injected service → Atom.query or defineQuery
 const user = Atom.query(() =>
-  Effect.service(UserApi).pipe(
-    Effect.flatMap((api) => api.getUser("123"))
-  )
+  Effect.service(UserApi).pipe(Effect.flatMap((api) => api.getUser("123"))),
 );
 // user() → Result<User, ApiError>
 
 // Needs invalidation, polling, or observability → defineQuery
-const data = defineQuery(() => fetch('/data'), {
+const data = defineQuery(() => fetch("/data"), {
   name: "fetchData",
   onTransition: ({ phase }) => console.log("Phase:", phase),
   pollSchedule: Schedule.spaced("30 seconds"),
@@ -1772,14 +2007,14 @@ const data = defineQuery(() => fetch('/data'), {
 
 `Result` has six states because UI needs to distinguish cases that are often collapsed together:
 
-| Variant | Description | Why separate? |
-|---------|-------------|---------------|
-| `Loading` | Initial load, no value yet | First load needs a full skeleton/spinner, not just a subtle indicator |
-| `Refreshing<A, E>` | Revalidating with previous settled value | Can show stale data + subtle indicator instead of hiding content |
-| `Success<A>` | Settled with a value | Normal case |
-| `Failure<E>` | Settled with a typed error | Expected error you can handle specifically |
-| `Stale<A, E>` | Failed refresh with last successful data | Show the last good data and the typed error together |
-| `Defect` | Unexpected defect or interrupt | Programming error or unhandled exception — usually a generic error boundary |
+| Variant            | Description                              | Why separate?                                                               |
+| ------------------ | ---------------------------------------- | --------------------------------------------------------------------------- |
+| `Loading`          | Initial load, no value yet               | First load needs a full skeleton/spinner, not just a subtle indicator       |
+| `Refreshing<A, E>` | Revalidating with previous settled value | Can show stale data + subtle indicator instead of hiding content            |
+| `Success<A>`       | Settled with a value                     | Normal case                                                                 |
+| `Failure<E>`       | Settled with a typed error               | Expected error you can handle specifically                                  |
+| `Stale<A, E>`      | Failed refresh with last successful data | Show the last good data and the typed error together                        |
+| `Defect`           | Unexpected defect or interrupt           | Programming error or unhandled exception — usually a generic error boundary |
 
 **`Failure` vs `Defect`:** `Failure` carries a typed `E` — you know what went wrong and can handle it specifically (e.g., show a "not found" message). `Defect` is the untyped escape hatch for things that shouldn't happen — bugs, unexpected exceptions, fiber interruptions. Separating them means your error UI can be typed and specific, not a generic catch-all.
 
@@ -1790,6 +2025,52 @@ const data = defineQuery(() => fetch('/data'), {
 Constructors/helpers: `Result.loading`, `refreshing`, `success`, `failure`, `stale`, `defect`, `settled`, `fromExit`, `toExit`, `toOption`, `getData`, `getError`, `rawCause`
 
 Guards: `Result.isLoading`, `isRefreshing`, `isSuccess`, `isFailure`, `isStale`, `isDefect`
+
+Combinators: `Result.match`, `map`, `flatMap`, `getOrElse`, `getOrThrow`, `builder`, `all`
+
+#### `Result.builder(result)`
+
+Fluent, **partial** matcher. Every handler is optional and the render type
+accumulates across handlers, so a call site that does not care about a variant
+does not have to name it — and adding a variant later does not break it.
+
+```ts
+Result.builder(users())
+  .onLoading(() => <Spinner />)
+  .onSuccess((list) => <UserList users={list} />)
+  .onStale((error, list) => <UserList users={list} warning={error} />)
+  .onFailure((error) => <ErrorView error={error} />)
+  .render();  // JSX | undefined
+```
+
+Handlers: `onLoading()`, `onRefreshing(previous)`, `onSuccess(value)`,
+`onStale(error, data)`, `onFailure(error)`, `onDefect(cause, rawCause)`, then
+`render()`.
+
+Two documented fallbacks keep short builders total:
+
+- `Refreshing` delegates to the handler of the variant it wraps (so a builder
+  with only `onSuccess` still renders during a refresh).
+- `Stale` and `Defect` delegate to `onFailure` — `Stale` with its typed error,
+  `Defect` with a tagged `ResultDefectError` envelope. `onFailure`'s parameter is
+  therefore `E | ResultDefectError`.
+
+`render()` returns `undefined` when the variant that occurred has no handler and
+no fallback.
+
+#### `Result.all(results)`
+
+Combine a tuple of results into one result of a tuple.
+
+```ts
+const combined = Result.all([userResult, prefsResult]);
+// Result<readonly [User, Prefs], UserError | PrefsError>
+```
+
+Short-circuit priority is `Defect > Failure > Stale > Loading > Refreshing >
+Success`. `Stale` and `Refreshing` keep their combined data when *every* input
+still has data available (`Result.getData`), so keep-stale-on-failure composes;
+otherwise they degrade to `Failure` and `Loading` respectively.
 
 ### Control-Flow Components
 
@@ -1848,7 +2129,7 @@ Solid.js-compatible reactive primitives. These are the foundation that `Atom` is
 
 Functions called by `babel-plugin-jsx-dom-expressions` compiled JSX output. You don't call these directly — the Babel plugin generates calls to them. They are documented here for framework authors and for understanding the compiled output.
 
-- `template(html)` — create reusable DOM template from HTML string
+- `template(html)` — create a lazy factory that clones a reusable DOM or SSR template
 - `insert(parent, accessor, marker?, current?)` — insert reactive children
 - `createComponent(Comp, props)` — instantiate a component in a new reactive root
 - `spread(node, accessor, isSVG?, skipChildren?)` — reactive prop spreading
@@ -1912,15 +2193,18 @@ local mutation semantics or single-flight transport.
 - `FormInvalid<E>` — typed validation failure `{ _tag: "FormInvalid", errors }`.
 
 ```ts
-const form = Form.make({
-  email: { schema: Schema.String, initial: "" },
-}, {
-  onSubmit: (values) => UserService.save(values),
-  reactivityKeys: ["users"],
-  singleFlight: { mode: "auto" },
-});
+const form = Form.make(
+  {
+    email: { schema: Schema.String, initial: "" },
+  },
+  {
+    onSubmit: (values) => UserService.save(values),
+    reactivityKeys: ["users"],
+    singleFlight: { mode: "auto" },
+  },
+);
 
-yield* form.validate();
+yield * form.validate();
 form.submit.run();
 ```
 
@@ -1970,6 +2254,30 @@ projection.
 - Result helpers: `resultToWire`, `resultFromWire`, `encodeResult`,
   `decodeResult`, `encodeResultRecord`, `decodeResultRecord`.
 - Wire schemas: `ResultWire`, `ResultWireRecord`.
+
+### `src/result-wire.ts` — the single wire projection
+
+`src/result-wire.ts` is the **only** module that constructs or interprets the
+flat result DTO (`Initial | Success | Failure` with `waiting`, `timestamp`,
+`previousSuccess`). `Serialization` re-exports its schema and functions, so the
+historic `Serialization.resultToWire` / `resultFromWire` paths keep working.
+
+- `toWire(result, now?)` — project a core `Result`. `now` defaults to `Date.now`
+  and only feeds the write-only `timestamp` field; tests pin it for
+  byte-deterministic output.
+- `fromWire(wire)` — rehydrate a core `Result`. Deliberately **lenient**: it
+  accepts every historical wire value, including shapes `toWire` can no longer
+  produce.
+- `ResultWire`, `ResultWireRecord`, `ResultWireValue`, `SuccessWireValue`.
+
+`waiting` is the boolean shadow of `Refreshing`; `previousSuccess` is `Stale.data`
+when settled and `Refreshing.previous` in flight; `timestamp` is a serializer
+field with no model counterpart. `Exit`/`rawCause` are not on the wire — `Defect`
+travels as `error: { defect: string }`. The mapping is frozen and pinned by
+golden-byte fixtures in `src/__tests__/serialization.test.ts`.
+
+Any new module needing a serializable result must import this one; a hand-rolled
+mapping is a review-blocking defect.
 
 The public route helpers `Route.serializeLoaderData(...)`,
 `Route.deserializeLoaderData(...)`, and `Route.streamDeferredLoaderScripts(...)`
@@ -2067,13 +2375,17 @@ For full testing patterns, see `docs/TESTING.md`.
 Babel JSX plugin integration. This module is imported by `babel-plugin-jsx-dom-expressions` during compilation. You configure it once and never import it directly.
 
 **Configure Babel:**
+
 ```json
 {
   "plugins": [
-    ["babel-plugin-jsx-dom-expressions", {
-      "moduleName": "effect-atom-jsx/runtime",
-      "generate": "dom"
-    }]
+    [
+      "babel-plugin-jsx-dom-expressions",
+      {
+        "moduleName": "effect-atom-jsx/runtime",
+        "generate": "dom"
+      }
+    ]
   ]
 }
 ```

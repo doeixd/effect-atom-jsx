@@ -1,4 +1,4 @@
-import { Effect, Layer, Schedule, Scope, ServiceMap } from "effect";
+import { Effect, Layer, Schedule, Scope, Context } from "effect";
 import * as Atom from "../Atom.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
@@ -13,10 +13,10 @@ type Equal<A, B> =
 type Expect<T extends true> = T;
 
 type Api = { readonly find: (id: string) => Effect.Effect<string> };
-const Api = ServiceMap.Service<Api>("Api");
+const Api = Context.Service<Api>("Api");
 
 type Auth = { readonly current: () => Effect.Effect<string> };
-const Auth = ServiceMap.Service<Auth>("Auth");
+const Auth = Context.Service<Auth>("Auth");
 
 type HttpError = { readonly _tag: "HttpError" };
 type AuthError = { readonly _tag: "AuthError" };
@@ -112,8 +112,8 @@ const StateComponent = Component.make(
 );
 
 type _StateBindings = Component.BindingsOf<typeof StateComponent>;
-type _StateCountCheck = Expect<Equal<_StateBindings["count"], import("../Atom.js").WritableAtom<number>>>;
-type _StateConfigCheck = Expect<Equal<_StateBindings["config"], import("../Atom.js").WritableAtom<{ retries: number }>>>;
+type _StateCountCheck = Expect<Equal<_StateBindings["count"], Component.StateAtom<number>>>;
+type _StateConfigCheck = Expect<Equal<_StateBindings["config"], Component.StateAtom<{ retries: number }>>>;
 type _SignalAccessorCheck = Expect<Equal<_StateBindings["step"], import("../api.js").Accessor<number>>>;
 type _SignalSetterCheck = Expect<Equal<_StateBindings["setStep"], import("../api.js").Setter<number>>>;
 
@@ -142,7 +142,7 @@ const BuilderSetup = Component.setup<{ readonly id: string }>()
   );
 
 type _BuilderSetupBindings = Component.SetupBindingsOf<typeof BuilderSetup>;
-type _BuilderPage = Expect<Equal<_BuilderSetupBindings["page"], Atom.WritableAtom<number>>>;
+type _BuilderPage = Expect<Equal<_BuilderSetupBindings["page"], Component.StateAtom<number>>>;
 type _BuilderPageLabel = Expect<Equal<_BuilderSetupBindings["pageLabel"], string>>;
 type _BuilderUserValue = Expect<Equal<Atom.ValueOf<_BuilderSetupBindings["user"]>, import("../effect-ts.js").Result<string, never>>>;
 type _BuilderSaveInput = Expect<Equal<Component.ActionInputOf<_BuilderSetupBindings["save"]>, string>>;
@@ -163,7 +163,7 @@ const PipeBuilderSetup = Component.setup<{ readonly id: string }>().pipe(
 );
 
 type _PipeBuilderBindings = Component.SetupBindingsOf<typeof PipeBuilderSetup>;
-type _PipeBuilderCount = Expect<Equal<_PipeBuilderBindings["count"], Atom.WritableAtom<number>>>;
+type _PipeBuilderCount = Expect<Equal<_PipeBuilderBindings["count"], Component.StateAtom<number>>>;
 
 Component.setup<{}>()
   .bind("count", () => Component.state(0))

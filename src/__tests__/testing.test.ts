@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import { createSignal, createMemo } from "../api.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
@@ -30,7 +30,7 @@ interface Api {
   fetchData(): Effect.Effect<string, Error>;
   saveData(n: number): Effect.Effect<void, Error>;
 }
-const Api = ServiceMap.Service<Api>("Api");
+const Api = Context.Service<Api>("Api");
 
 describe("testing.ts harness", () => {
   it("withTestLayer executes logic inside a reactive root with layer services", async () => {
