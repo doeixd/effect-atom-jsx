@@ -243,6 +243,25 @@ describe("composables behavior system", () => {
     expect(bindings.isOpen()).toBe(false);
     bindings.trigger.emit("press");
     expect(bindings.isOpen()).toBe(true);
+
+    // A single `press` must toggle exactly once. Asserting only the transition
+    // to `true` passed for a listener registered twice (each press flipping the
+    // state an even number of times would have been invisible on the first
+    // press only if it also settled on `true` — the second press is what makes
+    // double-registration observable).
+    bindings.trigger.emit("press");
+    expect(bindings.isOpen()).toBe(false);
+    bindings.trigger.emit("press");
+    expect(bindings.isOpen()).toBe(true);
+
+    // The imperative bindings are not aliases for `toggle`.
+    bindings.close();
+    expect(bindings.isOpen()).toBe(false);
+    bindings.close();
+    expect(bindings.isOpen()).toBe(false);
+    bindings.open();
+    bindings.open();
+    expect(bindings.isOpen()).toBe(true);
   });
 
   it("attaches selection behavior to a collection", () => {
@@ -382,11 +401,25 @@ describe("composables behavior system", () => {
     );
 
     const bindings = Effect.runSync(Component.setupEffect(Enhanced, {}) as Effect.Effect<any, never, never>);
-    bindings.input.emit("input", "a");
+
+    // Unfiltered baseline (negative control for the query below).
     expect(bindings.filtered()).toEqual(["alpha", "beta", "gamma"]);
+
+    // A query that discriminates. The previous query was "a", which every row
+    // contains — so an implementation that ignored the query entirely passed.
+    bindings.input.emit("input", "be");
+    expect(bindings.filtered()).toEqual(["beta"]);
+
+    // ...and keyboard nav must select out of the *filtered* list, not the
+    // original rows. Asserting only `selected.length === 1` could not tell the
+    // two apart.
     bindings.listbox.emit("keydown", { key: "ArrowDown" });
     bindings.listbox.emit("keydown", { key: "Enter" });
-    expect(selected.length).toBe(1);
+    expect(selected).toEqual(["beta"]);
+
+    // Clearing the query restores every row.
+    bindings.input.emit("input", "");
+    expect(bindings.filtered()).toEqual(["alpha", "beta", "gamma"]);
   });
 
   it("rebinds selection listeners when collection items change", () => {
@@ -499,13 +532,16 @@ describe("composables behavior system", () => {
     bindings.trigger.emit("press");
     expect(bindings.isOpen()).toBe(true);
 
-    bindings.input.emit("input", "a");
-    expect(bindings.filtered()).toEqual(["alpha", "beta", "gamma"]);
+    // Discriminating query: "a" matched every row, so the old assertion held
+    // even for an implementation that never applied `filter`.
+    bindings.input.emit("input", "be");
+    expect(bindings.filtered()).toEqual(["beta"]);
 
     bindings.listbox.emit("keydown", { key: "ArrowDown" });
     bindings.listbox.emit("keydown", { key: "Enter" });
 
-    expect(bindings.selected().length).toBe(1);
+    // Content, not length: selection must come from the filtered list.
+    expect(bindings.selected()).toEqual(["beta"]);
     expect(bindings.isOpen()).toBe(false);
   });
 

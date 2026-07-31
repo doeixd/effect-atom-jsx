@@ -91,6 +91,17 @@ could fail it. Classic pass-for-the-wrong-reason. The plan's claim that deferral
 is safe "where all module bindings are initialized" is true of the definition's
 own dependencies and **false of its callers**.
 
+> **Confirmed independently by execution (2026-07-30, test audit).** The test
+> audit built an `evaluateTransformed` harness — transform, lower to CJS, run
+> under a `require` serving the real `Portable` runtime — and reproduced the
+> `ReferenceError` rather than reasoning to it. Both order tests now execute the
+> module and assert the captures schema *decodes*, which proves the definition
+> closed over an initialized binding rather than merely appearing later in the
+> file. Verified to have teeth by replacing the bind captures with `{}`: both
+> tests fail, and neither could have before. The defect remains **unfixed** at
+> `src/compiler/resume-extract-plugin.ts:1423-1425`; the strengthened tests pin
+> the lazy-call shape that currently works.
+
 ### D3 — Vite: stale entries survive file deletion and rename
 
 `entriesByModule` is plugin-instance state with **no `buildStart` or
@@ -112,6 +123,16 @@ container, so the loop **silently no-ops** and the virtual module is generated
 from whatever happened to be transformed. The doc comment does not say
 *build-only*. `sourceModules` appears in **zero tests** — its only proof is the
 Chromium fixture, which runs in build mode.
+
+> **Now covered (2026-07-30, test audit).** Four tests drive `load.call` against
+> a container running the real transform: force-load happens, duplicate
+> specifiers collapse (asserted as exact arrays, not counts), unresolvable
+> specifiers are tolerated, and nothing loads when the option is unset. The
+> no-`this.load` path is pinned by an explicitly-labelled **known-defect** test —
+> "emits an EMPTY resolver module when the container exposes no this.load" —
+> carrying a comment that it records rather than endorses the behaviour. Invert
+> or delete that test when the source is fixed; leaving it green after a fix
+> would be the bug.
 
 ### D5 — Vite HMR: invalidation without a re-request, plus a load/transform race
 

@@ -181,6 +181,11 @@ class FakeRoot {
     return this.captureListeners.has(type);
   }
 
+  /** Falsifiable listener accounting: a leaked listener shows up as a count. */
+  listenerCount(type: string): number {
+    return this.listeners.get(type)?.size ?? 0;
+  }
+
   dispatch(type: string, target: FakeElement): Event {
     const event = {
       type,
@@ -615,24 +620,48 @@ describe("Resume.collect", () => {
   });
 
   it("isolates nested and consecutive collections", () => {
-    const action = makePortableAction();
+    // Each entry carries a distinct capture label so the manifests can be
+    // checked for *attribution*, not merely for id numbering. The outer render
+    // also emits an entry both before and after the nested collection: asserting
+    // only that every session starts at "e0" would still pass if resuming the
+    // outer session dropped, restarted, or stole the post-nesting entry.
+    const labelsOf = (result: Resume.CollectionResult | undefined) =>
+      Object.entries(result?.manifest.events ?? {}).map(([id, entry]) => [
+        id,
+        entry.invocation === "deferred-no-args"
+          ? (entry.code.captures as { readonly label: string }).label
+          : entry.invocation,
+      ]);
+
     let inner: Resume.CollectionResult | undefined;
     const outer = collect(() => {
-      inner = collect(() =>
-        renderToString(() => makeButton(Resume.event(action))),
+      const before = renderToString(() =>
+        makeButton(Resume.event(makePortableAction("outer-before")))
       );
-      return renderToString(() => makeButton(Resume.event(action)));
+      inner = collect(() =>
+        renderToString(() => makeButton(Resume.event(makePortableAction("inner")))),
+      );
+      const after = renderToString(() =>
+        makeButton(Resume.event(makePortableAction("outer-after")))
+      );
+      return `${before}${after}`;
     });
     const next = collect(() =>
-      renderToString(() => makeButton(Resume.event(action))),
+      renderToString(() => makeButton(Resume.event(makePortableAction("next")))),
     );
 
     expect(inner?.html).toContain('data-af-event-click="e0"');
-    expect(Object.keys(inner?.manifest.events ?? {})).toEqual(["e0"]);
+    expect(labelsOf(inner)).toEqual([["e0", "inner"]]);
+    // The nested session must not consume ids from, or leak entries into, the
+    // outer one, and the outer render must keep collecting after it returns.
     expect(outer.html).toContain('data-af-event-click="e0"');
-    expect(Object.keys(outer.manifest.events)).toEqual(["e0"]);
+    expect(outer.html).toContain('data-af-event-click="e1"');
+    expect(labelsOf(outer)).toEqual([
+      ["e0", "outer-before"],
+      ["e1", "outer-after"],
+    ]);
     expect(next.html).toContain('data-af-event-click="e0"');
-    expect(Object.keys(next.manifest.events)).toEqual(["e0"]);
+    expect(labelsOf(next)).toEqual([["e0", "next"]]);
   });
 
   it("restores collection state when rendering throws", () => {
@@ -714,23 +743,50 @@ describe("Resume.collect", () => {
   });
 
   it("rejects stale build descriptors and oversized manifests", () => {
+    const render = () =>
+      renderToString(() => makeButton(Resume.event(makePortableAction())));
     const mismatched = Effect.runSync(
-      Resume.collect(
-        () =>
-          renderToString(() => makeButton(Resume.event(makePortableAction()))),
-        { buildId: "another-build" },
-      ).pipe(Effect.flip, Effect.provide(Serialization.layer)),
+      Resume.collect(render, { buildId: "another-build" }).pipe(
+        Effect.flip,
+        Effect.provide(Serialization.layer),
+      ),
     );
+    // The negative control: the same render under a matching build succeeds and
+    // still yields the entry, so "rejects everything" cannot pass this test.
+    const accepted = collect(render);
+    const bytes = new TextEncoder().encode(
+      accepted.serializedManifest,
+    ).byteLength;
     const oversized = Effect.runSync(
-      Resume.collect(
-        () =>
-          renderToString(() => makeButton(Resume.event(makePortableAction()))),
-        { buildId: TestBuildId, maxPayloadBytes: 1 },
-      ).pipe(Effect.flip, Effect.provide(Serialization.layer)),
+      Resume.collect(render, {
+        buildId: TestBuildId,
+        // The real boundary, not an unmissable `1`.
+        maxPayloadBytes: bytes - 1,
+      }).pipe(Effect.flip, Effect.provide(Serialization.layer)),
     );
+    const atLimit = collect(render, { maxPayloadBytes: bytes });
 
     expect(mismatched._tag).toBe("ResumeBuildMismatchError");
+    if (mismatched._tag !== "ResumeBuildMismatchError") {
+      throw new Error(`Expected a build mismatch, received ${mismatched._tag}.`);
+    }
+    // The identities are the whole diagnostic value of the error.
+    expect(mismatched.expected).toBe("another-build");
+    expect(mismatched.actual).toBe(TestBuildId);
+    expect(mismatched.eventId).toBe("e0");
+
+    expect(Object.keys(atLimit.manifest.events)).toEqual(["e0"]);
     expect(oversized._tag).toBe("ResumePayloadTooLargeError");
+    if (oversized._tag !== "ResumePayloadTooLargeError") {
+      throw new Error(`Expected a payload error, received ${oversized._tag}.`);
+    }
+    expect(oversized.maximumBytes).toBe(bytes - 1);
+    expect(oversized.actualBytes).toBe(bytes);
+    // Attribution: the caller must be told which entry to shrink.
+    expect(oversized.largestEntryKind).toBe("event");
+    expect(oversized.largestEntryId).toBe("e0");
+    expect(oversized.largestEntryBytes).toBeGreaterThan(0);
+    expect(oversized.largestEntryBytes).toBeLessThanOrEqual(bytes);
   });
 });
 
@@ -800,12 +856,73 @@ describe("Resume client adapter", () => {
     expect(stale._tag).toBe("ResumeClientBuildMismatchError");
   });
 
+  it("fails a build-mismatched install closed and leaves the root installable", async () => {
+    // `decodeManifest` is not the only entry point: a caller holding an
+    // already-decoded manifest reaches `installClient` directly, and that
+    // boundary must reject a foreign build too. The rejection must also leave
+    // no trace on the root — no listeners, no retained claim — or one
+    // mismatched install would make the root permanently uninstallable.
+    const result = serverCollection();
+    const { root, target, domRoot } = clientRoot();
+    const saves: string[] = [];
+    const runtime = ManagedRuntime.make(
+      Layer.succeed(SaveService, {
+        save: (label) =>
+          Effect.sync(() => {
+            saves.push(label);
+          }),
+      }),
+    );
+    const options = {
+      root: domRoot,
+      manifest: result.manifest,
+      expectedBuildId: TestBuildId,
+      resolverEntries: { [ClientSaveCode.id]: ClientSaveCode },
+      runtime,
+    };
+    const mismatch = Effect.runSync(
+      Resume.installClient({
+        ...options,
+        expectedBuildId: "other-client-build",
+      }).pipe(Effect.flip),
+    );
+
+    expect(mismatch._tag).toBe("ResumeClientBuildMismatchError");
+    if (mismatch._tag !== "ResumeClientBuildMismatchError") {
+      throw new Error(`Expected a build mismatch, received ${mismatch._tag}.`);
+    }
+    expect(mismatch.expected).toBe("other-client-build");
+    expect(mismatch.actual).toBe(TestBuildId);
+    expect(root.listenerCount("click")).toBe(0);
+
+    // Negative control: the matching build installs and dispatches normally, so
+    // an implementation that rejected every install could not pass this.
+    const installation = Effect.runSync(Resume.installClient(options));
+    expect(root.listenerCount("click")).toBe(1);
+    root.dispatch("click", target);
+    await vi.waitFor(() => expect(saves).toEqual(["Save"]));
+
+    await Effect.runPromise(installation.dispose);
+    await runtime.dispose();
+  });
+
   it("enforces a configurable client-side manifest size ceiling", () => {
     const result = serverCollection();
+    const bytes = new TextEncoder().encode(
+      result.serializedManifest,
+    ).byteLength;
+    // Exercise the boundary rather than an unmissable `1`: one byte under the
+    // limit must fail and exactly at the limit must decode cleanly, so an
+    // off-by-one in the comparison is caught in both directions.
     const oversized = Effect.runSync(
       Resume.decodeManifest(result.serializedManifest, TestBuildId, {
-        maxPayloadBytes: 1,
+        maxPayloadBytes: bytes - 1,
       }).pipe(Effect.flip, Effect.provide(Serialization.layer)),
+    );
+    const atLimit = Effect.runSync(
+      Resume.decodeManifest(result.serializedManifest, TestBuildId, {
+        maxPayloadBytes: bytes,
+      }).pipe(Effect.provide(Serialization.layer)),
     );
     const invalidLimit = Effect.runSync(
       Resume.decodeManifest(result.serializedManifest, TestBuildId, {
@@ -813,7 +930,13 @@ describe("Resume client adapter", () => {
       }).pipe(Effect.flip, Effect.provide(Serialization.layer)),
     );
 
+    expect(atLimit).toEqual(result.manifest);
     expect(oversized._tag).toBe("ResumePayloadTooLargeError");
+    if (oversized._tag !== "ResumePayloadTooLargeError") {
+      throw new Error(`Expected a payload error, received ${oversized._tag}.`);
+    }
+    expect(oversized.maximumBytes).toBe(bytes - 1);
+    expect(oversized.actualBytes).toBe(bytes);
     expect(invalidLimit._tag).toBe("ResumeConfigurationError");
   });
 
@@ -1306,12 +1429,19 @@ describe("Resume client adapter", () => {
       }),
     );
 
+    expect(root.listensInCapture("click")).toBe(true);
     root.dispatch("click", target);
     await vi.waitFor(() => expect(installation.pending()).toBe(1));
     await Effect.runPromise(installation.dispose);
 
     expect(interrupted).toBe(true);
     expect(installation.pending()).toBe(0);
+    // The name promises listener removal, and `pending() === 0` alone does not
+    // prove it: the disposed guard would satisfy that with the listener still
+    // attached. Assert the root itself no longer holds a click listener, so a
+    // leak fails here rather than silently accumulating across installations.
+    expect(root.listensInCapture("click")).toBe(false);
+    expect(root.listenerCount("click")).toBe(0);
     root.dispatch("click", target);
     expect(installation.pending()).toBe(0);
 
@@ -3403,7 +3533,14 @@ describe("Resume portable behaviors", () => {
         },
       ),
       (_props, bindings) => bindings.count(),
-    ).pipe(Component.withDefinition({ name: "ResumeBehaviorCounter" }));
+    ).pipe(
+      // The behavior must be attached to the *component*, otherwise restoration
+      // has nothing to reattach and the test would pass with `reattach` deleted.
+      Behavior.attach(Behavior.portable(Portable.bind(ListenerCode, {})), {
+        select: () => ({ root: { id: "restored-root" } }),
+      }),
+      Component.withDefinition({ name: "ResumeBehaviorCounter" }),
+    );
 
     const serverScope = Scope.makeUnsafe();
     const result = collect(() =>
@@ -3416,27 +3553,46 @@ describe("Resume portable behaviors", () => {
       )
     );
     Effect.runSync(Scope.close(serverScope, Exit.void));
-    expect(setupRuns).toBe(1);
-
-    const restored = Effect.runSync(
-      Resume.restoreStateBindings(Counter, result.manifest, "c0"),
-    );
-
-    const behavior = Behavior.portable(Portable.bind(ListenerCode, {}));
-    const attached = await Effect.runPromise(
-      Behavior.attachScoped(behavior, { root: { id: "restored-root" } }),
-    );
+    // The server render ran setup once and attached the behavior once; closing
+    // the server Scope released it.
     expect(setupRuns).toBe(1);
     expect(acquired).toBe(1);
-    expect(attached.bindings.listening()).toBe(true);
-
-    await Effect.runPromise(attached.dispose);
-    expect(released).toBe(1);
-    expect(attached.bindings.listening()).toBe(false);
-    await Effect.runPromise(attached.dispose);
     expect(released).toBe(1);
 
+    const resolver = Effect.runSync(
+      Portable.makeResolver({ [ListenerCode.id]: ListenerCode }),
+    );
+    const restored = await Effect.runPromise(
+      Resume.restoreStateBindings(Counter, result.manifest, "c0").pipe(
+        Effect.provideService(Portable.Resolver, resolver),
+        // The behavior's code declares `Scope.Scope`, so it surfaces in the
+        // component's requirements. Restoration provides its *own* Scope to the
+        // reattachment internally; this only discharges the residual type.
+        Scope.provide(Scope.makeUnsafe()),
+      ),
+    );
+
+    // Reattachment happened (a second acquire) in a *fresh* Scope, and setup did
+    // not rerun. Counting acquires is what gives this teeth: dropping the
+    // `component.withBehavior` reattach branch leaves `acquired` at 1.
+    expect(setupRuns).toBe(1);
+    expect(acquired).toBe(2);
+    expect(released).toBe(1);
+    const bindings = restored.bindings as unknown as {
+      readonly count: () => number;
+      readonly listening: () => boolean;
+    };
+    // The restored snapshot value survives reattachment, and the reattached
+    // behavior's own bindings are merged in and live.
+    expect(bindings.count()).toBe(41);
+    expect(bindings.listening()).toBe(true);
+
+    // Disposal of the restoration owns the reattached behavior's Scope.
     Effect.runSync(restored.dispose);
+    expect(released).toBe(2);
+    expect(bindings.listening()).toBe(false);
+    Effect.runSync(restored.dispose);
+    expect(released).toBe(2);
     expect(setupRuns).toBe(1);
   });
 });

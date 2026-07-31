@@ -356,6 +356,14 @@ describe("Component", () => {
     Effect.runSync(Scope.close(scope, Exit.void));
 
     expect(cleanupLog).toEqual([2, 2]);
+
+    // House rule: disposal is exactly-once and a second close is a no-op.
+    // Counting cleanups is the only way to see a double-run — the final
+    // binding state is identical either way.
+    Effect.runSync(Scope.close(scope, Exit.void));
+    expect(cleanupLog).toEqual([2, 2]);
+    expect(effectLog).toEqual([1, 2]);
+
     expect(() => bindings.setStep(3)).toThrow(
       "[effect-atom-jsx/Component.signal] cannot write component-local state after its setup scope has closed.",
     );
@@ -451,6 +459,11 @@ describe("Component", () => {
 
     Effect.runSync(Scope.close(scope, Exit.void));
 
+    expect(bindings.node.current).toBeNull();
+
+    // Re-closing must not resurrect or re-run anything, and a post-close write
+    // must not be silently retained.
+    Effect.runSync(Scope.close(scope, Exit.void));
     expect(bindings.node.current).toBeNull();
   });
 

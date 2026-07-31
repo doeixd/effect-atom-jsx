@@ -491,9 +491,16 @@ describe("mergeProps", () => {
   });
 
   it("skips null / undefined sources", () => {
-    const merged = mergeProps({ a: 1 } as Record<string, unknown>, null as unknown as {}, { b: 2 });
+    const merged = mergeProps(
+      { a: 1 } as Record<string, unknown>,
+      null as unknown as {},
+      undefined as unknown as {},
+      { b: 2 },
+    );
     expect(merged.a).toBe(1);
     expect(merged.b).toBe(2);
+    // The name claims both null *and* undefined; only `null` was exercised.
+    expect(Object.keys(merged).sort()).toEqual(["a", "b"]);
   });
 });
 
@@ -510,10 +517,24 @@ describe("splitProps", () => {
   });
 
   it("preserves getters in both halves", () => {
-    const [n] = createSignal(7);
-    const props = { get val() { return n(); }, other: "x" };
-    const [left] = splitProps(props, ["val"]);
+    // The name claims *both* halves; only `left` used to be checked, and only
+    // for its initial value — a getter copied by value would have passed.
+    const [n, setN] = createSignal(7);
+    const [m, setM] = createSignal("x");
+    const props = { get val() { return n(); }, get other() { return m(); } };
+    const [left, right] = splitProps(props, ["val"] as ("val")[]);
+
     expect(left.val).toBe(7);
+    expect((right as { other: string }).other).toBe("x");
+
+    setN(8);
+    setM("y");
+    expect(left.val).toBe(8);
+    expect((right as { other: string }).other).toBe("y");
+
+    // Keys are partitioned, not duplicated.
+    expect(Object.keys(left)).toEqual(["val"]);
+    expect(Object.keys(right)).toEqual(["other"]);
   });
 });
 

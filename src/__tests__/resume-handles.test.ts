@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Exit, Schedule, Schema, Scope } from "effect";
 import { createRoot } from "../api.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
@@ -82,22 +82,30 @@ describe("uniform handle inspection protocol", () => {
   });
 
   it("reports disposal through every handle inspection", () => {
-    let bindings: {
-      readonly count: unknown;
-      readonly doubled: unknown;
-      readonly node: unknown;
-      readonly save: unknown;
-    };
-    createRoot((dispose) => {
-      bindings = runSetup(Handles, { start: 1 }) as typeof bindings;
-      dispose();
-    });
-    // Setup runs without a Scope here, so handles stay live; the point is that
-    // every kind exposes the same `isDisposed` capability.
-    for (const key of ["count", "doubled", "node", "save"] as const) {
-      const inspection = Resume.inspectHandle(bindings![key]);
+    const keys = ["count", "doubled", "node", "save"] as const;
+    type Bag = { readonly [K in (typeof keys)[number]]: unknown };
+    const scope = Scope.makeUnsafe();
+    const bindings = Effect.runSync(
+      Component.setupEffect(Handles, { start: 1 }).pipe(
+        Scope.provide(scope),
+      ) as Effect.Effect<Bag>,
+    );
+
+    // Live before the owning Scope closes...
+    for (const key of keys) {
+      const inspection = Resume.inspectHandle(bindings[key]);
       expect(typeof inspection?.isDisposed).toBe("function");
       expect(inspection?.isDisposed()).toBe(false);
+    }
+
+    Effect.runSync(Scope.close(scope, Exit.void));
+
+    // ...and every kind actually *reports* disposal afterwards. Asserting only
+    // that `isDisposed` is callable (and false) would pass with the flag never
+    // being set at all, which is the whole guarantee this test is named for.
+    for (const key of keys) {
+      const inspection = Resume.inspectHandle(bindings[key]);
+      expect(inspection?.isDisposed()).toBe(true);
     }
   });
 
@@ -136,7 +144,17 @@ describe("uniform handle inspection protocol", () => {
       const bindings = runSetup(Portably, {});
       const action = Resume.inspectHandle(bindings.save);
       expect(action?.kind).toBe("action");
-      expect(action?.kind === "action" && action.executable).toBeDefined();
+      // `toBeDefined()` alone would accept any object here; the executable's
+      // identity and captures are the actual guarantee, because that is what a
+      // resumed client re-executes.
+      expect(action?.kind === "action" ? action.executable : undefined)
+        .toMatchObject({
+          code: { id: "test.handles.save", buildId: "resume-handles-build" },
+          captures: { label: "Save" },
+        });
+      expect(Portable.inspectExecutable(bindings.save)).toMatchObject({
+        kind: "portable",
+      });
       dispose();
     });
   });

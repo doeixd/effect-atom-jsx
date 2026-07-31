@@ -13,6 +13,7 @@ import {
   isExpressionStylePropertyName,
 } from "../resume-expression.js";
 import { expr, extract } from "../portable-extract.js";
+import * as Portable from "../Portable.js";
 import { Effect, Schema } from "effect";
 
 function transform(
@@ -35,6 +36,47 @@ function transform(
   });
   if (result?.code == null) throw new Error("Babel produced no output.");
   return result.code;
+}
+
+/**
+ * Compile a module with the transform and *run it*, so evaluation-order claims
+ * are proven by execution rather than by the index of a substring.
+ *
+ * The transformed ESM is lowered to CJS and evaluated with a `require` that
+ * serves the real `Portable` runtime, so a TDZ violation in the generated
+ * placement surfaces here as the `ReferenceError` a browser would raise.
+ */
+async function evaluateTransformed(
+  source: string,
+  options: Partial<ResumeExtractOptions> = {},
+  filename = "C:/app/src/todo.ts",
+): Promise<Record<string, unknown>> {
+  const esm = transform(source, options, filename);
+  const cjs = babel.transformSync(esm, {
+    filename,
+    babelrc: false,
+    configFile: false,
+    sourceType: "module",
+    plugins: ["@babel/plugin-transform-modules-commonjs"],
+  })?.code;
+  if (cjs == null) throw new Error("Babel produced no CommonJS output.");
+  const Portable = await import("../Portable.js");
+  const effect = await import("effect");
+  const moduleExports: Record<string, unknown> = {};
+  const requireModule = (id: string): unknown => {
+    if (id === "effect") return effect;
+    if (id === "effect-atom-jsx/Portable") return Portable;
+    // The marker import survives the transform but is never called in
+    // generated code; the generated calls go to `effect-atom-jsx/Portable`.
+    if (id === "effect-atom-jsx/portable-extract") return {};
+    throw new Error(`Unexpected import of "${id}" in generated module.`);
+  };
+  new Function("require", "exports", "module", cjs)(
+    requireModule,
+    moduleExports,
+    { exports: moduleExports },
+  );
+  return moduleExports;
 }
 
 const fixture = `
@@ -865,8 +907,8 @@ export const save = extract((captures) => Effect.succeed(captures.label), {
     expect(definitionIndex).toBeLessThan(bindIndex);
   });
 
-  it("preserves earlier declarator initialization before a generated definition", () => {
-    const output = transform(`
+  it("preserves earlier declarator initialization before a generated definition", async () => {
+    const source = `
 import { extract } from "effect-atom-jsx/portable-extract";
 import { Effect, Schema } from "effect";
 export const LabelSchema = Schema.Struct({ label: Schema.String }),
@@ -874,17 +916,34 @@ export const LabelSchema = Schema.Struct({ label: Schema.String }),
     captures: LabelSchema,
     bind: { label: "hi" },
   });
-`);
+`;
+    const output = transform(source);
     const schemaIndex = output.indexOf("const LabelSchema");
     const definitionIndex = output.indexOf("_afPortableCode(");
     const bindIndex = output.indexOf("_afPortableBind(");
     expect(schemaIndex).toBeGreaterThanOrEqual(0);
     expect(schemaIndex).toBeLessThan(definitionIndex);
     expect(definitionIndex).toBeLessThan(bindIndex);
+
+    // Ordering is only a proxy. Evaluate the module: hoisting the generated
+    // definition ahead of the whole declaration would read `LabelSchema` in
+    // its TDZ, which no index comparison can observe.
+    const module = await evaluateTransformed(source);
+    const save = module.save as Portable.AnyBoundCode;
+    expect(Portable.isBoundCode(save)).toBe(true);
+    expect(save.code.id).toBe("src/todo.ts#save");
+    // The definition really closed over the *initialized* schema, not a
+    // placeholder: decoding through it succeeds.
+    expect(
+      Schema.decodeUnknownSync(save.code.captures as never)({ label: "hi" }),
+    ).toEqual({ label: "hi" });
+    expect(await Effect.runPromise(
+      Portable.execute(save) as Effect.Effect<unknown>,
+    )).toBe("hi");
   });
 
-  it("places definitions for deferred calls at the end of the module so later consts are initialized", () => {
-    const output = transform(`
+  it("places definitions for deferred calls at the end of the module so later consts are initialized", async () => {
+    const source = `
 import { extract } from "effect-atom-jsx/portable-extract";
 import { Effect, Schema } from "effect";
 export function makeSave() {
@@ -894,11 +953,27 @@ export function makeSave() {
   });
 }
 const LabelSchema = Schema.Struct({ label: Schema.String });
-`);
+`;
+    const output = transform(source);
     const schemaIndex = output.indexOf("const LabelSchema");
     const definitionIndex = output.indexOf("_afPortableCode(");
     expect(schemaIndex).toBeGreaterThanOrEqual(0);
     expect(definitionIndex).toBeGreaterThan(schemaIndex);
+
+    // The claim in the test name is a *runtime* claim, so run it. Deferring
+    // the definition to the end of the module body is what makes the
+    // `LabelSchema` reference inside it legal; emitting it before the `const`
+    // would throw here while leaving the index assertion above satisfied.
+    const module = await evaluateTransformed(source);
+    const made = (module.makeSave as () => Portable.AnyBoundCode)();
+    expect(Portable.isBoundCode(made)).toBe(true);
+    expect(made.captures).toEqual({ label: "hi" });
+    expect(
+      Schema.decodeUnknownSync(made.code.captures as never)({ label: "hi" }),
+    ).toEqual({ label: "hi" });
+    expect(await Effect.runPromise(
+      Portable.execute(made) as Effect.Effect<unknown>,
+    )).toBe("hi");
   });
 
   it("rejects `this` in extracted arrows that inherit enclosing context", () => {
@@ -1387,5 +1462,34 @@ describe("resume-extract plugin allowlist parity", () => {
     for (const statement of imports) {
       expect(statement.startsWith("import type ")).toBe(true);
     }
+    // `^import ...` alone cannot see the two other ways a value dependency
+    // gets in. Neither is used today, so these guard the drift the check
+    // exists to catch rather than describing current code.
+    const reExports = source.match(/^export\s[^\n]*\sfrom\s/gm) ?? [];
+    for (const statement of reExports) {
+      expect(statement.startsWith("export type ")).toBe(true);
+    }
+    expect(source).not.toMatch(/\bimport\s*\(/);
+    expect(source).not.toMatch(/\brequire\s*\(/);
+  });
+
+  it("catches a value dependency the plain import scan would miss", () => {
+    // NEGATIVE CONTROL for the guard above: the same predicates applied to
+    // sources that *do* smuggle a value dependency must reject them, so the
+    // guard is not vacuously satisfied by the current file's shape.
+    const scan = (source: string): boolean => {
+      const imports = source.match(/^import .*$/gm) ?? [];
+      const reExports = source.match(/^export\s[^\n]*\sfrom\s/gm) ?? [];
+      return imports.every((s) => s.startsWith("import type "))
+        && reExports.every((s) => s.startsWith("export type "))
+        && !/\bimport\s*\(/.test(source)
+        && !/\brequire\s*\(/.test(source);
+    };
+    expect(scan(`import type * as Babel from "@babel/core";\n`)).toBe(true);
+    expect(scan(`export type { X } from "./x.js";\n`)).toBe(true);
+    expect(scan(`import { Schema } from "effect";\n`)).toBe(false);
+    expect(scan(`export { Schema } from "effect";\n`)).toBe(false);
+    expect(scan(`const s = await import("effect");\n`)).toBe(false);
+    expect(scan(`const s = require("effect");\n`)).toBe(false);
   });
 });

@@ -51,7 +51,7 @@ import {
 } from "../effect-ts.js";
 import { createSignal, createRoot, createEffect, onCleanup } from "../api.js";
 import * as AtomNs from "../Atom.js";
-import { Owner, runWithOwner } from "../owner.js";
+import { Owner, runWithOwner, getOwner } from "../owner.js";
 import { currentComponentScope, withComponentScope } from "../component-scope.js";
 import { createComponent } from "../dom.js";
 import { withTestLayer } from "../testing.js";
@@ -530,8 +530,9 @@ describe("query keys / defineQuery", () => {
     ));
 
     await tick();
-    expect(phases.includes("start")).toBe(true);
-    expect(phases.includes("success")).toBe(true);
+    // Exact sequence, not membership: `includes` passed for an implementation
+    // that emitted every phase on every query.
+    expect(phases).toEqual(["start", "success"]);
     expect(query.result()).toEqual(AsyncResult.success(1));
     await runtime.dispose();
   });
@@ -552,6 +553,31 @@ describe("query keys / defineQuery", () => {
 
     await tick(40);
     expect(query.result()).toEqual(AsyncResult.success(3));
+    // `recurs(2)` means at most three attempts total. Without this, an
+    // implementation that retried without bound also reached `success(3)`.
+    expect(attempts).toBe(3);
+    await runtime.dispose();
+  });
+
+  it("stops retrying once retrySchedule is exhausted", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    let attempts = 0;
+    const query = createRoot(() => defineQuery(
+      () => Effect.sync(() => ++attempts).pipe(Effect.flatMap(() => Effect.fail("always" as const))),
+      {
+        name: "retry-exhausted",
+        runtime,
+        retrySchedule: Schedule.recurs(2),
+      },
+    ));
+
+    await tick(40);
+    expect(query.result()).toEqual(AsyncResult.failure("always"));
+    expect(attempts).toBe(3);
+
+    // And the schedule does not keep firing after it is exhausted.
+    await tick(40);
+    expect(attempts).toBe(3);
     await runtime.dispose();
   });
 
@@ -593,8 +619,14 @@ describe("query keys / defineQuery", () => {
     ));
 
     await tick(50);
-    expect(runs).toBeGreaterThan(1);
-    expect(AsyncResult.isSuccess(query.result())).toBe(true);
+    // `recurs(2)` = initial run plus two repeats.
+    expect(runs).toBe(3);
+    expect(query.result()).toEqual(AsyncResult.success(3));
+
+    // The poll must *stop* when the schedule is exhausted. `runs > 1` could
+    // not distinguish a bounded schedule from an unbounded one.
+    await tick(50);
+    expect(runs).toBe(3);
     await runtime.dispose();
   });
 
@@ -632,8 +664,7 @@ describe("query keys / defineQuery", () => {
     ));
 
     await tick(20);
-    expect(phases.includes("start")).toBe(true);
-    expect(phases.includes("failure")).toBe(true);
+    expect(phases).toEqual(["start", "failure"]);
     expect(query.result()).toEqual(AsyncResult.failure("boom"));
     await runtime.dispose();
   });
@@ -1063,6 +1094,11 @@ describe("createAtom — WritableAtom", () => {
     unsub();
     count.set(3);
     expect(values).toEqual([0, 1, 2]); // stopped
+
+    // Unsubscribing twice is a no-op (the owner is disposed exactly once).
+    unsub();
+    count.set(4);
+    expect(values).toEqual([0, 1, 2]);
   });
 });
 
@@ -1105,6 +1141,10 @@ describe("createAtom — DerivedAtom", () => {
     expect(log).toEqual([100, 9, 16]);
     unsub();
     n.set(5);
+    expect(log).toEqual([100, 9, 16]);
+
+    unsub();
+    n.set(6);
     expect(log).toEqual([100, 9, 16]);
   });
 });
@@ -1411,8 +1451,25 @@ describe("createFrame / Frame", () => {
 describe("WithLayer", () => {
   it("renders fallback while layer is unresolved", () => {
     const layer = Layer.succeed(Context.Service<{ readonly v: number }>("Tmp"), { v: 1 });
-    const r = WithLayer({ layer, fallback: () => "loading", children: () => "ok" });
-    expect(r === "loading" || r === "ok" || r === null).toBe(true);
+    let fallbacks = 0;
+    let childRuns = 0;
+    const r = WithLayer({
+      layer,
+      fallback: () => {
+        fallbacks += 1;
+        return "loading";
+      },
+      children: () => {
+        childRuns += 1;
+        return "ok";
+      },
+    });
+    // The old assertion (`r === "loading" || r === "ok" || r === null`) was
+    // satisfied by every possible implementation, including one that never
+    // invoked either branch. Pin the synchronous shape instead.
+    expect(r).toBe("loading");
+    expect(fallbacks).toBe(1);
+    expect(childRuns).toBe(0);
   });
 });
 
@@ -1433,16 +1490,30 @@ describe("scopedRoot", () => {
     );
   });
 
-  it("runs fn under the provided owner", () => {
-    Effect.runPromise(
+  it("runs fn exactly once under a fresh reactive owner", async () => {
+    // Previously this test asserted nothing at all (it assigned `owner = null`
+    // and never awaited the promise), so it passed even if `fn` never ran.
+    await Effect.runPromise(
       Effect.gen(function* () {
         const scope = yield* Scope.make();
-        let owner!: Owner | null;
+        const outerOwner = getOwner();
+        let runs = 0;
+        let owner: Owner | null = null;
+
         Effect.runSync(scopedRootEffect(scope, () => {
-          // Just verify fn runs.
-          owner = null; // scope runs synchronously
+          runs += 1;
+          owner = getOwner();
         }));
+
+        expect(runs).toBe(1);
+        expect(owner).not.toBeNull();
+        expect(owner).not.toBe(outerOwner);
+        // The owner is scoped to the call, not left installed afterwards.
+        expect(getOwner()).toBe(outerOwner);
+
         yield* Scope.close(scope, Exit.void);
+        // Closing the scope must not re-run `fn`.
+        expect(runs).toBe(1);
       })
     );
   });

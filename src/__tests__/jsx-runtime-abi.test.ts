@@ -130,19 +130,41 @@ describe("JSX compiler/runtime ABI", () => {
       )
     `);
 
+    // Bare `toContain` on the whole file is not a pin: "effect" matches the
+    // module specifier, and "className" matched only the *author's* prop name
+    // `props.className`, never a runtime helper. Read the actual import list
+    // instead, so a helper the compiler stops emitting is visible.
+    const imported = [
+      ...output.matchAll(
+        /import\s*\{\s*([A-Za-z_$][\w$]*)\s+as\s+[A-Za-z_$][\w$]*\s*\}\s*from\s*"effect-atom-jsx\/runtime"/g,
+      ),
+    ].map((match) => match[1]!);
+
     expect(output).toContain('from "effect-atom-jsx/runtime"');
-    expect(output).toContain("addEventListener");
-    expect(output).toContain("delegateEvents");
-    expect(output).toContain("insert");
-    expect(output).toContain("createComponent");
-    expect(output).toContain("spread");
-    expect(output).toContain("mergeProps");
-    expect(output).toContain("setAttribute");
-    expect(output).toContain("setAttributeNS");
-    expect(output).toContain("setBoolAttribute");
-    expect(output).toContain("className");
-    expect(output).toContain("use");
-    expect(output).toContain("effect");
+    expect([...imported].sort()).toEqual([
+      "addEventListener",
+      "createComponent",
+      "delegateEvents",
+      "effect",
+      "insert",
+      "mergeProps",
+      "setAttribute",
+      "setAttributeNS",
+      "setBoolAttribute",
+      "spread",
+      "template",
+      "use",
+    ]);
+    // Every name the compiler reaches for must exist on the runtime module —
+    // this is the half of the ABI a text pin cannot see.
+    for (const name of imported) {
+      expect(
+        runtime as unknown as Record<string, unknown>,
+      ).toHaveProperty(name);
+      expect(
+        typeof (runtime as unknown as Record<string, unknown>)[name],
+      ).toBe("function");
+    }
     expect(output).toContain('"click"');
     expect(output).toContain(".$$click = handler");
   });

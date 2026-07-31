@@ -366,6 +366,44 @@ describe("Serialization", () => {
       expect(out).toEqual({ n: 3 });
     });
 
+    it("applies the same `<script>` escaping as the pure codec", () => {
+      // The round-trip above passes with escaping removed entirely: encode and
+      // decode are inverses either way. `</script>`-safety is a property of
+      // the injected layer, so assert it *on the layer*, not only on
+      // `encodeSync` — the two are separate code paths.
+      const schema = Schema.Struct({ html: Schema.String });
+      const value = { html: "</script><script>alert(1)</script>&amp;" };
+      const program = Effect.gen(function* () {
+        const svc = yield* Serialization.Tag;
+        return yield* svc.serialize(schema, value);
+      });
+      const wire = Effect.runSync(program.pipe(Effect.provide(Serialization.layer)));
+
+      expect(wire).not.toContain("<");
+      expect(wire).not.toContain(">");
+      expect(wire).not.toContain("&");
+      expect(wire).toContain("\\u003c");
+      expect(wire).toContain("\\u003e");
+      expect(wire).toContain("\\u0026");
+      // Byte-identical to the pure codec: one escaping implementation, not two.
+      expect(wire).toBe(Serialization.encodeSync(schema, value));
+      expect(Serialization.decodeSync(schema, wire)).toEqual(value);
+    });
+
+    it("escapes the JS line/paragraph separators through the layer too", () => {
+      const value = `a b c`;
+      const program = Effect.gen(function* () {
+        const svc = yield* Serialization.Tag;
+        return yield* svc.serialize(Schema.String, value);
+      });
+      const wire = Effect.runSync(program.pipe(Effect.provide(Serialization.layer)));
+      expect(wire).toContain("\\u2028");
+      expect(wire).toContain("\\u2029");
+      expect(wire).not.toContain(" ");
+      expect(wire).not.toContain(" ");
+      expect(Serialization.decodeSync(Schema.String, wire)).toBe(value);
+    });
+
     it("surfaces a schema mismatch as a typed failure (not a defect)", () => {
       const schema = Schema.Struct({ n: Schema.Number });
       const program = Effect.gen(function* () {

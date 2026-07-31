@@ -150,6 +150,122 @@ describe("resume-extract Vite plugin", () => {
   });
 });
 
+describe("sourceModules force-loading", () => {
+  /**
+   * A minimal stand-in for Vite's plugin container `this`, recording what the
+   * `load` hook asks of it. `loadModule` is optional so the dev-serve
+   * container (which does not expose `this.load`) can be modelled too.
+   */
+  function pluginContext(
+    plugin: ReturnType<typeof resumeExtract>,
+    options: { readonly withLoad: boolean },
+  ) {
+    const resolved: string[] = [];
+    const loaded: string[] = [];
+    const hooks = hooksOf(plugin);
+    const context: Record<string, unknown> = {
+      resolve: async (source: string) => {
+        resolved.push(source);
+        return { id: `C:/app${source}` };
+      },
+    };
+    if (options.withLoad) {
+      context.load = async ({ id }: { readonly id: string }) => {
+        loaded.push(id);
+        // Vite would run the plugin container's transform pipeline here.
+        await hooks.transform(fixture, id);
+      };
+    }
+    return { context, resolved, loaded };
+  }
+
+  it("force-loads configured source modules before generating the virtual module", async () => {
+    const plugin = resumeExtract({
+      buildId: "build-1",
+      root: "C:/app",
+      sourceModules: ["/src/todo.ts", "/src/todo.ts"],
+    });
+    const load = plugin.load as unknown as (
+      this: unknown,
+      id: string,
+    ) => Promise<string | undefined>;
+    const { context, resolved, loaded } = pluginContext(plugin, {
+      withLoad: true,
+    });
+
+    // Nothing has been transformed yet: without the discovery loop the
+    // virtual module would be empty.
+    const source = await load.call(context, `\0${virtualEntriesId}`);
+
+    // Falsifiable counts, not just "it happened": duplicates are collapsed.
+    expect(resolved).toEqual(["/src/todo.ts"]);
+    expect(loaded).toEqual(["C:/app/src/todo.ts"]);
+    expect(source).toContain('"src/todo.ts#save": () => Effect.promise(');
+    expect(hooksOf(plugin).entries()).toHaveLength(1);
+  });
+
+  it("emits an EMPTY resolver module when the container exposes no `this.load`", async () => {
+    // PIN OF A KNOWN DEFECT, not an endorsement. Vite's dev-serve plugin
+    // container does not provide `this.load`, so the discovery loop resolves
+    // the specifier and then silently no-ops — the virtual module ships with
+    // zero loaders and every resume lookup misses at runtime. The build-mode
+    // container does provide it (covered above), which is why the Chromium
+    // fixture never sees this.
+    const plugin = resumeExtract({
+      buildId: "build-1",
+      root: "C:/app",
+      sourceModules: ["/src/todo.ts"],
+    });
+    const load = plugin.load as unknown as (
+      this: unknown,
+      id: string,
+    ) => Promise<string | undefined>;
+    const { context, resolved } = pluginContext(plugin, { withLoad: false });
+
+    const source = await load.call(context, `\0${virtualEntriesId}`);
+    expect(resolved).toEqual(["/src/todo.ts"]);
+    expect(source).toContain("export const resolverEntries = {");
+    expect(source).not.toContain("Effect.promise(");
+  });
+
+  it("tolerates a specifier that does not resolve", async () => {
+    const plugin = resumeExtract({
+      buildId: "build-1",
+      root: "C:/app",
+      sourceModules: ["/missing.ts"],
+    });
+    const load = plugin.load as unknown as (
+      this: unknown,
+      id: string,
+    ) => Promise<string | undefined>;
+    const loaded: string[] = [];
+    const context = {
+      resolve: async () => null,
+      load: async ({ id }: { readonly id: string }) => {
+        loaded.push(id);
+      },
+    };
+    await expect(
+      load.call(context, `\0${virtualEntriesId}`),
+    ).resolves.toContain("export const resolverEntries = {");
+    expect(loaded).toEqual([]);
+  });
+
+  it("does not force-load anything when sourceModules is unset", async () => {
+    const plugin = resumeExtract({ buildId: "build-1", root: "C:/app" });
+    const load = plugin.load as unknown as (
+      this: unknown,
+      id: string,
+    ) => Promise<string | undefined>;
+    const { context, resolved, loaded } = pluginContext(plugin, {
+      withLoad: true,
+    });
+    await load.call(context, `\0${virtualEntriesId}`);
+    expect(resolved).toEqual([]);
+    expect(loaded).toEqual([]);
+  });
+});
+
 describe("resolverEntriesModule", () => {
   const entry: ResumeExtractEntry = {
     id: "src/todo.ts#save",
@@ -252,18 +368,80 @@ describe("resume-extract Vite plugin HMR", () => {
     ) => void;
     const changed = fakeContext("C:\\app\\src\\todo.ts");
     handleHotUpdate(changed.context);
-    expect(changed.graph.invalidated).toHaveLength(1);
+    // Identity, not just arity: the *virtual entries* module is the one
+    // invalidated, so invalidating some arbitrary module cannot pass.
+    expect(changed.graph.invalidated).toEqual([
+      { id: `\0${virtualEntriesId}` },
+    ]);
 
     const fresh = fakeContext("C:/app/src/new-module.ts");
     handleHotUpdate(fresh.context);
-    expect(fresh.graph.invalidated).toHaveLength(1);
+    expect(fresh.graph.invalidated).toEqual([{ id: `\0${virtualEntriesId}` }]);
 
     const irrelevant = fakeContext("C:/app/node_modules/dep/index.ts");
     handleHotUpdate(irrelevant.context);
-    expect(irrelevant.graph.invalidated).toHaveLength(0);
+    expect(irrelevant.graph.invalidated).toEqual([]);
 
     const nonScript = fakeContext("C:/app/README.md");
     handleHotUpdate(nonScript.context);
-    expect(nonScript.graph.invalidated).toHaveLength(0);
+    expect(nonScript.graph.invalidated).toEqual([]);
+  });
+
+  it("regenerates the virtual module from post-update entries after invalidation", async () => {
+    // The invalidation call is only a means; what must hold is that the *next*
+    // load reflects the edited module. Drive the full sequence rather than
+    // asserting on the spy.
+    const plugin = resumeExtract({ buildId: "build-1", root: "C:/app" });
+    const hooks = hooksOf(plugin);
+    const load = plugin.load as unknown as (
+      this: unknown,
+      id: string,
+    ) => Promise<string | undefined>;
+    const handleHotUpdate = plugin.handleHotUpdate as unknown as (
+      context: unknown,
+    ) => void;
+
+    await hooks.transform(fixture, "C:/app/src/todo.ts");
+    expect(await load.call({}, `\0${virtualEntriesId}`)).toContain(
+      '"src/todo.ts#save"',
+    );
+
+    // The author renames the export; Vite re-transforms and fires HMR.
+    const renamed = fixture.replace("export const save", "export const store");
+    await hooks.transform(renamed, "C:/app/src/todo.ts");
+    handleHotUpdate(fakeContext("C:/app/src/todo.ts").context);
+
+    const regenerated = await load.call({}, `\0${virtualEntriesId}`);
+    expect(regenerated).toContain('"src/todo.ts#store"');
+    expect(regenerated).not.toContain('"src/todo.ts#save"');
+
+    // …and removing the marker entirely drops the loader instead of leaving a
+    // dangling import of a deleted export.
+    await hooks.transform("export const store = 1;", "C:/app/src/todo.ts");
+    handleHotUpdate(fakeContext("C:/app/src/todo.ts").context);
+    expect(await load.call({}, `\0${virtualEntriesId}`)).not.toContain(
+      "Effect.promise(",
+    );
+  });
+
+  it("does not throw when the virtual module is absent from the graph", () => {
+    const plugin = resumeExtract({ buildId: "build-1", root: "C:/app" });
+    const handleHotUpdate = plugin.handleHotUpdate as unknown as (
+      context: unknown,
+    ) => void;
+    const graph = {
+      invalidated: [] as unknown[],
+      getModuleById: () => undefined,
+      invalidateModule(module: unknown) {
+        this.invalidated.push(module);
+      },
+    };
+    expect(() =>
+      handleHotUpdate({
+        file: "C:/app/src/todo.ts",
+        server: { moduleGraph: graph },
+      })
+    ).not.toThrow();
+    expect(graph.invalidated).toEqual([]);
   });
 });

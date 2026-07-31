@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { Effect, Exit, Scope } from "effect";
 import * as Behavior from "../Behavior.js";
 import * as Behaviors from "../behaviors.js";
 import * as Element from "../Element.js";
@@ -120,5 +120,63 @@ describe("Behavior", () => {
     expect(prevented).toBe(2);
     expect(focused).toEqual(["first", "second", "first"]);
     expect(bindings.activeIndex()).toBe(0);
+
+    // Deactivating must actually stop the trap. Without this, an
+    // implementation that ignored `active()` left identical final state
+    // (index 0) and passed every assertion above.
+    bindings.deactivate();
+    container.emit("keydown", {
+      key: "Tab",
+      preventDefault: () => {
+        prevented += 1;
+      },
+    });
+    expect(prevented).toBe(2);
+    expect(focused).toEqual(["first", "second", "first"]);
+  });
+
+  it("removes the focus-trap keydown listener when its scope closes", () => {
+    const container = Element.container();
+    const first = Element.focusable();
+    const focused: Array<string> = [];
+    const scope = Scope.makeUnsafe();
+    Effect.runSync(
+      Effect.provideService(first.on("focus", () => focused.push("first")), Scope.Scope, scope),
+    );
+
+    const bindings = Effect.runSync(
+      Effect.provideService(
+        Behaviors.focusTrap({ initialIndex: 0 }).run({
+          container,
+          focusables: Element.collection([first]),
+        }),
+        Scope.Scope,
+        scope,
+      ),
+    );
+    let prevented = 0;
+    const tab = () =>
+      container.emit("keydown", {
+        key: "Tab",
+        preventDefault: () => {
+          prevented += 1;
+        },
+      });
+
+    bindings.activate();
+    tab();
+    expect(prevented).toBe(1);
+
+    // Counting, not final state: a leaked listener keeps handling keydown
+    // against a torn-down behaviour while `activeIndex()` still reads 0.
+    Effect.runSync(Scope.close(scope, Exit.void));
+    tab();
+    tab();
+    expect(prevented).toBe(1);
+
+    // Closing twice is a no-op.
+    Effect.runSync(Scope.close(scope, Exit.void));
+    tab();
+    expect(prevented).toBe(1);
   });
 });
