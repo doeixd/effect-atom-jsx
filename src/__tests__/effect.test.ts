@@ -61,6 +61,17 @@ import { withTestLayer } from "../testing.js";
 /** Wait for the microtask / promise queue to drain. */
 const tick = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 
+/**
+ * Module-scope scheduling fixture: reactive propagation is made synchronous by
+ * running `queueMicrotask` callbacks inline, so signal writes appear to
+ * propagate immediately.
+ *
+ * Consequence: **nothing in this file can observe reactive deferral.** Do not
+ * add a test here that claims to cover microtask batching or scheduling — see
+ * `reactive.test.ts`'s `withRealMicrotasks` helper, which opts back out to the
+ * real queue for exactly that purpose. (Effect fibers are unaffected; they run
+ * on the promise queue and are awaited via `tick`.)
+ */
 const originalQueueMicrotask = globalThis.queueMicrotask;
 
 beforeAll(() => {

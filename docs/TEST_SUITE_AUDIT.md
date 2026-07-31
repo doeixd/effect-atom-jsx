@@ -121,12 +121,28 @@ test anywhere asserts the disposer is actually wired.
 - **A strengthened existing test beats three new shallow ones.** The goal is
   falsifiability, not count.
 
-## Known-weak, deliberately left alone
+## The module-scope scheduling fixture — fixed
 
 `reactive.test.ts` and `effect.test.ts` both monkey-patch
 `globalThis.queueMicrotask` to run synchronously in a module-level `beforeAll`.
-Consequently `reactive.test.ts:354` "uses microtask batching with explicit
-flush" does not exercise microtask batching, and its assertions would pass under
-fully synchronous notification. Changing this is a scheduling change with blast
-radius well beyond a test edit, and it is a judgement call about what the suite
-intends to pin.
+`tracking.ts:61` schedules its flush through `queueMicrotask`, so that fixture
+makes propagation synchronous for **every test in the file** — and the test named
+"uses microtask batching with explicit flush" ran under it, asserting nothing
+about scheduling.
+
+Rather than unpatch the fixture (a scheduling change across two whole files),
+a `withRealMicrotasks` helper opts a *single* test back out to the real queue and
+restores the fixture in a `finally`. The test now pins the actual contract: the
+initial run is synchronous, a write does **not** apply inline, `flush()` runs it
+early, the already-satisfied microtask does **not** re-run it, and three writes
+landing before the microtask coalesce into one re-run seeing only the final
+value (`[0,1,2,5]`, not `[0,1,2,3,4,5]`).
+
+A guard test asserts the fixture is genuinely restored afterwards — without it,
+every later test in the file would silently change meaning. Both patch sites
+carry a note documenting the blast radius.
+
+**The break-verification produced the most useful result here.** Removing the
+`queueMicrotask` wrapper in `tracking.ts:61` fails the new test and **nothing
+else in either file** — direct confirmation that every other test there is
+scheduling-insensitive, which was the original complaint.
