@@ -929,6 +929,78 @@ merits — `dom.reconcileArrays` is correct and useful independently of this
 question — and both structural specs remain `unbuilt(...)`. No region
 representation, target kind, or owner type has been added to the source.
 
+---
+
+## Project fit — revision to the recommendation (2026-08-11)
+
+Re-reading the recommendation against this repo's own conventions rather than
+against the problem in the abstract changes one answer materially and sharpens
+another. Recorded as a revision rather than an edit, because the first version
+was already committed.
+
+### The region owner must be a `Scope`, not a reactive `Owner`
+
+The wording above ("per-instance owner", `Map<key, Owner>`) is **off-style, and
+in a way this codebase has already been burned by**. `Resume.ts` is Scope-first
+throughout — `Scope.addFinalizer` at `:2197`, `:2204`, `:2218`, `:3634` and
+`Scope.close` at `:2429`, `:3767`, `:3840` — and the M6 audit's most notable
+clean finding was precisely that *"no reactive-owner-vs-`Scope` leak exists in
+the M6 paths"*, at a point when three such leaks had been found elsewhere the
+same day. The recurring defect signature this session was **cleanup attached to
+the reactive owner instead of the `Scope`**, which is what made
+`Element.on`, `collection().observeEach`, `setAttr`, and `setStyle` leak.
+
+So: **each row/branch instance gets a child `Scope`**, created under the
+installation's Scope, with content subscribers registering via
+`Scope.addFinalizer` and removal closing it with `Scope.close`. This is not a
+cosmetic renaming — it is what makes requirement and error types bubble through
+the region the way they already bubble through components, behaviors, routes,
+and local layers, and it is what lets a region's cleanup participate in the
+same interruption and exit semantics as everything else in the subsystem.
+
+The reactive owner still has a job (tracking reads), but it is not the
+disposal authority. That separation is the project's existing position; the
+first draft of this recommendation quietly departed from it.
+
+### The single-element-root constraint should be a compile error, not just a
+### runtime fallback
+
+The repo's stated diagnostics rule is that **compile-time safety is preferred
+for library-authored code, with runtime diagnostics for generated/dynamic
+attachments**. The Babel plugin already enforces exactly this class of
+constraint and does it well: the M7 audit found its rejector "not naive",
+issuing **code frames** for `onClick`, `on:click`, whole `style`, `classList`,
+spread, `href`/`src`, `prop:*`, `ref`, component props, and member elements.
+
+`data-af-key`'s requirement — every row has exactly one element root — belongs
+in that same rejector for authored JSX, with the collect-time diagnostic
+retained only for the dynamic/generated path. That materially reduces the
+residual risk flagged above: the load-bearing authoring constraint stops being
+a silent fallback discovered in production and becomes a build failure with a
+code frame pointing at the row.
+
+It does not remove the need for the slope measurement, which is still what
+decides between `data-af-key` and per-row markers.
+
+### The manifest recommendation is unchanged, and plugs into existing machinery
+
+One `structural` member with a `mode` field remains right, and it fits better
+than the first draft argued: `Resume.ts:262-275` already carries a
+**compile-time exhaustiveness device** for expression-target names
+(`_AttributeNamesCoverSchema` / `_StyleNamesCoverSchema`, asserted through a
+`void`-ed const). A new union member should extend that device rather than
+introduce a parallel one — the same pattern as `RouteDecorationFields`'
+exhaustiveness assert. Two separate `list`/`branch` members would need the
+coverage check duplicated, which is how the attribute allowlist ended up in
+three copies with only two compile-time linked.
+
+### Net
+
+Recommendation (1) changes from *per-instance `Owner`* to **per-instance child
+`Scope`**, driven off the reconciler's removal list. Recommendations (2) and (3)
+stand, with (2) strengthened by moving its constraint into the compiler's
+existing rejector and (3) grounded in the existing exhaustiveness device.
+
 **Related.** `DQ-010` (deferred this milestone, and mis-ratified face 1 as "just
 expose it" — see the correction in `RESUMABILITY_M8C_PLAN.md`), `DQ-002`
 (`ExpressionOutput` widening is *not* a wire change; this is), `DQ-099` and the
