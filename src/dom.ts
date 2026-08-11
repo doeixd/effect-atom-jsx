@@ -183,28 +183,41 @@ function flattenChild(c: Child): Node[] {
   return [document.createTextNode(String(c))];
 }
 
-function reconcileArrays(
+/**
+ * Reconcile `parent`'s children from `oldNodes` to `newNodes`, keeping every
+ * surviving node's identity and leaving anything after `marker` untouched.
+ *
+ * Identity preservation is the contract, not an optimisation: subscribers,
+ * focus, selection, scroll position, and media playback all live on the node.
+ * A reconciler that rebuilt rows would produce the right-looking HTML and
+ * silently destroy all of it.
+ *
+ * Nodes present in `oldNodes` but not `newNodes` are removed; the rest are
+ * moved into place. Placement walks backwards so each node is positioned
+ * against an already-final successor, which makes an unchanged list a true
+ * no-op rather than a sequence of self-cancelling moves.
+ */
+export function reconcileArrays(
   parent: Element,
   oldNodes: Node[],
   newNodes: Node[],
   marker: Node | null,
 ): void {
-  // Simple keyed reconciliation using a LCS-free approach.
-  // Good enough for most UI patterns; a keyed For component handles large lists.
-  let o = 0, n = 0;
-  while (o < oldNodes.length && n < newNodes.length) {
-    if (oldNodes[o] === newNodes[n]) {
-      o++; n++;
-    } else {
-      parent.insertBefore(newNodes[n], oldNodes[o]);
-      n++;
+  const surviving = new Set<Node>(newNodes);
+  for (const node of oldNodes) {
+    if (!surviving.has(node) && node.parentNode === parent) {
+      parent.removeChild(node);
     }
   }
-  while (n < newNodes.length) {
-    parent.insertBefore(newNodes[n++], marker);
-  }
-  while (o < oldNodes.length) {
-    parent.removeChild(oldNodes[o++]);
+  // Backwards: `reference` is the node this one must precede, and it is
+  // already in its final position by the time we get here.
+  let reference: Node | null = marker;
+  for (let index = newNodes.length - 1; index >= 0; index -= 1) {
+    const node = newNodes[index]!;
+    if (node.parentNode !== parent || node.nextSibling !== reference) {
+      parent.insertBefore(node, reference);
+    }
+    reference = node;
   }
 }
 
@@ -956,6 +969,9 @@ class ServerNode {
   }
 
   appendChild(child: ServerNode): ServerNode {
+    // Per DOM semantics, inserting an attached node *moves* it. Without the
+    // detach a reorder duplicates the node instead of relocating it.
+    child.parentNode?.removeChild(child);
     child.parentNode = this;
     this.childNodes.push(child);
     this._updateSiblings();
@@ -964,6 +980,9 @@ class ServerNode {
 
   insertBefore(newChild: ServerNode, ref: ServerNode | null): ServerNode {
     if (ref == null) return this.appendChild(newChild);
+    // Detach first, then locate `ref`: if `newChild` preceded `ref` under this
+    // same parent, removing it shifts `ref`'s index.
+    newChild.parentNode?.removeChild(newChild);
     const idx = this.childNodes.indexOf(ref);
     if (idx === -1) return this.appendChild(newChild);
     newChild.parentNode = this;

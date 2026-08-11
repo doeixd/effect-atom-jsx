@@ -770,3 +770,26 @@ function is `reconcileArrays(parent, oldNodes: Node[], newNodes: Node[], marker)
 array signature. Deliberately **not** `reconcileChildren`, which would claim to
 be the general child reconciler it is not. If the single-node path is ever needed
 publicly it gets its own honest name.
+
+> **Correction (2026-08-11): "simply expose it" was wrong — it did not work.**
+> The ratification assumed `dom.ts` already reconciled keyed children correctly
+> and only needed a public export. Exporting the function unchanged and running
+> the spec's own reorder case failed immediately. **Two real defects:**
+>
+> 1. **The reconciler dropped a surviving node.** Its single forward pass
+>    advanced `n` on a mismatch but never `o`, so the trailing
+>    `while (o < oldNodes.length) removeChild(oldNodes[o++])` removed nodes that
+>    were present in `newNodes`. `[a,b,c] → [c,a]` produced `[a]`. Replaced with
+>    a survivor set for removals plus a **backwards** placement pass, so each
+>    node is positioned against an already-final successor and an unchanged list
+>    is a true no-op instead of a sequence of self-cancelling moves.
+> 2. **The server DOM's `insertBefore`/`appendChild` did not detach.** Per DOM
+>    semantics, inserting an attached node *moves* it; `ServerNode` spliced it in
+>    while leaving the original in place, so any reorder **duplicated** the node.
+>    Latent until something reordered during SSR — which is exactly what a
+>    structural target will do.
+>
+> The lesson generalises: **a ratification that says "just expose the existing
+> thing" is asserting the existing thing is correct**, which is a claim about
+> untested code. Both defects were found by running the spec's assertions, not
+> by reading either implementation.
