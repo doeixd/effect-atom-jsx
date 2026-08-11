@@ -1629,8 +1629,33 @@ streaming transport, and Milestone 11b below.
 
 ### Milestone 11b — Server UI fragments (`Resume.mountFragment`)
 
-Status: proposed; a small design delta on Milestone 11 item 6 (incremental
-manifest install), sequenced immediately after it
+Status: **items 1-3 implemented** (2026-08-11); item 4 deferred behind
+`DQ-014`/`DQ-011`, item 5 (Chromium proof) pending.
+
+> **Items 1-3 are done**, per the DQ-013/DQ-015 recommendations (provisional
+> picks, both deferrable). `Resume.mountFragment` gained a second door: the
+> static `(installation, region, {html, manifest})` shape mounts a
+> server-side `Resume.collect` result into a live `installClient` page. The
+> HTML is injected between the region's `af:region` comment markers (platform
+> `<template>` parser when available, a serializer-shaped lite parser for
+> minimal DOM doubles), and the fragment's events install into the page
+> installation's OWN dispatch table under a client-assigned scope —
+> **a mount adds zero root listeners**. `DQ-015` as recommended: manifest
+> keys stay verbatim, only the DOM markers are re-qualified
+> (`p0:e0` → `f1:e0`), so independently collected fragments can never collide
+> with each other or the page. Build-ID inequality fails closed AFTER
+> injection — the HTML stays visible but inert — with a
+> `"fragment-build-mismatch"` diagnostic and `ResumeClientBuildMismatchError`.
+> `DQ-013` handle: `{dispose, disposed(), inspect()}`; dispose is idempotent,
+> remounting a region disposes the previous fragment exactly once, and
+> fragment disposal never touches the parent installation.
+> Typed unit coverage: `src/__tests__/mount-fragment.test.ts`;
+> `future/streaming/server-fragments.spec.ts` stays (4/5 green) because its
+> fifth spec is item 4's deliberately-unbuilt `Resume.fragmentAction`.
+> v1 limitations, recorded in the `mountFragment` doc comment: fragment
+> manifests install events only (components/expressions stay dormant-inert),
+> and a fragment event type with no page-level root listener reports a
+> diagnostic instead of installing one.
 
 The capability: a typed server function returns **live, dormant UI** — the
 answer to TanStack Start's "server functions returning components" and to

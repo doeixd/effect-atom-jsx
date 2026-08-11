@@ -1208,7 +1208,8 @@ export type ClientDiagnosticCode =
   | "expression-execution-failure"
   | "expression-patch-failure"
   | "client-runtime-failure"
-  | "stream-truncated";
+  | "stream-truncated"
+  | "fragment-build-mismatch";
 
 export interface ClientDiagnostic {
   readonly code: ClientDiagnosticCode;
@@ -4418,6 +4419,21 @@ function installClientClaimed<R, ER>(
         const processed = new WeakMap<Event, Set<string>>();
         const claimedInteractions = new WeakSet<Event>();
         const listeners = new Map<string, EventListener>();
+        // M11b fragment scopes: events of mounted fragments, keyed by the
+        // client-assigned scope id their rewritten DOM markers carry
+        // (`DQ-015`). They dispatch through THIS installation's listeners —
+        // a mount never adds root listeners of its own.
+        const fragmentScopes = new Map<
+          string,
+          {
+            readonly events: Readonly<
+              Record<string, typeof EventEntrySchema.Type>
+            >;
+            disposed: boolean;
+          }
+        >();
+        const regionFragments = new Map<string, { dispose: () => void }>();
+        let fragmentScopeCounter = 0;
         const bindingValues = new Map<string, unknown>();
         const bindingOverrides = new Map<
           ComponentId,
@@ -5441,7 +5457,35 @@ function installClientClaimed<R, ER>(
               // dispatch — a nested fragment's events must never resolve
               // against the page's table, or vice versa.
               const scopedEventId = unscopeEventMarker(marker, manifest.installationId);
-              if (scopedEventId === undefined) continue;
+              if (scopedEventId === undefined) {
+                // M11b: a foreign-scoped marker may belong to a mounted
+                // fragment. Its events resolve against that fragment's own
+                // table — never the page's — through this same listener.
+                const separator = marker.indexOf(":");
+                if (separator <= 0) continue;
+                const fragment = fragmentScopes.get(marker.slice(0, separator));
+                if (fragment === undefined || fragment.disposed) continue;
+                const fragmentEntry =
+                  fragment.events[marker.slice(separator + 1)];
+                if (
+                  fragmentEntry === undefined
+                  || fragmentEntry.type !== eventType
+                  || fragmentEntry.invocation === ActivationProjection
+                ) {
+                  continue;
+                }
+                if (claimedInteractions.has(event)) return;
+                let fragmentEventIds = processed.get(event);
+                if (fragmentEventIds === undefined) {
+                  fragmentEventIds = new Set();
+                  processed.set(event, fragmentEventIds);
+                }
+                if (fragmentEventIds.has(marker)) continue;
+                fragmentEventIds.add(marker);
+                claimedInteractions.add(event);
+                launch(eventType, marker, fragmentEntry);
+                return;
+              }
               const entry = events[scopedEventId];
               if (entry === undefined) {
                 report({
@@ -5796,7 +5840,7 @@ function installClientClaimed<R, ER>(
           };
         };
 
-        return {
+        const installation: ClientInstallation = {
           pending: () => fibers.size,
           inspect,
           boundaries,
@@ -5808,6 +5852,16 @@ function installClientClaimed<R, ER>(
           writeBindingEncoded,
           dispose,
         };
+        clientInstallationFragmentInternals.set(installation, {
+          root: options.root,
+          expectedBuildId,
+          report,
+          fragmentScopes,
+          regionFragments,
+          mintFragmentScope: () => `f${++fragmentScopeCounter}`,
+          hasRootListener: (eventType) => listeners.has(eventType),
+        });
+        return installation;
       },
       catch: (error) =>
         new ResumeListenerInstallError({
@@ -6246,38 +6300,389 @@ export function installClientStreamed<R, ER>(
   }).pipe(Effect.withSpan("Resume.installClientStreamed"));
 }
 
+/** Streaming door (`DQ-008`): a stream record fetched out of band. */
 export interface MountFragmentOptions {
   readonly manifest: unknown;
 }
 
+/** Static door (M11b): `{html, manifest}` from a server `Resume.collect`. */
+export interface MountClientFragmentOptions {
+  readonly html: string;
+  readonly manifest: unknown;
+}
+
+export type MountClientFragmentError =
+  | ResumeManifestDecodeError
+  | ResumeClientBuildMismatchError
+  | ResumeConfigurationError;
+
+export interface FragmentHandleInspection {
+  readonly disposed: boolean;
+  readonly scope: string;
+  readonly region: string;
+  readonly events: number;
+}
+
 /**
- * Mount an out-of-band fragment into a live streamed page (`DQ-008`,
- * M11b item 1): a fetched fragment IS a streamed record arriving out of
- * band, so this door delegates to the installation's single `ingest`
- * primitive after pinning that the record describes the region being
- * mounted.
+ * The handle a static-fragment mount returns (`DQ-013`): `dispose` is
+ * idempotent, `disposed()` observes it directly, and `inspect()` mirrors the
+ * installation handle's idiom at fragment scope.
+ */
+export interface FragmentHandle {
+  readonly dispose: Effect.Effect<void>;
+  readonly disposed: () => boolean;
+  readonly inspect: () => FragmentHandleInspection;
+}
+
+interface ClientFragmentInternals {
+  readonly root: Document | Element | ShadowRoot;
+  readonly expectedBuildId: string;
+  readonly report: (diagnostic: ClientDiagnostic) => void;
+  readonly fragmentScopes: Map<
+    string,
+    {
+      readonly events: Readonly<Record<string, typeof EventEntrySchema.Type>>;
+      disposed: boolean;
+    }
+  >;
+  readonly regionFragments: Map<string, { dispose: () => void }>;
+  readonly mintFragmentScope: () => string;
+  readonly hasRootListener: (eventType: string) => boolean;
+}
+
+/** Fragment machinery per live install, kept off the public handle type. */
+const clientInstallationFragmentInternals = new WeakMap<
+  ClientInstallation,
+  ClientFragmentInternals
+>();
+
+const voidElements = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "source",
+  "track",
+  "wbr",
+]);
+
+function decodeHtmlText(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Parse serialized fragment HTML into nodes of `document`. Real documents get
+ * the platform parser via `<template>`; minimal DOM doubles (no `content`)
+ * fall back to a small serializer-shaped parser that covers what
+ * `renderToString` emits: elements with double-quoted attributes, text, and
+ * comment markers.
+ */
+function parseFragmentHtml(document: Document, html: string): Node[] {
+  const template = document.createElement("template");
+  if (
+    "content" in template
+    && (template as HTMLTemplateElement).content !== undefined
+  ) {
+    (template as HTMLTemplateElement).innerHTML = html;
+    return [...(template as HTMLTemplateElement).content.childNodes];
+  }
+  const top: Node[] = [];
+  const stack: Element[] = [];
+  const append = (node: Node): void => {
+    const parent = stack[stack.length - 1];
+    if (parent === undefined) top.push(node);
+    else parent.appendChild(node);
+  };
+  let index = 0;
+  while (index < html.length) {
+    if (html.startsWith("<!--", index)) {
+      const close = html.indexOf("-->", index + 4);
+      const data = close < 0 ? html.slice(index + 4) : html.slice(index + 4, close);
+      append(document.createComment(data));
+      index = close < 0 ? html.length : close + 3;
+      continue;
+    }
+    if (html[index] === "<") {
+      const close = html.indexOf(">", index);
+      if (close < 0) break;
+      const raw = html.slice(index + 1, close);
+      index = close + 1;
+      if (raw.startsWith("/")) {
+        stack.pop();
+        continue;
+      }
+      const selfClosing = raw.endsWith("/");
+      const body = selfClosing ? raw.slice(0, -1) : raw;
+      const nameMatch = /^[a-zA-Z][^\s/>]*/.exec(body);
+      if (nameMatch === null) continue;
+      const element = document.createElement(nameMatch[0]);
+      const attributePattern = /([^\s=/]+)(?:="([^"]*)")?/g;
+      attributePattern.lastIndex = nameMatch[0].length;
+      let attribute = attributePattern.exec(body);
+      while (attribute !== null) {
+        const name = attribute[1];
+        if (name !== undefined && name.length > 0) {
+          element.setAttribute(name, decodeHtmlText(attribute[2] ?? ""));
+        }
+        attribute = attributePattern.exec(body);
+      }
+      append(element);
+      if (!selfClosing && !voidElements.has(nameMatch[0].toLowerCase())) {
+        stack.push(element);
+      }
+      continue;
+    }
+    const next = html.indexOf("<", index);
+    const text = next < 0 ? html.slice(index) : html.slice(index, next);
+    if (text.length > 0) append(document.createTextNode(decodeHtmlText(text)));
+    index = next < 0 ? html.length : next;
+  }
+  return top;
+}
+
+interface RegionMarkerPair {
+  readonly start: Node;
+  readonly end: Node;
+  readonly parent: Node;
+}
+
+function findRegionMarkerPair(
+  root: Document | Element | ShadowRoot,
+  regionId: string,
+): RegionMarkerPair | undefined {
+  const startData = `af:region:${regionId}:start`;
+  const endData = `af:region:${regionId}:end`;
+  let start: Node | undefined;
+  let end: Node | undefined;
+  const visit = (node: Node): void => {
+    for (
+      let child: Node | null = node.firstChild;
+      child !== null;
+      child = child.nextSibling
+    ) {
+      if (child.nodeType === 8) {
+        const data = (child as Comment).data ?? child.textContent ?? "";
+        if (data === startData) start = start ?? child;
+        else if (data === endData) end = end ?? child;
+      }
+      visit(child);
+    }
+  };
+  visit(root as unknown as Node);
+  if (
+    start === undefined
+    || end === undefined
+    || start.parentNode === null
+    || start.parentNode !== end.parentNode
+  ) {
+    return undefined;
+  }
+  return { start, end, parent: start.parentNode };
+}
+
+/**
+ * Mount an out-of-band fragment into a live page.
+ *
+ * Two doors, one per installation kind:
+ *
+ * - **Streaming** (`DQ-008`, M11 item 6): the fragment IS a streamed record
+ *   arriving over a different transport, so this delegates to the streaming
+ *   installation's single `ingest` primitive after pinning that the record
+ *   describes the region being mounted.
+ * - **Static** (`M11b` items 1-3): `{html, manifest}` from a server-side
+ *   `Resume.collect` is injected between the region's comment markers and its
+ *   events are installed into the page installation's OWN dispatch table
+ *   under a client-assigned scope (`DQ-015`: manifest keys stay verbatim,
+ *   only the DOM markers are re-qualified) — a mount adds no root listeners.
+ *   Build-ID inequality with the page fails CLOSED but leaves the injected
+ *   HTML visible and inert, with a `"fragment-build-mismatch"` diagnostic.
+ *   Remounting a region disposes the previous fragment exactly once;
+ *   fragment disposal never touches the parent installation.
+ *
+ * v1 limitations (per M11b non-goals): fragment manifests install events
+ *   only — components/expressions inside a fragment stay dormant-inert — and
+ *   a fragment event type with no page-level root listener reports a
+ *   diagnostic instead of installing a listener.
  */
 export function mountFragment(
   installation: StreamingClientInstallation,
   regionId: string,
   options: MountFragmentOptions,
-): Effect.Effect<void, StreamIngestError> {
-  return Effect.suspend(() => {
-    const record = options.manifest;
-    if (
-      typeof record === "object"
-      && record !== null
-      && "region" in record
-      && (record as { readonly region?: unknown }).region !== regionId
-    ) {
-      return Effect.fail(
-        new ResumeManifestDecodeError({
-          message: `Fragment record describes region "${String((record as { readonly region?: unknown }).region)}", not the mounted region "${regionId}".`,
-        }),
-      );
+): Effect.Effect<void, StreamIngestError>;
+export function mountFragment(
+  installation: ClientInstallation,
+  regionId: string,
+  options: MountClientFragmentOptions,
+): Effect.Effect<FragmentHandle, MountClientFragmentError>;
+export function mountFragment(
+  installation: StreamingClientInstallation | ClientInstallation,
+  regionId: string,
+  options: MountFragmentOptions | MountClientFragmentOptions,
+): Effect.Effect<
+  FragmentHandle | void,
+  StreamIngestError | MountClientFragmentError
+> {
+  if ("ingest" in installation) {
+    return Effect.suspend(() => {
+      const record = options.manifest;
+      if (
+        typeof record === "object"
+        && record !== null
+        && "region" in record
+        && (record as { readonly region?: unknown }).region !== regionId
+      ) {
+        return Effect.fail(
+          new ResumeManifestDecodeError({
+            message: `Fragment record describes region "${String((record as { readonly region?: unknown }).region)}", not the mounted region "${regionId}".`,
+          }),
+        );
+      }
+      return installation.ingest(record);
+    }).pipe(Effect.withSpan("Resume.mountFragment"));
+  }
+  return mountClientFragment(
+    installation,
+    regionId,
+    options as MountClientFragmentOptions,
+  ).pipe(Effect.withSpan("Resume.mountFragment"));
+}
+
+function mountClientFragment(
+  installation: ClientInstallation,
+  regionId: string,
+  options: MountClientFragmentOptions,
+): Effect.Effect<FragmentHandle, MountClientFragmentError> {
+  return Effect.gen(function* () {
+    const internals = clientInstallationFragmentInternals.get(installation);
+    if (internals === undefined) {
+      return yield* new ResumeConfigurationError({
+        message:
+          "This installation cannot host fragments; mount into the handle installClient returned.",
+      });
     }
-    return installation.ingest(record);
-  }).pipe(Effect.withSpan("Resume.mountFragment"));
+    const manifest = yield* validateManifestValue(
+      options.manifest,
+      "fragment mount",
+    );
+    const pair = findRegionMarkerPair(internals.root, regionId);
+    if (pair === undefined) {
+      return yield* new ResumeConfigurationError({
+        message: `No region "${regionId}" exists to mount a fragment into.`,
+      });
+    }
+
+    // Replacing the region's content disposes the previous fragment first —
+    // exactly once, through the same handle path as a manual dispose.
+    internals.regionFragments.get(regionId)?.dispose();
+
+    // Clear whatever the region held, then inject the fragment HTML. The
+    // injection happens BEFORE the build gate on purpose: a stale fragment is
+    // inert, not absent (M11b item 2).
+    const { start, end, parent } = pair;
+    while (start.nextSibling !== null && start.nextSibling !== end) {
+      parent.removeChild(start.nextSibling);
+    }
+    const ownerDocument =
+      internals.root.nodeType === 9
+        ? (internals.root as Document)
+        : (internals.root.ownerDocument as Document);
+    for (const node of parseFragmentHtml(ownerDocument, options.html)) {
+      parent.insertBefore(node, end);
+    }
+
+    if (manifest.buildId !== internals.expectedBuildId) {
+      internals.report({
+        code: "fragment-build-mismatch",
+        reason: `Fragment for region "${regionId}" belongs to build "${manifest.buildId}", not "${internals.expectedBuildId}"; its HTML stays visible but it will never resume.`,
+      });
+      return yield* new ResumeClientBuildMismatchError({
+        expected: internals.expectedBuildId as typeof Portable.BuildId.Type,
+        actual: manifest.buildId,
+        message: `Fragment manifest belongs to a different client build.`,
+      });
+    }
+
+    // DQ-015: manifest keys stay verbatim; only the DOM markers are
+    // re-qualified from the fragment's server-assigned collection scope to a
+    // client-assigned one, so independently collected fragments can never
+    // collide with each other or with the page.
+    const scope = internals.mintFragmentScope();
+    const events = manifest.events as Readonly<
+      Record<string, typeof EventEntrySchema.Type>
+    >;
+    const rewrite = (node: Node): void => {
+      if (node.nodeType === 1) {
+        const element = node as Element;
+        for (const attribute of element.getAttributeNames()) {
+          if (!attribute.startsWith("data-af-event-")) continue;
+          const marker = element.getAttribute(attribute);
+          if (marker === null) continue;
+          const eventId = unscopeEventMarker(marker, manifest.installationId);
+          if (eventId === undefined) continue;
+          element.setAttribute(attribute, `${scope}:${eventId}`);
+        }
+      }
+      for (
+        let child: Node | null = node.firstChild;
+        child !== null;
+        child = child.nextSibling
+      ) {
+        rewrite(child);
+      }
+    };
+    for (
+      let node: Node | null = start.nextSibling;
+      node !== null && node !== end;
+      node = node.nextSibling
+    ) {
+      rewrite(node);
+    }
+
+    for (const entry of Object.values(events)) {
+      if (!internals.hasRootListener(entry.type)) {
+        internals.report({
+          code: "event-handoff-failure",
+          eventType: entry.type,
+          reason: `Fragment event type "${entry.type}" has no root listener on the page installation; the fragment's "${entry.type}" events will not dispatch (M11b v1 limitation).`,
+        });
+      }
+    }
+
+    const registration = { events, disposed: false };
+    internals.fragmentScopes.set(scope, registration);
+    let disposed = false;
+    const disposeNow = (): void => {
+      if (disposed) return;
+      disposed = true;
+      registration.disposed = true;
+      internals.fragmentScopes.delete(scope);
+      if (internals.regionFragments.get(regionId)?.dispose === disposeNow) {
+        internals.regionFragments.delete(regionId);
+      }
+    };
+    internals.regionFragments.set(regionId, { dispose: disposeNow });
+    return {
+      dispose: Effect.sync(disposeNow),
+      disposed: () => disposed,
+      inspect: () => ({
+        disposed,
+        scope,
+        region: regionId,
+        events: Object.keys(events).length,
+      }),
+    } satisfies FragmentHandle;
+  });
 }
 
 export function installClientScoped<R, ER>(
