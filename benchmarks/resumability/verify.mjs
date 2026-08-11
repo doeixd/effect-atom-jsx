@@ -3,6 +3,16 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
 
+/**
+ * Retained-heap budgets. Named and exported so they are greppable: these
+ * were inline `1.1` and `200_000` literals, and a search for "slope" or
+ * "1.10" found nothing -- which led to a written claim that the gate was
+ * not automated at all. It always was, and `run.mjs` enforces it on every
+ * run.
+ */
+export const SLOPE_CEILING = 1.1;
+export const FIXED_GAP_CEILING_BYTES = 200_000;
+
 function invariant(condition, message) {
   if (!condition) {
     throw new Error(`Resumability benchmark invariant failed: ${message}`);
@@ -474,21 +484,49 @@ export function verifyBenchmarkResult(result) {
     resumedTwentyFour.summary.heapReadyBytes.median;
   const eagerOneHeap = eagerOne.summary.heapReadyBytes.median;
   const eagerTwentyFourHeap = eagerTwentyFour.summary.heapReadyBytes.median;
-  if (
-    [
-      resumedOneHeap,
-      resumedTwentyFourHeap,
-      eagerOneHeap,
-      eagerTwentyFourHeap,
-    ].every(Number.isFinite)
-  ) {
+  const heapIsMeasured = [
+    resumedOneHeap,
+    resumedTwentyFourHeap,
+    eagerOneHeap,
+    eagerTwentyFourHeap,
+  ].every(Number.isFinite);
+
+  if (heapIsMeasured) {
     const resumedGrowth = resumedTwentyFourHeap - resumedOneHeap;
     const eagerGrowth = eagerTwentyFourHeap - eagerOneHeap;
+    const fixedGapBytes = resumedTwentyFourHeap - eagerTwentyFourHeap;
+    // Report the ratio as null rather than Infinity/NaN when the denominator
+    // is degenerate, so a broken run reads as unmeasured instead of as a
+    // suspiciously perfect score.
+    const slope = eagerGrowth > 0 ? resumedGrowth / eagerGrowth : null;
+
+    result.gates = {
+      slope: {
+        name: "dormant-vs-eager density-1-to-24 heap growth ratio",
+        value: slope,
+        ceiling: SLOPE_CEILING,
+        resumedGrowthBytes: resumedGrowth,
+        eagerGrowthBytes: eagerGrowth,
+        headroom: slope === null ? null : SLOPE_CEILING - slope,
+        status: "enforced",
+      },
+      fixedGap: {
+        name: "density-24 dormant-over-eager retained heap",
+        valueBytes: fixedGapBytes,
+        ceilingBytes: FIXED_GAP_CEILING_BYTES,
+        status: "pending",
+      },
+    };
+
     invariant(
       resumedGrowth >= 0
       && eagerGrowth > 0
-      && resumedGrowth <= eagerGrowth * 1.1,
-      "dormant per-expression heap growth exceeded 110% of eager growth",
+      && resumedGrowth <= eagerGrowth * SLOPE_CEILING,
+      "dormant per-expression heap growth exceeded "
+      + Math.round(SLOPE_CEILING * 100)
+      + "% of eager growth (ratio "
+      + (slope === null ? "undefined" : slope.toFixed(4))
+      + ", dormant " + resumedGrowth + "B, eager " + eagerGrowth + "B)",
     );
 
     const isCalibratedEnvironment =
@@ -497,13 +535,82 @@ export function verifyBenchmarkResult(result) {
       && result.browser.name === "chromium"
       && result.browser.version.startsWith("151.");
     if (isCalibratedEnvironment) {
+      result.gates.fixedGap.status = "enforced";
       invariant(
-        resumedTwentyFourHeap - eagerTwentyFourHeap <= 200_000,
-        "density-24 dormant heap exceeded the calibrated 200 KB fixed-cost budget",
+        fixedGapBytes <= FIXED_GAP_CEILING_BYTES,
+        "density-24 dormant heap exceeded the calibrated "
+        + FIXED_GAP_CEILING_BYTES + "-byte fixed-cost budget (measured "
+        + fixedGapBytes + "B)",
       );
+    } else {
+      // Report-only off the calibrated environment, because the budget was
+      // calibrated there. Say so out loud: a threshold that quietly does not
+      // apply reads exactly like a threshold that passed.
+      result.gates.fixedGap.status = "skipped-uncalibrated-environment";
+      result.gates.fixedGap.reason = "calibrated for win32/x64/chromium 151.x; ran on "
+        + result.environment.platform + "/" + result.environment.architecture
+        + "/" + result.browser.name + " " + result.browser.version;
     }
+  } else {
+    // Both heap gates depend on CDP measurements that can be absent. Skipping
+    // them silently is how a run with no heap data passes as cleanly as a run
+    // that met every budget.
+    result.gates = {
+      slope: {
+        name: "dormant-vs-eager density-1-to-24 heap growth ratio",
+        value: null,
+        ceiling: SLOPE_CEILING,
+        status: "skipped-no-heap-measurement",
+      },
+      fixedGap: {
+        name: "density-24 dormant-over-eager retained heap",
+        valueBytes: null,
+        ceilingBytes: FIXED_GAP_CEILING_BYTES,
+        status: "skipped-no-heap-measurement",
+      },
+    };
   }
   return result;
+}
+
+/**
+ * Render the heap gates for humans.
+ *
+ * The slope gate decided DQ-030 (per-row markers vs `data-af-key`), and that
+ * decision was made by recomputing the ratio by hand out of the result JSON,
+ * because the gate threw on failure but never reported its value on success.
+ * A gate you cannot read is a gate someone will recompute by hand.
+ */
+export function formatGateReport(gates) {
+  if (gates === undefined) return "heap gates: not evaluated\n";
+  const lines = [];
+  const slope = gates.slope;
+  if (slope.status === "enforced" && slope.value !== null) {
+    lines.push(
+      "  slope     " + slope.value.toFixed(4) + " / "
+      + slope.ceiling.toFixed(2) + " ceiling  (headroom "
+      + slope.headroom.toFixed(4) + "; dormant +"
+      + slope.resumedGrowthBytes + "B, eager +"
+      + slope.eagerGrowthBytes + "B)",
+    );
+  } else {
+    lines.push("  slope     SKIPPED - " + slope.status);
+  }
+  const gap = gates.fixedGap;
+  if (gap.status === "enforced") {
+    lines.push(
+      "  fixed gap " + gap.valueBytes + "B / " + gap.ceilingBytes
+      + "B ceiling",
+    );
+  } else if (gap.valueBytes !== null && gap.valueBytes !== undefined) {
+    lines.push(
+      "  fixed gap " + gap.valueBytes + "B (report-only) - " + gap.status
+      + (gap.reason === undefined ? "" : ": " + gap.reason),
+    );
+  } else {
+    lines.push("  fixed gap SKIPPED - " + gap.status);
+  }
+  return "heap gates:\n" + lines.join("\n") + "\n";
 }
 
 async function main() {
@@ -516,6 +623,7 @@ async function main() {
   );
   verifyBenchmarkResult(result);
   process.stdout.write(`Verified ${filename}\n`);
+  process.stdout.write(formatGateReport(result.gates));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

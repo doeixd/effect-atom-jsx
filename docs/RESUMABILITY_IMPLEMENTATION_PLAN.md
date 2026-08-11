@@ -1229,17 +1229,33 @@ Acceptance:
 - Structural output on a **text/attribute/class/style** target remains rejected
   with `unsupported-expression-output`; the existing fence spec must stay green
   unchanged.
-- A row without a single element root fails at build time in authored JSX, and
-  falls back with a diagnostic on the dynamic path.
-- The 8c payload and slope gates still pass at density 24.
+- Rows that are text, fragments, or several top-level nodes resume correctly.
+  Markers replaced `data-af-key` precisely so no single-element-root constraint
+  exists; a test that only ever renders single-element rows would not notice if
+  one were reintroduced.
+- The 8c payload and slope gates still pass at density 24, and the slope is
+  **read from `result.gates.slope` in the artifact**, not recomputed by hand.
 
 Open:
 
-- **The 1.10 slope gate is not automated.** Neither `run.mjs` nor `verify.mjs`
-  computes it; it is a documented checkpoint read by hand out of the result
-  JSON. It was relied on to make this decision, so it should be moved into
-  `verify.mjs` before it is relied on again — a gate nobody runs is a gate that
-  has already stopped working. Small, and not a blocker for M8d.
+- **Correction: the 1.10 slope gate was always automated.** An earlier note here
+  claimed it was not. That was wrong. `verify.mjs` has always enforced
+  `resumedGrowth <= eagerGrowth * 1.1`, and `run.mjs` calls it on every run, so
+  a violation has always failed the benchmark. The claim came from grepping for
+  `slope`, `1.10`, and `204800` and finding nothing — the code used the literals
+  `1.1` and `200_000` and the phrase "110% of eager growth". **A search that
+  misses is evidence about the search, not about the code.**
+
+  What *was* genuinely wrong is now fixed: the thresholds are named
+  (`SLOPE_CEILING`, `FIXED_GAP_CEILING_BYTES`) so they are greppable; the gate
+  reports its computed value on success instead of only throwing on failure, so
+  a decision like DQ-030's reads the number instead of recomputing it by hand;
+  the numbers are persisted to `result.gates` in the artifact and declared in
+  `result.schema.json`; and the two silent skips — no heap measurement, and the
+  fixed-gap budget off its calibrated environment — now print `SKIPPED` with a
+  reason. A run with no heap data used to pass as cleanly as one that met every
+  budget.
+
 - **Measurement lane.** `AF_BENCH_ROW_MARKERS=1` on the benchmark build wraps
   every resumable row in a marker pair. Env-gated and off by default; kept so
   the comparison is repeatable rather than a number in a document.

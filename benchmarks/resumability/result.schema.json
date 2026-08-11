@@ -16,25 +16,52 @@
     "attribution"
   ],
   "properties": {
-    "schemaVersion": { "const": 2 },
-    "benchmark": { "const": "effect-atom-jsx/resumability-m8c1" },
-    "generatedAt": { "type": "string", "format": "date-time" },
-    "buildId": { "type": "string" },
+    "schemaVersion": {
+      "const": 2
+    },
+    "benchmark": {
+      "const": "effect-atom-jsx/resumability-m8c1"
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "buildId": {
+      "type": "string"
+    },
     "browser": {
       "type": "object",
-      "required": ["name", "version"],
+      "required": [
+        "name",
+        "version"
+      ],
       "properties": {
-        "name": { "const": "chromium" },
-        "version": { "type": "string" }
+        "name": {
+          "const": "chromium"
+        },
+        "version": {
+          "type": "string"
+        }
       }
     },
-    "environment": { "type": "object" },
+    "environment": {
+      "type": "object"
+    },
     "config": {
       "type": "object",
-      "required": ["coldRuns", "warmWritesPerKind"],
+      "required": [
+        "coldRuns",
+        "warmWritesPerKind"
+      ],
       "properties": {
-        "coldRuns": { "type": "integer", "minimum": 1 },
-        "warmWritesPerKind": { "type": "integer", "minimum": 1 }
+        "coldRuns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "warmWritesPerKind": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "fixtures": {
@@ -52,11 +79,21 @@
           "summary"
         ],
         "properties": {
-          "file": { "type": "string" },
-          "mode": {
-            "enum": ["eager-rerender", "dormant-resume"]
+          "file": {
+            "type": "string"
           },
-          "density": { "enum": [1, 24] },
+          "mode": {
+            "enum": [
+              "eager-rerender",
+              "dormant-resume"
+            ]
+          },
+          "density": {
+            "enum": [
+              1,
+              24
+            ]
+          },
           "payload": {
             "type": "object",
             "required": [
@@ -87,7 +124,9 @@
               ]
             }
           },
-          "summary": { "type": "object" }
+          "summary": {
+            "type": "object"
+          }
         }
       }
     },
@@ -97,10 +136,24 @@
       "maxItems": 2,
       "items": {
         "type": "object",
-        "required": ["file", "mode", "density", "payload", "samples", "summary"],
+        "required": [
+          "file",
+          "mode",
+          "density",
+          "payload",
+          "samples",
+          "summary"
+        ],
         "properties": {
-          "mode": { "const": "eager-rerender-shared-runtime" },
-          "density": { "enum": [1, 24] }
+          "mode": {
+            "const": "eager-rerender-shared-runtime"
+          },
+          "density": {
+            "enum": [
+              1,
+              24
+            ]
+          }
         }
       }
     },
@@ -110,9 +163,18 @@
       "maxItems": 3,
       "items": {
         "type": "object",
-        "required": ["density", "stages"],
+        "required": [
+          "density",
+          "stages"
+        ],
         "properties": {
-          "density": { "enum": [0, 1, 24] },
+          "density": {
+            "enum": [
+              0,
+              1,
+              24
+            ]
+          },
           "stages": {
             "type": "array",
             "minItems": 11,
@@ -146,6 +208,97 @@
           }
         }
       }
+    },
+    "gates": {
+      "type": "object",
+      "description": "Heap budgets computed and enforced by verify.mjs. Recorded in the artifact so a decision that depends on the slope reads it here instead of recomputing it by hand -- which is how DQ-030 was decided, and how the claim that this gate was unautomated arose.",
+      "properties": {
+        "slope": {
+          "type": "object",
+          "description": "One retained-heap budget: its measured value, its ceiling, and whether it was actually enforced. `status` is not decoration -- a gate that silently does not apply reads exactly like a gate that passed.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "enforced",
+                "pending",
+                "skipped-uncalibrated-environment",
+                "skipped-no-heap-measurement"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "value": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "dormant growth / eager growth, density 1 to 24; null when unmeasured"
+            },
+            "ceiling": {
+              "type": "number"
+            },
+            "headroom": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "resumedGrowthBytes": {
+              "type": "number"
+            },
+            "eagerGrowthBytes": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "name",
+            "status"
+          ]
+        },
+        "fixedGap": {
+          "type": "object",
+          "description": "One retained-heap budget: its measured value, its ceiling, and whether it was actually enforced. `status` is not decoration -- a gate that silently does not apply reads exactly like a gate that passed.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "enforced",
+                "pending",
+                "skipped-uncalibrated-environment",
+                "skipped-no-heap-measurement"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "valueBytes": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "ceilingBytes": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "name",
+            "status"
+          ]
+        }
+      },
+      "required": [
+        "slope",
+        "fixedGap"
+      ]
     }
   }
 }

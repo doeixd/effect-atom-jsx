@@ -176,6 +176,20 @@ Two things this lane made visible that outlast the decision:
   5-run baseline's absolute heap figures, so only the difference between the two
   arms is claimed. Quoting an absolute from a short local run as if it were the
   baseline is how a re-pin goes wrong.
-- **The 1.10 slope gate is not automated.** Neither `run.mjs` nor `verify.mjs`
-  computes it — it is read by hand from the result JSON. It should move into
-  `verify.mjs`.
+- **Correction: the 1.10 slope gate was always automated.** An earlier note here
+  claimed it was not. That was wrong. `verify.mjs` has always enforced
+  `resumedGrowth <= eagerGrowth * 1.1`, and `run.mjs` calls it on every run, so
+  a violation has always failed the benchmark. The claim came from grepping for
+  `slope`, `1.10`, and `204800` and finding nothing — the code used the literals
+  `1.1` and `200_000` and the phrase "110% of eager growth". **A search that
+  misses is evidence about the search, not about the code.**
+
+  What *was* genuinely wrong is now fixed: the thresholds are named
+  (`SLOPE_CEILING`, `FIXED_GAP_CEILING_BYTES`) so they are greppable; the gate
+  reports its computed value on success instead of only throwing on failure, so
+  a decision like DQ-030's reads the number instead of recomputing it by hand;
+  the numbers are persisted to `result.gates` in the artifact and declared in
+  `result.schema.json`; and the two silent skips — no heap measurement, and the
+  fixed-gap budget off its calibrated environment — now print `SKIPPED` with a
+  reason. A run with no heap data used to pass as cleanly as one that met every
+  budget.
