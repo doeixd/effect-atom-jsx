@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Streaming + fragment proof</title>
+  </head>
+  <body>
+    <main>
+      <h1>Streaming + fragment proof</h1>
+      <section id="stream-root">
+        <!--__STREAMED_HTML__-->
+      </section>
+      <section id="frag-root">
+        <!--__HOST_HTML__-->
+        <!--af:region:slot:start--><!--af:region:slot:end-->
+        <!--__HOST_MANIFEST__-->
+      </section>
+    </main>
+    <script>
+      window.__STREAM_TEST__ = {
+        saves: [],
+        diagnostics: [],
+        loaderCalls: 0,
+        ready: false,
+        firstFragmentDisposed: false
+      };
+    </script>
+    <script type="application/json" id="fragment-payload"><!--__FRAGMENT_JSON__--></script>
+    <script type="module" src="/client/bootstrap-streaming.ts"></script>
+  </body>
+</html>

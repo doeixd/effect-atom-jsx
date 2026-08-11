@@ -12,8 +12,9 @@
 import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Schema, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 import * as Component from "../Component.js";
+import * as Portable from "../Portable.js";
 import * as Resume from "../Resume.js";
-import { renderToStream } from "../dom.js";
+import { addEventListener, renderToStream, template } from "../dom.js";
 import {
   ResumeStreamPayloadTooLargeError,
   StreamRecordSchema,
@@ -91,6 +92,63 @@ describe("streaming manifest (M11.5)", () => {
       expect(record.buildId).toBe(StreamBuildId);
       expect(record.version).toBe(5);
     }
+  });
+
+  it("scopes streamed event markers by region id so records can resolve them", async () => {
+    // The end-to-end contract the fake-DOM install fixtures cannot pin on
+    // their own: `installClientStreaming` resolves a marker's scope against
+    // the per-region record tables, so the HTML the stream actually emits
+    // must spell its markers "<regionId>:<eventId>" — an installation-scoped
+    // marker ("s0:e0") would queue forever against a region that never
+    // arrives. Found by probing real output while preparing the Chromium
+    // proof (2026-08-11).
+    const code = Portable.code<
+      { readonly label: string },
+      { readonly label: string },
+      readonly [],
+      void,
+      never,
+      never
+    >({
+      id: "test.stream.marker-scope",
+      buildId: StreamBuildId,
+      captures: Schema.Struct({ label: Schema.String }),
+      run: () => Effect.void,
+    });
+    const shellButton = () => {
+      const action = Effect.runSync(
+        Component.action(Portable.bind(code, { label: "x" })),
+      );
+      const button = template("<button>Go")();
+      addEventListener(button, "click", Resume.event(action), true);
+      return button;
+    };
+
+    const html = await Effect.runPromise(
+      drainToString(
+        renderToStream(
+          () => [shellButton(), labelledRegion("slow", 5)],
+          { mode: "ordered", buildId: StreamBuildId },
+        ),
+      ) as Effect.Effect<string, never>,
+    );
+
+    // The marker's scope is the region id ("shell"), never the stream
+    // session's installation id.
+    const marker = /data-af-event-click="([^"]+)"/.exec(html);
+    expect(marker?.[1]).toBe("shell:e0");
+    // And the record the client will resolve it against agrees: the shell
+    // record's region is "shell" and it carries that event id verbatim.
+    const records = manifestRecords(html);
+    const shellRecord = records
+      .filter(isRegion)
+      .find((record) => record.region === "shell");
+    expect(shellRecord).toBeDefined();
+    expect(Object.keys(shellRecord!.events)).toEqual(["e0"]);
+    // The terminal set includes the shell region, so completeness gating
+    // covers the shell's events too.
+    const terminal = records.find(isTerminal);
+    expect([...terminal!.regionIds]).toContain("shell");
   });
 
   it("registers nothing for a region that never flushes", async () => {

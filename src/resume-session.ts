@@ -152,6 +152,14 @@ export interface ResumeSession {
    * reserved as the separator and rejected inside ids at collection time.
    */
   readonly installationId: string;
+  /**
+   * Streaming marker-scope override (M11.5/M11.6): during a stream flush
+   * slice, markers are scoped by the REGION id (`"shell"`, `"r0"`, …) instead
+   * of the installation id, because `installClientStreaming` resolves a
+   * marker's scope against the per-region record tables. Set and restored
+   * synchronously around each flush slice; `undefined` outside streaming.
+   */
+  markerScope: string | undefined;
   readonly events: Array<PendingEvent>;
   readonly components: Array<PendingComponentSnapshot>;
   readonly expressions: Array<PendingExpression>;
@@ -248,6 +256,7 @@ export function registerComponentActivation(
 export function makeResumeSession(installationId: string): ResumeSession {
   return {
     installationId,
+    markerScope: undefined,
     events: [],
     components: [],
     expressions: [],
@@ -1403,8 +1412,10 @@ export function observeServerEventTarget(
       });
     }
     // DQ-009: scope-qualified — two concurrent collections must not mint
-    // markers that could resolve against each other's manifests.
-    markers[markerName] = `${session.installationId}:${id}`;
+    // markers that could resolve against each other's manifests. A streaming
+    // flush slice overrides the scope with its region id, which is what the
+    // streamed install resolves against.
+    markers[markerName] = `${session.markerScope ?? session.installationId}:${id}`;
   }
 
   const frozen = Object.freeze(markers);

@@ -1516,9 +1516,17 @@ Status: **items 1-3 and 5-6 implemented** (2026-08-11); item 4 proposed.
 > markers against it and treats foreign-scoped markers as not-ours (legacy
 > manifests without the field accept only unqualified markers).
 > `future/streaming/resume-session-isolation.spec.ts` is fully green.
-> NOTE: the Chromium browser tests exercise the full collect→install loop and
-> are self-consistent under qualification, but have not been re-run in this
-> change-set — run them before relying on the marker change in a browser.
+> The Chromium browser tests were re-run 2026-08-11 after the whole streaming
+> lane landed: 9/9, including two new proofs (`streaming-fragments.spec.ts`)
+> covering a streamed page installing from its record scripts and an
+> out-of-band fragment mount. That run caught two real bugs the fake-DOM
+> fixtures could not: (1) `renderToStream` scoped markers by the stream
+> session's installation id while `installClientStreaming` resolves scopes as
+> REGION ids — flush slices now scope markers by region id ("shell", "r0", …)
+> via `session.markerScope`, pinned by a unit test on real streamed output;
+> (2) the out-of-order swap script nested single quotes inside a
+> single-quoted selector string — a JS syntax error no text assertion sees —
+> now pinned by a `new Function(body)` syntax check in the OOO unit test.
 
 **Blocker found 2026-07-30 while writing `future/streaming/` specs — decide
 before implementing item 1.** Item 1 makes the *resume session* per-request, but
@@ -1629,8 +1637,15 @@ streaming transport, and Milestone 11b below.
 
 ### Milestone 11b — Server UI fragments (`Resume.mountFragment`)
 
-Status: **items 1-3 implemented** (2026-08-11); item 4 deferred behind
-`DQ-014`/`DQ-011`, item 5 (Chromium proof) pending.
+Status: **items 1-3 and 5 implemented** (2026-08-11); item 4 deferred behind
+`DQ-014`/`DQ-011`.
+
+> **Item 5 — the Chromium proof — is done**: `streaming.html` in the
+> resumable-action example serves a real out-of-order streamed area (records
+> + swap scripts) next to a statically collected host, and
+> `browser-tests/streaming-fragments.spec.ts` proves the fragment mounts into
+> the live page, resumes on first touch with the page untouched, and a
+> remount disposes the previous fragment exactly once.
 
 > **Items 1-3 are done**, per the DQ-013/DQ-015 recommendations (provisional
 > picks, both deferrable). `Resume.mountFragment` gained a second door: the

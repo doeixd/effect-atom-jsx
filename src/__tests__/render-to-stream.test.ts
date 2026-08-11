@@ -136,6 +136,12 @@ describe("renderToStream (M11.2/11.3)", () => {
     expect(swap).toContain('nonce="test-nonce"');
     expect(swap).not.toMatch(/\son[a-z]+=/);
     expect(swap).not.toContain("javascript:");
+    // The swap body must be syntactically valid JS — a quoting slip inside
+    // the generated selector parses as HTML but throws in the browser before
+    // any swap runs (caught by the Chromium proof 2026-08-11).
+    const body = /<script[^>]*>([\s\S]*?)<\/script>/.exec(swap)?.[1] ?? "";
+    expect(body.length).toBeGreaterThan(0);
+    expect(() => new Function(body)).not.toThrow();
     for (const chunk of chunks) expect(splitsAMarker(chunk)).toBe(false);
   });
 

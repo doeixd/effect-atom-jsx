@@ -1502,6 +1502,24 @@ function runStreamSlice<A>(
   serverDoc: unknown,
   session: ReturnType<typeof makeResumeSession>,
   evaluate: () => A,
+  markerScope?: string,
+): A {
+  // M11.5/M11.6: a stream flush slice scopes its markers by REGION id, so
+  // `installClientStreaming` can resolve them against the per-region record
+  // tables. Set/restored synchronously with the slice.
+  const previousScope = session.markerScope;
+  if (markerScope !== undefined) session.markerScope = markerScope;
+  try {
+    return runStreamSliceUnscoped(serverDoc, session, evaluate);
+  } finally {
+    session.markerScope = previousScope;
+  }
+}
+
+function runStreamSliceUnscoped<A>(
+  serverDoc: unknown,
+  session: ReturnType<typeof makeResumeSession>,
+  evaluate: () => A,
 ): A {
   const prevSSR = _ssrMode;
   const prevDoc = _serverDoc;
@@ -1593,7 +1611,7 @@ function streamSwapChunk(id: string, html: string, nonce: string | undefined): s
   const nonceAttribute = nonce === undefined ? "" : ` nonce="${nonce}"`;
   return (
     `<template data-af-region="${id}">${html}</template>`
-    + `<script${nonceAttribute}>(function(d){var t=d.querySelector('template[data-af-region=\'${id}\']');if(!t)return;`
+    + `<script${nonceAttribute}>(function(d){var t=d.querySelector('template[data-af-region="${id}"]');if(!t)return;`
     + `var w=d.createTreeWalker(d,128),s=null,e=null;while(w.nextNode()){var c=w.currentNode;`
     + `if(c.data==="af:region:${id}:start")s=c;else if(c.data==="af:region:${id}:end"){e=c;break;}}`
     + `if(s&&e&&s.parentNode===e.parentNode){while(s.nextSibling&&s.nextSibling!==e)s.parentNode.removeChild(s.nextSibling);`
@@ -1635,9 +1653,14 @@ export function renderToStream(
       const segments: Array<StreamSegment> = [];
       yield* Effect.try({
         try: () => {
-          runStreamSlice(serverDoc, session, () => {
-            segmentStreamTree(fn(), segments, { ordinal: 0 });
-          });
+          runStreamSlice(
+            serverDoc,
+            session,
+            () => {
+              segmentStreamTree(fn(), segments, { ordinal: 0 });
+            },
+            "shell",
+          );
         },
         catch: (error) =>
           new RenderToStreamError(`Streaming shell render failed: ${String(error)}`),
@@ -1665,11 +1688,16 @@ export function renderToStream(
               // The serialization slice is synchronous, so the event range it
               // registers is captured atomically alongside its HTML — record
               // attribution cannot be scrambled by a concurrent flush.
-              runStreamSlice(serverDoc, session, (): RegionFlush => {
-                const before = session.events.length;
-                const html = serverValueToHTML(settled);
-                return { html, pending: session.events.slice(before) };
-              }),
+              runStreamSlice(
+                serverDoc,
+                session,
+                (): RegionFlush => {
+                  const before = session.events.length;
+                  const html = serverValueToHTML(settled);
+                  return { html, pending: session.events.slice(before) };
+                },
+                segment.id,
+              ),
             ),
             // The region effect runs on its own fiber, suspending freely; the
             // per-render state travels with it so observation hooks (component
