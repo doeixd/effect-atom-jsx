@@ -22,6 +22,12 @@ const pages = [
   },
   { file: "resume-1.html", mode: "dormant-resume", density: 1 },
   { file: "resume-24.html", mode: "dormant-resume", density: 24 },
+  { file: "structural-1.html", mode: "dormant-resume-structural", density: 1 },
+  {
+    file: "structural-24.html",
+    mode: "dormant-resume-structural",
+    density: 24,
+  },
   { file: "attribution-0.html", mode: "attribution", density: 0 },
   { file: "attribution-1.html", mode: "attribution", density: 1 },
   { file: "attribution-24.html", mode: "attribution", density: 24 },
@@ -45,6 +51,11 @@ try {
     script: boundaryOnly.script,
   });
   for (const density of [1, 24]) {
+    const structural = app.renderStructuralServer(density);
+    fixtures.set(`dormant-resume-structural:${density}`, {
+      html: structural.html,
+      script: structural.script,
+    });
     const collection = app.renderResumableServer(density);
     fixtures.set(`dormant-resume:${density}`, {
       html: collection.html,
@@ -70,7 +81,9 @@ try {
 function payloadFor(fixture) {
   const manifest =
     fixture.script.match(/<script[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? "";
-  const markers = [...fixture.html.matchAll(/<!--af:expr:[\s\S]*?-->/g)]
+  // Structural regions add `af:row` pairs beside the `af:expr` boundary; both
+  // are wire cost attributable to the resume protocol.
+  const markers = [...fixture.html.matchAll(/<!--af:(?:expr|row):[\s\S]*?-->/g)]
     .map((match) => match[0])
     .join("");
   const combined = `${manifest}${markers}`;

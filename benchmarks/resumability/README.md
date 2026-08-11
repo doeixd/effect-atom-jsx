@@ -152,6 +152,26 @@ Dormant grows **more slowly per expression than eager** (1,138 B/expr vs
 1,710 B/expr). The widening itself cost **288 raw / 11 gzip bytes at density 24**
 (8,186 → 8,474 raw; 766 → 777 gzip).
 
+## M8d real-rows lane — structural regions (2026-08-11, report-only)
+
+`structural-{1,24}.html` render one authored structural list expression
+(`StructuralRowsExpression` in `app/benchmark.ts`) with 1 or 24 keyed text
+rows; `client/structural.ts` installs and exposes the shared write.
+`structural.mjs` measures both pages plus the paired `resume-{1,24}` baseline
+in one jitless session, taking heap at ready (dormant) and after one patch
+(every row `Scope` live), and writes
+`bench-results/resumability/structural-latest.json`:
+
+```bash
+npm run build && npm run build:resumability-benchmark
+node benchmarks/resumability/structural.mjs
+```
+
+Result (2026-08-11): **379.3 B retained heap per live structural row** — 3.7×
+cheaper than the 1,404.2 B/row scalar-expression shape, with a flat manifest
+(one entry) instead of ~300 B/row. Not gated: the gated density lane keeps its
+scalar shape so the pinned baseline stays comparable.
+
 ## DQ-100 measurement lane — per-row markers (2026-08-11)
 
 `AF_BENCH_ROW_MARKERS=1` on the **build** (the fixtures are server-rendered at

@@ -1154,7 +1154,8 @@ resumability, rather than only portable event handlers or partial activation.
 
 ### Milestone 8d — Structural expression targets (keyed lists, branch replacement)
 
-Status: **implemented** (2026-08-11) — all three faces landed. Face 1
+Status: **complete** (2026-08-11) — all three faces landed and every work
+item, including the real-rows measurement, is done. Face 1
 (`dom.reconcileArrays`), face 2 (collect-side `af:row` marker pairs, the
 `structural` target kind, manifest v5), and face 3 (client reconciliation with
 per-instance row `Scope`s closed from the reconciler's own removal list) are
@@ -1244,15 +1245,32 @@ Work:
 5. **Manifest compatibility.** Status: **done** (2026-08-11). v5 fixture,
    v4-decodes-on-v5-client, and a negative control proving a structural target
    smuggled into a v4 payload fails decoding.
-6. **Re-read the slope once rows are real.** Status: **open** — the only
-   remaining M8d item. The 35 B/row figure prices the
-   *markers only*; the per-row `Scope` cancelled out of the paired delta
-   because both options needed it. Re-run the density lane after converting
-   the benchmark fixture's rows to authored structural expressions and quote
-   the linear per-row cost, not the ratio — 24 rows is a small
-   list and the ratio does not extrapolate to a 10,000-row table. (The 8c
-   gates were re-run unchanged after faces 2 and 3 landed; converting the
-   fixture to structural rows is the substantive remaining work.)
+6. **Re-read the slope once rows are real.** Status: **done** (2026-08-11,
+   report-only lane). `benchmarks/resumability/structural.mjs` measures real
+   structural rows — `structural-{1,24}.html` pages render one authored
+   `structuralExpressionCode` list (`StructuralRowsExpression`,
+   `app/benchmark.ts`) and the client patches once so every row's `Scope` is
+   live before the jitless-forced-gc heap read. Linear per-row cost, density
+   1→24 (/23), 3-run medians, paired in-session against the 24-scalar-
+   expression `resume-{1,24}` baseline:
+
+   | per row | structural row | scalar expression |
+   | --- | ---: | ---: |
+   | **live heap** (Scope open, post-patch) | **379.3 B** | 1,404.2 B |
+   | dormant heap (installed, pre-patch) | 47.8 B | 1,137.9 B |
+   | document raw / gzip | 55.1 B / 9.2 B | 435.1 B / 29.4 B |
+   | manifest | **0 B** (one entry total) | 300.5 B |
+
+   So the honest quotable number is **~380 B of retained heap per live
+   structural row**, and a structural region is 3.7× cheaper per live row —
+   and ~24× cheaper dormant — than the expression-per-row shape it replaces,
+   because the manifest entry, portable descriptor, and dependency
+   subscription are amortized across the region. No gate risk: dormant
+   density growth stays far below eager. The gated density lane keeps its
+   scalar shape so the pinned baseline stays comparable; the structural lane
+   is report-only (`bench-results/resumability/structural-latest.json`), and
+   the 24-row caveat stands — quote the linear B/row, not a ratio, for large
+   tables.
 
 Acceptance:
 

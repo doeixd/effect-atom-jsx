@@ -1115,3 +1115,16 @@ manifest member at v5 are **unchanged**.
 
 The measurement lane stays in the fixture, env-gated and off by default, so this
 comparison is repeatable rather than a one-off number in a document.
+
+### Follow-up: the real-rows re-read was run (2026-08-11)
+
+The "per-row `Scope` is not measured" caveat above is now closed. After faces 2
+and 3 landed, `benchmarks/resumability/structural.mjs` measured a **real**
+structural region (authored `structuralExpressionCode` list, one patch run so
+every row `Scope` is live) at densities 1 and 24, jitless-forced-gc, 3-run
+medians, paired in-session against the scalar-expression-per-row baseline:
+**379.3 B retained heap per live structural row** (47.8 B dormant, 55.1 B raw /
+9.2 B gzip document, 0 B manifest — one entry regardless of row count), versus
+1,404.2 B live / 300.5 B manifest per scalar expression row. The full table
+lives in `RESUMABILITY_IMPLEMENTATION_PLAN.md` §Milestone 8d work item 6; the
+artifact is `bench-results/resumability/structural-latest.json`.

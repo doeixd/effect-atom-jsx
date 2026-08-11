@@ -8,7 +8,11 @@ import {
   setAttribute,
   template,
 } from "effect-atom-jsx/runtime";
-import { expr } from "effect-atom-jsx/portable-extract";
+import {
+  bindStructuralExpression,
+  expr,
+  structuralExpressionCode,
+} from "effect-atom-jsx/portable-extract";
 import { browserState } from "../shared/browser-state.js";
 import {
   BuildId,
@@ -212,6 +216,80 @@ const RealisticResumable = Component.make(
     return section;
   },
 );
+
+/**
+ * Milestone 8d item 6: the real-rows lane. One authored structural list
+ * expression renders `count` keyed text rows off the shared binding — the
+ * per-row Scope, marker pair, map entry, and text node are all real, so the
+ * density delta prices what the 2026-08-11 marker measurement could not: the
+ * markers-only 35 B/row figure priced comments alone, and the per-row `Scope`
+ * cancelled out of that paired delta.
+ *
+ * Report-only (`benchmarks/resumability/structural.mjs`); the gated density
+ * lane keeps its 24-scalar-expression shape so the pinned baseline stays
+ * comparable.
+ */
+export const StructuralRowsExpression = structuralExpressionCode({
+  id: "af.benchmark.structural-rows",
+  buildId: BuildId,
+  mode: "list",
+  captures: Schema.Struct({ count: Schema.Number }),
+  dependencies: Schema.Tuple([Schema.Number]),
+  render: (captures, [value]) =>
+    Array.from({ length: captures.count }, (_, index) => ({
+      key: `r${index}`,
+      text: `shared-${index}: ${value}`,
+    })),
+});
+
+function makeStructuralComponent(count: number) {
+  return Component.make(
+    Component.props<{}>(),
+    Component.require<never>(),
+    Component.setup<{}>()
+      .doEffect(() => instrumentSetup())
+      .bind("shared", () => Component.state(1), {
+        resume: Resume.snapshotState(Schema.Number),
+      }),
+    (_props, bindings) => {
+      const section = instrumentView();
+      insert(
+        section,
+        bindStructuralExpression(StructuralRowsExpression, { count }, [
+          bindings.shared,
+        ]),
+      );
+      return section;
+    },
+  );
+}
+
+const MinimalStructural = makeStructuralComponent(1);
+const RealisticStructural = makeStructuralComponent(24);
+
+export function renderStructuralServer(
+  density: BenchmarkDensity,
+): Resume.CollectionResult {
+  const scope = Scope.makeUnsafe();
+  try {
+    return Effect.runSync(
+      Resume.collect(
+        () =>
+          renderToString(() =>
+            Effect.runSync(
+              Component.renderEffect(
+                density === 1 ? MinimalStructural : RealisticStructural,
+                {},
+              ).pipe(Scope.provide(scope)),
+            )
+          ),
+        { buildId: BuildId },
+      ).pipe(Effect.provide(Serialization.layer)),
+    );
+  } finally {
+    Effect.runSync(Scope.close(scope, Exit.void));
+  }
+}
 
 interface EagerController {
   readonly shared: Component.StateAtom<number>;
