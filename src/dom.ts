@@ -8,7 +8,7 @@
  * Computation so they update only the minimal DOM node when deps change.
  */
 
-import { Effect, Exit, Fiber, Queue, Stream, type Scope } from "effect";
+import { Cause, Effect, Exit, Fiber, Queue, Stream, type Scope } from "effect";
 import { Computation } from "./computation.js";
 import { runUntracked } from "./tracking.js";
 import { createRoot, mergeProps, onCleanup } from "./api.js";
@@ -27,6 +27,12 @@ import {
   runInResumeSession,
 } from "./resume-session.js";
 import { ServerRenderStateTag, currentServerRenderState } from "./render-state.js";
+import {
+  ResumeStreamPayloadTooLargeError,
+  buildStreamRegionRecord,
+  buildStreamTerminalRecord,
+  streamRecordScript,
+} from "./streaming-manifest.js";
 import {
   inspectExpression,
   type ExpressionTargetValue,
@@ -1446,7 +1452,7 @@ export function renderToString(fn: () => unknown): string {
 
 export interface RenderToStreamOptions {
   /**
-   * `ordered` flushes regions in document order (no scripts at all);
+   * `ordered` flushes regions in document order (no swap scripts);
    * `out-of-order` emits placeholder regions up front and swaps each region's
    * content in as it settles, via a nonce-carrying inline script.
    */
@@ -1454,6 +1460,19 @@ export interface RenderToStreamOptions {
   readonly buildId: string;
   /** CSP nonce stamped on out-of-order swap scripts. */
   readonly nonce?: string;
+  /**
+   * Cumulative byte budget across ALL streamed manifest records (M11.5,
+   * `DQ-007`): failing per record would let a stream smuggle an unbounded
+   * manifest past the ceiling.
+   */
+  readonly maxPayloadBytes?: number;
+  /**
+   * Out-of-order only: wall-clock budget after which unfinished regions are
+   * abandoned — their placeholders remain, no record is emitted for them, and
+   * the terminal completeness record excludes them (the ghost-snapshot rule,
+   * generalized to streaming).
+   */
+  readonly deadline?: number | string;
 }
 
 let nextStreamSessionOrdinal = 0;
@@ -1624,18 +1643,33 @@ export function renderToStream(
           new RenderToStreamError(`Streaming shell render failed: ${String(error)}`),
       });
 
+      // M11.5: the shell slice's own event range becomes the shell's manifest
+      // record (emitted only when it registered anything).
+      const shellEvents = session.events.slice(0);
+
       // Every boundary starts computing immediately — ordering constrains
       // FLUSHING only, never parallelism.
+      interface RegionFlush {
+        readonly html: string;
+        readonly pending: typeof session.events;
+      }
       const regions: Array<{
         readonly id: string;
-        readonly fiber: Fiber.Fiber<string, unknown>;
+        readonly fiber: Fiber.Fiber<RegionFlush, unknown>;
       }> = [];
       for (const segment of segments) {
         if (segment.kind !== "async") continue;
         const fiber = yield* Effect.forkDetach(
           segment.effect.pipe(
             Effect.map((settled) =>
-              runStreamSlice(serverDoc, session, () => serverValueToHTML(settled)),
+              // The serialization slice is synchronous, so the event range it
+              // registers is captured atomically alongside its HTML — record
+              // attribution cannot be scrambled by a concurrent flush.
+              runStreamSlice(serverDoc, session, (): RegionFlush => {
+                const before = session.events.length;
+                const html = serverValueToHTML(settled);
+                return { html, pending: session.events.slice(before) };
+              }),
             ),
             // The region effect runs on its own fiber, suspending freely; the
             // per-render state travels with it so observation hooks (component
@@ -1648,23 +1682,61 @@ export function renderToStream(
         );
         regions.push({ id: segment.id, fiber });
       }
-      const fiberOf = (id: string): Fiber.Fiber<string, unknown> => {
+      const fiberOf = (id: string): Fiber.Fiber<RegionFlush, unknown> => {
         const found = regions.find((region) => region.id === id);
         if (found === undefined) {
           throw new RenderToStreamError(`Unknown stream region "${id}".`);
         }
         return found.fiber;
       };
-      const joinRegion = (id: string): Effect.Effect<string, unknown> =>
+      const joinRegion = (id: string): Effect.Effect<RegionFlush, unknown> =>
         Fiber.await(fiberOf(id)).pipe(
-          Effect.flatMap((exit) => exit as Effect.Effect<string, unknown>),
+          Effect.flatMap((exit) => exit as Effect.Effect<RegionFlush, unknown>),
         );
+
+      // Cumulative manifest budget (DQ-007) and the flushed-record ledger the
+      // terminal completeness record is built from.
+      const maximumBytes = options.maxPayloadBytes ?? Number.POSITIVE_INFINITY;
+      let cumulativeBytes = 0;
+      const flushedRecordIds: Array<string> = [];
+      const emitRecord = (
+        region: string,
+        pending: typeof session.events,
+      ): Effect.Effect<string, unknown> =>
+        buildStreamRegionRecord(session, pending, region, options.buildId).pipe(
+          Effect.flatMap((record) => {
+            const script = streamRecordScript(record);
+            cumulativeBytes += script.length;
+            if (cumulativeBytes > maximumBytes) {
+              return Effect.fail(
+                new ResumeStreamPayloadTooLargeError({
+                  region,
+                  maximumBytes,
+                  cumulativeBytes,
+                  message: `Streamed manifest records exceeded the cumulative ${maximumBytes}-byte budget at region "${region}".`,
+                }),
+              );
+            }
+            flushedRecordIds.push(region);
+            return Effect.succeed(script);
+          }),
+        );
+      const terminalScript = (): string =>
+        streamRecordScript(
+          buildStreamTerminalRecord(session, options.buildId, [...flushedRecordIds]),
+        );
+      const shellRecord: Effect.Effect<string, unknown> = shellEvents.length > 0
+        ? emitRecord("shell", shellEvents)
+        : Effect.succeed("");
 
       if (options.mode === "ordered") {
         // Document order: each region's start marker travels with the
-        // preceding shell chunk, its content and end marker flush when the
-        // region settles. Later regions wait behind earlier ones.
-        const pieces: Array<Stream.Stream<string, unknown>> = [];
+        // preceding shell chunk, its content, end marker, and manifest record
+        // flush when the region settles. Later regions wait behind earlier
+        // ones.
+        const pieces: Array<Stream.Stream<string, unknown>> = [
+          Stream.fromEffect(shellRecord),
+        ];
         let pendingHtml = "";
         for (const segment of segments) {
           if (segment.kind === "html") {
@@ -1677,16 +1749,28 @@ export function renderToStream(
           pieces.push(
             Stream.fromEffect(
               joinRegion(segment.id).pipe(
-                Effect.map((html) => html + streamRegionEnd(segment.id)),
+                Effect.flatMap((flush) =>
+                  emitRecord(segment.id, flush.pending).pipe(
+                    Effect.map(
+                      (record) =>
+                        flush.html + streamRegionEnd(segment.id) + record,
+                    ),
+                  ),
+                ),
               ),
             ),
           );
         }
         if (pendingHtml.length > 0) pieces.push(Stream.succeed(pendingHtml));
-        return pieces.reduce(
-          (acc, piece) => Stream.concat(acc, piece),
-          Stream.empty as Stream.Stream<string, unknown>,
-        );
+        // Terminal completeness record: evaluated last, over exactly the
+        // records that flushed (DQ-007's set-equality rule).
+        pieces.push(Stream.fromEffect(Effect.sync(() => terminalScript())));
+        return pieces
+          .reduce(
+            (acc, piece) => Stream.concat(acc, piece),
+            Stream.empty as Stream.Stream<string, unknown>,
+          )
+          .pipe(Stream.filter((chunk) => chunk.length > 0));
       }
 
       // Out-of-order: the whole shell — placeholder pairs included — flushes
@@ -1701,29 +1785,71 @@ export function renderToStream(
         segment.kind === "async" ? [segment.id] : [],
       );
       const swapQueue = Stream.callback<string, unknown>((queue) =>
-        Effect.sync(() => {
-          let outstanding = asyncIds.length;
-          if (outstanding === 0) {
-            Queue.endUnsafe(queue);
-            return;
-          }
-          for (const id of asyncIds) {
-            fiberOf(id).addObserver((exit) => {
-              if (Exit.isSuccess(exit)) {
-                Queue.offerUnsafe(
-                  queue,
-                  streamSwapChunk(id, exit.value, options.nonce),
-                );
-                outstanding -= 1;
-                if (outstanding === 0) Queue.endUnsafe(queue);
-              } else {
-                Queue.failCauseUnsafe(queue, exit.cause as never);
-              }
-            });
-          }
+        Effect.gen(function* () {
+          // Deadline (DQ-007's ghost rule, generalized): unfinished regions
+          // are abandoned — placeholder kept, no record, excluded from the
+          // terminal id set.
+          const timer = options.deadline === undefined
+            ? undefined
+            : yield* Effect.forkDetach(
+                Effect.sleep(options.deadline as Parameters<typeof Effect.sleep>[0]).pipe(
+                  Effect.andThen(
+                    Effect.forEach(
+                      asyncIds,
+                      (id) => Fiber.interrupt(fiberOf(id)),
+                      { discard: true },
+                    ),
+                  ),
+                ),
+              );
+          yield* Effect.forkDetach(
+            Effect.gen(function* () {
+              yield* Effect.forEach(
+                asyncIds,
+                (id) =>
+                  Fiber.await(fiberOf(id)).pipe(
+                    Effect.flatMap((exit) => {
+                      if (!Exit.isSuccess(exit)) {
+                        // Abandoned or failed region: nothing to swap, nothing
+                        // to record.
+                        return Effect.void;
+                      }
+                      return emitRecord(id, exit.value.pending).pipe(
+                        Effect.map((record) => {
+                          Queue.offerUnsafe(
+                            queue,
+                            streamSwapChunk(id, exit.value.html, options.nonce),
+                          );
+                          if (record.length > 0) {
+                            Queue.offerUnsafe(queue, record);
+                          }
+                        }),
+                        Effect.catch((error) =>
+                          Effect.sync(() => {
+                            Queue.failCauseUnsafe(
+                              queue,
+                              Cause.fail(error) as never,
+                            );
+                          }),
+                        ),
+                      );
+                    }),
+                  ),
+                { concurrency: "unbounded" },
+              );
+              if (timer !== undefined) yield* Fiber.interrupt(timer);
+              Queue.offerUnsafe(queue, terminalScript());
+              Queue.endUnsafe(queue);
+            }),
+          );
         }),
       );
-      return Stream.concat(Stream.succeed(shell), swapQueue);
+      return Stream.concat(
+        Stream.fromEffect(
+          shellRecord.pipe(Effect.map((record) => shell + record)),
+        ),
+        swapQueue,
+      );
     }),
   ) as Stream.Stream<string, unknown>;
 }

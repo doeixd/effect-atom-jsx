@@ -57,6 +57,11 @@ import {
 } from "./dom.js";
 import { ServerRenderStateTag } from "./render-state.js";
 import {
+  StreamRecordSchema,
+  type StreamRegionRecord,
+  type StreamTerminalRecord,
+} from "./streaming-manifest.js";
+import {
   finalizeResumeSession,
   registerComponentActivation,
   makeResumeSession,
@@ -5815,6 +5820,113 @@ function installClientClaimed<R, ER>(
  * Scoped client installation companion. Root listeners, dispatch fibers, and
  * activated component regions are released with the caller's Scope.
  */
+/** A record stream ended without its terminal completeness record (M11.5). */
+export class ResumeStreamTruncatedError extends Schema.TaggedErrorClass<ResumeStreamTruncatedError>(
+  "@effect-atom-jsx/ResumeStreamTruncatedError",
+)("ResumeStreamTruncatedError", {
+  message: Schema.String,
+}) {}
+
+export interface InstallClientStreamedOptions<R, ER>
+  extends Omit<ClientInstallOptions<R, ER>, "manifest">
+{
+  /** The streamed manifest records, in arrival order. */
+  readonly records: ReadonlyArray<unknown>;
+}
+
+/**
+ * Completeness-gated install over streamed manifest records (M11.5/M11.6,
+ * `DQ-007`).
+ *
+ * Fails CLOSED, never partially: a stream without its terminal record — or
+ * whose terminal id set disagrees with the records that actually arrived — is
+ * a typed `ResumeStreamTruncatedError`; any record from another build is a
+ * `ResumeClientBuildMismatchError` even if every other record agrees. Only a
+ * complete, build-consistent record set is merged into one manifest and
+ * handed to the ordinary `installClient` validation pipeline.
+ */
+export function installClientStreamed<R, ER>(
+  options: InstallClientStreamedOptions<R, ER>,
+): Effect.Effect<ClientInstallation, ClientInstallError | ResumeStreamTruncatedError> {
+  return Effect.gen(function* () {
+    const decoded = yield* Effect.forEach(options.records, (record) =>
+      Schema.decodeUnknownEffect(StreamRecordSchema)(record).pipe(
+        Effect.catchTag("SchemaError", (error) =>
+          Effect.fail(
+            new ResumeManifestDecodeError({
+              message: `Streamed manifest record failed decoding: ${String(error)}`,
+            }),
+          ),
+        ),
+      ));
+
+    for (const record of decoded) {
+      if (record.buildId !== options.expectedBuildId) {
+        return yield* new ResumeClientBuildMismatchError({
+          expected: yield* decodeBuildId(options.expectedBuildId),
+          actual: record.buildId as typeof Portable.BuildId.Type,
+          message: `Streamed manifest record belongs to build "${record.buildId}", not "${options.expectedBuildId}".`,
+        });
+      }
+    }
+
+    const regionRecords = decoded.filter(
+      (record): record is StreamRegionRecord => !("complete" in record),
+    );
+    const terminals = decoded.filter(
+      (record): record is StreamTerminalRecord => "complete" in record,
+    );
+    if (terminals.length !== 1) {
+      return yield* new ResumeStreamTruncatedError({
+        message: terminals.length === 0
+          ? "The record stream ended without its terminal completeness record; refusing a partial install."
+          : `The record stream carried ${terminals.length} terminal records; exactly one is required.`,
+      });
+    }
+    const terminal = terminals[0]!;
+    // DQ-007: completeness is SET EQUALITY over region ids — robust to a
+    // duplicated or dropped flush in a way a counter is not.
+    const arrived = regionRecords.map((record) => record.region);
+    const expected = [...terminal.regionIds];
+    const arrivedSet = new Set(arrived);
+    const expectedSet = new Set(expected);
+    const setsAgree =
+      arrived.length === arrivedSet.size
+      && expected.length === expectedSet.size
+      && arrivedSet.size === expectedSet.size
+      && [...arrivedSet].every((id) => expectedSet.has(id));
+    if (!setsAgree) {
+      return yield* new ResumeStreamTruncatedError({
+        message: `The record stream is incomplete: terminal record expects regions [${expected.join(", ")}], received [${arrived.join(", ")}].`,
+      });
+    }
+
+    // Merge into one manifest; the ordinary install pipeline deep-validates
+    // it (schemas, freeze, markers) exactly as a static manifest.
+    const events: Record<string, unknown> = {};
+    for (const record of regionRecords) {
+      for (const [eventId, entry] of Object.entries(record.events)) {
+        events[eventId] = entry;
+      }
+    }
+    const first = regionRecords[0];
+    const merged = {
+      version: 5,
+      buildId: options.expectedBuildId,
+      ...(first?.installationId === undefined
+        ? {}
+        : { installationId: first.installationId }),
+      events,
+      components: {},
+      expressions: {},
+    };
+    return yield* installClient({
+      ...options,
+      manifest: merged as unknown as Manifest,
+    });
+  }).pipe(Effect.withSpan("Resume.installClientStreamed"));
+}
+
 export function installClientScoped<R, ER>(
   options: ClientInstallOptions<R, ER>,
 ): Effect.Effect<ClientInstallation, ClientInstallError, Scope.Scope> {
@@ -6255,6 +6367,7 @@ export const Resume = {
   onStructuralRowScopeOpened,
   collect,
   collectAsync,
+  installClientStreamed,
   decodeManifest,
   restoreStateBindings,
   restoreStateBindingsScoped,
