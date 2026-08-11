@@ -17,16 +17,21 @@
  * Owner: docs/ROUTER_CONSOLIDATION_PLAN.md § R4 (`DQ-031`).
  */
 import { describe, expect, it } from "vitest";
-import { Deferred, Effect, Layer, Schema } from "effect";
-import { fromSrc, loadSrc } from "../harness.js";
+import { Deferred, Effect, Exit, Layer, Schema } from "effect";
+import * as Atom from "../Atom.js";
+import * as Component from "../Component.js";
+import * as Route from "../Route.js";
+import * as RouterRuntime from "../RouterRuntime.js";
+import { clearLoaderCache } from "../router-runtime.js";
+import { withTestLayer } from "../testing.js";
+
+// Promoted from future/router/navigation-stack.spec.ts (all green 2026-08-11),
+// retyped: no `any`, no assertion casts.
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("R4 — one navigation stack", () => {
   it("[R4] RouterService is implemented by the runtime, so navigating through it drives loaders", async () => {
-    const Route = await fromSrc("Route", "path", "id", "loader", "children", "layout", "RouterTag");
-    const Component: any = await loadSrc("Component");
-    const RouterRuntime = await fromSrc("RouterRuntime", "create", "createMemoryHistory", "toLayer");
 
     let loads = 0;
     const Page = Route.loader((_: {}) => Effect.sync(() => {
@@ -48,21 +53,18 @@ describe("R4 — one navigation stack", () => {
         yield* router.navigate("/r4-page");
         // The facade's URL state is the runtime's, not a parallel atom.
         return router.url().pathname;
-      }).pipe(Effect.provide(RouterRuntime.toLayer(runtime, history))) as Effect.Effect<string, unknown, never>,
+      }).pipe(Effect.provide(RouterRuntime.toLayer(runtime, history))),
     );
 
     expect(exit._tag).toBe("Success");
-    expect((exit as any).value).toBe("/r4-page");
+    expect(Exit.isSuccess(exit) ? exit.value : undefined).toBe("/r4-page");
     await flush();
-    const snapshot: any = Effect.runSync(runtime.snapshot());
+    const snapshot = Effect.runSync(runtime.snapshot());
     expect(snapshot.location.pathname).toBe("/r4-page");
     expect(snapshot.loaderData.get("r4.page")).toEqual({ visits: 1 });
   });
 
   it("[R4] a superseded navigation's loader result is discarded, not applied", async () => {
-    const Route = await fromSrc("Route", "path", "id", "loader", "children", "layout", "RouterTag");
-    const Component: any = await loadSrc("Component");
-    const RouterRuntime = await fromSrc("RouterRuntime", "create", "createMemoryHistory", "toLayer");
 
     const gates = new Map<string, Deferred.Deferred<void>>();
     const gated = (id: string, path: string) =>
@@ -90,7 +92,7 @@ describe("R4 — one navigation stack", () => {
       Effect.runPromiseExit(Effect.gen(function* () {
         const router = yield* Route.RouterTag;
         yield* router.navigate(to);
-      }).pipe(Effect.provide(layer)) as Effect.Effect<void, unknown, never>);
+      }).pipe(Effect.provide(layer)));
 
     const first = navigate("/r4-slow");
     await flush();
@@ -112,16 +114,13 @@ describe("R4 — one navigation stack", () => {
     await first;
     await second;
 
-    const snapshot: any = Effect.runSync(runtime.snapshot());
+    const snapshot = Effect.runSync(runtime.snapshot());
     expect(snapshot.location.pathname).toBe("/r4-fast");
     expect(snapshot.loaderData.get("r4.fast")).toEqual({ id: "r4.fast" });
     expect(snapshot.loaderData.has("r4.slow")).toBe(false);
   });
 
   it("[R4] Route.reload revalidates through the runtime", async () => {
-    const Route = await fromSrc("Route", "path", "id", "loader", "reload", "RouterTag");
-    const Component: any = await loadSrc("Component");
-    const RouterRuntime = await fromSrc("RouterRuntime", "create", "createMemoryHistory", "toLayer");
 
     let loads = 0;
     const Page = Route.loader((_: {}) => Effect.sync(() => {
@@ -136,20 +135,16 @@ describe("R4 — one navigation stack", () => {
     expect(loads).toBe(1);
 
     await Effect.runPromise(
-      Route.reload.pipe(Effect.provide(RouterRuntime.toLayer(runtime, history))) as Effect.Effect<void, never, never>,
+      Route.reload.pipe(Effect.provide(RouterRuntime.toLayer(runtime, history))),
     );
     await flush();
 
     expect(loads).toBe(2);
-    const snapshot: any = Effect.runSync(runtime.snapshot());
+    const snapshot = Effect.runSync(runtime.snapshot());
     expect(snapshot.loaderData.get("r4.reload")).toEqual({ loads: 2 });
   });
 
   it("[R4] prefetch warms the cache so the following navigation does not re-run the loader", async () => {
-    const Route = await fromSrc("Route", "path", "id", "loader", "link", "prefetch");
-    const Component: any = await loadSrc("Component");
-    const RouterRuntime = await fromSrc("RouterRuntime", "create", "createMemoryHistory");
-    const { clearLoaderCache }: any = await loadSrc("router-runtime");
 
     let loads = 0;
     const Page = Route.loader((_: {}) => Effect.sync(() => {
@@ -174,7 +169,7 @@ describe("R4 — one navigation stack", () => {
 
     // Exactly once: the prefetched entry served the navigation.
     expect(loads).toBe(1);
-    expect((Effect.runSync(runtime.snapshot()) as any).loaderData.get("r4.prefetch")).toEqual({ loads: 1 });
+    expect(Effect.runSync(runtime.snapshot()).loaderData.get("r4.prefetch")).toEqual({ loads: 1 });
   });
 
   // `DQ-031`(b), ratified 2026-07-30: a `queryAtom` signal write updates the atom
@@ -185,12 +180,10 @@ describe("R4 — one navigation stack", () => {
   // The accepted cost is a visible window where atom and URL disagree, which the
   // rollback rule bounds.
   it("[R4] queryAtom.set updates the atom immediately and drives the navigation to completion", async () => {
-    const Route = await fromSrc("Route", "queryAtom", "RouterTag");
-    const Atom: any = await loadSrc("Atom");
 
     // A router whose navigation is genuinely asynchronous: `Effect.runSync`
     // inside a signal write cannot drive this.
-    const url = Atom.value(new URL("/r4-query?page=2", "http://test.local")) as any;
+    const url = Atom.value(new URL("/r4-query?page=2", "http://test.local"));
     const asyncRouter = Layer.succeed(Route.RouterTag, {
       url,
       navigate: (to: string) => Effect.sleep(5).pipe(Effect.map(() => {
@@ -198,7 +191,7 @@ describe("R4 — one navigation stack", () => {
       })),
       back: () => Effect.void,
       forward: () => Effect.void,
-    } as any);
+    });
 
     const exit = await Effect.runPromiseExit(
       Effect.gen(function* () {
@@ -212,21 +205,19 @@ describe("R4 — one navigation stack", () => {
         expect(page()).toBe(7);
         expect(url().searchParams.get("page")).toBe("2");
         return page;
-      }).pipe(Effect.provide(asyncRouter)) as Effect.Effect<any, unknown, never>,
+      }).pipe(Effect.provide(asyncRouter)),
     );
 
-    expect(exit._tag).toBe("Success");
+    expect(Exit.isSuccess(exit)).toBe(true);
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
     // Reconciled: the forked navigation completed and the atom still agrees.
     expect(url().searchParams.get("page")).toBe("7");
-    expect((exit as any).value()).toBe(7);
+    if (Exit.isSuccess(exit)) expect(exit.value()).toBe(7);
   });
 
   it("[R4] a failed queryAtom navigation rolls the atom back and surfaces the error", async () => {
-    const Route = await fromSrc("Route", "queryAtom", "RouterTag");
-    const Atom: any = await loadSrc("Atom");
 
-    const url = Atom.value(new URL("/r4-query-fail?page=2", "http://test.local")) as any;
+    const url = Atom.value(new URL("/r4-query-fail?page=2", "http://test.local"));
     const seen: Array<unknown> = [];
     const failingRouter = Layer.succeed(Route.RouterTag, {
       url,
@@ -241,15 +232,15 @@ describe("R4 — one navigation stack", () => {
       onNavigationError: (error: unknown) => Effect.sync(() => {
         seen.push(error);
       }),
-    } as any);
+    });
 
-    const page: any = await Effect.runPromise(
+    const page = await Effect.runPromise(
       Effect.gen(function* () {
         const atom = yield* Route.queryAtom("page", Schema.NumberFromString, { default: 1 });
         atom.set(7);
         expect(atom()).toBe(7);
         return atom;
-      }).pipe(Effect.provide(failingRouter)) as Effect.Effect<any, unknown, never>,
+      }).pipe(Effect.provide(failingRouter)),
     );
 
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
@@ -264,9 +255,6 @@ describe("R4 — one navigation stack", () => {
   // That is what makes "one navigation stack" true as a *type* rather than as a
   // convention — so the test that earns it runs one script against both.
   it("[R4] one script over RouterService behaves identically against the runtime and a Memory layer", async () => {
-    const Route = await fromSrc("Route", "path", "id", "children", "layout", "RouterTag", "Memory");
-    const Component: any = await loadSrc("Component");
-    const RouterRuntime = await fromSrc("RouterRuntime", "create", "createMemoryHistory", "toLayer");
 
     // The script only ever touches the narrow interface.
     const script = Effect.gen(function* () {
@@ -289,10 +277,10 @@ describe("R4 — one navigation stack", () => {
     Effect.runSync(runtime.initialize());
 
     const viaRuntime = await Effect.runPromise(
-      script.pipe(Effect.provide(RouterRuntime.toLayer(runtime, history))) as Effect.Effect<any, never, never>,
+      script.pipe(Effect.provide(RouterRuntime.toLayer(runtime, history))),
     );
     const viaMemory = await Effect.runPromise(
-      script.pipe(Effect.provide(Route.Memory("/"))) as Effect.Effect<any, never, never>,
+      script.pipe(Effect.provide(Route.Memory("/"))),
     );
 
     const expected = {
@@ -308,21 +296,21 @@ describe("R4 — one navigation stack", () => {
   });
 
   it("[R4] the RouterService interface stays narrow enough for a loader-less layer to honour", async () => {
-    const Route = await fromSrc("Route", "path", "id", "children", "layout", "RouterTag", "Memory");
-    const Component: any = await loadSrc("Component");
-    const RouterRuntime = await fromSrc("RouterRuntime", "create", "createMemoryHistory", "toLayer");
 
     const probe = Effect.gen(function* () {
-      const router: any = yield* Route.RouterTag;
+      const router = yield* Route.RouterTag;
+      // Structural view for key-presence probing only — services have no
+      // index signature, and absence checks are inherently untypeable.
+      const record: Readonly<Record<string, unknown>> = { ...router };
       return {
         // Present on both, or the interface is not honoured.
-        has: ["url", "navigate", "back", "forward"].filter((k) => router[k] !== undefined),
+        has: ["url", "navigate", "back", "forward"].filter((k) => record[k] !== undefined),
         // Absent from both. The constraint the decision imposes: a loader-less
         // layer cannot produce pending state or supersession, so the interface
         // must not promise them. Widening it until only the runtime can satisfy it
         // is the failure mode this guards.
         leaked: ["pending", "navigation", "supersede", "loaderData", "revalidation"]
-          .filter((k) => router[k] !== undefined),
+          .filter((k) => record[k] !== undefined),
       };
     });
 
@@ -333,11 +321,11 @@ describe("R4 — one navigation stack", () => {
     const runtime = RouterRuntime.create({ app: App, history });
     Effect.runSync(runtime.initialize());
 
-    const fromRuntime: any = await Effect.runPromise(
-      probe.pipe(Effect.provide(RouterRuntime.toLayer(runtime, history))) as Effect.Effect<any, never, never>,
+    const fromRuntime = await Effect.runPromise(
+      probe.pipe(Effect.provide(RouterRuntime.toLayer(runtime, history))),
     );
-    const fromMemory: any = await Effect.runPromise(
-      probe.pipe(Effect.provide(Route.Memory("/"))) as Effect.Effect<any, never, never>,
+    const fromMemory = await Effect.runPromise(
+      probe.pipe(Effect.provide(Route.Memory("/"))),
     );
 
     expect(fromMemory.has).toEqual(["url", "navigate", "back", "forward"]);
@@ -350,9 +338,6 @@ describe("R4 — one navigation stack", () => {
   // *service's* URL. `window.location.pathname` is simply wrong under the Hash,
   // Memory, and Server layers.
   it("[R4] Link active state comes from the router service, not the document location", async () => {
-    const Route = await fromSrc("Route", "Link", "path", "link", "Memory");
-    const Component: any = await loadSrc("Component");
-    const { withTestLayer }: any = await loadSrc("testing");
 
     const Page = Route.path("/r4-active/:id")(Component.from(() => null));
 
@@ -414,8 +399,6 @@ describe("R4 — one navigation stack", () => {
     // Renamed: the body cannot see which global was *not* used, only that none
     // was touched at all — which is the stronger and actually-checkable claim,
     // and covers both `window.location` reads and `new PopStateEvent(...)`.
-    const Route = await fromSrc("Route", "Link", "path", "link");
-    const Component: any = await loadSrc("Component");
 
     const touched: Array<string> = [];
     const fakeWindow = new Proxy({}, {
@@ -447,7 +430,7 @@ describe("R4 — one navigation stack", () => {
       // `globalThis.window` were not the object the code under test reads,
       // `touched` would be empty no matter what `Link` did. Prove the recorder
       // actually records before trusting its silence.
-      void (fakeWindow as any).location;
+      void (fakeWindow as { readonly location?: unknown }).location;
       expect(touched).toEqual(["location"]);
       touched.length = 0;
       // Re-render with the recorder known-live.

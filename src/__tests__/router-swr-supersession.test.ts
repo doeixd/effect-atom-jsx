@@ -20,19 +20,34 @@
  */
 import { describe, expect, it } from "vitest";
 import { Deferred, Effect } from "effect";
-import { fromSrc, loadSrc } from "../harness.js";
+import * as Component from "../Component.js";
+import * as Route from "../Route.js";
+import * as RouterRuntime from "../RouterRuntime.js";
+import {
+  LoaderCacheTag,
+  clearLoaderCache,
+  getLoaderCacheEntry,
+  makeLoaderCacheStore,
+  runCachedLoader,
+} from "../router-runtime.js";
+
+// Promoted from future/router/swr-supersession.spec.ts (all green 2026-08-11),
+// retyped: no `any`, no assertion casts.
+const runtime = { runCachedLoader, makeLoaderCacheStore, getLoaderCacheEntry, LoaderCacheTag };
+
+/** The success value of a cached result — direct or behind `Refreshing`. */
+function cachedValue(result: unknown): unknown {
+  if (typeof result !== "object" || result === null) return undefined;
+  const tagged = result as { readonly _tag?: unknown; readonly value?: unknown; readonly previous?: { readonly value?: unknown } };
+  if (tagged._tag === "Success") return tagged.value;
+  if (tagged._tag === "Refreshing") return tagged.previous?.value;
+  return undefined;
+}
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("R4 — SWR refresh supervision", () => {
   it("[R4] a stale-while-revalidate refresh completes and updates the cache", async () => {
-    const runtime = await fromSrc(
-      "router-runtime",
-      "runCachedLoader",
-      "makeLoaderCacheStore",
-      "getLoaderCacheEntry",
-      "LoaderCacheTag",
-    );
 
     const store = runtime.makeLoaderCacheStore();
     let value = 0;
@@ -44,12 +59,12 @@ describe("R4 — SWR refresh supervision", () => {
       runtime.runCachedLoader("/r4-swr-cache", { id: 1 }, load, {
         staleTime: 0,
         staleWhileRevalidate: true,
-      }).pipe(Effect.provideService(runtime.LoaderCacheTag, store)) as Effect.Effect<any, never, never>,
+      }).pipe(Effect.provideService(runtime.LoaderCacheTag, store)),
     );
 
     const first = await run();
     expect(first._tag).toBe("Success");
-    expect(first.value).toEqual({ value: 1 });
+    expect(cachedValue(first)).toEqual({ value: 1 });
 
     // Second read is served stale immediately while a refresh runs behind it.
     const second = await run();
@@ -59,7 +74,7 @@ describe("R4 — SWR refresh supervision", () => {
     // The refresh actually finished and wrote through to the cache.
     const entry = runtime.getLoaderCacheEntry("/r4-swr-cache", { id: 1 }, store);
     expect(entry?.result._tag).toBe("Success");
-    expect((entry?.result as any).value).toEqual({ value: 2 });
+    expect(cachedValue(entry?.result)).toEqual({ value: 2 });
     expect(value).toBe(2);
   });
 
@@ -70,13 +85,6 @@ describe("R4 — SWR refresh supervision", () => {
   // it. Counts, not final state: a leak is "it wrote at all", which a final-value
   // assertion can miss when the value happens to match.
   it("[R4] disposing the cache store interrupts and refuses a late SWR refresh write", async () => {
-    const runtime = await fromSrc(
-      "router-runtime",
-      "runCachedLoader",
-      "makeLoaderCacheStore",
-      "getLoaderCacheEntry",
-      "LoaderCacheTag",
-    );
 
     const store = runtime.makeLoaderCacheStore();
     const gate = Effect.runSync(Deferred.make<void>());
@@ -97,7 +105,7 @@ describe("R4 — SWR refresh supervision", () => {
       runtime.runCachedLoader("/r4-swr-scope", { id: 1 }, load, {
         staleTime: 0,
         staleWhileRevalidate: true,
-      }).pipe(Effect.provideService(runtime.LoaderCacheTag, store)) as Effect.Effect<any, never, never>,
+      }).pipe(Effect.provideService(runtime.LoaderCacheTag, store)),
     );
 
     expect((await run())._tag).toBe("Success");
@@ -116,7 +124,7 @@ describe("R4 — SWR refresh supervision", () => {
     expect(interrupted).toBe(1);
     // Nothing was written after the scope closed.
     const entry = runtime.getLoaderCacheEntry("/r4-swr-scope", { id: 1 }, store);
-    expect((entry?.result as any)?.value ?? (entry?.result as any)?.previous?.value).toEqual({ n: 1 });
+    expect(cachedValue(entry?.result)).toEqual({ n: 1 });
 
     // NEGATIVE CONTROL: an identical refresh in a *live* store completes and
     // writes. Without it, a `runCachedLoader` that never refreshes at all — or a
@@ -133,13 +141,13 @@ describe("R4 — SWR refresh supervision", () => {
       runtime.runCachedLoader("/r4-swr-scope-live", { id: 1 }, liveLoad, {
         staleTime: 0,
         staleWhileRevalidate: true,
-      }).pipe(Effect.provideService(runtime.LoaderCacheTag, live)) as Effect.Effect<any, never, never>,
+      }).pipe(Effect.provideService(runtime.LoaderCacheTag, live)),
     );
     await runLive();
     await runLive();
     await flush();
     expect(liveStarts).toBe(2);
-    expect((runtime.getLoaderCacheEntry("/r4-swr-scope-live", { id: 1 }, live)?.result as any).value)
+    expect(cachedValue(runtime.getLoaderCacheEntry("/r4-swr-scope-live", { id: 1 }, live)?.result))
       .toEqual({ n: 2 });
   });
 
@@ -149,13 +157,6 @@ describe("R4 — SWR refresh supervision", () => {
   // Counted, because the failure mode is a *duplicate*, which a final-value
   // assertion cannot see.
   it("[R4] concurrent reads of a stale key share one in-flight refresh", async () => {
-    const runtime = await fromSrc(
-      "router-runtime",
-      "runCachedLoader",
-      "makeLoaderCacheStore",
-      "getLoaderCacheEntry",
-      "LoaderCacheTag",
-    );
 
     const store = runtime.makeLoaderCacheStore();
     const gate = Effect.runSync(Deferred.make<void>());
@@ -170,7 +171,7 @@ describe("R4 — SWR refresh supervision", () => {
       runtime.runCachedLoader("/r4-swr-join", { id: 1 }, load, {
         staleTime: 0,
         staleWhileRevalidate: true,
-      }).pipe(Effect.provideService(runtime.LoaderCacheTag, store)) as Effect.Effect<any, never, never>,
+      }).pipe(Effect.provideService(runtime.LoaderCacheTag, store)),
     );
 
     await run();
@@ -188,7 +189,7 @@ describe("R4 — SWR refresh supervision", () => {
     await flush();
     // One refresh, one write, one winner — no last-write-wins race to arbitrate.
     expect(starts).toBe(2);
-    expect((runtime.getLoaderCacheEntry("/r4-swr-join", { id: 1 }, store)?.result as any).value)
+    expect(cachedValue(runtime.getLoaderCacheEntry("/r4-swr-join", { id: 1 }, store)?.result))
       .toEqual({ n: 2 });
 
     // NEGATIVE CONTROL: joining must not become caching-forever. Once the refresh
@@ -201,10 +202,6 @@ describe("R4 — SWR refresh supervision", () => {
   });
 
   it("[R4] navigating away interrupts an in-flight SWR refresh", async () => {
-    const Route = await fromSrc("Route", "path", "id", "loader", "children", "layout");
-    const Component: any = await loadSrc("Component");
-    const RouterRuntime = await fromSrc("RouterRuntime", "create", "createMemoryHistory");
-    const { clearLoaderCache }: any = await loadSrc("router-runtime");
 
     let calls = 0;
     let refreshInterrupted = false;

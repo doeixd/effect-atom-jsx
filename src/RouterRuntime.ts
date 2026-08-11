@@ -1,5 +1,7 @@
 import { Effect, Fiber, Layer, Context } from "effect";
+import * as Atom from "./Atom.js";
 import * as Route from "./Route.js";
+import { SwrRefreshSupervisorTag } from "./router-runtime.js";
 import type { Result as CoreResultType } from "./effect-ts.js";
 import * as ServerRoute from "./ServerRoute.js";
 import type { AnyRoute, AppRouteNode } from "./Route.js";
@@ -451,8 +453,28 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
   const serverRoutes = config.server ?? [];
   let unsubscribeHistory: (() => void) | null = null;
 
+  // DQ-032, the navigation-scope half: SWR refreshes started under a
+  // navigation register here, and a superseding navigation interrupts them.
+  // (They still complete normally if no later navigation arrives — the store's
+  // scope, not the navigation's completion, bounds the write.)
+  const outstandingSwrRefreshes = new Set<Fiber.Fiber<unknown, unknown>>();
+  const interruptOutstandingSwrRefreshes = (): void => {
+    for (const fiber of [...outstandingSwrRefreshes]) {
+      outstandingSwrRefreshes.delete(fiber);
+      Effect.runFork(Fiber.interrupt(fiber));
+    }
+  };
   const loadMatchedRouteResultsAt = (nextLocation: URL): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: CoreResultType<unknown, unknown> }>> => {
-    return Route.runMatchedLoaders(config.app, nextLocation, { includeDeferred: true });
+    return Route.runMatchedLoaders(config.app, nextLocation, { includeDeferred: true }).pipe(
+      Effect.provideService(SwrRefreshSupervisorTag, {
+        register: (fiber) => {
+          outstandingSwrRefreshes.add(fiber);
+          fiber.addObserver(() => {
+            outstandingSwrRefreshes.delete(fiber);
+          });
+        },
+      }),
+    );
   };
 
   const commitLoaderResults = (
@@ -672,6 +694,9 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
         }
         const body = Effect.gen(function* () {
           if (supersededFiber) yield* Fiber.interrupt(supersededFiber);
+          // A new navigation supersedes any SWR refresh a previous one left
+          // in flight (DQ-032).
+          interruptOutstandingSwrRefreshes();
           // R3 (`DQ-030`): guards run in the navigation path, before any
           // loader. A failing guard refuses the navigation — the location is
           // rolled back, no loader runs, and no loader data is committed. A
@@ -1050,9 +1075,32 @@ export function createMemoryHistory(initial: string): HistoryAdapter {
   };
 }
 
-/** Expose a RouterRuntime instance as Effect services/layers. */
-export function toLayer(runtime: RouterRuntimeInstance, history: HistoryAdapter): Layer.Layer<RouterRuntimeInstance | HistoryService | NavigationService> {
+/**
+ * Expose a RouterRuntime instance as Effect services/layers.
+ *
+ * DQ-031(a): this includes `Route.RouterTag` — the narrow read/command facade
+ * — implemented BY the runtime, so `Link`, `queryAtom`, `Route.reload`, and
+ * any script written against `RouterService` drive the runtime's supersession
+ * path. The facade deliberately exposes only `url`/`navigate`/`back`/`forward`:
+ * a loader-less layer must be able to honour the same interface, so it cannot
+ * promise pending state or supersession.
+ */
+export function toLayer(runtime: RouterRuntimeInstance, history: HistoryAdapter): Layer.Layer<RouterRuntimeInstance | HistoryService | NavigationService | Route.RouterService> {
+  // Reactive URL sourced from the history adapter, which emits synchronously
+  // on every push/replace/go — the runtime's own snapshot emission is gated on
+  // task phases and would lag a burst of navigations.
+  const urlAtom = Atom.value(new URL(history.location().toString()));
+  history.subscribe((event) => {
+    urlAtom.set(new URL(event.location.toString()));
+  });
+  const routerService: Route.RouterService = {
+    url: urlAtom,
+    navigate: (to, options) => runtime.navigate(to, options?.replace === true ? { replace: true } : undefined),
+    back: () => runtime.navigate(-1),
+    forward: () => runtime.navigate(1),
+  };
   return Layer.mergeAll(
+    Layer.succeed(Route.RouterTag, routerService),
     Layer.succeed(RouterRuntimeTag, runtime),
     Layer.succeed(HistoryTag, {
       location: () => history.location(),

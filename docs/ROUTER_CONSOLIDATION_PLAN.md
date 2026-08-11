@@ -252,6 +252,28 @@ covers the full field list via one shared definition.
 
 ### R4 — One navigation stack
 
+> **Status 2026-08-11: implemented.** `RouterRuntime.toLayer` now provides
+> `Route.RouterTag` — the narrow `url`/`navigate`/`back`/`forward` facade,
+> implemented BY the runtime (URL sourced reactively from the history adapter),
+> so one script over `RouterService` behaves identically against the runtime
+> and the Memory layer, and the interface stays narrow enough for loader-less
+> layers (asserted: no pending/supersession leak). `queryAtom.set` updates
+> optimistically, forks the navigation, rolls back on failure, and surfaces the
+> error on the service's optional `onNavigationError` channel (DQ-031(b));
+> `Route.reload` routes its navigation failure there too. `Link` active state
+> reads the router service's URL — the `window.location` read and the
+> `pushState` + synthetic `PopStateEvent` fallback are deleted; a Link outside
+> a runtime (or any document) is inert. Superseded navigations' loader results
+> are discarded (pinned by spec). SWR refreshes are supervised per `DQ-032`:
+> `LoaderCacheStore.dispose()` interrupts in-flight refreshes and refuses late
+> writes (server write-after-response leak closed); at most one in-flight
+> refresh per cache key (concurrent stale reads join it); a superseding
+> navigation interrupts refreshes via the ambient `SwrRefreshSupervisorTag`
+> the runtime provides. `isFresh` is now strict, so `staleTime: 0` means
+> immediately stale. Covered by
+> `src/__tests__/router-navigation-stack.test.ts` and
+> `src/__tests__/router-swr-supersession.test.ts` (promoted, fully typed).
+
 Merge or bridge `RouterService` and `RouterRuntime`: `Link`, `queryAtom`,
 `reload`, and `prefetch` must drive the runtime's supersession path and
 read the runtime's URL state (never `window.location` directly).

@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Fiber, Layer, Schema } from "effect";
 import { Result as CoreResult, type Result as CoreResultType } from "./effect-ts.js";
 import { makeResourceCacheIdentity } from "./cache-identity.js";
 import {
@@ -45,6 +45,21 @@ export interface LoaderCacheStore {
   readonly cache: Map<string, LoaderCacheEntry>;
   readonly reactivityToCache: Map<string, Set<string>>;
   readonly reactivitySubscriptions: Map<string, () => void>;
+  /**
+   * At most one in-flight SWR refresh per cache key (`DQ-032`): a second
+   * stale read joins the running refresh instead of starting a duplicate,
+   * which removes the last-write-wins race between two refreshes of one key.
+   */
+  readonly inFlightRefreshes: Map<string, Fiber.Fiber<unknown, unknown>>;
+  /** Set once {@link LoaderCacheStore.dispose} has run; refuses late writes. */
+  disposed: boolean;
+  /**
+   * Close the store (`DQ-032`, the cache-store-scope half): interrupts every
+   * in-flight refresh and refuses any later write. On the server this is the
+   * response being sent — a refresh that outlives it would write into a store
+   * nobody will ever read, holding the request's data alive behind it.
+   */
+  dispose(): void;
 }
 
 // Live stores are tracked weakly: reactivity invalidation must reach every
@@ -68,6 +83,20 @@ export function makeLoaderCacheStore(): LoaderCacheStore {
     cache: new Map(),
     reactivityToCache: new Map(),
     reactivitySubscriptions: new Map(),
+    inFlightRefreshes: new Map(),
+    disposed: false,
+    dispose: () => {
+      if (store.disposed) return;
+      store.disposed = true;
+      for (const fiber of store.inFlightRefreshes.values()) {
+        Effect.runFork(Fiber.interrupt(fiber));
+      }
+      store.inFlightRefreshes.clear();
+      for (const unsubscribe of store.reactivitySubscriptions.values()) {
+        unsubscribe();
+      }
+      store.reactivitySubscriptions.clear();
+    },
   };
   trackedStores.add(new WeakRef(store));
   return store;
@@ -78,6 +107,19 @@ export const defaultLoaderCacheStore: LoaderCacheStore = makeLoaderCacheStore();
 
 /** Injectable loader cache service. */
 export const LoaderCacheTag = Context.Service<LoaderCacheStore>("LoaderCache");
+
+/**
+ * Ambient supervisor for SWR refresh fibers (`DQ-032`, the navigation-scope
+ * half): a router runtime provides this so refreshes started under one
+ * navigation can be interrupted when a later navigation supersedes them. The
+ * cache-store scope still bounds the write either way.
+ */
+export interface SwrRefreshSupervisor {
+  readonly register: (fiber: Fiber.Fiber<unknown, unknown>) => void;
+}
+
+export const SwrRefreshSupervisorTag =
+  Context.Service<SwrRefreshSupervisor>("SwrRefreshSupervisor");
 
 /**
  * Default loader-cache layer: the process-wide store, i.e. exactly today's
@@ -196,7 +238,9 @@ export function getLoaderCacheEntry(routeId: string, params: unknown, store?: Lo
 }
 
 export function isFresh(entry: LoaderCacheEntry): boolean {
-  return Date.now() <= entry.staleAt;
+  // Strict: `staleTime: 0` means immediately stale, including reads landing
+  // in the same millisecond as the write.
+  return Date.now() < entry.staleAt;
 }
 
 export function setLoaderCacheEntry(routeId: string, params: unknown, result: CoreResultType<unknown, unknown>, options?: {
@@ -317,17 +361,37 @@ export function runCachedLoader<A, E>(
 
     if (existing && options?.staleWhileRevalidate && existing.result._tag === "Success") {
       const stale = CoreResult.refreshing(existing.result as CoreResultType<A, E> & { readonly _tag: "Success" });
-      // Forked inside Effect rather than via `Effect.runFork`, so the refresh
-      // is an ordinary fiber in the runtime rather than an escaped promise.
-      // It is deliberately *detached*: `Effect.forkChild` would tie its
-      // lifetime to the requesting loader fiber, which completes immediately
-      // with the stale value and would therefore cancel every refresh. Making
-      // the refresh participate in navigation supersession needs the navigation
-      // scope threaded down to loaders — that arrives with R3/R4's single
-      // navigation stack; see the R2 handoff notes.
-      return Effect.forkDetach(
-        executeAndCache(routeId, params, run, options, store).pipe(Effect.asVoid),
-      ).pipe(Effect.as(stale as CoreResultType<A, E>));
+      const { key } = makeLoaderCacheKey(routeId, params);
+      // DQ-032: at most one in-flight refresh per cache key — a concurrent
+      // stale read joins the running refresh rather than starting a second.
+      if (store.inFlightRefreshes.has(key)) {
+        return Effect.succeed(stale as CoreResultType<A, E>);
+      }
+      // Detached rather than a child of the requesting fiber (which completes
+      // immediately with the stale value and would cancel every refresh), but
+      // never unowned: the store tracks it (dispose interrupts and refuses
+      // the write) and, when a router runtime is driving, the ambient
+      // supervisor lets a superseding navigation interrupt it.
+      return Effect.serviceOption(SwrRefreshSupervisorTag).pipe(
+        Effect.flatMap((supervisor) =>
+          Effect.forkDetach(
+            executeAndCache(routeId, params, run, options, store).pipe(Effect.asVoid),
+          ).pipe(
+            Effect.map((fiber) => {
+              store.inFlightRefreshes.set(key, fiber);
+              fiber.addObserver(() => {
+                if (store.inFlightRefreshes.get(key) === fiber) {
+                  store.inFlightRefreshes.delete(key);
+                }
+              });
+              if (supervisor._tag === "Some") {
+                supervisor.value.register(fiber);
+              }
+              return stale as CoreResultType<A, E>;
+            }),
+          )
+        ),
+      );
     }
 
     return executeAndCache(routeId, params, run, options, store);
@@ -368,7 +432,12 @@ function executeAndCache<A, E>(
       Effect.map((exit) => {
         const out = CoreResult.fromExit(exit) as CoreResultType<A, E>;
         const mergedKeys = [...new Set([...optionKeys, ...capture.end()])];
-        setLoaderCacheEntry(routeId, params, out, { ...options, reactivityKeys: mergedKeys }, store);
+        // DQ-032: a disposed store refuses late writes — interruption stops
+        // most of them, but a refresh completing in the same tick as dispose
+        // must not resurrect the entry.
+        if (!store.disposed) {
+          setLoaderCacheEntry(routeId, params, out, { ...options, reactivityKeys: mergedKeys }, store);
+        }
         return out;
       }),
       Effect.ensuring(Effect.sync(() => {

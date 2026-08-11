@@ -40,10 +40,16 @@ export interface NavigateOptions {
 
 export interface RouterService {
   readonly url: Atom.ReadonlyAtom<URL>;
-  readonly navigate: (to: string, options?: NavigateOptions) => Effect.Effect<void>;
+  readonly navigate: (to: string, options?: NavigateOptions) => Effect.Effect<void, unknown>;
   readonly back: () => Effect.Effect<void>;
   readonly forward: () => Effect.Effect<void>;
   readonly preload?: (to: string) => Effect.Effect<void>;
+  /**
+   * Optional navigation error channel (DQ-031(b)): an optimistic write that
+   * fails its forked navigation reports here after rolling back — never
+   * swallowed. Optional so loader-less layers stay trivially implementable.
+   */
+  readonly onNavigationError?: (error: unknown) => Effect.Effect<void>;
 }
 
 export const RouterTag = Context.Service<RouterService>("Router");
@@ -2433,7 +2439,18 @@ export function Link<P, Q>(props: {
 }) {
   const runtime = useContext(ManagedRuntimeContext);
   const href = props.to(props.params, { query: props.query, hash: props.hash });
-  const active = (props.to.pattern ? window.location.pathname.startsWith(props.to.pattern.replace(/:[^/]+/g, "")) : false);
+  // DQ-031: active state reads the ROUTER SERVICE's URL — `window.location`
+  // is simply wrong under the Hash, Memory, and Server layers, so there is no
+  // browser fallback of any kind here.
+  const serviceOption = runtime === null
+    ? undefined
+    : runtime.runSync(Effect.serviceOption(RouterTag));
+  const routerService = serviceOption !== undefined && serviceOption._tag === "Some"
+    ? serviceOption.value
+    : undefined;
+  const active = props.to.pattern !== undefined && routerService !== undefined
+    ? matchPattern(props.to.pattern, routerService.url().pathname)
+    : false;
   const onClick = (event: MouseEvent) => {
     event.preventDefault();
     if (runtime !== null) {
@@ -2441,10 +2458,9 @@ export function Link<P, Q>(props: {
         const router = yield* RouterTag;
         yield* router.navigate(href);
       }) as Effect.Effect<void, never, never>);
-    } else {
-      window.history.pushState(null, "", href);
-      window.dispatchEvent(new PopStateEvent("popstate"));
     }
+    // No `pushState` + synthetic `PopStateEvent` fallback: a Link outside a
+    // router runtime is inert rather than a second navigation stack.
   };
   const onMouseEnter = () => {
     if (props.preload !== "hover" || runtime === null) return;
@@ -2460,6 +2476,11 @@ export function Link<P, Q>(props: {
     }) as Effect.Effect<void, never, never>);
   };
   const className = typeof props.class === "function" ? props.class(active) : props.class;
+  // No document, no anchor: outside any DOM (browser or installed server
+  // document) the Link is inert rather than reaching for browser globals.
+  if ((globalThis as { readonly document?: unknown }).document === undefined) {
+    return null;
+  }
   return createComponent("a" as any, {
     href,
     class: className,
@@ -2480,8 +2501,18 @@ export function queryAtom<A>(
     const encode = encodeWithSchema(schema);
     const defaultEncoded = String(encode(options.default));
 
+    // DQ-031(b): a signal write navigates optimistically, then reconciles.
+    // The atom updates immediately from the written value; the navigation is
+    // FORKED (never `Effect.runSync` around an async navigation); a failed
+    // navigation rolls the atom back to the URL's value and surfaces the
+    // error on the service's navigation error channel. The accepted cost is a
+    // visible window where atom and URL disagree — the same trade every
+    // optimistic update makes, bounded by the rollback rule.
+    const [override, setOverride] = createSignal<{ readonly value: A } | null>(null);
     return Atom.writable(
       () => {
+        const pending = override();
+        if (pending !== null) return pending.value;
         const raw = router.url().searchParams.get(key);
         if (raw === null) return options.default;
         const decoded = decode(raw);
@@ -2495,7 +2526,29 @@ export function queryAtom<A>(
         } else {
           url.searchParams.set(key, encoded);
         }
-        Effect.runSync(router.navigate(url.pathname + url.search, { replace: true }));
+        setOverride({ value: next });
+        Effect.runFork(
+          router.navigate(url.pathname + url.search + url.hash, { replace: true }).pipe(
+            Effect.matchEffect({
+              onSuccess: () =>
+                Effect.sync(() => {
+                  // Reconciled: the URL now carries the value.
+                  setOverride(null);
+                }),
+              onFailure: (error) =>
+                Effect.sync(() => {
+                  // Rolled back: never left showing a state that did not land.
+                  setOverride(null);
+                }).pipe(
+                  Effect.andThen(
+                    router.onNavigationError === undefined
+                      ? Effect.void
+                      : router.onNavigationError(error),
+                  ),
+                ),
+            }),
+          ),
+        );
       },
     );
   });
@@ -2562,7 +2615,13 @@ export function loaderError(
 export const reload: Effect.Effect<void, never, RouterService> = Effect.gen(function* () {
   const router = yield* RouterTag;
   const current = router.url();
-  yield* router.navigate(current.pathname + current.search + current.hash, { replace: true });
+  yield* router.navigate(current.pathname + current.search + current.hash, { replace: true }).pipe(
+    Effect.catch((error) =>
+      router.onNavigationError === undefined
+        ? Effect.void
+        : router.onNavigationError(error)
+    ),
+  );
 });
 
 /** Prefetch the loaders a link target would run, against an explicit source. */
