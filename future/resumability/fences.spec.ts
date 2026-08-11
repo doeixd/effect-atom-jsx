@@ -185,23 +185,38 @@ describe("M8 structural fences", () => {
   });
 
   it("[M8.6] resumes a keyed list region by patching only the changed rows", async () => {
-    // Faces 2 and 3 stay deferred *by decision*, not by omission: DQ-010 sends
-    // the structural expression targets to a milestone named after 8c.7's
-    // measurement go/no-go, so designing the region representation now would
-    // pre-empt the gate that decides whether it is worth building at all.
-    // Provisional lean recorded there: the *region* owns its content's
-    // subscribers (a lightweight region owner nested under the boundary
-    // owner), not the boundary.
+    // DESIGN DECIDED, NOT YET BUILT. DQ-030 (ratified 2026-08-11) settles what
+    // DQ-010 deferred until 8c.7's gate reported GO:
+    //
+    //   - each row gets a per-instance child `Scope`, closed when the
+    //     reconciler drops the row, driven off the *same* removal list so DOM
+    //     removal and Scope closure cannot drift apart;
+    //   - per-row identity is `data-af-key` on a single element root, fenced
+    //     at compile time by the Babel rejector;
+    //   - the manifest gains one `{ kind: "structural", mode }` member at v5.
+    //
+    // The earlier provisional lean -- a single region owner shared by all rows
+    // -- is OVERRULED: it cannot dispose one removed row, which is this
+    // milestone's primary case. Do not reinstate it from an older doc.
+    //
+    // When this is built, the assertion must count finalizer runs at the
+    // moment of removal. Asserting final state would pass for an
+    // implementation that deferred every row's cleanup to unmount, which is
+    // precisely the leak.
     unbuilt(
-      "the keyed-list expression target: region representation, per-row instance identity, and the manifest target kind",
-      "the post-8c.7 structural-target milestone (deferred by DQ-010)",
+      "the keyed-list expression target: region representation, per-row Scope lifecycle, and the structural manifest kind",
+      "Milestone 8d (design ratified in DQ-030)",
     );
   });
 
   it("[M8.6] resumes a conditional branch by replacing the region's content under one owner", async () => {
+    // Per DQ-030, branch replacement is the degenerate single-instance case of
+    // the keyed-list mechanism, not a second one: the outgoing branch's child
+    // `Scope` is closed exactly once. The spec name says "one owner" -- read
+    // that as one `Scope`, not a reactive owner.
     unbuilt(
-      "the branch-replacement expression target: which owner disposes the outgoing branch's subscribers",
-      "the post-8c.7 structural-target milestone (deferred by DQ-010)",
+      "the branch-replacement expression target: closing the outgoing branch's child Scope exactly once",
+      "Milestone 8d (design ratified in DQ-030)",
     );
   });
 });

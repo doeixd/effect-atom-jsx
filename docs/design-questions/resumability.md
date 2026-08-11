@@ -792,7 +792,19 @@ are already marked decided and ratified in place; no entry resurrects them.
 
 ## DQ-030 — Who owns a structural region's content subscribers, and how is per-row identity carried?
 
-- **Severity:** blocking (M8d cannot start without it)
+> **RATIFIED 2026-08-11.** All three recommendations accepted, as revised in
+> the Project-fit section below: **per-instance child `Scope`s** (not reactive
+> `Owner`s), **`data-af-key` fenced at compile time** by the Babel plugin's
+> existing rejector, and **one `{ kind: "structural", mode }` manifest member**
+> at v5. The decisions now live in
+> `RESUMABILITY_IMPLEMENTATION_PLAN.md` §Milestone 8d, which is the
+> authoritative statement; this entry is retained as the reasoning record.
+>
+> The one thing ratification does **not** settle: whether `data-af-key` or
+> per-row markers win. That is a measurement, not an argument — see the Open
+> item under Milestone 8d.
+
+- **Severity:** blocking (M8d cannot start without it) — **resolved**
 - **Owning plan:** `docs/RESUMABILITY_M8C_PLAN.md` §DQ-010 → Milestone 8d
 - **Raised:** 2026-08-11, after closing the M8.6 keyed-reconciliation
   prerequisite and finding the two remaining structural specs still `unbuilt`

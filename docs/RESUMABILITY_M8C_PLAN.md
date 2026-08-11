@@ -757,6 +757,14 @@ may have built the counting version. The ratified shape is **`regionIds` set
 equality** against the flushed regions — which detects a duplicated or reordered
 flush, and a counter cannot.
 
+> **Region representation decided (2026-08-11).** `DQ-030` ratifies
+> per-instance child `Scope`s, `data-af-key` fenced at compile time, and one
+> `{ kind: "structural", mode }` manifest member at v5. The provisional lean
+> recorded here and in `future/resumability/fences.spec.ts` — a single region
+> owner shared by all rows — is **overruled**, because it cannot dispose one
+> removed row. `RESUMABILITY_IMPLEMENTATION_PLAN.md` §Milestone 8d is now
+> authoritative.
+
 **3. `DQ-010` — the deferred milestone is named `M8d`.** Keyed-list and
 branch-replacement targets are deferred to **Milestone 8d — structural expression
 targets**, gated on 8c.7's go/no-go. It is a separate milestone rather than an

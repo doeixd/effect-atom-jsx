@@ -31,9 +31,16 @@ compiler directive seam, and 8c.4 **plus** 8c.5 and 8c.6. Source suite is
 to have been done despite the milestone reading complete, and the gap had already
 dropped `__routeTransition` and `__routeSitemapParams` from every wrapper.
 
-**Not started:** **M8d** structural targets (keyed lists, branch replacement —
-gated on 8c.7's go/no-go); M9 (deferred, blocked by `DQ-099`, with item 2
-separately blocked on M10 item 4); M10 beyond `extract.auto`; M11/M11b.
+**M8d is in progress** (2026-08-11): face 1, the keyed-reconciliation
+prerequisite, is done — `dom.reconcileArrays` is exported with
+identity-preserving semantics, and exporting it uncovered two real defects that
+`DQ-010`'s "just expose it" ratification had hidden. Faces 2 and 3 (region
+representation, branch owner) are now specified: **`DQ-030` ratifies
+per-instance child `Scope`s, `data-af-key` fenced at compile time, and one
+`structural` manifest member at v5.** See §Milestone 8d.
+
+**Not started:** M9 (deferred, blocked by `DQ-099`, with item 2 separately
+blocked on M10 item 4); M10 beyond `extract.auto`; M11/M11b.
 
 **Browser tests and the benchmark have both been re-run** (7/7 Chromium; both
 heap gates pass), and the recorded baseline is **re-pinned from the post-widening
@@ -54,10 +61,15 @@ tamper gap are now fixed):
 3. The expression attribute/style allowlist now exists in **three** copies
    (runtime, schema, compiler); only two are compile-time linked.
 
-**Suggested order:** with 8c closed, the real choice is **M8d** (now permitted,
-small, extends what just shipped) versus **M11** (largest remaining, and the only
-thing that moves `future/streaming`'s 40 red specs). M0/M2's unfinished
-characterization is cheap and is a prerequisite for trusting either.
+**Suggested order:** **finish M8d** — it is underway, `DQ-030` has removed the
+design uncertainty, and its remaining work is bounded by a written acceptance
+list. Then **M11** (largest remaining, and the only thing that moves
+`future/streaming`'s 40 red specs).
+
+One caveat on "small": M8d was called small when it was believed to be an export
+plus two targets. Face 1 alone turned up two defects, and faces 2 and 3 touch
+the collect path, the compiler's rejector, the client install path, and the
+manifest version. Treat it as medium.
 
 Status: Milestones 0–7 and Milestone 8a–8b are implemented — the manual runtime protocol
 (Milestones 0–6 plus the exact-once boundary event handoff) and the
@@ -1139,6 +1151,89 @@ Acceptance:
 
 This is the point at which AF-UI can accurately claim fine-grained
 resumability, rather than only portable event handlers or partial activation.
+
+### Milestone 8d — Structural expression targets (keyed lists, branch replacement)
+
+Status: **in progress** — face 1 (the keyed-reconciliation prerequisite) landed
+2026-08-11; faces 2 and 3 are specified and unblocked by `DQ-030`.
+
+Gated on M8c.7's measurement go/no-go, which **returned GO**. `DQ-010` deferred
+the region representation to this milestone precisely so it would not be
+designed before that gate reported; `DQ-030` now decides it.
+
+**Ratified design (`DQ-030`, 2026-08-11).**
+
+1. **Ownership is a per-instance child `Scope`.** Each row or branch instance
+   gets a child `Scope` under the installation's Scope; content subscribers
+   register with `Scope.addFinalizer` and removal closes it with `Scope.close`.
+   Not a reactive `Owner` — `Resume.ts` is Scope-first throughout, and
+   "cleanup on the reactive owner instead of the `Scope`" is the exact
+   signature of the leaks fixed in `Element.on`, `collection().observeEach`,
+   `setAttr`, and `setStyle`. A region owner *shared by all rows* was the
+   provisional lean and is **overruled**: it cannot dispose a single removed
+   row, which is the milestone's primary case. Branch replacement is the
+   degenerate one-instance case, so there is one mechanism, not two.
+2. **Per-row identity is `data-af-key` on a single element root**, fenced at
+   **compile time** by the Babel plugin's existing rejector (the one that
+   already code-frames `onClick`, spread, `href`/`src`, `prop:*`, `ref`,
+   component props, and member elements), with the collect-time diagnostic
+   retained only for the dynamic/generated path. Chosen over per-row marker
+   comments because markers push directly on the **slope ceiling of 1.10**, the
+   gate that scales with row count.
+3. **The manifest gains one `{ kind: "structural", mode: "list" | "branch" }`
+   member**, extending the existing compile-time exhaustiveness device at
+   `Resume.ts:262-275` rather than adding a parallel one. `target` *is* a wire
+   field, so this is a real **v4 → v5 bump** — `DQ-002`'s "widening is
+   authoring/patch only" does **not** transfer. Low risk: buildId is enforced at
+   seven sites, so a stale client fails closed rather than misreading.
+
+Work:
+
+1. **`dom.reconcileArrays` (face 1).** Status: **done** (2026-08-11). Exported
+   with identity-preserving semantics. `DQ-010`'s "just expose the existing
+   private function" premise was wrong and hid two defects — the reconciler
+   dropped surviving nodes on reorder, and `ServerNode.insertBefore` duplicated
+   rather than moved. See the correction in `RESUMABILITY_M8C_PLAN.md`.
+2. **Region representation.** A structural region delimited by the existing
+   `af:expr:<id>:start|end` markers, holding `Map<key, Scope>`. Disposal is
+   driven from **the same computation that produces the reconciler's removals**,
+   so "dropped from the DOM" and "Scope closed" are derived from one list rather
+   than kept in agreement by convention — the structural-vs-guarded move that
+   closed `DQ-099` and the M4 install race.
+3. **Collect side.** Emit `data-af-key` per row, the `structural` target kind,
+   and the v5 manifest entry. Fail closed with a named diagnostic when a row has
+   no single element root on the dynamic path.
+4. **Compiler side.** Reject a non-single-element-root row in authored JSX with
+   a code frame, next to the existing JSX rejections.
+5. **Client side.** Resolve the region's portable code on first invalidation,
+   reconcile rows by key, close the Scopes of dropped rows, and open child
+   Scopes for added ones.
+6. **Manifest compatibility.** Extend `manifest-compat.test.ts` with v5
+   fixtures and a v4-decodes-on-v5-client case.
+
+Acceptance:
+
+- A keyed update patches **only** the changed rows: surviving rows keep node
+  identity, and the assertion is identity, not rendered text.
+- A removed row's subscribers are disposed **when the row is removed**, not when
+  the component unmounts. Asserted by counting finalizer runs, not by inspecting
+  final state — all three lifecycle leaks found in the 2026-07-30 audits left
+  correct-looking final state.
+- A replaced branch disposes the outgoing branch's Scope exactly once.
+- Structural output on a **text/attribute/class/style** target remains rejected
+  with `unsupported-expression-output`; the existing fence spec must stay green
+  unchanged.
+- A row without a single element root fails at build time in authored JSX, and
+  falls back with a diagnostic on the dynamic path.
+- The 8c payload and slope gates still pass at density 24.
+
+Open, and deliberately not decided here:
+
+- **Whether `data-af-key` or per-row markers win** is settled by measurement,
+  not argument: run the density-24 fixture with markers and read the slope. If
+  markers come in under 1.10 they are strictly more general and should replace
+  `data-af-key`. Until that is run, `data-af-key` is the ratified choice and the
+  single-element-root constraint is load-bearing.
 
 ### Milestone 9 — Hardening, documentation, and adapter stability
 
