@@ -143,6 +143,14 @@ export interface PendingComponentSnapshot {
 }
 
 export interface ResumeSession {
+  /**
+   * The installation scope id (`DQ-009`): every event marker in served HTML is
+   * `"<installationId>:<eventId>"`, and the page installation gets an explicit
+   * id like any fragment — no unqualified special case, because that is
+   * precisely how a fragment id eventually collides with the page's. `:` is
+   * reserved as the separator and rejected inside ids at collection time.
+   */
+  readonly installationId: string;
   readonly events: Array<PendingEvent>;
   readonly components: Array<PendingComponentSnapshot>;
   readonly expressions: Array<PendingExpression>;
@@ -203,8 +211,9 @@ export function registerComponentActivation(
   componentActivations.set(component, activation);
 }
 
-export function makeResumeSession(): ResumeSession {
+export function makeResumeSession(installationId: string): ResumeSession {
   return {
+    installationId,
     events: [],
     components: [],
     expressions: [],
@@ -1377,7 +1386,9 @@ export function observeServerEventTarget(
         executable: inspection.executable,
       });
     }
-    markers[markerName] = id;
+    // DQ-009: scope-qualified — two concurrent collections must not mint
+    // markers that could resolve against each other's manifests.
+    markers[markerName] = `${session.installationId}:${id}`;
   }
 
   const frozen = Object.freeze(markers);

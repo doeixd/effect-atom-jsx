@@ -22,7 +22,7 @@
  * manifests — see the document spec at the bottom of this file.
  */
 
-import { Deferred, Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import { describe, expect, it } from "vitest";
 import { unbuilt } from "../harness.js";
 import {
@@ -234,7 +234,9 @@ describe("resume session isolation (M11.1)", () => {
                 ),
               ).pipe(Effect.delay("5 millis")),
             );
-            const regionHtml = yield* (fiber as any).await.pipe(
+            // (Corrected to this Effect v4 beta's API: `Fiber.await(fiber)`,
+            // not a `.await` property on the fiber.)
+            const regionHtml = yield* Fiber.await(fiber).pipe(
               Effect.flatMap((exit: any) => exit),
             );
             return `${shellHtml}${regionHtml as string}`;

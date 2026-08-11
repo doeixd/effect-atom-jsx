@@ -50,10 +50,12 @@ import {
 } from "./resume-expression.js";
 import {
   className as domClassName,
+  createServerDocument,
   reconcileArrays as domReconcileArrays,
   setAttribute as domSetAttribute,
   setStyleProperty as domSetStyleProperty,
 } from "./dom.js";
+import { ServerRenderStateTag } from "./render-state.js";
 import {
   finalizeResumeSession,
   registerComponentActivation,
@@ -209,12 +211,14 @@ export type ComponentSnapshot = typeof ComponentSnapshotSchema.Type;
 export const ManifestV1Schema = Schema.Struct({
   version: Schema.Literal(1),
   buildId: Portable.BuildId,
+  installationId: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
 });
 
 export const ManifestV2Schema = Schema.Struct({
   version: Schema.Literal(2),
   buildId: Portable.BuildId,
+  installationId: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
   components: Schema.Record(ComponentId, ComponentSnapshotSchema),
 });
@@ -353,6 +357,7 @@ export type ExpressionEntry = typeof ExpressionEntrySchema.Type;
 export const ManifestV3Schema = Schema.Struct({
   version: Schema.Literal(3),
   buildId: Portable.BuildId,
+  installationId: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
   components: Schema.Record(ComponentId, ComponentSnapshotSchema),
   expressions: Schema.Record(ExpressionId, ExpressionEntryV3Schema),
@@ -361,6 +366,7 @@ export const ManifestV3Schema = Schema.Struct({
 export const ManifestV4Schema = Schema.Struct({
   version: Schema.Literal(4),
   buildId: Portable.BuildId,
+  installationId: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
   components: Schema.Record(ComponentId, ComponentSnapshotSchema),
   expressions: Schema.Record(ExpressionId, ExpressionEntryV4Schema),
@@ -383,6 +389,7 @@ export const ManifestLoaderEntrySchema = Schema.Struct({
 export const ManifestV5Schema = Schema.Struct({
   version: Schema.Literal(5),
   buildId: Portable.BuildId,
+  installationId: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
   components: Schema.Record(ComponentId, ComponentSnapshotSchema),
   expressions: Schema.Record(ExpressionId, ExpressionEntryV5Schema),
@@ -548,6 +555,13 @@ function validateManifestValue(
 export interface CollectOptions {
   readonly buildId: string;
   readonly maxPayloadBytes?: number;
+  /**
+   * Explicit installation scope id (`DQ-009`). Defaults to a per-collection
+   * generated id; must not contain `:` (the marker separator), which is
+   * rejected at collection time — validating on the client would be too late,
+   * because the ambiguous marker would already be in served HTML.
+   */
+  readonly installationId?: string;
 }
 
 export interface CollectionResult {
@@ -1598,6 +1612,31 @@ function largestManifestEntry(manifest: Manifest): {
  * manifest finalization remain Effect-native and use the configured
  * `Serialization` service.
  */
+let nextAutoInstallationOrdinal = 0;
+
+/**
+ * Validate (or mint) one installation scope id (`DQ-009`). `:` is the marker
+ * separator and is rejected here, at collection time — an ambiguous marker
+ * must never reach served HTML.
+ */
+function resolveInstallationId(
+  requested: string | undefined,
+): Effect.Effect<string, ResumeConfigurationError> {
+  if (requested === undefined) {
+    const minted = `p${nextAutoInstallationOrdinal}`;
+    nextAutoInstallationOrdinal += 1;
+    return Effect.succeed(minted);
+  }
+  if (requested.length === 0 || requested.includes(":")) {
+    return Effect.fail(
+      new ResumeConfigurationError({
+        message: `Installation id ${JSON.stringify(requested)} is invalid: ids must be non-empty and must not contain ":" (the reserved marker separator).`,
+      }),
+    );
+  }
+  return Effect.succeed(requested);
+}
+
 export function collect(
   render: () => string,
   options: CollectOptions,
@@ -1605,6 +1644,57 @@ export function collect(
   CollectionResult,
   CollectionError,
   Serialization.SerializationService
+> {
+  return collectInternal(
+    (session) =>
+      Effect.try({
+        try: () => runInResumeSession(session, render),
+        catch: (error) =>
+          new ResumeRenderError({
+            message: `Resume render failed: ${String(error)}`,
+          }),
+      }),
+    options,
+  ).pipe(Effect.withSpan("Resume.collect"));
+}
+
+/**
+ * Async-capable collection (M11.1/M11.2): the render is an Effect that may
+ * suspend between synchronous render passes while other requests render to
+ * completion. The session and the render's own server document travel on the
+ * fiber (`ServerRenderStateTag`) — inherited by forked children — and
+ * `renderToString` installs them for exactly its own synchronous slices, so
+ * two interleaved renders share no session, no document, and no diagnostics.
+ */
+export function collectAsync<E = never, R = never>(
+  render: () => Effect.Effect<string, E, R>,
+  options: CollectOptions,
+): Effect.Effect<
+  CollectionResult,
+  CollectionError | E,
+  Serialization.SerializationService | R
+> {
+  return collectInternal(
+    (session) =>
+      Effect.suspend(render).pipe(
+        Effect.provideService(ServerRenderStateTag, {
+          session,
+          document: createServerDocument(),
+        }),
+      ),
+    options,
+  ).pipe(Effect.withSpan("Resume.collectAsync"));
+}
+
+function collectInternal<E, R>(
+  produceHtml: (
+    session: ReturnType<typeof makeResumeSession>,
+  ) => Effect.Effect<string, E, R>,
+  options: CollectOptions,
+): Effect.Effect<
+  CollectionResult,
+  CollectionError | E,
+  Serialization.SerializationService | R
 > {
   return Effect.gen(function* () {
     const buildId = yield* Schema.decodeUnknownEffect(Portable.BuildId)(
@@ -1624,15 +1714,10 @@ export function collect(
         message: "maxPayloadBytes must be a positive safe integer.",
       });
     }
+    const installationId = yield* resolveInstallationId(options.installationId);
 
-    const session = makeResumeSession();
-    let html = yield* Effect.try({
-      try: () => runInResumeSession(session, render),
-      catch: (error) =>
-        new ResumeRenderError({
-          message: `Resume render failed: ${String(error)}`,
-        }),
-    });
+    const session = makeResumeSession(installationId);
+    let html = yield* produceHtml(session);
     finalizeResumeSession(session);
 
     const events: Record<string, typeof EventEntrySchema.Type> = {};
@@ -1916,6 +2001,7 @@ export function collect(
           ? {
               version: 5,
               buildId,
+              installationId,
               events,
               components,
               expressions,
@@ -1923,6 +2009,7 @@ export function collect(
           : {
               version: 4,
               buildId,
+              installationId,
               events,
               components,
               // No structural entries exist on this branch, so the record
@@ -1933,11 +2020,13 @@ export function collect(
         ? {
             version: 1,
             buildId,
+            installationId,
             events,
           }
         : {
             version: 2,
             buildId,
+            installationId,
             events,
             components,
           };
@@ -1981,7 +2070,7 @@ export function collect(
       script: `<script type="application/json" data-af-resume>${serializedManifest}</script>`,
       diagnostics: Object.freeze([...session.diagnostics]),
     };
-  }).pipe(Effect.withSpan("Resume.collect"));
+  });
 }
 
 /**
@@ -4296,7 +4385,7 @@ function installClientClaimed<R, ER>(
     const eventTypes = new Set<EventType>(
       Object.values(events).map((entry) => entry.type),
     );
-    yield* validateMarkers(options.root, events, eventTypes);
+    yield* validateMarkers(options.root, events, eventTypes, manifest.installationId);
     yield* validateActivationEventOwnership(
       options.root,
       events,
@@ -5342,7 +5431,12 @@ function installClientClaimed<R, ER>(
             for (const target of path) {
               const marker = readMarker(target, eventType);
               if (marker === null) continue;
-              const entry = events[marker];
+              // DQ-009: a marker scoped to another installation is not ours to
+              // dispatch — a nested fragment's events must never resolve
+              // against the page's table, or vice versa.
+              const scopedEventId = unscopeEventMarker(marker, manifest.installationId);
+              if (scopedEventId === undefined) continue;
+              const entry = events[scopedEventId];
               if (entry === undefined) {
                 report({
                   code: "unknown-event-marker",
@@ -5831,6 +5925,7 @@ function validateMarkers(
   root: Document | Element | ShadowRoot,
   events: Readonly<Record<string, typeof EventEntrySchema.Type>>,
   eventTypes: ReadonlySet<EventType>,
+  installationId: string | undefined,
 ): Effect.Effect<
   void,
   | ResumeUnknownEventMarkerError
@@ -5855,7 +5950,17 @@ function validateMarkers(
       for (const target of targets) {
         const marker = target.getAttribute(`data-af-event-${eventType}`);
         if (marker === null) continue;
-        const entry = events[marker];
+        const eventId = unscopeEventMarker(marker, installationId);
+        if (eventId === undefined) {
+          return yield* new ResumeUnknownEventMarkerError({
+            marker,
+            eventType,
+            message: `Event marker "${marker}" does not belong to this installation${
+              installationId === undefined ? "" : ` ("${installationId}")`
+            }.`,
+          });
+        }
+        const entry = events[eventId];
         if (entry === undefined) {
           return yield* new ResumeUnknownEventMarkerError({
             marker,
@@ -5865,13 +5970,13 @@ function validateMarkers(
         }
         if (entry.type !== eventType) {
           return yield* new ResumeEventTypeMismatchError({
-            eventId: eventIdFromValidatedString(marker),
+            eventId: eventIdFromValidatedString(eventId),
             expected: entry.type,
             actual: eventType,
             message: `Event marker "${marker}" is attached to the wrong event type.`,
           });
         }
-        counts.set(marker, (counts.get(marker) ?? 0) + 1);
+        counts.set(eventId, (counts.get(eventId) ?? 0) + 1);
       }
     }
     for (const [eventId, entry] of Object.entries(events)) {
@@ -5995,6 +6100,30 @@ function discoverMarkerEventTypes(
     }
   }
   return eventTypes;
+}
+
+/**
+ * Strip the installation scope off one event marker (`DQ-009`).
+ *
+ * Markers are `"<installationId>:<eventId>"`. A marker whose scope does not
+ * match this installation's id — or a malformed one — returns `undefined`
+ * and is treated as belonging to some other installation, never resolved
+ * against this manifest's table. Manifests without an `installationId`
+ * (legacy payloads) accept only unqualified markers.
+ */
+function unscopeEventMarker(
+  marker: string,
+  installationId: string | undefined,
+): string | undefined {
+  const separator = marker.indexOf(":");
+  if (separator < 0) {
+    return installationId === undefined ? marker : undefined;
+  }
+  if (marker.indexOf(":", separator + 1) >= 0) return undefined;
+  if (installationId === undefined) return undefined;
+  return marker.slice(0, separator) === installationId
+    ? marker.slice(separator + 1)
+    : undefined;
 }
 
 function readMarker(target: EventTarget, eventType: EventType): string | null {
@@ -6125,6 +6254,7 @@ export const Resume = {
   ExpressionElementMarkerAttribute,
   onStructuralRowScopeOpened,
   collect,
+  collectAsync,
   decodeManifest,
   restoreStateBindings,
   restoreStateBindingsScoped,

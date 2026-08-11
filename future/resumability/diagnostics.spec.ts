@@ -78,7 +78,9 @@ async function kit() {
 
   const collect = (render: () => string, options: Record<string, unknown> = {}) =>
     runSync(
-      Resume.collect(render, { buildId: BuildId, ...options }).pipe(
+      // DQ-009 (implemented with M11.1): event markers are scope-qualified
+      // as "<installationId>:<eventId>"; a stable id keeps fixtures exact.
+      Resume.collect(render, { buildId: BuildId, installationId: "page0", ...options }).pipe(
         Effect.provide(Serialization.layer),
       ),
     );
@@ -333,7 +335,7 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
 
     // Stale DOM marker — the HTML references an event the manifest dropped.
     const staleRoot = new FakeDocument([
-      { kind: "element", attributes: { "data-af-event-click": "e9" } },
+      { kind: "element", attributes: { "data-af-event-click": "page0:e9" } },
     ]);
     const runtime = ManagedRuntime.make(Layer.empty);
     const staleTag = taggedFailure(
@@ -353,7 +355,7 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     // duplicate-install case below: a marker the manifest *does* carry
     // installs cleanly.
     const goodRoot = new FakeDocument([
-      { kind: "element", attributes: { "data-af-event-click": "e0" } },
+      { kind: "element", attributes: { "data-af-event-click": "page0:e0" } },
     ]);
     const installation = runSync(
       Resume.installClient({

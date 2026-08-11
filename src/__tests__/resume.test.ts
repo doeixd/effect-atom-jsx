@@ -103,6 +103,9 @@ function collect(
   return Effect.runSync(
     Resume.collect(render, {
       buildId: TestBuildId,
+      // Deterministic scope id: DQ-009 qualifies every event marker as
+      // "<installationId>:<eventId>", and exact-HTML pins need a stable one.
+      installationId: "page0",
       ...options,
     }).pipe(Effect.provide(Serialization.layer)),
   );
@@ -472,7 +475,7 @@ function expressionComponentBoundaryRoot(
   ]);
 }
 
-function clientRoot(eventId = "e0") {
+function clientRoot(eventId = "page0:e0") {
   const root = new FakeRoot();
   const target = root.element({
     "data-af-event-click": eventId,
@@ -491,10 +494,11 @@ describe("Resume.collect", () => {
       renderToString(() => makeButton(Resume.event(action))),
     );
 
-    expect(result.html).toBe('<button data-af-event-click="e0">Save</button>');
+    expect(result.html).toBe('<button data-af-event-click="page0:e0">Save</button>');
     expect(result.manifest).toEqual({
       version: 1,
       buildId: TestBuildId,
+      installationId: "page0",
       events: {
         e0: {
           type: "click",
@@ -651,17 +655,17 @@ describe("Resume.collect", () => {
       renderToString(() => makeButton(Resume.event(makePortableAction("next")))),
     );
 
-    expect(inner?.html).toContain('data-af-event-click="e0"');
+    expect(inner?.html).toContain('data-af-event-click="page0:e0"');
     expect(labelsOf(inner)).toEqual([["e0", "inner"]]);
     // The nested session must not consume ids from, or leak entries into, the
     // outer one, and the outer render must keep collecting after it returns.
-    expect(outer.html).toContain('data-af-event-click="e0"');
-    expect(outer.html).toContain('data-af-event-click="e1"');
+    expect(outer.html).toContain('data-af-event-click="page0:e0"');
+    expect(outer.html).toContain('data-af-event-click="page0:e1"');
     expect(labelsOf(outer)).toEqual([
       ["e0", "outer-before"],
       ["e1", "outer-after"],
     ]);
-    expect(next.html).toContain('data-af-event-click="e0"');
+    expect(next.html).toContain('data-af-event-click="page0:e0"');
     expect(labelsOf(next)).toEqual([["e0", "next"]]);
   });
 
@@ -679,7 +683,7 @@ describe("Resume.collect", () => {
     );
 
     expect(failure._tag).toBe("ResumeRenderError");
-    expect(next.html).toContain('data-af-event-click="e0"');
+    expect(next.html).toContain('data-af-event-click="page0:e0"');
     expect(Object.keys(next.manifest.events)).toEqual(["e0"]);
   });
 
@@ -693,7 +697,7 @@ describe("Resume.collect", () => {
       }),
     );
 
-    expect(result.html).toBe('<button data-af-event-click="e0">Save</button>');
+    expect(result.html).toBe('<button data-af-event-click="page0:e0">Save</button>');
     expect(Object.keys(result.manifest.events)).toEqual(["e0"]);
   });
 
@@ -761,6 +765,7 @@ describe("Resume.collect", () => {
     const oversized = Effect.runSync(
       Resume.collect(render, {
         buildId: TestBuildId,
+        installationId: "page0",
         // The real boundary, not an unmissable `1`.
         maxPayloadBytes: bytes - 1,
       }).pipe(Effect.flip, Effect.provide(Serialization.layer)),
@@ -1097,7 +1102,7 @@ describe("Resume client adapter", () => {
       }
     }
     const root = new RacingRoot();
-    const target = root.element({ "data-af-event-click": "e0" });
+    const target = root.element({ "data-af-event-click": "page0:e0" });
     const saves: string[] = [];
     const runtime = ManagedRuntime.make(
       Layer.succeed(SaveService, {
@@ -1236,7 +1241,7 @@ describe("Resume client adapter", () => {
     );
     const root = new FakeRoot();
     const target = root.element({
-      "data-af-event-focus": "e0",
+      "data-af-event-focus": "page0:e0",
     });
     const saves: string[] = [];
     const runtime = ManagedRuntime.make(
@@ -1337,7 +1342,8 @@ describe("Resume client adapter", () => {
         {
           code: "dispatch-resolution-failure",
           eventType: "click",
-          eventId: "e0",
+          // Diagnostics carry the DOM marker as-is — scope-qualified (DQ-009).
+          eventId: "page0:e0",
         },
       ]);
     });
@@ -1673,7 +1679,7 @@ describe("Resume state binding restoration", () => {
     );
 
     expect(result.html).toContain('data-af-replay-click="save"');
-    expect(result.html).toContain('data-af-event-click="e0"');
+    expect(result.html).toContain('data-af-event-click="page0:e0"');
     expect(result.manifest.events).toEqual({
       e0: {
         type: "click",
@@ -7160,7 +7166,7 @@ describe("Resume.collect — non-delegated (direct) event handlers", () => {
       renderToString(() => makeDirectElement("blur", Resume.event(action))),
     );
 
-    expect(result.html).toBe('<button data-af-event-blur="e0">Save</button>');
+    expect(result.html).toBe('<button data-af-event-blur="page0:e0">Save</button>');
     expect(result.diagnostics).toEqual([]);
     expect(Object.keys(result.manifest.events)).toEqual(["e0"]);
     expect(Object.values(result.manifest.events)[0]).toMatchObject({
@@ -7178,7 +7184,7 @@ describe("Resume.collect — non-delegated (direct) event handlers", () => {
     );
 
     expect(result.html).toBe(
-      '<button data-af-event-mouseenter="e0">Save</button>',
+      '<button data-af-event-mouseenter="page0:e0">Save</button>',
     );
     expect(result.diagnostics).toEqual([]);
     expect(Object.values(result.manifest.events)[0]).toMatchObject({
@@ -7254,8 +7260,8 @@ describe("Resume.collect — non-delegated (direct) event handlers", () => {
     );
 
     expect(result.diagnostics).toEqual([]);
-    expect(result.html).toContain('data-af-event-click="e0"');
-    expect(result.html).toContain('data-af-event-blur="e1"');
+    expect(result.html).toContain('data-af-event-click="page0:e0"');
+    expect(result.html).toContain('data-af-event-blur="page0:e1"');
     expect(Object.keys(result.manifest.events)).toEqual(["e0", "e1"]);
     const [first, second] = Object.values(result.manifest.events);
     expect(first).toMatchObject({ type: "click" });

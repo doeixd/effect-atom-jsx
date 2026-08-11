@@ -1448,8 +1448,31 @@ Acceptance:
 
 ### Milestone 11 — Streaming SSR with parallel route data (resolves Open Question 9)
 
-Status: proposed; sequenced after Milestone 9 (touches the renderer, the
-resume session, and the manifest contract at once)
+Status: **item 1 implemented** (2026-08-11); the rest proposed.
+
+> **Item 1 — per-render server render state — is done**, together with the
+> `DQ-009` marker scoping it forced. The mechanism: `ServerRenderState`
+> (session + the render's own server document) is an ordinary Effect service
+> (`src/render-state.ts`) provided by the new **`Resume.collectAsync`** for the
+> duration of one render effect — so it survives suspension and is inherited
+> by forked child fibers — and `currentServerRenderState()` reads it
+> *synchronously* off the running fiber (`Fiber.getCurrent().context`), which
+> is what lets `renderToString` install the right session and document for
+> exactly its own synchronous slice and restore the ambient globals after.
+> Two interleaved renders share no session, no diagnostics, and no document
+> (identity-asserted), and the global `document` is restored exactly.
+>
+> `DQ-009` landed with it: every event marker is
+> `"<installationId>:<eventId>"` — the page installation gets an explicit
+> scope id like any fragment (auto-minted `pN`, or the validated
+> `installationId` collect option; `:` rejected at collection time). Manifests
+> of every version carry an optional `installationId`; the client unscopes
+> markers against it and treats foreign-scoped markers as not-ours (legacy
+> manifests without the field accept only unqualified markers).
+> `future/streaming/resume-session-isolation.spec.ts` is fully green.
+> NOTE: the Chromium browser tests exercise the full collect→install loop and
+> are self-consistent under qualification, but have not been re-run in this
+> change-set — run them before relying on the marker change in a browser.
 
 **Blocker found 2026-07-30 while writing `future/streaming/` specs — decide
 before implementing item 1.** Item 1 makes the *resume session* per-request, but

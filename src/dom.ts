@@ -22,7 +22,9 @@ import {
   observeRenderedExpression,
   observeRenderedExpressionTarget,
   observeServerEventTarget,
+  runInResumeSession,
 } from "./resume-session.js";
+import { currentServerRenderState } from "./render-state.js";
 import {
   inspectExpression,
   type ExpressionTargetValue,
@@ -1306,7 +1308,7 @@ function parseHTML(html: string): ServerNode[] {
 /**
  * Create a mock `document` object for server-side rendering.
  */
-function createServerDocument(): unknown {
+export function createServerDocument(): unknown {
   const doc = {
     createElement(tag: string): ServerElement {
       return new ServerElement(tag.toUpperCase());
@@ -1371,9 +1373,16 @@ export function renderToString(fn: () => unknown): string {
   const origNode = typeof globalThis.Node !== "undefined" ? globalThis.Node : undefined;
   let dispose: (() => void) | undefined;
 
+  // M11.1: inside a `Resume.collectAsync` render, this fiber carries its own
+  // per-render state — the render's stable server document and its resume
+  // session. Installing them for exactly this synchronous slice (and
+  // restoring afterwards, below) is what keeps two interleaved renders'
+  // documents and sessions disjoint.
+  const ambient = currentServerRenderState();
+
   try {
     _ssrMode = true;
-    const serverDoc = createServerDocument();
+    const serverDoc = ambient?.document ?? createServerDocument();
     _serverDoc = serverDoc;
 
     // Temporarily install the server document as the global `document` so
@@ -1383,14 +1392,26 @@ export function renderToString(fn: () => unknown): string {
     // Also patch `Node` so that `instanceof Node` checks work with virtual nodes.
     (globalThis as Record<string, unknown>).Node = ServerNode as unknown;
 
-    let result: unknown;
+    let html!: string;
 
-    createRoot((d) => {
-      dispose = d;
-      result = fn();
-    });
+    // Serialization stays inside the session wrap: event markers are observed
+    // while element props are serialized, so ending the session before
+    // `serverValueToHTML` would silently drop every event of an async render.
+    const renderBody = (): void => {
+      let result: unknown;
+      createRoot((d) => {
+        dispose = d;
+        result = fn();
+      });
+      html = serverValueToHTML(result);
+    };
+    if (ambient !== undefined) {
+      runInResumeSession(ambient.session, renderBody);
+    } else {
+      renderBody();
+    }
 
-    return serverValueToHTML(result);
+    return html;
   } finally {
     try {
       // Dispose on both success and failure; SSR only needs one snapshot.

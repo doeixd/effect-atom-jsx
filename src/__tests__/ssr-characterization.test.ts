@@ -41,7 +41,7 @@ function collect(
   options: Partial<Resume.CollectOptions> = {},
 ) {
   return Effect.runSync(
-    Resume.collect(render, { buildId: TestBuildId, ...options }).pipe(
+    Resume.collect(render, { buildId: TestBuildId, installationId: "page0", ...options }).pipe(
       Effect.provide(Serialization.layer),
     ),
   );
@@ -448,7 +448,7 @@ describe("Resume fallback contract (Milestone 0, item 5)", () => {
     const plain = renderToString(() => makeButton(Resume.event(action)));
 
     expect(collected.html).toBe(
-      '<button data-af-event-click="e0">Save</button>',
+      '<button data-af-event-click="page0:e0">Save</button>',
     );
     expect(collected.diagnostics).toEqual([]);
     // Without an active collector the resume path is byte-invisible.
