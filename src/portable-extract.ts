@@ -12,9 +12,14 @@ export {
   ExpressionDependenciesSchemaTypeId,
   ExpressionRenderTypeId,
   ExpressionTypeId,
+  ExpressionStructuralModeTypeId,
   bindExpression,
+  bindStructuralExpression,
+  decodeStructuralRowKey,
+  encodeStructuralRowKey,
   expressionCode,
   inspectExpression,
+  structuralExpressionCode,
 } from "./resume-expression.js";
 export type {
   ExpressionCode,
@@ -25,6 +30,12 @@ export type {
   ExpressionInspection,
   ExpressionOutput,
   ResumableExpression,
+  ResumableStructuralExpression,
+  StructuralExpressionCode,
+  StructuralExpressionCodeOptions,
+  StructuralMode,
+  StructuralOutput,
+  StructuralRow,
 } from "./resume-expression.js";
 
 /**

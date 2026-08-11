@@ -41,11 +41,16 @@ import {
   ExpressionCustomStylePropertyPattern,
   ExpressionElementMarkerAttributeName,
   ExpressionNamedStylePropertyNames,
+  decodeStructuralRowKey,
+  encodeStructuralRowKey,
+  validateStructuralOutput,
   type ExpressionContext,
   type ExpressionOutput,
+  type StructuralRow,
 } from "./resume-expression.js";
 import {
   className as domClassName,
+  reconcileArrays as domReconcileArrays,
   setAttribute as domSetAttribute,
   setStyleProperty as domSetStyleProperty,
 } from "./dom.js";
@@ -294,7 +299,23 @@ export const ExpressionTargetSchema = Schema.Union([
   ClassExpressionTargetSchema,
   StylePropertyExpressionTargetSchema,
 ]);
-export type ExpressionTarget = typeof ExpressionTargetSchema.Type;
+/**
+ * Milestone 8d: one structural member with a `mode` field, so the fence
+ * predicate stays single-sited (`kind === "structural"`). `target` is a wire
+ * field, so admitting this member is a real v4 → v5 manifest bump (`DQ-100`).
+ */
+export const StructuralExpressionTargetSchema = Schema.Struct({
+  kind: Schema.Literal("structural"),
+  mode: Schema.Union([Schema.Literal("list"), Schema.Literal("branch")]),
+});
+export const ExpressionTargetV5Schema = Schema.Union([
+  TextExpressionTargetSchema,
+  AttributeExpressionTargetSchema,
+  ClassExpressionTargetSchema,
+  StylePropertyExpressionTargetSchema,
+  StructuralExpressionTargetSchema,
+]);
+export type ExpressionTarget = typeof ExpressionTargetV5Schema.Type;
 
 const ExpressionEntryFields = {
   code: Portable.DescriptorSchema,
@@ -315,10 +336,17 @@ export const ExpressionEntryV4Schema = Schema.Struct({
 });
 export type ExpressionEntryV4 = typeof ExpressionEntryV4Schema.Type;
 
+export const ExpressionEntryV5Schema = Schema.Struct({
+  target: ExpressionTargetV5Schema,
+  ...ExpressionEntryFields,
+});
+export type ExpressionEntryV5 = typeof ExpressionEntryV5Schema.Type;
+
 /** Any expression entry accepted by the backwards-compatible wire decoder. */
 export const ExpressionEntrySchema = Schema.Union([
   ExpressionEntryV3Schema,
   ExpressionEntryV4Schema,
+  ExpressionEntryV5Schema,
 ]);
 export type ExpressionEntry = typeof ExpressionEntrySchema.Type;
 
@@ -338,23 +366,34 @@ export const ManifestV4Schema = Schema.Struct({
   expressions: Schema.Record(ExpressionId, ExpressionEntryV4Schema),
 });
 
+export const ManifestV5Schema = Schema.Struct({
+  version: Schema.Literal(5),
+  buildId: Portable.BuildId,
+  events: Schema.Record(EventId, EventEntrySchema),
+  components: Schema.Record(ComponentId, ComponentSnapshotSchema),
+  expressions: Schema.Record(ExpressionId, ExpressionEntryV5Schema),
+});
+
 export const ManifestSchema = Schema.Union([
   ManifestV1Schema,
   ManifestV2Schema,
   ManifestV3Schema,
   ManifestV4Schema,
+  ManifestV5Schema,
 ]);
 
 export type ManifestV1 = typeof ManifestV1Schema.Type;
 export type ManifestV2 = typeof ManifestV2Schema.Type;
 export type ManifestV3 = typeof ManifestV3Schema.Type;
 export type ManifestV4 = typeof ManifestV4Schema.Type;
+export type ManifestV5 = typeof ManifestV5Schema.Type;
 export type Manifest = typeof ManifestSchema.Type;
 
 function expressionEntriesOf(
   manifest: Manifest,
 ): Readonly<Record<ExpressionId, ExpressionEntry>> {
   return manifest.version === 3 || manifest.version === 4
+      || manifest.version === 5
     ? manifest.expressions
     : {};
 }
@@ -841,10 +880,12 @@ export class ResumeExpressionTargetKindMismatchError extends Schema.TaggedErrorC
   expected: Schema.Union([
     Schema.Literal("text"),
     Schema.Literal("element"),
+    Schema.Literal("structural"),
   ]),
   actual: Schema.Union([
     Schema.Literal("text"),
     Schema.Literal("element"),
+    Schema.Literal("structural"),
   ]),
   message: Schema.String,
 }) {}
@@ -1246,6 +1287,12 @@ export type ScannedExpressionTarget =
       readonly kind: "text";
       readonly expressionId: ExpressionId;
       readonly boundary: ExpressionBoundary;
+    }
+  | {
+      readonly kind: "structural";
+      readonly expressionId: ExpressionId;
+      readonly boundary: ExpressionBoundary;
+      readonly mode: "list" | "branch";
     }
   | {
       readonly kind: "attribute";
@@ -1750,7 +1797,7 @@ export function collect(
       });
     }
 
-    const expressions: Record<string, ExpressionEntryV4> =
+    const expressions: Record<string, ExpressionEntryV5> =
       Object.create(null);
     for (const pending of session.expressions) {
       const expressionId = expressionIdFromValidatedString(pending.id);
@@ -1766,11 +1813,22 @@ export function collect(
         // reserved sentinels from the returned HTML together with the manifest
         // entry so an adapter that proceeds after diagnostics does not turn
         // the warning into an unknown-owner installation failure.
-        html = pending.target.kind === "text"
-          ? html
+        if (
+          pending.target.kind === "text"
+          || pending.target.kind === "structural"
+        ) {
+          html = html
             .replace(`<!--af:expr:${expressionId}:start-->`, "")
-            .replace(`<!--af:expr:${expressionId}:end-->`, "")
-          : removeExpressionElementMarkerId(html, expressionId);
+            .replace(`<!--af:expr:${expressionId}:end-->`, "");
+          if (pending.target.kind === "structural") {
+            html = html.replace(
+              new RegExp(`<!--af:row:${expressionId}:[^>]*-->`, "g"),
+              "",
+            );
+          }
+        } else {
+          html = removeExpressionElementMarkerId(html, expressionId);
+        }
         continue;
       }
       const dependencyValues = (
@@ -1830,15 +1888,30 @@ export function collect(
       });
     }
 
+    // A structural entry is the only thing that needs the v5 schema; without
+    // one the manifest stays at v4 so older clients keep decoding it.
+    const hasStructuralExpression = Object.values(expressions).some(
+      (entry) => entry.target.kind === "structural",
+    );
     const manifest: Manifest =
       Object.keys(expressions).length > 0
-        ? {
-            version: 4,
-            buildId,
-            events,
-            components,
-            expressions,
-          }
+        ? hasStructuralExpression
+          ? {
+              version: 5,
+              buildId,
+              events,
+              components,
+              expressions,
+            }
+          : {
+              version: 4,
+              buildId,
+              events,
+              components,
+              // No structural entries exist on this branch, so the record
+              // satisfies the narrower v4 entry union.
+              expressions: expressions as Record<string, ExpressionEntryV4>,
+            }
         : Object.keys(components).length === 0
         ? {
             version: 1,
@@ -2761,17 +2834,20 @@ export function scanExpressionBoundaries(
       "expression boundary discovery",
     );
     const expressions = expressionEntriesOf(manifest);
-    const textExpressionIds = new Set<ExpressionId>();
+    // Text and structural targets share the comment-pair region shape, so both
+    // are legitimate boundary owners here.
+    const boundaryExpressionIds = new Set<ExpressionId>();
     for (const [expressionId, entry] of Object.entries(expressions) as Array<
       [ExpressionId, ExpressionEntry]
     >) {
-      if (expressionTargetOf(entry).kind === "text") {
-        textExpressionIds.add(expressionId);
+      const kind = expressionTargetOf(entry).kind;
+      if (kind === "text" || kind === "structural") {
+        boundaryExpressionIds.add(expressionId);
       }
     }
     const scanned = scanBoundaryRegions(
       root,
-      textExpressionIds,
+      boundaryExpressionIds,
       expressionBoundaryMarkerPrefix,
       expressionBoundaryMarkerPattern,
     );
@@ -2896,12 +2972,13 @@ function scanExpressionTargetsWithComponentBoundaries(
             message: `Expression boundary "${expressionId}" has no matching manifest record.`,
           });
         }
-        if (expressionTargetOf(entry).kind !== "text") {
+        const declaredKind = expressionTargetOf(entry).kind;
+        if (declaredKind !== "text" && declaredKind !== "structural") {
           return yield* new ResumeExpressionTargetKindMismatchError({
             expressionId,
             expected: "element",
             actual: "text",
-            message: `Expression "${expressionId}" is declared as an element target but was marked with a text boundary.`,
+            message: `Expression "${expressionId}" is declared as an element target but was marked with a comment-pair boundary.`,
           });
         }
         const edge = match[2] as "start" | "end";
@@ -2967,12 +3044,15 @@ function scanExpressionTargetsWithComponentBoundaries(
             message: `Expression element target "${expressionId}" has no matching manifest record.`,
           });
         }
-        if (expressionTargetOf(entry).kind === "text") {
+        const declaredElementKind = expressionTargetOf(entry).kind;
+        if (
+          declaredElementKind === "text" || declaredElementKind === "structural"
+        ) {
           return yield* new ResumeExpressionTargetKindMismatchError({
             expressionId,
-            expected: "text",
+            expected: declaredElementKind,
             actual: "element",
-            message: `Expression "${expressionId}" is declared as a text target but was marked on an element.`,
+            message: `Expression "${expressionId}" is declared as a ${declaredElementKind} target but was marked on an element.`,
           });
         }
         if (elementTargets.has(expressionId)) {
@@ -2990,7 +3070,7 @@ function scanExpressionTargetsWithComponentBoundaries(
       [ExpressionId, ExpressionEntry]
     >) {
       const target = expressionTargetOf(entry);
-      if (target.kind === "text") {
+      if (target.kind === "text" || target.kind === "structural") {
         const start = starts.get(expressionId);
         const end = ends.get(expressionId);
         if (start === undefined || end === undefined) {
@@ -3012,11 +3092,17 @@ function scanExpressionTargetsWithComponentBoundaries(
             ? {}
             : { parentExpressionId: parents.get(expressionId) }),
         };
-        targets.set(expressionId, {
-          kind: "text",
+        targets.set(
           expressionId,
-          boundary,
-        });
+          target.kind === "text"
+            ? { kind: "text", expressionId, boundary }
+            : {
+                kind: "structural",
+                expressionId,
+                boundary,
+                mode: target.mode,
+              },
+        );
         continue;
       }
 
@@ -3233,7 +3319,7 @@ function patchExpressionBoundary(
  * absence, so it still accepts only `string | number`.
  */
 function isSupportedExpressionOutput(
-  target: ScannedExpressionTarget,
+  target: Exclude<ScannedExpressionTarget, { kind: "structural" }>,
   value: unknown,
 ): value is ExpressionOutput {
   if (typeof value === "string" || typeof value === "number") return true;
@@ -3250,7 +3336,7 @@ function isSupportedExpressionOutput(
  * classified patch failure rather than a silent mutation.
  */
 function patchExpressionTarget(
-  target: ScannedExpressionTarget,
+  target: Exclude<ScannedExpressionTarget, { kind: "structural" }>,
   value: ExpressionOutput,
   ownerBoundary: ComponentBoundary | undefined,
 ): void {
@@ -3281,6 +3367,263 @@ function patchExpressionTarget(
       domSetStyleProperty(element as HTMLElement, target.name, value);
       return;
   }
+}
+
+/**
+ * Milestone 8d structural regions (`DQ-100`).
+ *
+ * A structural region lives between the ordinary `af:expr` markers and holds
+ * one `Map<key, row>`; each row owns a child `Scope` opened when the row
+ * appears and closed exactly when the reconciler drops it. Disposal is driven
+ * from the same key diff that produces the reconciler's removals, so "dropped
+ * from the DOM" and "Scope closed" derive from one list rather than being kept
+ * in agreement by convention.
+ */
+const structuralRowMarkerPattern = /^af:row:(x[0-9]+):([^:]*):(s|e)$/;
+
+type StructuralRowScope = ReturnType<typeof Scope.makeUnsafe>;
+
+interface StructuralRowInstance {
+  readonly key: string;
+  readonly scope: StructuralRowScope;
+  nodes: Node[];
+}
+
+interface StructuralRegionState {
+  readonly rows: Map<string, StructuralRowInstance>;
+  order: string[];
+}
+
+export interface StructuralRowScopeObservation {
+  readonly expressionId: ExpressionId;
+  readonly key: string;
+  readonly scope: StructuralRowScope;
+}
+
+const structuralRowScopeObservers = new Set<
+  (observation: StructuralRowScopeObservation) => void
+>();
+
+/**
+ * Observe every structural row `Scope` as it opens, so tests can register
+ * finalizers and count their runs at the moment of removal — final-state
+ * inspection would pass for an implementation that deferred every row's
+ * cleanup to unmount, which is precisely the leak `DQ-100` exists to prevent.
+ *
+ * @internal
+ */
+export function onStructuralRowScopeOpened(
+  observer: (observation: StructuralRowScopeObservation) => void,
+): () => void {
+  structuralRowScopeObservers.add(observer);
+  return () => {
+    structuralRowScopeObservers.delete(observer);
+  };
+}
+
+function openStructuralRowScope(
+  expressionId: ExpressionId,
+  key: string,
+): StructuralRowScope {
+  const scope = Scope.makeUnsafe();
+  for (const observer of structuralRowScopeObservers) {
+    try {
+      observer({ expressionId, key, scope });
+    } catch {
+      // Observability callbacks must never compromise patching or cleanup.
+    }
+  }
+  return scope;
+}
+
+/**
+ * Recover `Map<key, nodes>` from the SSR document's `af:row` marker pairs.
+ * Runs once, on the region's first invalidation; later patches evolve the
+ * in-memory state instead of re-scanning.
+ */
+function recoverStructuralRegionState(
+  target: Extract<ScannedExpressionTarget, { kind: "structural" }>,
+): StructuralRegionState {
+  const boundary = target.boundary;
+  const parent = boundary.start.parentNode;
+  if (parent === null || boundary.end.parentNode !== parent) {
+    throw new Error(
+      `Structural region "${target.expressionId}" is no longer contiguous.`,
+    );
+  }
+  const rows = new Map<string, StructuralRowInstance>();
+  const order: string[] = [];
+  let openRow: { readonly key: string; readonly nodes: Node[] } | undefined;
+  let current: Node | null = boundary.start.nextSibling;
+  while (current !== null && current !== boundary.end) {
+    const comment = componentBoundaryComment(current);
+    const match = comment === undefined
+      ? null
+      : structuralRowMarkerPattern.exec(comment);
+    if (
+      match !== null
+      && match[1] === target.expressionId
+      && match[2] !== undefined
+    ) {
+      const key = decodeStructuralRowKey(match[2]);
+      if (match[3] === "s") {
+        if (openRow !== undefined) {
+          throw new Error(
+            `Structural region "${target.expressionId}" row "${openRow.key}" is missing its end marker.`,
+          );
+        }
+        openRow = { key, nodes: [current] };
+      } else {
+        if (openRow === undefined || openRow.key !== key) {
+          throw new Error(
+            `Structural region "${target.expressionId}" row "${key}" has an unmatched end marker.`,
+          );
+        }
+        if (rows.has(key)) {
+          throw new Error(
+            `Structural region "${target.expressionId}" row key "${key}" appears more than once.`,
+          );
+        }
+        openRow.nodes.push(current);
+        rows.set(key, {
+          key,
+          scope: openStructuralRowScope(target.expressionId, key),
+          nodes: openRow.nodes,
+        });
+        order.push(key);
+        openRow = undefined;
+      }
+    } else if (openRow !== undefined) {
+      openRow.nodes.push(current);
+    }
+    current = current.nextSibling;
+  }
+  if (openRow !== undefined) {
+    throw new Error(
+      `Structural region "${target.expressionId}" row "${openRow.key}" is missing its end marker.`,
+    );
+  }
+  if (current !== boundary.end) {
+    throw new Error(
+      `Structural region "${target.expressionId}" is no longer contiguous.`,
+    );
+  }
+  return { rows, order };
+}
+
+function updateStructuralRowText(
+  instance: StructuralRowInstance,
+  text: string | number,
+  parent: Node,
+  ownerDocument: Document,
+): void {
+  const value = String(text);
+  const start = instance.nodes[0]!;
+  const end = instance.nodes[instance.nodes.length - 1]!;
+  const content = instance.nodes.slice(1, -1);
+  if (content.length === 1 && content[0]!.nodeName === "#text") {
+    if (content[0]!.textContent !== value) {
+      content[0]!.textContent = value;
+    }
+    return;
+  }
+  for (const node of content) {
+    if (node.parentNode === parent) parent.removeChild(node);
+  }
+  const textNode = ownerDocument.createTextNode(value);
+  parent.insertBefore(textNode, end);
+  instance.nodes = [start, textNode, end];
+}
+
+/**
+ * Reconcile one structural region against freshly computed rows.
+ *
+ * Surviving rows keep node identity; their text is updated in place. The key
+ * diff that removes DOM rows is the same one whose dropped keys' Scopes the
+ * caller closes — the returned `removedScopes` list is that single source.
+ */
+function patchStructuralExpressionTarget(
+  target: Extract<ScannedExpressionTarget, { kind: "structural" }>,
+  previous: StructuralRegionState | undefined,
+  rows: ReadonlyArray<StructuralRow>,
+  ownerBoundary: ComponentBoundary | undefined,
+): {
+  readonly state: StructuralRegionState;
+  readonly removedScopes: ReadonlyArray<StructuralRowScope>;
+} {
+  const boundary = target.boundary;
+  if (
+    ownerBoundary !== undefined
+    && !(
+      componentBoundaryContains(ownerBoundary, boundary.start)
+      && componentBoundaryContains(ownerBoundary, boundary.end)
+    )
+  ) {
+    throw new Error(
+      `Structural region "${target.expressionId}" no longer belongs to the document region it was installed against.`,
+    );
+  }
+  const parent = boundary.start.parentNode;
+  if (parent === null || boundary.end.parentNode !== parent) {
+    throw new Error(
+      `Structural region "${target.expressionId}" is no longer contiguous.`,
+    );
+  }
+  const ownerDocument =
+    boundary.start.ownerDocument
+    ?? (globalThis as { readonly document?: Document }).document;
+  if (ownerDocument === undefined) {
+    throw new Error(
+      `Structural region "${target.expressionId}" has no document for patching.`,
+    );
+  }
+  const state = previous ?? recoverStructuralRegionState(target);
+  const oldNodes = state.order.flatMap(
+    (key) => state.rows.get(key)?.nodes ?? [],
+  );
+  const newNodes: Node[] = [];
+  const newOrder: string[] = [];
+  for (const row of rows) {
+    let instance = state.rows.get(row.key);
+    if (instance === undefined) {
+      const encodedKey = encodeStructuralRowKey(row.key);
+      instance = {
+        key: row.key,
+        scope: openStructuralRowScope(target.expressionId, row.key),
+        nodes: [
+          ownerDocument.createComment(
+            `af:row:${target.expressionId}:${encodedKey}:s`,
+          ),
+          ownerDocument.createTextNode(String(row.text)),
+          ownerDocument.createComment(
+            `af:row:${target.expressionId}:${encodedKey}:e`,
+          ),
+        ],
+      };
+      state.rows.set(row.key, instance);
+    } else {
+      updateStructuralRowText(instance, row.text, parent, ownerDocument);
+    }
+    newOrder.push(row.key);
+    newNodes.push(...instance.nodes);
+  }
+  const survivingKeys = new Set(newOrder);
+  const removedScopes: StructuralRowScope[] = [];
+  for (const key of state.order) {
+    if (survivingKeys.has(key)) continue;
+    const dropped = state.rows.get(key);
+    if (dropped === undefined) continue;
+    removedScopes.push(dropped.scope);
+    state.rows.delete(key);
+  }
+  domReconcileArrays(
+    parent as Element,
+    oldNodes,
+    newNodes,
+    boundary.end,
+  );
+  state.order = newOrder;
+  return { state, removedScopes };
 }
 
 function componentBoundaryContains(
@@ -3351,10 +3694,11 @@ function validateScannedExpressionOwnership(
       let closest: ComponentBoundary | undefined;
       let closestDepth = -1;
       for (const boundary of componentBoundaries.values()) {
-        const contains = target.kind === "text"
-          ? componentBoundaryContains(boundary, target.boundary.start)
-            && componentBoundaryContains(boundary, target.boundary.end)
-          : componentBoundaryContains(boundary, target.element);
+        const contains =
+          target.kind === "text" || target.kind === "structural"
+            ? componentBoundaryContains(boundary, target.boundary.start)
+              && componentBoundaryContains(boundary, target.boundary.end)
+            : componentBoundaryContains(boundary, target.element);
         if (!contains) continue;
         const boundaryDepth = depth(boundary);
         if (boundaryDepth > closestDepth) {
@@ -3994,6 +4338,8 @@ function installClientClaimed<R, ER>(
           dirty: boolean;
           queued: boolean;
           running?: Fiber.Fiber<unknown, unknown>;
+          /** Present only after a structural region's first patch. */
+          structural?: StructuralRegionState;
         }
         interface BoundaryController {
           readonly boundary: ComponentBoundary;
@@ -4072,6 +4418,33 @@ function installClientClaimed<R, ER>(
           } catch {
             // Observability callbacks must never compromise dispatch or cleanup.
           }
+        };
+        /**
+         * Close the Scopes of rows the reconciler just dropped. `runFork`
+         * begins execution synchronously, so synchronous finalizers run before
+         * this returns — disposal is observable at the moment of removal, not
+         * at unmount.
+         */
+        const closeStructuralRowScopes = (
+          scopes: ReadonlyArray<ReturnType<typeof Scope.makeUnsafe>>,
+        ): void => {
+          if (scopes.length === 0) return;
+          let fiber: Fiber.Fiber<unknown, unknown>;
+          try {
+            fiber = options.runtime.runFork(
+              Effect.forEach(
+                scopes,
+                (scope) => Scope.close(scope, Exit.void),
+                { discard: true },
+              ),
+            );
+          } catch {
+            return;
+          }
+          fibers.add(fiber);
+          fiber.addObserver(() => {
+            fibers.delete(fiber);
+          });
         };
         const notifyActivation = (
           controller: BoundaryController,
@@ -4155,11 +4528,27 @@ function installClientClaimed<R, ER>(
                 expressionSubscribers.delete(key);
               }
             }
+            // A structural region's surviving row Scopes close with the
+            // installation; rows removed earlier already closed theirs at the
+            // moment of removal.
+            const rowScopes = controller.structural === undefined
+              ? []
+              : [...controller.structural.rows.values()].map(
+                  (row) => row.scope,
+                );
+            controller.structural = undefined;
+            const closeRows = rowScopes.length === 0
+              ? Effect.void
+              : Effect.forEach(
+                  rowScopes,
+                  (scope) => Scope.close(scope, Exit.void),
+                  { discard: true },
+                );
             const running = controller.running;
             controller.running = undefined;
-            if (running === undefined) return Effect.void;
+            if (running === undefined) return closeRows;
             fibers.delete(running);
-            return Fiber.interrupt(running);
+            return Effect.andThen(Fiber.interrupt(running), closeRows);
           });
         const disposeBoundaryExpressions = (
           controller: BoundaryController,
@@ -4241,7 +4630,46 @@ function installClientClaimed<R, ER>(
               });
             } else if (!controller.dirty) {
               const value = exit.value;
-              if (!isSupportedExpressionOutput(controller.target, value)) {
+              const target = controller.target;
+              const ownerBoundary = controller.entry.component === undefined
+                ? undefined
+                : controllers.get(controller.entry.component)?.boundary;
+              if (target.kind === "structural") {
+                const validated = validateStructuralOutput(
+                  target.mode,
+                  value,
+                );
+                if (!validated.ok) {
+                  report({
+                    code: "expression-execution-failure",
+                    expressionId: controller.expressionId,
+                    ...(controller.entry.component === undefined
+                      ? {}
+                      : { componentId: controller.entry.component }),
+                    reason: `Expression "${controller.expressionId}" returned invalid structural output: ${validated.reason}.`,
+                  });
+                } else {
+                  try {
+                    const patched = patchStructuralExpressionTarget(
+                      target,
+                      controller.structural,
+                      validated.rows,
+                      ownerBoundary,
+                    );
+                    controller.structural = patched.state;
+                    closeStructuralRowScopes(patched.removedScopes);
+                  } catch (error) {
+                    report({
+                      code: "expression-patch-failure",
+                      expressionId: controller.expressionId,
+                      ...(controller.entry.component === undefined
+                        ? {}
+                        : { componentId: controller.entry.component }),
+                      reason: `Expression "${controller.expressionId}" could not patch its SSR region: ${String(error)}`,
+                    });
+                  }
+                }
+              } else if (!isSupportedExpressionOutput(target, value)) {
                 report({
                   code: "expression-execution-failure",
                   expressionId: controller.expressionId,
@@ -4255,11 +4683,9 @@ function installClientClaimed<R, ER>(
               } else {
                 try {
                   patchExpressionTarget(
-                    controller.target,
+                    target,
                     value as ExpressionOutput,
-                    controller.entry.component === undefined
-                      ? undefined
-                      : controllers.get(controller.entry.component)?.boundary,
+                    ownerBoundary,
                   );
                 } catch (error) {
                   report({
@@ -5667,14 +6093,19 @@ export const Resume = {
   AttributeExpressionTargetSchema,
   ClassExpressionTargetSchema,
   StylePropertyExpressionTargetSchema,
+  StructuralExpressionTargetSchema,
   ExpressionTargetSchema,
+  ExpressionTargetV5Schema,
   ExpressionEntryV3Schema,
   ExpressionEntryV4Schema,
+  ExpressionEntryV5Schema,
   ExpressionEntrySchema,
   ManifestV3Schema,
   ManifestV4Schema,
+  ManifestV5Schema,
   ManifestSchema,
   ExpressionElementMarkerAttribute,
+  onStructuralRowScopeOpened,
   collect,
   decodeManifest,
   restoreStateBindings,

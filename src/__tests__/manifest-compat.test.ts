@@ -56,6 +56,13 @@ const MANIFEST_V4 =
   '{"version":4,"buildId":"resume-test-build","events":{"e0":{"type":"click","invocation":"deferred-no-args","code":{"version":1,"kind":"portable.code","id":"test.resume.save","buildId":"resume-test-build","captures":{"label":"Save"}}}},"components":{"c0":{"definitionName":"Counter","region":{"kind":"comment-pair"},"bindings":{"count":{"kind":"state","key":"count","value":0,"dehydratedAt":1700000000000}}}},"expressions":{"x0":{"target":{"kind":"text"},"code":{"version":1,"kind":"portable.code","id":"test.resume.label","buildId":"resume-test-build","captures":{}},"deps":["binding:c0:count"],"inputs":["count"],"component":"c0"},"x1":{"target":{"kind":"attribute","name":"aria-label"},"code":{"version":1,"kind":"portable.code","id":"test.resume.aria","buildId":"resume-test-build","captures":{}},"deps":["binding:c0:count"]},"x2":{"target":{"kind":"style-property","name":"--af-progress"},"code":{"version":1,"kind":"portable.code","id":"test.resume.progress","buildId":"resume-test-build","captures":{}},"deps":[]},"x3":{"target":{"kind":"class"},"code":{"version":1,"kind":"portable.code","id":"test.resume.class","buildId":"resume-test-build","captures":{}},"deps":[]}}}';
 
 /**
+ * v5 (newest): structural expression targets (Milestone 8d, `DQ-100`) beside
+ * the scalar target kinds v4 introduced.
+ */
+const MANIFEST_V5 =
+  '{"version":5,"buildId":"resume-test-build","events":{},"components":{"c0":{"region":{"kind":"comment-pair"},"bindings":{"items":{"kind":"state","key":"items","value":["a","b"],"dehydratedAt":1700000000000}}}},"expressions":{"x0":{"target":{"kind":"structural","mode":"list"},"code":{"version":1,"kind":"portable.code","id":"test.resume.rows","buildId":"resume-test-build","captures":{}},"deps":["binding:c0:items"],"inputs":["items"],"component":"c0"},"x1":{"target":{"kind":"structural","mode":"branch"},"code":{"version":1,"kind":"portable.code","id":"test.resume.toggle","buildId":"resume-test-build","captures":{}},"deps":["binding:c0:items"]},"x2":{"target":{"kind":"text"},"code":{"version":1,"kind":"portable.code","id":"test.resume.label","buildId":"resume-test-build","captures":{}},"deps":[]}}}';
+
+/**
  * A manifest claiming a version this library does not know. Kept alongside the
  * real fixtures because "an old client meets a new payload" must fail closed
  * with a decode error rather than crash or partially install.
@@ -69,6 +76,7 @@ const fixtures = [
   ["v2 component bindings", MANIFEST_V2, 2],
   ["v3 region expressions", MANIFEST_V3, 3],
   ["v4 target expressions", MANIFEST_V4, 4],
+  ["v5 structural expressions", MANIFEST_V5, 5],
 ] as const;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -182,6 +190,33 @@ describe("resume manifest cross-version compatibility", () => {
       { kind: "style-property", name: "--af-progress" },
       { kind: "class" },
     ]);
+  });
+
+  it("decodes v5 structural targets and keeps v4 decoding on a v5 client", () => {
+    const manifest = decode(MANIFEST_V5);
+    expect(manifest.version).toBe(5);
+    if (manifest.version !== 5) return;
+
+    const targets = Object.values(manifest.expressions).map(
+      (entry) => entry.target,
+    );
+    expect(targets).toEqual([
+      { kind: "structural", mode: "list" },
+      { kind: "structural", mode: "branch" },
+      { kind: "text" },
+    ]);
+
+    // A v4 payload from an older deploy of the same build still decodes on
+    // this (v5-capable) client — the bump is additive, not a break.
+    expect(decode(MANIFEST_V4).version).toBe(4);
+
+    // NEGATIVE CONTROL: a structural target smuggled into a v4 payload is a
+    // decode failure, not a silent acceptance — the member exists at v5 only.
+    const smuggled = MANIFEST_V4.replace(
+      '{"kind":"text"}',
+      '{"kind":"structural","mode":"list"}',
+    );
+    expect(decodeFailure(smuggled)._tag).toBe("ResumeManifestDecodeError");
   });
 
   it.each(fixtures)(

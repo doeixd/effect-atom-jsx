@@ -10,10 +10,14 @@ import {
   inspectExpression,
   isExpressionAttributeName,
   isExpressionStylePropertyName,
+  encodeStructuralRowKey,
   onExpressionCreated,
+  validateStructuralOutput,
   type ExpressionDependencyDecodeError,
+  type ExpressionInspection,
   type ExpressionTargetValue,
   type ResumableExpression,
+  type StructuralMode,
 } from "./resume-expression.js";
 import type { SetupPlan, SetupStepInspection } from "./Component.js";
 import {
@@ -324,6 +328,19 @@ export function observeRenderedExpression(
   const resolvedInputs = resolved.inputs;
   const inputsMatchDeps = resolvedInputs === undefined;
 
+  if (inspection.structuralMode !== undefined) {
+    return observeStructuralExpressionRegion(
+      session,
+      inspection,
+      insertion,
+      ownerComponentId,
+      inspection.structuralMode,
+      value,
+      canonicalDeps,
+      resolvedInputs,
+    );
+  }
+
   if (typeof value !== "string" && typeof value !== "number") {
     session.invalidExpressionRegions.add(insertion);
     const observation = session.expressionRegions.get(insertion);
@@ -392,6 +409,103 @@ export function observeRenderedExpression(
     value,
     observation.end,
   ];
+}
+
+/**
+ * Observe one structural (keyed list / branch) expression during SSR.
+ *
+ * Rows are wrapped in `af:row` marker comment pairs inside the ordinary
+ * `af:expr` region; the marker carries the row key so the dormant client can
+ * recover "the row with key k is these nodes" without any element-root
+ * constraint (`DQ-100`, decided by measurement 2026-08-11).
+ *
+ * @internal
+ */
+function observeStructuralExpressionRegion(
+  session: ResumeSession,
+  inspection: ExpressionInspection,
+  insertion: object,
+  ownerComponentId: string | undefined,
+  mode: StructuralMode,
+  value: unknown,
+  canonicalDeps: ReadonlyArray<string>,
+  resolvedInputs: ReadonlyArray<string> | undefined,
+): unknown {
+  const validated = validateStructuralOutput(mode, value);
+  if (!validated.ok) {
+    session.invalidExpressionRegions.add(insertion);
+    const observation = session.expressionRegions.get(insertion);
+    recordFallbackDiagnostic(session, {
+      code: "unsupported-expression-output",
+      ...(ownerComponentId === undefined
+        ? {}
+        : { componentId: ownerComponentId }),
+      codeId: inspection.executable.code.id,
+      ...(observation === undefined ? {} : { expressionId: observation.id }),
+      reason:
+        `Expression "${inspection.executable.code.id}" produced invalid structural output: ${validated.reason}.`,
+    });
+    return value;
+  }
+
+  const documentValue = (
+    globalThis as {
+      readonly document?: {
+        readonly createComment?: (text: string) => unknown;
+      };
+    }
+  ).document;
+  if (typeof documentValue?.createComment !== "function") {
+    session.invalidExpressionRegions.add(insertion);
+    recordFallbackDiagnostic(session, {
+      code: "missing-expression-boundary",
+      ...(ownerComponentId === undefined
+        ? {}
+        : { componentId: ownerComponentId }),
+      codeId: inspection.executable.code.id,
+      reason:
+        `Expression "${inspection.executable.code.id}" rendered without an SSR document capable of creating ownership markers.`,
+    });
+    return value;
+  }
+
+  if (session.invalidExpressionRegions.has(insertion)) return value;
+  let observation = session.expressionRegions.get(insertion);
+  if (observation === undefined) {
+    const expressionId = `x${session.nextExpressionId}`;
+    session.nextExpressionId += 1;
+    observation = {
+      id: expressionId,
+      start: documentValue.createComment(`af:expr:${expressionId}:start`),
+      end: documentValue.createComment(`af:expr:${expressionId}:end`),
+    };
+    session.expressionRegions.set(insertion, observation);
+    session.expressions.push({
+      id: expressionId,
+      target: { kind: "structural", mode },
+      executable: inspection.executable,
+      deps: canonicalDeps,
+      ...(resolvedInputs === undefined ? {} : { inputs: resolvedInputs }),
+      ...(ownerComponentId === undefined ? {} : { ownerComponentId }),
+      validateDependencies: inspection.validateDependencies,
+      source: insertion,
+    });
+  }
+  const output: unknown[] = [observation.start];
+  for (const row of validated.rows) {
+    const encodedKey = encodeStructuralRowKey(row.key);
+    output.push(
+      documentValue.createComment(
+        `af:row:${observation.id}:${encodedKey}:s`,
+      ),
+      row.text,
+      documentValue.createComment(
+        `af:row:${observation.id}:${encodedKey}:e`,
+      ),
+    );
+  }
+  output.push(observation.end);
+  return output;
 }
 
 /**
@@ -559,6 +673,8 @@ function describeExpressionTarget(target: ExpressionTargetValue): string {
       return `the "${target.name}" attribute`;
     case "style-property":
       return `the "${target.name}" style property`;
+    case "structural":
+      return `a structural ${target.mode} region`;
   }
 }
 
@@ -566,6 +682,7 @@ function expressionTargetIsAllowed(target: ExpressionTargetValue): boolean {
   switch (target.kind) {
     case "text":
     case "class":
+    case "structural":
       return true;
     case "attribute":
       return isExpressionAttributeName(target.name);
@@ -600,6 +717,23 @@ export function observeRenderedExpressionTarget(
 
   session.renderedExpressions.add(expression);
   const ownerComponentId = session.currentComponentIds.at(-1);
+
+  if (inspection.structuralMode !== undefined) {
+    // A structural expression's output is content, not a scalar; writing it
+    // into an attribute/class/style slot would serialize garbage into served
+    // HTML, so the write is suppressed like a refused target name.
+    session.invalidExpressionRegions.add(registration);
+    recordFallbackDiagnostic(session, {
+      code: "unsupported-expression-output",
+      ...(ownerComponentId === undefined
+        ? {}
+        : { componentId: ownerComponentId }),
+      codeId: inspection.executable.code.id,
+      reason:
+        `Expression "${inspection.executable.code.id}" is a structural ${inspection.structuralMode} expression and cannot target ${describeExpressionTarget(target)}; insert it as content.`,
+    });
+    return refusedExpressionTarget;
+  }
 
   if (!expressionTargetIsAllowed(target)) {
     session.invalidExpressionRegions.add(registration);

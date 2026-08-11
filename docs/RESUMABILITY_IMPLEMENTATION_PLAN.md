@@ -1154,8 +1154,30 @@ resumability, rather than only portable event handlers or partial activation.
 
 ### Milestone 8d — Structural expression targets (keyed lists, branch replacement)
 
-Status: **in progress** — face 1 (the keyed-reconciliation prerequisite) landed
-2026-08-11; faces 2 and 3 are specified and unblocked by `DQ-100`.
+Status: **implemented** (2026-08-11) — all three faces landed. Face 1
+(`dom.reconcileArrays`), face 2 (collect-side `af:row` marker pairs, the
+`structural` target kind, manifest v5), and face 3 (client reconciliation with
+per-instance row `Scope`s closed from the reconciler's own removal list) are
+in `src/Resume.ts`, `src/resume-session.ts`, and `src/resume-expression.ts`,
+tested in `src/__tests__/resume-structural.test.ts` (lifecycle assertions
+count finalizer runs at removal; every test verified by breaking the source)
+and `src/__tests__/manifest-compat.test.ts` (v5 fixture, v4-on-v5-client, and
+a structural-target-smuggled-into-v4 negative control).
+`future/resumability/fences.spec.ts` went fully green and was **promoted**:
+its coverage now lives in those files plus `reconcile.test.ts` and the
+existing fence tests in `resume.test.ts`, and the future file was removed.
+
+**First-slice authoring shape (provisional, chosen at implementation time).**
+A structural expression's render returns rows of
+`{ key: string, text: string | number }` — `list` renders an array, `branch`
+renders one row or `null` — authored via
+`structuralExpressionCode({ mode, ... })` / `bindStructuralExpression(...)`
+(exported from `portable-extract`). Rows carry **text content only** in this
+slice; widening row content (nested expressions, elements, event handlers —
+the point of the per-row `Scope`) is the milestone's remaining direction, and
+the row Scope is where those subscribers will register. Row keys are
+comment-encoded (`encodeURIComponent` plus `-` → `%2D`) so a hostile key can
+never break the marker comment.
 
 Gated on M8c.7's measurement go/no-go, which **returned GO**. `DQ-010` deferred
 the region representation to this milestone precisely so it would not be
@@ -1197,25 +1219,40 @@ Work:
    private function" premise was wrong and hid two defects — the reconciler
    dropped surviving nodes on reorder, and `ServerNode.insertBefore` duplicated
    rather than moved. See the correction in `RESUMABILITY_M8C_PLAN.md`.
-2. **Region representation.** A structural region delimited by the existing
+2. **Region representation.** Status: **done** (2026-08-11). A structural
+   region delimited by the existing
    `af:expr:<id>:start|end` markers, holding `Map<key, Scope>`. Disposal is
    driven from **the same computation that produces the reconciler's removals**,
    so "dropped from the DOM" and "Scope closed" are derived from one list rather
    than kept in agreement by convention — the structural-vs-guarded move that
    closed `DQ-099` and the M4 install race.
-3. **Collect side.** Emit the per-row marker pair, the `structural` target
-   kind, and the v5 manifest entry. No single-element-root fence is needed —
-   markers delimit text, fragment, and multi-node rows equally.
-4. **Client side.** Resolve the region's portable code on first invalidation,
-   recover each row's nodes from its marker pair, reconcile by key, close the
-   `Scope`s of dropped rows, and open child `Scope`s for added ones.
-5. **Manifest compatibility.** Extend `manifest-compat.test.ts` with v5
-   fixtures and a v4-decodes-on-v5-client case.
-6. **Re-read the slope once rows are real.** The 35 B/row figure prices the
+3. **Collect side.** Status: **done** (2026-08-11). Emits the per-row marker
+   pair, the `structural` target kind, and the v5 manifest entry (v4 is still
+   emitted when no structural entry exists, so older payloads stay decodable).
+   No single-element-root fence is needed — markers delimit text, fragment,
+   and multi-node rows equally. Invalid structural output (bad row shape,
+   duplicate keys) fails closed with `unsupported-expression-output`; a
+   structural expression bound to an attribute/class/style target is refused
+   with a suppressed write.
+4. **Client side.** Status: **done** (2026-08-11). Resolves the region's
+   portable code on first invalidation, recovers each row's nodes from its
+   marker pair, reconciles by key via `dom.reconcileArrays`, closes the
+   `Scope`s of dropped rows from the same key diff, and opens child `Scope`s
+   for added ones. Surviving rows close with the installation.
+   `Resume.onStructuralRowScopeOpened` is the internal test hook for counting
+   finalizer runs.
+5. **Manifest compatibility.** Status: **done** (2026-08-11). v5 fixture,
+   v4-decodes-on-v5-client, and a negative control proving a structural target
+   smuggled into a v4 payload fails decoding.
+6. **Re-read the slope once rows are real.** Status: **open** — the only
+   remaining M8d item. The 35 B/row figure prices the
    *markers only*; the per-row `Scope` cancelled out of the paired delta
-   because both options needed it. Re-run the density lane after faces 2 and 3
-   land and quote the linear per-row cost, not the ratio — 24 rows is a small
-   list and the ratio does not extrapolate to a 10,000-row table.
+   because both options needed it. Re-run the density lane after converting
+   the benchmark fixture's rows to authored structural expressions and quote
+   the linear per-row cost, not the ratio — 24 rows is a small
+   list and the ratio does not extrapolate to a 10,000-row table. (The 8c
+   gates were re-run unchanged after faces 2 and 3 landed; converting the
+   fixture to structural rows is the substantive remaining work.)
 
 Acceptance:
 
