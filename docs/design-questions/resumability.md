@@ -800,9 +800,11 @@ are already marked decided and ratified in place; no entry resurrects them.
 > `RESUMABILITY_IMPLEMENTATION_PLAN.md` §Milestone 8d, which is the
 > authoritative statement; this entry is retained as the reasoning record.
 >
-> The one thing ratification does **not** settle: whether `data-af-key` or
-> per-row markers win. That is a measurement, not an argument — see the Open
-> item under Milestone 8d.
+> **Superseded in part, 2026-08-11:** the open measurement was run, and
+> **per-row markers won** — see the Measurement result section at the end of
+> this entry. Per-row identity is now marker comments, not `data-af-key`, which
+> deletes the single-element-root authoring constraint and M8d's compiler work
+> item. Recommendations (1) and (3) are unchanged.
 
 - **Severity:** blocking (M8d cannot start without it) — **resolved**
 - **Owning plan:** `docs/RESUMABILITY_M8C_PLAN.md` §DQ-010 → Milestone 8d
@@ -1018,3 +1020,85 @@ expose it" — see the correction in `RESUMABILITY_M8C_PLAN.md`), `DQ-002`
 (`ExpressionOutput` widening is *not* a wire change; this is), `DQ-099` and the
 M4 install race (both structural-vs-guarded precedents), and M8c.7's payload
 gates.
+
+---
+
+## Measurement result — per-row markers win (2026-08-11)
+
+DQ-030 recommendation (2) was ratified with an explicit escape clause: *"run the
+density-24 fixture with per-row markers and read the measured slope. If markers
+come in under 1.10, Option 1 is strictly more general and I would switch."*
+
+**Measured. They come in far under. Switching to per-row markers.**
+
+### Method
+
+An env-gated lane (`AF_BENCH_ROW_MARKERS=1`) wraps every resumable row in a
+comment pair shaped like the proposed markers (`<!--af:row:x<n>:s-->` / `:e`).
+Two arms, same session, same machine, 3 runs each, compared as a **paired
+delta** rather than as a re-pin of the recorded baseline — the absolute heap
+figures here do not reproduce the checked-in 5-run baseline, so only the
+difference between the two arms is claimed.
+
+`data-af-key` needs no lane: these rows already carry a
+`data-expression-index` attribute, so its cost is already inside the baseline.
+
+### Result
+
+| metric | baseline | + row markers | delta |
+| --- | ---: | ---: | ---: |
+| **slope** (ceiling **1.10**) | 0.6648 | **0.6840** | +0.0192 |
+| fixed gap (ceiling 204,800) | 49,636 | 50,404 | +768 |
+| dormant heap growth 1→24 | 26,184 | 26,940 | +756 |
+| eager heap growth 1→24 | 39,384 | 39,384 | 0 |
+| attribution net growth | 26,044 | 26,848 | +804 |
+| document raw bytes @24 | 12,019 | 12,911 | +892 |
+| document gzip bytes @24 | 1,616 | 1,766 | +150 |
+
+**Per row: 37.2 B raw, 6.2 B gzipped, 35 B retained heap.**
+
+Slope headroom remaining after markers: **0.4160**. Markers consume about
+**4.7%** of the available headroom — dormant per-row cost would have to rise by
+roughly 745 B/row to reach the ceiling, and markers cost 35 B. The same
+direction and magnitude appeared in an earlier single-run pass (0.6665 →
+0.6843), so this is not one noisy sample.
+
+Gzip is where the intuition was most wrong: repeated comment markers compress
+to **6.2 bytes per row**, because they are near-identical strings.
+
+### Consequence — the ratified design changes
+
+**Per-row identity is now marker comments, not `data-af-key`.**
+
+This *removes* work rather than adding it. The `data-af-key` option required
+every row to have exactly one element root, which was going to be enforced by a
+new rejection in the Babel plugin plus a collect-time diagnostic and a
+non-resumable fallback for the dynamic path. Markers work for rows that are
+text, fragments, or several top-level nodes, so:
+
+- the **single-element-root constraint disappears entirely** — it was the one
+  load-bearing authoring constraint in the design, and the risk flagged when it
+  was ratified ("I do not know how often real lists violate it") is now moot;
+- **Milestone 8d loses its compiler work item**;
+- the "no single element root" collect diagnostic and fallback are no longer
+  needed.
+
+Recommendations (1) per-instance child `Scope`s and (3) one `structural`
+manifest member at v5 are **unchanged**.
+
+### What this measurement does not cover
+
+- **The per-row `Scope` is not measured.** Both options need it equally, so it
+  cancels in the delta — but it means the 35 B/row figure is the *marker* cost,
+  not the total per-row cost of a structural region. The real per-row cost will
+  be higher, and the slope should be re-read once faces 2 and 3 are built.
+- **24 rows is a small list.** Slope is a ratio of growths measured between
+  densities 1 and 24; a 10,000-row table is outside the fixture's range. The
+  linear extrapolation (35 B/row) is the honest thing to quote, not the ratio.
+- **The 1.10 slope gate is not automated.** Neither `run.mjs` nor `verify.mjs`
+  computes it; it is a documented checkpoint read by hand from the result JSON.
+  Worth automating before it is relied on again — a gate nobody runs is a gate
+  that has already stopped working.
+
+The measurement lane stays in the fixture, env-gated and off by default, so this
+comparison is repeatable rather than a one-off number in a document.

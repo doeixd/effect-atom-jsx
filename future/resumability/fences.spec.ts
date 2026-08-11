@@ -191,8 +191,11 @@ describe("M8 structural fences", () => {
     //   - each row gets a per-instance child `Scope`, closed when the
     //     reconciler drops the row, driven off the *same* removal list so DOM
     //     removal and Scope closure cannot drift apart;
-    //   - per-row identity is `data-af-key` on a single element root, fenced
-    //     at compile time by the Babel rejector;
+    //   - per-row identity is a marker comment pair per row, chosen by
+    //     measurement (0.6840 against the 1.10 slope ceiling; 37.2 B raw,
+    //     6.2 B gzipped, 35 B retained per row). An earlier `data-af-key`
+    //     ratification was overturned by its own escape clause, which also
+    //     deleted the single-element-root authoring constraint;
     //   - the manifest gains one `{ kind: "structural", mode }` member at v5.
     //
     // The earlier provisional lean -- a single region owner shared by all rows

@@ -58,16 +58,41 @@ function resumableText(
   );
 }
 
+/**
+ * DQ-030 measurement lane. When `AF_BENCH_ROW_MARKERS=1`, every resumable row
+ * is wrapped in a comment pair shaped like the per-row markers option
+ * (`<!--af:row:<id>:s-->` / `:e`). This is the only way to price that option
+ * against the 1.10 slope ceiling before building it: the ratified alternative,
+ * `data-af-key`, is already represented by the `data-expression-index`
+ * attribute these rows carry.
+ *
+ * It measures the *marker* cost only -- DOM comment nodes and their payload
+ * bytes -- not the per-row `Scope` that both options need equally, so the
+ * result is a lower bound on the true difference.
+ */
+const rowMarkersEnabled = (): boolean => {
+  const env = (globalThis as { readonly process?: { readonly env?: Record<string, string | undefined> } })
+    .process?.env;
+  return env?.["AF_BENCH_ROW_MARKERS"] === "1";
+};
+
 function row(
   index: number,
   key: "shared" | "independent",
   value: string | number | (() => string | number),
-): Element {
+  markers = false,
+): Element | ReadonlyArray<unknown> {
   const output = outputTemplate();
   setAttribute(output, "data-expression-index", String(index));
   setAttribute(output, "data-expression-key", key);
   insert(output, value);
-  return output;
+  if (!markers || !rowMarkersEnabled()) return output;
+  const doc = globalThis.document;
+  return [
+    doc.createComment(`af:row:x${index}:s`),
+    output,
+    doc.createComment(`af:row:x${index}:e`),
+  ];
 }
 
 function instrumentView(): Element {
@@ -86,7 +111,7 @@ const MinimalResumable = Component.make(
     }),
   (_props, bindings) => {
     const section = instrumentView();
-    insert(section, row(0, "shared", resumableText("shared-0", bindings.shared)));
+    insert(section, row(0, "shared", resumableText("shared-0", bindings.shared), true));
     return section;
   },
 );
@@ -169,6 +194,7 @@ const RealisticResumable = Component.make(
           index,
           "shared",
           resumableText(`shared-${index}`, bindings.shared),
+          true,
         ),
       );
     }
@@ -179,6 +205,7 @@ const RealisticResumable = Component.make(
           index + 12,
           "independent",
           resumableText(`independent-${index}`, independents[index]!),
+          true,
         ),
       );
     }

@@ -1173,13 +1173,16 @@ designed before that gate reported; `DQ-030` now decides it.
    provisional lean and is **overruled**: it cannot dispose a single removed
    row, which is the milestone's primary case. Branch replacement is the
    degenerate one-instance case, so there is one mechanism, not two.
-2. **Per-row identity is `data-af-key` on a single element root**, fenced at
-   **compile time** by the Babel plugin's existing rejector (the one that
-   already code-frames `onClick`, spread, `href`/`src`, `prop:*`, `ref`,
-   component props, and member elements), with the collect-time diagnostic
-   retained only for the dynamic/generated path. Chosen over per-row marker
-   comments because markers push directly on the **slope ceiling of 1.10**, the
-   gate that scales with row count.
+2. **Per-row identity is a marker comment pair** per row
+   (`<!--af:row:x<n>:s-->` / `:e`), **measured 2026-08-11**. `data-af-key` on a
+   single element root was ratified first and then **overturned by its own
+   escape clause**: markers were priced against the slope ceiling and came in at
+   **0.6840 against a 1.10 ceiling** (+0.0192 over baseline), costing **37.2 B
+   raw, 6.2 B gzipped, and 35 B retained heap per row** — about 4.7% of
+   available headroom. Markers also work for rows that are text, fragments, or
+   several top-level nodes, so the **single-element-root authoring constraint
+   is gone**, and with it M8d's compiler work item and the "no single element
+   root" fallback. See the Measurement result in `DQ-030`.
 3. **The manifest gains one `{ kind: "structural", mode: "list" | "branch" }`
    member**, extending the existing compile-time exhaustiveness device at
    `Resume.ts:262-275` rather than adding a parallel one. `target` *is* a wire
@@ -1200,16 +1203,19 @@ Work:
    so "dropped from the DOM" and "Scope closed" are derived from one list rather
    than kept in agreement by convention — the structural-vs-guarded move that
    closed `DQ-099` and the M4 install race.
-3. **Collect side.** Emit `data-af-key` per row, the `structural` target kind,
-   and the v5 manifest entry. Fail closed with a named diagnostic when a row has
-   no single element root on the dynamic path.
-4. **Compiler side.** Reject a non-single-element-root row in authored JSX with
-   a code frame, next to the existing JSX rejections.
-5. **Client side.** Resolve the region's portable code on first invalidation,
-   reconcile rows by key, close the Scopes of dropped rows, and open child
-   Scopes for added ones.
-6. **Manifest compatibility.** Extend `manifest-compat.test.ts` with v5
+3. **Collect side.** Emit the per-row marker pair, the `structural` target
+   kind, and the v5 manifest entry. No single-element-root fence is needed —
+   markers delimit text, fragment, and multi-node rows equally.
+4. **Client side.** Resolve the region's portable code on first invalidation,
+   recover each row's nodes from its marker pair, reconcile by key, close the
+   `Scope`s of dropped rows, and open child `Scope`s for added ones.
+5. **Manifest compatibility.** Extend `manifest-compat.test.ts` with v5
    fixtures and a v4-decodes-on-v5-client case.
+6. **Re-read the slope once rows are real.** The 35 B/row figure prices the
+   *markers only*; the per-row `Scope` cancelled out of the paired delta
+   because both options needed it. Re-run the density lane after faces 2 and 3
+   land and quote the linear per-row cost, not the ratio — 24 rows is a small
+   list and the ratio does not extrapolate to a 10,000-row table.
 
 Acceptance:
 
@@ -1227,13 +1233,16 @@ Acceptance:
   falls back with a diagnostic on the dynamic path.
 - The 8c payload and slope gates still pass at density 24.
 
-Open, and deliberately not decided here:
+Open:
 
-- **Whether `data-af-key` or per-row markers win** is settled by measurement,
-  not argument: run the density-24 fixture with markers and read the slope. If
-  markers come in under 1.10 they are strictly more general and should replace
-  `data-af-key`. Until that is run, `data-af-key` is the ratified choice and the
-  single-element-root constraint is load-bearing.
+- **The 1.10 slope gate is not automated.** Neither `run.mjs` nor `verify.mjs`
+  computes it; it is a documented checkpoint read by hand out of the result
+  JSON. It was relied on to make this decision, so it should be moved into
+  `verify.mjs` before it is relied on again — a gate nobody runs is a gate that
+  has already stopped working. Small, and not a blocker for M8d.
+- **Measurement lane.** `AF_BENCH_ROW_MARKERS=1` on the benchmark build wraps
+  every resumable row in a marker pair. Env-gated and off by default; kept so
+  the comparison is repeatable rather than a number in a document.
 
 ### Milestone 9 — Hardening, documentation, and adapter stability
 

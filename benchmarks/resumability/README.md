@@ -151,3 +151,31 @@ comparable across runs.
 Dormant grows **more slowly per expression than eager** (1,138 B/expr vs
 1,710 B/expr). The widening itself cost **288 raw / 11 gzip bytes at density 24**
 (8,186 → 8,474 raw; 766 → 777 gzip).
+
+## DQ-030 measurement lane — per-row markers (2026-08-11)
+
+`AF_BENCH_ROW_MARKERS=1` on the **build** (the fixtures are server-rendered at
+build time, so setting it at run time does nothing) wraps every resumable row in
+a comment pair shaped like M8d's proposed per-row markers. It exists to price
+that option against the slope ceiling before building it.
+
+```bash
+AF_BENCH_ROW_MARKERS=1 npm run build:resumability-benchmark
+node benchmarks/resumability/run.mjs --runs 3 --warm 3
+```
+
+Paired-delta result, 3 runs per arm, same session: slope **0.6648 → 0.6840**
+against the 1.10 ceiling, costing **37.2 B raw / 6.2 B gzipped / 35 B retained
+heap per row**. Markers therefore won over `data-af-key`, which also deleted an
+authoring constraint. Full numbers and caveats: `DQ-030` in
+`docs/design-questions/resumability.md`.
+
+Two things this lane made visible that outlast the decision:
+
+- **Compare arms, not absolutes.** These runs did not reproduce the checked-in
+  5-run baseline's absolute heap figures, so only the difference between the two
+  arms is claimed. Quoting an absolute from a short local run as if it were the
+  baseline is how a re-pin goes wrong.
+- **The 1.10 slope gate is not automated.** Neither `run.mjs` nor `verify.mjs`
+  computes it — it is read by hand from the result JSON. It should move into
+  `verify.mjs`.
