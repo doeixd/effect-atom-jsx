@@ -63,7 +63,7 @@ what makes it safe to let agents edit plans at all.
 | File | Contents |
 | --- | --- |
 | `_TEMPLATE.md` | Copy this for a new entry. |
-| `resumability.md` | Triaged questions: expressions, manifests, SPI, streaming (`DQ-001`–`DQ-029`) |
+| `resumability.md` | Triaged questions: expressions, manifests, SPI, streaming (`DQ-001`–`DQ-030`) |
 | `router.md` | Triaged: routing, loaders, navigation, wire (`DQ-030`–`DQ-049`) |
 | `components.md` | Triaged: slots, views, styles, behaviors, kit (`DQ-050`–`DQ-079`) |
 | `platform.md` | Triaged: agent catalog, result/serialization, identity, cross-cutting (`DQ-080`–`DQ-099`) |

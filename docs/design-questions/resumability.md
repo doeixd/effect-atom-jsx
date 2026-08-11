@@ -787,3 +787,150 @@ DQ-001 describes, because this Effect v4 beta has no `FiberRef` and
 `Effect.runSync` starts a fresh fiber. Likewise the **M8 keys-only** decision
 (design-doc OQ 3) and the **M8a expression-identity** decision (design-doc OQ 2)
 are already marked decided and ratified in place; no entry resurrects them.
+
+---
+
+## DQ-030 — Who owns a structural region's content subscribers, and how is per-row identity carried?
+
+- **Severity:** blocking (M8d cannot start without it)
+- **Owning plan:** `docs/RESUMABILITY_M8C_PLAN.md` §DQ-010 → Milestone 8d
+- **Raised:** 2026-08-11, after closing the M8.6 keyed-reconciliation
+  prerequisite and finding the two remaining structural specs still `unbuilt`
+- **Blocks specs:** `future/resumability/fences.spec.ts` — "[M8.6] resumes a
+  keyed list region by patching only the changed rows" and "[M8.6] resumes a
+  conditional branch by replacing the region's content under one owner"
+
+**What I was doing.** Implementing M8d. Face 1 (`dom.reconcileArrays`) is done
+and green. Faces 2 and 3 need a region representation, and DQ-010 deliberately
+deferred that rather than pre-empting 8c.7's gate. The gate returned GO, so the
+decision is now due.
+
+**What is undecided.** Three coupled sub-questions. They are coupled because the
+answer to (1) determines what (2) must carry and what (3) must fence.
+
+### 1. Which owner disposes a removed row's or an outgoing branch's subscribers?
+
+Today there is **no per-expression reactive owner at all**. An expression is
+dormant; on invalidation its controller resolves the portable code, runs it,
+receives a scalar `ExpressionOutput`, and patches (`Resume.ts:4257`,
+`patchExpressionTarget`). Nothing subscribes, so nothing needs disposing. A
+structural target breaks that: its output is *content*, and content can contain
+nested expressions, event handlers, and behaviors.
+
+Ownership today is **positional, not lexical** — `componentBoundaryContains`
+(`Resume.ts:3285`) walks the DOM between the component's start/end markers. That
+answers "is this element still mine". It does **not** answer "whose finalizers
+run when this row leaves".
+
+### 2. How does the client map SSR nodes to keys?
+
+`reconcileArrays` takes `Node[]` and preserves identity, but the resume path
+receives markers and HTML, not a node array. Something must let the client
+recover "the row with key `k` is these nodes" from the server's output.
+
+### 3. What is the manifest target kind, and does it bump the version?
+
+`target: ExpressionTargetSchema` **is** a wire field (`ExpressionEntryFields`,
+`Resume.ts:313`), unlike `ExpressionOutput` — which is why DQ-002's correction
+("widening is authoring/patch only, no manifest bump") does *not* transfer here.
+Adding structural members is a real v4 → v5 bump.
+
+**Why it matters.** Without (1), a long-lived list leaks every removed row's
+subscribers until the whole component disposes — the exact failure the
+prerequisite spec's `expect(seen[1]).not.toContain(b)` anticipates ("leaks are
+what the region-ownership question exists to settle"). Without (2), a resumed
+list can only be replaced wholesale, which defeats the milestone. Without (3),
+the fence cannot distinguish "structural output on a text target" (must stay
+rejected) from "structural output on a structural target" (must be accepted).
+
+---
+
+**Options for (1) — ownership.**
+
+1. **Boundary owns everything** (status quo, extended). The component boundary
+   owns all subscribers; a removed row's subscribers live until the component
+   disposes. *Cost:* an unbounded leak proportional to list churn — a feed
+   replacing 50 rows a minute accumulates forever. *Buys:* zero new machinery.
+2. **Region owner** — one lightweight owner per region, nested under the
+   boundary owner. This is the provisional lean recorded in the spec. *Cost:*
+   correct for **branch replacement** (all content swaps at once) but **not for
+   keyed lists**: removing one row cannot dispose only that row's subscribers,
+   because they share the region's owner. *Buys:* one owner per region; cheap.
+3. **Per-instance owner under a region owner** — the region holds
+   `Map<key, Owner>`; each row or branch instance gets its own child owner,
+   disposed exactly when `reconcileArrays` drops that node. *Cost:* one owner
+   per row (an object plus a finalizer array), and a disposal path that must
+   stay in lockstep with the reconciler. *Buys:* precise disposal, and branch
+   replacement becomes the degenerate single-instance case rather than a second
+   mechanism.
+
+**Options for (2) — per-row identity.**
+
+1. **Per-row marker comments** (`<!--af:row:x0:k1:start-->` / `:end`). *Cost:*
+   two comments per row of payload. This lands directly on the 8c gates — the
+   fixed-gap ceiling of 204,800 B and the **slope ceiling of 1.10** — and slope
+   is the one that scales with row count, so it is the gate most at risk.
+   *Buys:* works for rows that are text, fragments, or several top-level nodes.
+2. **`data-af-key` on the row's root element.** *Cost:* requires each row to
+   have exactly one *element* root; text-only or multi-node rows cannot carry it
+   and need a collect-time diagnostic and fallback. *Buys:* far cheaper on the
+   wire, and it reuses the existing element-target ownership check instead of
+   adding a second marker-scanning path.
+3. **Positional / index-only.** *Cost:* breaks under reorder, which is the
+   entire point of keyed reconciliation. *Buys:* nothing here; listed so it is
+   rejected explicitly rather than by omission.
+
+**Options for (3) — manifest shape.**
+
+1. **Two new union members**, `{ kind: "list" }` and `{ kind: "branch" }`.
+   *Buys:* each carries only its own fields.
+2. **One member**, `{ kind: "structural", mode: "list" | "branch" }`. *Buys:* a
+   single fence predicate (`kind === "structural"`) rather than two that can
+   drift apart.
+
+---
+
+**Recommendation.**
+
+**(1) Option 3 — per-instance owners under a region owner.** Option 1 is a known
+leak. Option 2 is *insufficient for the primary use case*: the milestone is
+named for keyed lists, and a region-level owner cannot dispose a single removed
+row. Option 3 subsumes branch replacement as the one-instance case, so we build
+one mechanism instead of two. **This overrules the provisional lean recorded in
+the spec**, which should be updated on ratification — that lean predates face 1
+and reads as though branch replacement were the shaping case.
+
+Concretely: disposal is driven from the same computation that produces the
+reconciler's removals, so "dropped from the DOM" and "owner disposed" are
+derived from one list rather than kept in agreement by convention. That is the
+structural-vs-guarded distinction that closed `DQ-099` and the M4 install race —
+the two prior cases where an invariant maintained by convention turned out to be
+violable.
+
+**(2) Option 2 — `data-af-key`, with a fail-closed diagnostic.** The slope gate
+is the binding constraint and Option 1 pushes directly on it. A row whose root is
+not a single element gets a named collect diagnostic and the list ships
+non-resumable, consistent with every other fence in this subsystem.
+
+The residual risk, stated plainly: this makes a single element root a
+**load-bearing authoring constraint**, and I do not know how often real lists
+violate it. **What would settle it:** run the 8c density-24 fixture with per-row
+markers and read the measured slope. If markers come in under 1.10, Option 1 is
+strictly more general and I would switch to it.
+
+**(3) Option 2 — one `structural` member with a `mode` field**, so the fence
+predicate stays single-sited. The v4 → v5 bump is real but low-risk: buildId is
+enforced at seven sites, so a stale client cannot silently misread a v5
+manifest — it fails closed and falls back, which is the M7 audit's headline
+negative result.
+
+**What I did in the meantime.** Nothing was assumed. Face 1 shipped on its own
+merits — `dom.reconcileArrays` is correct and useful independently of this
+question — and both structural specs remain `unbuilt(...)`. No region
+representation, target kind, or owner type has been added to the source.
+
+**Related.** `DQ-010` (deferred this milestone, and mis-ratified face 1 as "just
+expose it" — see the correction in `RESUMABILITY_M8C_PLAN.md`), `DQ-002`
+(`ExpressionOutput` widening is *not* a wire change; this is), `DQ-099` and the
+M4 install race (both structural-vs-guarded precedents), and M8c.7's payload
+gates.
