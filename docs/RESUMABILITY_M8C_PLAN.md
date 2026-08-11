@@ -757,7 +757,7 @@ may have built the counting version. The ratified shape is **`regionIds` set
 equality** against the flushed regions — which detects a duplicated or reordered
 flush, and a counter cannot.
 
-> **Region representation decided (2026-08-11).** `DQ-030` ratifies
+> **Region representation decided (2026-08-11).** `DQ-100` ratifies
 > per-instance child `Scope`s, `data-af-key` fenced at compile time, and one
 > `{ kind: "structural", mode }` manifest member at v5. The provisional lean
 > recorded here and in `future/resumability/fences.spec.ts` — a single region

@@ -185,7 +185,7 @@ describe("M8 structural fences", () => {
   });
 
   it("[M8.6] resumes a keyed list region by patching only the changed rows", async () => {
-    // DESIGN DECIDED, NOT YET BUILT. DQ-030 (ratified 2026-08-11) settles what
+    // DESIGN DECIDED, NOT YET BUILT. DQ-100 (ratified 2026-08-11) settles what
     // DQ-010 deferred until 8c.7's gate reported GO:
     //
     //   - each row gets a per-instance child `Scope`, closed when the
@@ -208,18 +208,18 @@ describe("M8 structural fences", () => {
     // precisely the leak.
     unbuilt(
       "the keyed-list expression target: region representation, per-row Scope lifecycle, and the structural manifest kind",
-      "Milestone 8d (design ratified in DQ-030)",
+      "Milestone 8d (design ratified in DQ-100)",
     );
   });
 
   it("[M8.6] resumes a conditional branch by replacing the region's content under one owner", async () => {
-    // Per DQ-030, branch replacement is the degenerate single-instance case of
+    // Per DQ-100, branch replacement is the degenerate single-instance case of
     // the keyed-list mechanism, not a second one: the outgoing branch's child
     // `Scope` is closed exactly once. The spec name says "one owner" -- read
     // that as one `Scope`, not a reactive owner.
     unbuilt(
       "the branch-replacement expression target: closing the outgoing branch's child Scope exactly once",
-      "Milestone 8d (design ratified in DQ-030)",
+      "Milestone 8d (design ratified in DQ-100)",
     );
   });
 });

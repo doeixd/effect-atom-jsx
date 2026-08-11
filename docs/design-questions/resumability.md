@@ -790,7 +790,7 @@ are already marked decided and ratified in place; no entry resurrects them.
 
 ---
 
-## DQ-030 — Who owns a structural region's content subscribers, and how is per-row identity carried?
+## DQ-100 — Who owns a structural region's content subscribers, and how is per-row identity carried?
 
 > **RATIFIED 2026-08-11.** All three recommendations accepted, as revised in
 > the Project-fit section below: **per-instance child `Scope`s** (not reactive
@@ -1025,7 +1025,7 @@ gates.
 
 ## Measurement result — per-row markers win (2026-08-11)
 
-DQ-030 recommendation (2) was ratified with an explicit escape clause: *"run the
+DQ-100 recommendation (2) was ratified with an explicit escape clause: *"run the
 density-24 fixture with per-row markers and read the measured slope. If markers
 come in under 1.10, Option 1 is strictly more general and I would switch."*
 
@@ -1106,7 +1106,7 @@ manifest member at v5 are **unchanged**.
   What *was* genuinely wrong is now fixed: the thresholds are named
   (`SLOPE_CEILING`, `FIXED_GAP_CEILING_BYTES`) so they are greppable; the gate
   reports its computed value on success instead of only throwing on failure, so
-  a decision like DQ-030's reads the number instead of recomputing it by hand;
+  a decision like DQ-100's reads the number instead of recomputing it by hand;
   the numbers are persisted to `result.gates` in the artifact and declared in
   `result.schema.json`; and the two silent skips — no heap measurement, and the
   fixed-gap budget off its calibrated environment — now print `SKIPPED` with a

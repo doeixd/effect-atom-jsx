@@ -152,7 +152,7 @@ Dormant grows **more slowly per expression than eager** (1,138 B/expr vs
 1,710 B/expr). The widening itself cost **288 raw / 11 gzip bytes at density 24**
 (8,186 → 8,474 raw; 766 → 777 gzip).
 
-## DQ-030 measurement lane — per-row markers (2026-08-11)
+## DQ-100 measurement lane — per-row markers (2026-08-11)
 
 `AF_BENCH_ROW_MARKERS=1` on the **build** (the fixtures are server-rendered at
 build time, so setting it at run time does nothing) wraps every resumable row in
@@ -167,7 +167,7 @@ node benchmarks/resumability/run.mjs --runs 3 --warm 3
 Paired-delta result, 3 runs per arm, same session: slope **0.6648 → 0.6840**
 against the 1.10 ceiling, costing **37.2 B raw / 6.2 B gzipped / 35 B retained
 heap per row**. Markers therefore won over `data-af-key`, which also deleted an
-authoring constraint. Full numbers and caveats: `DQ-030` in
+authoring constraint. Full numbers and caveats: `DQ-100` in
 `docs/design-questions/resumability.md`.
 
 Two things this lane made visible that outlast the decision:
@@ -187,7 +187,7 @@ Two things this lane made visible that outlast the decision:
   What *was* genuinely wrong is now fixed: the thresholds are named
   (`SLOPE_CEILING`, `FIXED_GAP_CEILING_BYTES`) so they are greppable; the gate
   reports its computed value on success instead of only throwing on failure, so
-  a decision like DQ-030's reads the number instead of recomputing it by hand;
+  a decision like DQ-100's reads the number instead of recomputing it by hand;
   the numbers are persisted to `result.gates` in the artifact and declared in
   `result.schema.json`; and the two silent skips — no heap measurement, and the
   fixed-gap budget off its calibrated environment — now print `SKIPPED` with a

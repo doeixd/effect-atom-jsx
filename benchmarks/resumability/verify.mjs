@@ -576,7 +576,7 @@ export function verifyBenchmarkResult(result) {
 /**
  * Render the heap gates for humans.
  *
- * The slope gate decided DQ-030 (per-row markers vs `data-af-key`), and that
+ * The slope gate decided DQ-100 (per-row markers vs `data-af-key`), and that
  * decision was made by recomputing the ratio by hand out of the result JSON,
  * because the gate threw on failure but never reported its value on success.
  * A gate you cannot read is a gate someone will recompute by hand.

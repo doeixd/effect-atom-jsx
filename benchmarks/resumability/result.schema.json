@@ -211,7 +211,7 @@
     },
     "gates": {
       "type": "object",
-      "description": "Heap budgets computed and enforced by verify.mjs. Recorded in the artifact so a decision that depends on the slope reads it here instead of recomputing it by hand -- which is how DQ-030 was decided, and how the claim that this gate was unautomated arose.",
+      "description": "Heap budgets computed and enforced by verify.mjs. Recorded in the artifact so a decision that depends on the slope reads it here instead of recomputing it by hand -- which is how DQ-100 was decided, and how the claim that this gate was unautomated arose.",
       "properties": {
         "slope": {
           "type": "object",

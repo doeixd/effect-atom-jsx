@@ -35,7 +35,7 @@ dropped `__routeTransition` and `__routeSitemapParams` from every wrapper.
 prerequisite, is done — `dom.reconcileArrays` is exported with
 identity-preserving semantics, and exporting it uncovered two real defects that
 `DQ-010`'s "just expose it" ratification had hidden. Faces 2 and 3 (region
-representation, branch owner) are now specified: **`DQ-030` ratifies
+representation, branch owner) are now specified: **`DQ-100` ratifies
 per-instance child `Scope`s, `data-af-key` fenced at compile time, and one
 `structural` manifest member at v5.** See §Milestone 8d.
 
@@ -61,7 +61,7 @@ tamper gap are now fixed):
 3. The expression attribute/style allowlist now exists in **three** copies
    (runtime, schema, compiler); only two are compile-time linked.
 
-**Suggested order:** **finish M8d** — it is underway, `DQ-030` has removed the
+**Suggested order:** **finish M8d** — it is underway, `DQ-100` has removed the
 design uncertainty, and its remaining work is bounded by a written acceptance
 list. Then **M11** (largest remaining, and the only thing that moves
 `future/streaming`'s 40 red specs).
@@ -1155,13 +1155,13 @@ resumability, rather than only portable event handlers or partial activation.
 ### Milestone 8d — Structural expression targets (keyed lists, branch replacement)
 
 Status: **in progress** — face 1 (the keyed-reconciliation prerequisite) landed
-2026-08-11; faces 2 and 3 are specified and unblocked by `DQ-030`.
+2026-08-11; faces 2 and 3 are specified and unblocked by `DQ-100`.
 
 Gated on M8c.7's measurement go/no-go, which **returned GO**. `DQ-010` deferred
 the region representation to this milestone precisely so it would not be
-designed before that gate reported; `DQ-030` now decides it.
+designed before that gate reported; `DQ-100` now decides it.
 
-**Ratified design (`DQ-030`, 2026-08-11).**
+**Ratified design (`DQ-100`, 2026-08-11).**
 
 1. **Ownership is a per-instance child `Scope`.** Each row or branch instance
    gets a child `Scope` under the installation's Scope; content subscribers
@@ -1182,7 +1182,7 @@ designed before that gate reported; `DQ-030` now decides it.
    available headroom. Markers also work for rows that are text, fragments, or
    several top-level nodes, so the **single-element-root authoring constraint
    is gone**, and with it M8d's compiler work item and the "no single element
-   root" fallback. See the Measurement result in `DQ-030`.
+   root" fallback. See the Measurement result in `DQ-100`.
 3. **The manifest gains one `{ kind: "structural", mode: "list" | "branch" }`
    member**, extending the existing compile-time exhaustiveness device at
    `Resume.ts:262-275` rather than adding a parallel one. `target` *is* a wire
@@ -1249,7 +1249,7 @@ Open:
   What *was* genuinely wrong is now fixed: the thresholds are named
   (`SLOPE_CEILING`, `FIXED_GAP_CEILING_BYTES`) so they are greppable; the gate
   reports its computed value on success instead of only throwing on failure, so
-  a decision like DQ-030's reads the number instead of recomputing it by hand;
+  a decision like DQ-100's reads the number instead of recomputing it by hand;
   the numbers are persisted to `result.gates` in the artifact and declared in
   `result.schema.json`; and the two silent skips — no heap measurement, and the
   fixed-gap budget off its calibrated environment — now print `SKIPPED` with a

@@ -63,11 +63,20 @@ what makes it safe to let agents edit plans at all.
 | File | Contents |
 | --- | --- |
 | `_TEMPLATE.md` | Copy this for a new entry. |
-| `resumability.md` | Triaged questions: expressions, manifests, SPI, streaming (`DQ-001`–`DQ-030`) |
+| `resumability.md` | Triaged questions: expressions, manifests, SPI, streaming (`DQ-001`–`DQ-029`, overflow `DQ-100`–`DQ-129`) |
 | `router.md` | Triaged: routing, loaders, navigation, wire (`DQ-030`–`DQ-049`) |
 | `components.md` | Triaged: slots, views, styles, behaviors, kit (`DQ-050`–`DQ-079`) |
 | `platform.md` | Triaged: agent catalog, result/serialization, identity, cross-cutting (`DQ-080`–`DQ-099`) |
 | `inbox-*.md` | Raw, untriaged submissions from discovery-mode runs. |
+
+**Lane ranges are load-bearing — check them before assigning an ID.** The
+resumability block `DQ-001`–`DQ-029` filled up, and a 2026-08-11 triage assigned
+the "next free ID" as `DQ-030` without re-reading this table. `DQ-030` is a
+**router** question, ratified and referenced from `ROUTER_CONSOLIDATION_PLAN.md`
+and `future/router/authoring-tiers.spec.ts`; the collision would have made two
+different decisions share one name across five documents. Renumbered to
+`DQ-100`. When a lane fills, take the next free block above `DQ-099` and record
+it here rather than spilling into the neighbouring lane.
 
 Two tiers on purpose: **inbox** is append-only and conflict-free so writing is
 frictionless; the **lane files** are the triaged, deduplicated, ID-assigned
