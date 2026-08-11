@@ -325,17 +325,25 @@ function routeResultEntriesToMaps(
 } {
   const nextLoaderData = new Map<string, unknown>();
   let nextErrors: Map<string, unknown> | null = null;
+  const recordError = (routeId: string, error: unknown): void => {
+    if (nextErrors === null) nextErrors = new Map();
+    nextErrors.set(routeId, error);
+  };
   for (const item of results) {
     if (item.result._tag === "Success") {
       nextLoaderData.set(item.routeId, item.result.value);
     } else if (item.result._tag === "Refreshing" && item.result.previous._tag === "Success") {
       nextLoaderData.set(item.routeId, item.result.previous.value);
+    } else if (item.result._tag === "Stale") {
+      // The whole point of `Stale`: the data is still in hand AND the typed
+      // error is available alongside it. Dropping either half loses what the
+      // state exists to carry.
+      nextLoaderData.set(item.routeId, item.result.data);
+      recordError(item.routeId, item.result.error);
     } else if (item.result._tag === "Failure") {
-      if (nextErrors === null) nextErrors = new Map();
-      nextErrors.set(item.routeId, item.result.error);
+      recordError(item.routeId, item.result.error);
     } else if (item.result._tag === "Defect") {
-      if (nextErrors === null) nextErrors = new Map();
-      nextErrors.set(item.routeId, { defect: item.result.cause });
+      recordError(item.routeId, { defect: item.result.cause });
     }
   }
   return { loaderData: nextLoaderData, errors: nextErrors };

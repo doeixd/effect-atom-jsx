@@ -24,12 +24,33 @@
  */
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
-import { fromSrc, loadSrc } from "../harness.js";
+import * as Component from "../Component.js";
+import * as Resume from "../Resume.js";
+import * as Route from "../Route.js";
+import * as Serialization from "../Serialization.js";
+import { Result } from "../effect-ts.js";
+import {
+  LoaderCacheTag,
+  getLoaderCacheEntry,
+  makeLoaderCacheStore,
+} from "../router-runtime.js";
+
+// Promoted from future/router/loader-handoff-manifest.spec.ts (all green
+// 2026-08-11).
+const { resultToWire } = Serialization;
+const runtime = { makeLoaderCacheStore, getLoaderCacheEntry, LoaderCacheTag };
+
+
+/** The success value of a cached loader result, castlessly. */
+function successValue(result: unknown): unknown {
+  return typeof result === "object" && result !== null
+      && (result as { readonly _tag?: unknown })._tag === "Success"
+    ? (result as { readonly value?: unknown }).value
+    : undefined;
+}
 
 describe("R6 — one handoff", () => {
   it("[R6] SSR does not emit a second loader-data global beside the resume manifest", async () => {
-    const Route = await fromSrc("Route", "path", "id", "loader", "children", "layout", "renderRequest", "loaderHandoffGlobalKey");
-    const Component: any = await loadSrc("Component");
 
     const Deferred = Route.loader((_: {}) => Effect.succeed({ slow: true }), { priority: "deferred" })(
       Route.id("r6.deferred")(Route.path("/r6-handoff")(Component.from(() => null))),
@@ -38,7 +59,7 @@ describe("R6 — one handoff", () => {
       Route.layout()(Route.path("/")(Component.from(() => null))),
     );
 
-    const rendered: any = await Effect.runPromise(
+    const rendered = await Effect.runPromise(
       Route.renderRequest(App, { request: new Request("http://test.local/r6-handoff") }),
     );
 
@@ -51,10 +72,6 @@ describe("R6 — one handoff", () => {
   });
 
   it("[R6] the resume manifest carries loader entries through one decoder", async () => {
-    const Resume = await fromSrc("Resume", "decodeManifest");
-    const Serialization: any = await loadSrc("Serialization");
-    const { resultToWire }: any = await loadSrc("Serialization");
-    const { Result }: any = await loadSrc("effect-ts");
 
     const buildId = "r6-build";
     const manifest = {
@@ -83,11 +100,6 @@ describe("R6 — one handoff", () => {
   });
 
   it("[R6] hydrating the manifest fills the loader cache without a second handoff read", async () => {
-    const Route = await fromSrc("Route", "path", "id", "loader", "hydrateLoaderHandoff", "loaderHandoffVersion");
-    const Component: any = await loadSrc("Component");
-    const Serialization: any = await loadSrc("Serialization");
-    const { Result }: any = await loadSrc("effect-ts");
-    const runtime = await fromSrc("router-runtime", "makeLoaderCacheStore", "getLoaderCacheEntry", "LoaderCacheTag");
 
     const routeId = "/r6-hydrate/:id";
     const Page = Route.loader((params: { readonly id: string }) => Effect.succeed({ id: params.id }))(
@@ -115,7 +127,7 @@ describe("R6 — one handoff", () => {
 
     const entry = runtime.getLoaderCacheEntry(routeId, { id: "alice" }, store);
     expect(entry?.result._tag).toBe("Success");
-    expect((entry?.result as any).value).toEqual({ id: "alice" });
+    expect(successValue(entry?.result)).toEqual({ id: "alice" });
   });
 
   // `DQ-034` router-side requirement 1: loader identity in the manifest is
@@ -123,11 +135,6 @@ describe("R6 — one handoff", () => {
   // has many concurrently-live entries, and collapsing them onto the route id
   // would silently serve one user's data for another's URL.
   it("[R6] manifest loader identity is (routeId, params), so sibling params do not collide", async () => {
-    const Route = await fromSrc("Route", "path", "loader", "hydrateLoaderHandoff", "loaderHandoffVersion");
-    const Component: any = await loadSrc("Component");
-    const Serialization: any = await loadSrc("Serialization");
-    const { Result }: any = await loadSrc("effect-ts");
-    const runtime = await fromSrc("router-runtime", "makeLoaderCacheStore", "getLoaderCacheEntry", "LoaderCacheTag");
 
     const routeId = "/r6-identity/:id";
     const Page = Route.loader((params: { readonly id: string }) => Effect.succeed({ id: params.id }))(
@@ -155,9 +162,9 @@ describe("R6 — one handoff", () => {
 
     // Both survive, each under its own params — the second did not overwrite the
     // first the way a routeId-only identity would.
-    expect((runtime.getLoaderCacheEntry(routeId, { id: "alice" }, store)?.result as any).value)
+    expect(successValue(runtime.getLoaderCacheEntry(routeId, { id: "alice" }, store)?.result))
       .toEqual({ id: "alice" });
-    expect((runtime.getLoaderCacheEntry(routeId, { id: "bob" }, store)?.result as any).value)
+    expect(successValue(runtime.getLoaderCacheEntry(routeId, { id: "bob" }, store)?.result))
       .toEqual({ id: "bob" });
     // NEGATIVE CONTROL: params that were never delivered are a miss, not a
     // wildcard hit. Without this, a cache keyed on routeId alone — returning the
@@ -172,15 +179,6 @@ describe("R6 — one handoff", () => {
   // interactive while it resolves. If this cannot hold, `DQ-034` reverts to a
   // separate loader channel.
   it("[R6] manifest loader entries are delivered incrementally, each observable before the next", async () => {
-    const Route = await fromSrc(
-      "Route",
-      "onLoaderHandoffEntry",
-      "loaderHandoffGlobalKey",
-      "loaderHandoffNotifyKey",
-      "loaderHandoffVersion",
-    );
-    const Serialization: any = await loadSrc("Serialization");
-    const { Result }: any = await loadSrc("effect-ts");
 
     const carrier = globalThis as unknown as Record<string, unknown>;
     const previousEnvelope = carrier[Route.loaderHandoffGlobalKey];
@@ -190,12 +188,14 @@ describe("R6 — one handoff", () => {
     try {
       carrier[Route.loaderHandoffGlobalKey] = { version: Route.loaderHandoffVersion, entries: [] };
       delete carrier[Route.loaderHandoffNotifyKey];
-      unsubscribe = Route.onLoaderHandoffEntry((entry: any) => {
+      unsubscribe = Route.onLoaderHandoffEntry((entry) => {
         observed.push(String(entry.routeId));
       });
 
       const deliver = (routeId: string) => {
-        const envelope = carrier[Route.loaderHandoffGlobalKey] as any;
+        const envelope = carrier[Route.loaderHandoffGlobalKey] as {
+          readonly entries: Array<unknown>;
+        };
         const entry = {
           routeId,
           params: { id: "alice" },

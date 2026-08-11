@@ -430,7 +430,15 @@ function executeAndCache<A, E>(
     Effect.flatMap((capture) => timedRun.pipe(
       Effect.exit,
       Effect.map((exit) => {
-        const out = CoreResult.fromExit(exit) as CoreResultType<A, E>;
+        // Keep-stale on failure: a loader that fails while the cache still
+        // holds last-known-good data settles to `Stale(error, data)` rather
+        // than blanking to `Failure` — the same rule the resume/query path
+        // applies (`ResultState.fromExitWithPrevious`). This is what makes
+        // the router's Stale surfacing live rather than latent.
+        const previous = getLoaderCacheEntry(routeId, params, store)?.result as
+          | CoreResultType<A, E>
+          | undefined;
+        const out = CoreResult.fromExitWithPrevious(exit, previous) as CoreResultType<A, E>;
         const mergedKeys = [...new Set([...optionKeys, ...capture.end()])];
         // DQ-032: a disposed store refuses late writes — interruption stops
         // most of them, but a refresh completing in the same tick as dispose

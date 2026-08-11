@@ -154,7 +154,11 @@ describe("router de-globalization (R2)", () => {
       },
     ]);
     expect(scripts).toHaveLength(1);
-    expect(scripts[0]).toContain(Route.loaderHandoffGlobalKey);
+    // R6 (DQ-034): the streamed entry is inert data on the manifest channel —
+    // no executable script and no second window global beside the manifest.
+    expect(scripts[0]).toContain(Route.loaderEntryScriptAttribute);
+    expect(scripts[0]).toContain('type="application/json"');
+    expect(scripts[0]).not.toContain(Route.loaderHandoffGlobalKey);
 
     const handoff = {
       version: Route.loaderHandoffVersion,

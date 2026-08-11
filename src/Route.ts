@@ -1890,6 +1890,13 @@ function runMatchedLoadersInternal(
     const remaining = [...candidates];
     const outputs: Array<{ readonly routeId: string; readonly result: UnknownRouteResult }> = [];
     const successByPattern = new Map<string, unknown>();
+    // DQ-035: a dependent loader is never fresher than its parent. A `Stale`
+    // parent still feeds its child (discarding in-hand data is exactly what
+    // `Stale` exists to avoid), but the child's own `Success` is degraded to
+    // `Stale` carrying the parent's error — transitively, so a grandchild of a
+    // stale parent is stale too. This is `Result.all`'s composition rule
+    // applied along the loader tree.
+    const staleErrorByPattern = new Map<string, unknown>();
 
     while (remaining.length > 0) {
       const runnable = remaining.filter((entry) => {
@@ -1903,8 +1910,20 @@ function runMatchedLoadersInternal(
       const batchResults = yield* Effect.all(batch.map((entry) => {
         const parentPattern = entry.parentPattern([...successByPattern.keys()]);
         const parentData = parentPattern ? successByPattern.get(parentPattern) : undefined;
+        const inheritedStale =
+          entry.loaderOptions?.dependsOnParent === true
+            && parentPattern !== undefined
+            && staleErrorByPattern.has(parentPattern)
+            ? { error: staleErrorByPattern.get(parentPattern) }
+            : undefined;
         return entry.runLoader(url, parentData).pipe(
-          Effect.map((result) => ({ routeId: entry.routeId, result, pattern: entry.fullPattern })),
+          Effect.map((result) => ({
+            routeId: entry.routeId,
+            result: inheritedStale !== undefined && result._tag === "Success"
+              ? CoreResult.stale(inheritedStale.error, result.value)
+              : result,
+            pattern: entry.fullPattern,
+          })),
         );
       }), { concurrency: "unbounded" });
 
@@ -1913,6 +1932,9 @@ function runMatchedLoadersInternal(
         const success = loaderSuccess(item.result);
         if (success !== undefined) {
           successByPattern.set(item.pattern, success.value);
+        }
+        if (item.result._tag === "Stale") {
+          staleErrorByPattern.set(item.pattern, item.result.error);
         }
       }
 
@@ -3367,6 +3389,14 @@ export const loaderHandoffGlobalKey = "__afuiLoaderHandoff" as const;
 export const loaderHandoffNotifyKey = "__afuiLoaderHandoffNotify" as const;
 
 /**
+ * Attribute marking one inert, per-entry loader payload script (`DQ-034`):
+ * deferred loader results ship on the resume-manifest channel family
+ * (`data-af-*`) as `<script type="application/json" data-af-loader>` tags —
+ * no executable inline JS and no second window global beside the manifest.
+ */
+export const loaderEntryScriptAttribute = "data-af-loader" as const;
+
+/**
  * One streamed loader entry: the route id, the params the loader ran with (so
  * the client caches under the same identity the server used), and the canonical
  * result wire shape.
@@ -3418,17 +3448,17 @@ export function streamDeferredLoaderScripts(
   }>,
 ): ReadonlyArray<string> {
   return results.map((item) => {
-    const payload = Serialization.encodeSync(LoaderHandoff, {
-      version: loaderHandoffVersion,
-      entries: [{
-        routeId: item.routeId,
-        params: item.params ?? {},
-        result: Serialization.resultToWire(item.result),
-      }],
+    const payload = Serialization.encodeSync(LoaderHandoffEntry, {
+      routeId: item.routeId,
+      params: item.params ?? {},
+      result: Serialization.resultToWire(item.result),
     });
-    return `<script>(function(g,p){var s=g.${loaderHandoffGlobalKey}||(g.${loaderHandoffGlobalKey}={version:p.version,entries:[]});`
-      + `for(var i=0;i<p.entries.length;i++){s.entries.push(p.entries[i]);`
-      + `if(g.${loaderHandoffNotifyKey})g.${loaderHandoffNotifyKey}(p.entries[i]);}})(window,${payload});</script>`;
+    // DQ-034 / R6: one handoff. The entry is data on the manifest channel,
+    // not a script that builds a parallel window global — the client reads it
+    // through `readLoaderHandoff`/`hydrateLoaderHandoff` (and, once streaming
+    // installs land, through the incremental manifest reader). Inert JSON is
+    // also CSP-friendlier than executable inline scripts.
+    return `<script type="application/json" ${loaderEntryScriptAttribute}>${payload}</script>`;
   });
 }
 
@@ -3443,8 +3473,32 @@ export function readLoaderHandoff(
 ): Effect.Effect<LoaderHandoff, Schema.SchemaError, Serialization.SerializationService> {
   return Effect.gen(function* () {
     const serialization = yield* Serialization.Tag;
-    const raw = input ?? loaderHandoffCarrier()?.[loaderHandoffGlobalKey]
-      ?? { version: loaderHandoffVersion, entries: [] };
+    const raw = input ?? (() => {
+      const envelope = loaderHandoffCarrier()?.[loaderHandoffGlobalKey];
+      const entries: Array<unknown> = envelope === undefined ? [] : [...envelope.entries];
+      // Inert per-entry payload scripts on the manifest channel (DQ-034) are
+      // part of the same handoff: one channel, one decoder, one cache write.
+      const documentValue = (globalThis as {
+        readonly document?: {
+          readonly querySelectorAll?: (selector: string) => ArrayLike<{ readonly textContent: string | null }>;
+        };
+      }).document;
+      if (typeof documentValue?.querySelectorAll === "function") {
+        const scripts = documentValue.querySelectorAll(`script[${loaderEntryScriptAttribute}]`);
+        for (let index = 0; index < scripts.length; index += 1) {
+          const text = scripts[index]?.textContent;
+          if (text === null || text === undefined) continue;
+          try {
+            entries.push(JSON.parse(text));
+          } catch {
+            // Malformed entries fail below through the schema, not here —
+            // but unparseable text cannot even reach the schema, so it is
+            // skipped rather than turned into a defect.
+          }
+        }
+      }
+      return { version: loaderHandoffVersion, entries };
+    })();
     return yield* serialization.deserialize(LoaderHandoff, JSON.stringify(raw)) as Effect.Effect<LoaderHandoff, Schema.SchemaError>;
   });
 }

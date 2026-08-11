@@ -366,12 +366,29 @@ export const ManifestV4Schema = Schema.Struct({
   expressions: Schema.Record(ExpressionId, ExpressionEntryV4Schema),
 });
 
+/**
+ * One loader snapshot carried inside the manifest (R6, `DQ-034`): the
+ * loader-data channel folds into the resume manifest rather than surviving as
+ * a parallel window-global system. Identity is `(routeId, params)` — a
+ * parameterised route legitimately has many concurrently-live entries, and
+ * collapsing them onto the route id would serve one user's data for
+ * another's URL. The result crosses the wire through the canonical
+ * `ResultWire` projection, the same encoding the router uses everywhere.
+ */
+export const ManifestLoaderEntrySchema = Schema.Struct({
+  params: Schema.Unknown,
+  result: Serialization.ResultWire,
+});
+
 export const ManifestV5Schema = Schema.Struct({
   version: Schema.Literal(5),
   buildId: Portable.BuildId,
   events: Schema.Record(EventId, EventEntrySchema),
   components: Schema.Record(ComponentId, ComponentSnapshotSchema),
   expressions: Schema.Record(ExpressionId, ExpressionEntryV5Schema),
+  loaders: Schema.optional(
+    Schema.Record(Schema.String, ManifestLoaderEntrySchema),
+  ),
 });
 
 export const ManifestSchema = Schema.Union([
@@ -6103,6 +6120,7 @@ export const Resume = {
   ManifestV3Schema,
   ManifestV4Schema,
   ManifestV5Schema,
+  ManifestLoaderEntrySchema,
   ManifestSchema,
   ExpressionElementMarkerAttribute,
   onStructuralRowScopeOpened,

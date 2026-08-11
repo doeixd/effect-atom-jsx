@@ -381,6 +381,31 @@ failing navigation rolls it back with the error observable.
 
 ### R6 — Then Milestone 11
 
+> **Status 2026-08-11: the loader-data merge is implemented; the lane is
+> closed.** Manifest v5 gains an optional `loaders` record keyed by route id,
+> each entry `(params, result)` with the result through the canonical
+> `ResultWire` projection (`Resume.ManifestLoaderEntrySchema`) — identity is
+> `(routeId, params)`, so sibling params cannot collide. Streamed deferred
+> loader entries are **inert JSON scripts on the manifest channel**
+> (`<script type="application/json" data-af-loader>`): no executable inline
+> JS, no second window global beside the manifest — `readLoaderHandoff`'s
+> document path collects them, and the in-page envelope + notify hook remains
+> the client-side incremental mechanism for M11.5's streaming installer to
+> feed. Also landed with this slice: keep-stale on the loader path (a failed
+> refresh settles to `Stale(error, data)` via `fromExitWithPrevious` — the
+> Stale surfacing is now LIVE, with `Stale` projected into snapshot
+> `loaderData` + `errors`), and `DQ-035` (a `Stale` parent feeds its
+> `dependsOnParent` child and degrades the child's `Success` to `Stale` with
+> the parent's error, transitively).
+>
+> **`future/router/` is empty**: every spec in the lane is implemented and
+> promoted into `src/__tests__/` (`router-authoring-tier`,
+> `router-wire-hygiene`, `router-navigation-stack`, `router-swr-supersession`,
+> `router-regression-invariants`, `router-loader-handoff-manifest`, plus the
+> earlier R1/R2 coverage). R1–R6 are all implemented. Remaining router-adjacent
+> work lives elsewhere: the ADR-006 dispatcher collapse (type architecture)
+> and M11.5's incremental manifest delivery (streaming lane).
+
 With R1–R5 landed, M11's parallel fetch-and-render composes with a
 side-effect-free tree, an injectable cache, one navigation stack, and a
 schema-validated data wire — and the loader-data channel can merge into the

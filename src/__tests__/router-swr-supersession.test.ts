@@ -201,6 +201,47 @@ describe("R4 — SWR refresh supervision", () => {
     expect(starts).toBe(3);
   });
 
+  // Keep-stale on failure (the M6 rule, applied to loaders): a refresh that
+  // FAILS while the cache still holds last-known-good data settles to
+  // `Stale(error, data)` — the data stays in hand and the typed error rides
+  // alongside it — rather than blanking to `Failure`.
+  it("[R5] a failed SWR refresh settles the cache to Stale, keeping the data", async () => {
+    const store = runtime.makeLoaderCacheStore();
+    let starts = 0;
+    const load = Effect.suspend(() => {
+      starts += 1;
+      if (starts === 1) return Effect.succeed({ n: 1 });
+      return Effect.fail({ _tag: "Offline" } as const);
+    });
+    const run = () => Effect.runPromise(
+      runtime.runCachedLoader("/r5-keep-stale", { id: 1 }, load, {
+        staleTime: 0,
+        staleWhileRevalidate: true,
+      }).pipe(Effect.provideService(runtime.LoaderCacheTag, store)),
+    );
+
+    expect((await run())._tag).toBe("Success");
+    expect((await run())._tag).toBe("Refreshing");
+    await flush();
+    expect(starts).toBe(2);
+
+    const entry = runtime.getLoaderCacheEntry("/r5-keep-stale", { id: 1 }, store);
+    expect(entry?.result._tag).toBe("Stale");
+    if (entry?.result._tag === "Stale") {
+      expect(entry.result.data).toEqual({ n: 1 });
+      expect(entry.result.error).toEqual({ _tag: "Offline" });
+    }
+
+    // NEGATIVE CONTROL: with no previous data in hand, a failure is a plain
+    // Failure — keep-stale must not conjure data from nowhere.
+    const empty = runtime.makeLoaderCacheStore();
+    const failed = await Effect.runPromise(
+      runtime.runCachedLoader("/r5-keep-stale-empty", { id: 1 }, Effect.fail({ _tag: "Offline" } as const), {})
+        .pipe(Effect.provideService(runtime.LoaderCacheTag, empty)),
+    );
+    expect(failed._tag).toBe("Failure");
+  });
+
   it("[R4] navigating away interrupts an in-flight SWR refresh", async () => {
 
     let calls = 0;

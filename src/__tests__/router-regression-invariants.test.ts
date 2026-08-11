@@ -21,16 +21,29 @@
  * Success, Refreshing(Success), **and Stale** all surface their data.
  */
 import { describe, expect, it } from "vitest";
-import { Cause, Effect, Schema } from "effect";
-import { fromSrc, loadSrc } from "../harness.js";
+import { Cause, Effect, Exit, Schema } from "effect";
+import * as Component from "../Component.js";
+import * as Route from "../Route.js";
+import * as RouterRuntime from "../RouterRuntime.js";
+import { Result } from "../effect-ts.js";
+import * as Serialization from "../Serialization.js";
+import {
+  LoaderCacheTag,
+  clearLoaderCache,
+  getLoaderCacheEntry,
+  makeLoaderCacheStore,
+  setLoaderCacheEntry,
+} from "../router-runtime.js";
+
+// Promoted from future/router/regression-invariants.spec.ts (all green
+// 2026-08-11).
+const cache = { setLoaderCacheEntry, makeLoaderCacheStore, LoaderCacheTag };
+const runtime = { makeLoaderCacheStore, getLoaderCacheEntry, LoaderCacheTag };
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("R1/R2 — standing router invariants", () => {
   it("[R1] a nested route keeps one path identity for matching and loading", async () => {
-    const Route = await fromSrc("Route", "page", "layout", "children", "mount", "loader", "renderRequest");
-    const Component: any = await loadSrc("Component");
-    const RouterRuntime = await fromSrc("RouterRuntime", "create", "createMemoryHistory");
 
     const loaded: Array<string> = [];
     const Settings = Route.loader((_: {}) => Effect.sync(() => {
@@ -50,7 +63,7 @@ describe("R1/R2 — standing router invariants", () => {
     await Effect.runPromise(runtime.navigate("/users/1/settings"));
     await flush();
 
-    const snapshot: any = Effect.runSync(runtime.snapshot());
+    const snapshot = Effect.runSync(runtime.snapshot());
     expect(snapshot.appMatches).toContain("/users/:userId/settings");
     expect(snapshot.appMatches).not.toContain("/settings");
     // Render identity and loader identity are the same joined path.
@@ -59,7 +72,6 @@ describe("R1/R2 — standing router invariants", () => {
   });
 
   it("[R1] optional `:name?` segments match and extract consistently", async () => {
-    const Route = await fromSrc("Route", "matchPattern", "extractParams");
 
     expect(Route.matchPattern("/opt/:id?", "/opt", true)).toBe(true);
     expect(Route.matchPattern("/opt/:id?", "/opt/a", true)).toBe(true);
@@ -70,9 +82,6 @@ describe("R1/R2 — standing router invariants", () => {
   });
 
   it("[R1] revalidate:\"matched\" returns every matched loader; \"reactivity\" with no invalidations returns none and loads once", async () => {
-    const Route = await fromSrc("Route", "path", "paramsSchema", "loader", "singleFlight");
-    const Component: any = await loadSrc("Component");
-    const { clearLoaderCache }: any = await loadSrc("router-runtime");
 
     const makePage = (pattern: string, onLoad: () => void) =>
       Route.loader((params: { readonly userId: string }) => Effect.sync(() => {
@@ -95,10 +104,11 @@ describe("R1/R2 — standing router invariants", () => {
         app: MatchedPage,
         revalidate: "matched",
         baseUrl: "http://localhost",
-      })({ args: ["alice"], url: "/reval-matched/alice" }) as Effect.Effect<any, never, never>,
+      })({ args: ["alice"], url: "/reval-matched/alice" }),
     );
     expect(matchedResponse.ok).toBe(true);
-    expect(matchedResponse.payload.loaders.map((item: any) => item.routeId))
+    if (!matchedResponse.ok) return;
+    expect(matchedResponse.payload.loaders.map((item) => item.routeId))
       .toEqual(["/reval-matched/:userId"]);
 
     let reactivityLoads = 0;
@@ -120,9 +130,6 @@ describe("R1/R2 — standing router invariants", () => {
   });
 
   it("[R2] two interleaved concurrent renders share no head or loader state", async () => {
-    const Route = await fromSrc("Route", "path", "paramsSchema", "loader", "title", "renderRequest");
-    const Component: any = await loadSrc("Component");
-    const { clearLoaderCache, getLoaderCacheEntry }: any = await loadSrc("router-runtime");
 
     const page = (pattern: string, titleText: string, onLoad: () => void, delayMs: number) =>
       Route.title(() => titleText)(
@@ -162,19 +169,6 @@ describe("R1/R2 — standing router invariants", () => {
   });
 
   it("[R2] the versioned handoff round-trips and a version mismatch is a typed failure", async () => {
-    const Route = await fromSrc(
-      "Route",
-      "path",
-      "loader",
-      "hydrateLoaderHandoff",
-      "loaderHandoffVersion",
-      "loaderHandoffGlobalKey",
-      "streamDeferredLoaderScripts",
-    );
-    const Component: any = await loadSrc("Component");
-    const Serialization: any = await loadSrc("Serialization");
-    const { Result }: any = await loadSrc("effect-ts");
-    const runtime = await fromSrc("router-runtime", "makeLoaderCacheStore", "getLoaderCacheEntry", "LoaderCacheTag");
 
     const routeId = "/inv-handoff/:userId";
     const Page = Route.loader((params: { readonly userId: string }) => Effect.succeed({ name: params.userId }))(
@@ -209,20 +203,24 @@ describe("R1/R2 — standing router invariants", () => {
     // The round-trip above is this spec's own negative control: the matching
     // version is accepted and lands in the cache, so a `hydrateLoaderHandoff`
     // that rejected every handoff cannot pass the mismatch assertion below.
-    const mismatch: any = await Effect.runPromiseExit(
+    const mismatch = await Effect.runPromiseExit(
       Route.hydrateLoaderHandoff(Page, { input: { version: 99, entries: [] } }).pipe(
         Effect.provide(Serialization.layer),
-      ) as Effect.Effect<void, any, never>,
+      ),
     );
-    expect(mismatch._tag).toBe("Failure");
+    expect(Exit.isFailure(mismatch)).toBe(true);
+    if (!Exit.isFailure(mismatch)) return;
     // A version mismatch is deploy skew, so it must arrive as a typed failure the
     // client can act on — not as a defect. Note the near neighbour: a *malformed*
     // handoff is a decode failure and gets its own code; this one is specifically
     // about the version field.
     const error = Cause.findErrorOption(mismatch.cause);
     expect(error._tag).toBe("Some");
-    expect(typeof (error as any).value?._tag).toBe("string");
-    expect(JSON.stringify((error as any).value)).toContain("99");
+    if (error._tag === "Some") {
+      const tagged = error.value as { readonly _tag?: unknown };
+      expect(typeof tagged._tag).toBe("string");
+      expect(JSON.stringify(error.value)).toContain("99");
+    }
   });
 });
 
@@ -232,11 +230,6 @@ describe("Risk 3 — loader results must read Stale.data (expected RED)", () => 
   // Loading do not. The current implementation stops at the first two, so a
   // failed refresh drops data it is still holding.
   it("[R5] loader data surfaces for Success, Refreshing(Success) and Stale — and only those", async () => {
-    const Route = await fromSrc("Route", "path", "id", "paramsSchema", "loader");
-    const Component: any = await loadSrc("Component");
-    const RouterRuntime = await fromSrc("RouterRuntime", "create", "createMemoryHistory");
-    const { Result }: any = await loadSrc("effect-ts");
-    const { clearLoaderCache, setLoaderCacheEntry }: any = await loadSrc("router-runtime");
 
     let loads = 0;
     const Page = Route.loader((_: { readonly id: string }) => Effect.sync(() => {
@@ -253,7 +246,7 @@ describe("Risk 3 — loader results must read Stale.data (expected RED)", () => 
     // ISOLATION: clear only this spec's own route id. A bare `clearLoaderCache()`
     // wipes the process-wide store that every other spec file shares.
     clearLoaderCache("inv.stale");
-    const seed = (id: string, result: unknown) =>
+    const seed = (id: string, result: Result<unknown, unknown>) =>
       setLoaderCacheEntry("inv.stale", { id }, result, { staleTime: "1 minute" });
 
     const data = { cached: true };
@@ -271,7 +264,7 @@ describe("Risk 3 — loader results must read Stale.data (expected RED)", () => 
     const visit = async (id: string) => {
       await Effect.runPromise(runtime.navigate(`/inv-stale/${id}`));
       await flush();
-      const snapshot: any = Effect.runSync(runtime.snapshot());
+      const snapshot = Effect.runSync(runtime.snapshot());
       return {
         data: snapshot.loaderData.get("inv.stale"),
         error: snapshot.errors?.get("inv.stale"),
@@ -298,10 +291,6 @@ describe("Risk 3 — loader results must read Stale.data (expected RED)", () => 
   // data that is in hand is the precise thing `Stale` exists to avoid — but the
   // child must not then advertise itself as fresh.
   it("[R5] a Stale parent feeds its dependsOnParent child, and the child's Result is Stale too", async () => {
-    const Route = await fromSrc("Route", "path", "layout", "children", "loader", "runMatchedLoaders");
-    const Component: any = await loadSrc("Component");
-    const { Result }: any = await loadSrc("effect-ts");
-    const cache = await fromSrc("router-runtime", "setLoaderCacheEntry", "makeLoaderCacheStore", "LoaderCacheTag");
 
     const makeTree = (pattern: string) => {
       const Child = Route.loader((_: {}, deps?: { readonly parent: <A>() => A }) =>
@@ -319,35 +308,42 @@ describe("Risk 3 — loader results must read Stale.data (expected RED)", () => 
 
     // ISOLATION: a store per phase, so neither the shared module-global cache nor
     // the other phase can affect this one.
-    const runWith = async (pattern: string, seeded: unknown) => {
+    const runWith = async (pattern: string, seeded: Result<unknown, unknown>) => {
       const store = cache.makeLoaderCacheStore();
       cache.setLoaderCacheEntry(pattern, {}, seeded, { staleTime: "1 minute" }, store);
-      const results: any = await Effect.runPromise(
+      const results = await Effect.runPromise(
         Route.runMatchedLoaders(makeTree(pattern), new URL(`http://test.local${pattern}/child`)).pipe(
           Effect.provideService(cache.LoaderCacheTag, store),
-        ) as Effect.Effect<any, never, never>,
+        ),
       );
-      return results.find((item: any) => item.routeId === `${pattern}/child`);
+      return results.find((item) => item.routeId === `${pattern}/child`);
     };
 
     const error = { _tag: "Offline" } as const;
     const child = await runWith("/inv-parent-stale", Result.stale(error, { cached: true }));
     expect(child).toBeDefined();
     // The child ran and saw the parent's in-hand data...
-    expect(Result.getData(child.result)._tag).toBe("Some");
-    expect(Result.getData(child.result).value).toEqual({ parent: { cached: true } });
+    const childData = Result.getData(child!.result);
+    expect(childData._tag).toBe("Some");
+    if (childData._tag === "Some") {
+      expect(childData.value).toEqual({ parent: { cached: true } });
+    }
     // ...and says it is no fresher than its parent, carrying the parent's error.
     // This is the `Result.all` composition rule, applied along the loader tree.
-    expect(child.result._tag).toBe("Stale");
-    expect(child.result.error).toEqual(error);
+    expect(child!.result._tag).toBe("Stale");
+    if (child!.result._tag === "Stale") {
+      expect(child!.result.error).toEqual(error);
+    }
 
     // NEGATIVE CONTROL. Without it, an implementation that marks every dependent
     // child `Stale` — or one that fails every child — satisfies the above forever.
     // Same tree, fresh parent: the child is a plain Success with no error.
     const fresh = await runWith("/inv-parent-fresh", Result.success({ cached: true }));
     expect(fresh).toBeDefined();
-    expect(fresh.result._tag).toBe("Success");
-    expect(fresh.result.value).toEqual({ parent: { cached: true } });
-    expect(Result.getError(fresh.result)._tag).toBe("None");
+    expect(fresh!.result._tag).toBe("Success");
+    if (fresh!.result._tag === "Success") {
+      expect(fresh!.result.value).toEqual({ parent: { cached: true } });
+    }
+    expect(Result.getError(fresh!.result)._tag).toBe("None");
   });
 });

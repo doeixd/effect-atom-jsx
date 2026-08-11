@@ -140,9 +140,12 @@ describe("Route loader", () => {
     const scripts = Route.streamDeferredLoaderScripts([
       { routeId: "r1", result: Result.success(1) },
     ]);
-    expect(scripts[0]).toContain(Route.loaderHandoffGlobalKey);
-    expect(scripts[0]).toContain(Route.loaderHandoffNotifyKey);
-    expect(scripts[0]).toContain("\"version\":1");
+    // R6 (DQ-034): one handoff. Streamed entries are inert JSON on the
+    // manifest channel; neither the legacy ad-hoc global nor the handoff
+    // global appears in served scripts.
+    expect(scripts[0]).toContain(Route.loaderEntryScriptAttribute);
+    expect(scripts[0]).toContain('type="application/json"');
+    expect(scripts[0]).not.toContain(Route.loaderHandoffGlobalKey);
     expect(scripts[0]).not.toContain("__LOADER_DATA__");
   });
 
