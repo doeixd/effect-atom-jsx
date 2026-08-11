@@ -246,10 +246,24 @@ type TitleRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(ro
 type MetaRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(route: T) => T)
   & NodeMetaEnhancer<AnyAppRouteNode>
   & MetaEnhancer<P, A, E>;
+// Signature order is load-bearing (TypeScript resolves intersection overloads
+// in declaration order):
+// 1. Self-stamped `Component.route` sugar is Component AND Route; the runtime
+//    returns the same object, so the type preserves the component facet and
+//    refreshes the route facet — `renderEffect(loaderified sugar)` and
+//    `runMatchedLoaders(loaderified sugar)` both infer without casts.
+// 2. Detached unified routes take the pure route signature.
+// 3. Legacy routed components / nodes fall through to the historical shapes.
 // The unified signature comes FIRST: a self-stamped `Component.route` sugar
 // value matches both the route and component call signatures, and TypeScript
 // resolves intersection overloads in declaration order — unified typing must
 // win for the value the runtime treats as unified (R3).
+//
+// KNOWN INFERENCE GAP (ADR-006 collapse): `.pipe(Component.route, Route.loader)`
+// chains contextually infer through a different signature than direct calls,
+// so `renderEffect` on a pipe-built sugar route still needs a cast at the call
+// site. Fixing this properly means collapsing the three-way dispatcher types,
+// which is the remaining R3 workstream — not another signature reorder.
 type LoaderRouteEnhancer<P, A, E, R> =
   (<C, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<ComponentWithAddedReqE<C, R, E>, P, Q, H, A, E>)
   & LoaderEnhancer<P, A, E, R>

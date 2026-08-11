@@ -52,9 +52,14 @@ type WidenLiteral<T> =
   T extends symbol ? symbol :
   T;
 
+// Functions and built-in instances pass through unchanged: mapping over a
+// `URL`'s or `Date`'s keys destroys its identity and forces callers of
+// `Atom.value(new URL(...))` into casts. Only plain data is deep-widened.
 type DeepWiden<T> =
+  T extends (...args: ReadonlyArray<any>) => any ? T :
+  T extends Date | RegExp | URL | Error | Promise<any> ? T :
+  T extends Map<any, any> | Set<any> | WeakMap<any, any> | WeakSet<any> ? T :
   T extends ReadonlyArray<infer U> ? Array<DeepWiden<U>> :
-  T extends Array<infer U> ? Array<DeepWiden<U>> :
   T extends object ? { [K in keyof T]: DeepWiden<T[K]> } :
   WidenLiteral<T>;
 
