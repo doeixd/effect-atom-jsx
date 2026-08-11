@@ -1448,7 +1448,28 @@ Acceptance:
 
 ### Milestone 11 — Streaming SSR with parallel route data (resolves Open Question 9)
 
-Status: **item 1 implemented** (2026-08-11); the rest proposed.
+Status: **items 1-3 implemented** (2026-08-11); items 4+ proposed.
+
+> **Items 2-3 — `renderToStream` — are done** (`src/dom.ts`, per ratified
+> `DQ-006`): async boundaries are *authored* — any Effect value in the render
+> tree (an unresolved `Component.renderEffect`) becomes an `af:region`
+> comment-pair; a synchronous region that merely takes wall-clock time renders
+> inline with no region. One function, `mode: "ordered" | "out-of-order"` as
+> an option (validated, not defaulted): ordered flushes regions in document
+> order with zero scripts; out-of-order flushes the whole shell with
+> placeholder pairs first, then swaps each region in as it settles via a
+> nonce-carrying, CSP-compatible inline script (template + comment-walker).
+> Every boundary starts computing immediately — ordering constrains flushing,
+> never parallelism. Chunks are emitted whole, so no chunk ever splits a
+> resume marker. The stream renders under one session + document for its whole
+> life (the ambient per-render state inside `Resume.collectAsync`, else a
+> stream-local pair), and M11.1's fiber-state mechanism was generalized so the
+> resume observation hooks (component boundaries, markers) resolve both
+> session and document from the running fiber during async region execution.
+> `future/streaming/render-to-stream.spec.ts` is fully green (two spec
+> corrections: a lazy marker regex that swallowed the start marker into the
+> end match, and the stale `fiber.await` API). Chromium browser tests (7/7)
+> validated the DQ-009 marker change end-to-end before this landed.
 
 > **Item 1 — per-render server render state — is done**, together with the
 > `DQ-009` marker scoping it forced. The mechanism: `ServerRenderState`

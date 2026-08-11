@@ -20,6 +20,7 @@ import {
   type StructuralMode,
 } from "./resume-expression.js";
 import type { SetupPlan, SetupStepInspection } from "./Component.js";
+import { currentServerRenderState } from "./render-state.js";
 import {
   BindingReactivityKeyPrefix,
   bindingReactivityKey,
@@ -201,6 +202,39 @@ export interface ResumeSession {
 }
 
 let activeSession: ResumeSession | undefined;
+
+/**
+ * The session governing the CURRENT execution: the synchronous ambient one
+ * (installed by `runInResumeSession` around a render slice) when present,
+ * else the running fiber's per-render state (M11.1) — which is what lets
+ * observation hooks fire inside an async region effect that suspends between
+ * slices (`renderToStream` regions, `Resume.collectAsync` renders).
+ */
+/**
+ * The server document for marker creation: the installed global during a
+ * synchronous render slice, else the running fiber's per-render document —
+ * an async region effect creates its boundary comments against the same
+ * document its stream serializes.
+ */
+function currentServerDocumentValue():
+  | { readonly createComment?: (text: string) => unknown }
+  | undefined
+{
+  const global = (
+    globalThis as {
+      readonly document?: { readonly createComment?: (text: string) => unknown };
+    }
+  ).document;
+  if (global !== undefined) return global;
+  return currentServerRenderState()?.document as
+    | { readonly createComment?: (text: string) => unknown }
+    | undefined;
+}
+
+function currentResumeSession(): ResumeSession | undefined {
+  if (activeSession !== undefined) return activeSession;
+  return currentServerRenderState()?.session;
+}
 const noMarkers: Readonly<Record<string, string>> = Object.freeze({});
 const componentActivations = new WeakMap<object, Portable.AnyCode>();
 
@@ -283,7 +317,7 @@ export function withRenderedComponentOwner<A>(
   bindings: unknown,
   evaluate: () => A,
 ): A {
-  const session = activeSession;
+  const session = currentResumeSession();
   const componentId = session?.componentIds.get(bindings);
   if (session === undefined || componentId === undefined) {
     return evaluate();
@@ -307,7 +341,7 @@ export function observeRenderedExpression(
   insertion: object,
   evaluate: () => unknown,
 ): unknown {
-  const session = activeSession;
+  const session = currentResumeSession();
   const inspection = inspectExpression(expression);
   if (session === undefined || inspection === undefined) {
     return evaluate();
@@ -369,13 +403,7 @@ export function observeRenderedExpression(
     return value;
   }
 
-  const documentValue = (
-    globalThis as {
-      readonly document?: {
-        readonly createComment?: (text: string) => unknown;
-      };
-    }
-  ).document;
+  const documentValue = currentServerDocumentValue();
   if (typeof documentValue?.createComment !== "function") {
     session.invalidExpressionRegions.add(insertion);
     recordFallbackDiagnostic(session, {
@@ -457,13 +485,7 @@ function observeStructuralExpressionRegion(
     return value;
   }
 
-  const documentValue = (
-    globalThis as {
-      readonly document?: {
-        readonly createComment?: (text: string) => unknown;
-      };
-    }
-  ).document;
+  const documentValue = currentServerDocumentValue();
   if (typeof documentValue?.createComment !== "function") {
     session.invalidExpressionRegions.add(insertion);
     recordFallbackDiagnostic(session, {
@@ -718,7 +740,7 @@ export function observeRenderedExpressionTarget(
   target: ExpressionTargetValue,
   evaluate: () => unknown,
 ): ObservedExpressionTarget {
-  const session = activeSession;
+  const session = currentResumeSession();
   const inspection = inspectExpression(expression);
   if (session === undefined || inspection === undefined) {
     return { write: true, value: evaluate() };
@@ -898,7 +920,7 @@ export function observeCommittedComponentBindings(
   props: unknown,
   bindings: unknown,
 ): void {
-  const session = activeSession;
+  const session = currentResumeSession();
   if (session === undefined) return;
 
   const resumableSteps = plan.kind === "named"
@@ -1094,7 +1116,7 @@ export function observeRenderedComponentBoundary(
   result: unknown,
   bindings: unknown,
 ): unknown {
-  const session = activeSession;
+  const session = currentResumeSession();
   if (session === undefined) return result;
 
   const componentId = session.componentIds.get(bindings);
@@ -1102,13 +1124,7 @@ export function observeRenderedComponentBoundary(
 
   let markers = session.componentBoundaryMarkers.get(componentId);
   if (markers === undefined) {
-    const documentValue = (
-      globalThis as {
-        readonly document?: {
-          readonly createComment?: (text: string) => unknown;
-        };
-      }
-    ).document;
+    const documentValue = currentServerDocumentValue();
     if (typeof documentValue?.createComment !== "function") {
       recordFallbackDiagnostic(session, {
         code: "missing-component-boundary",
@@ -1161,7 +1177,7 @@ export function observeDirectEventHandler(
   eventType: string,
   handler: unknown,
 ): void {
-  const session = activeSession;
+  const session = currentResumeSession();
   if (session === undefined) return;
   if (handler === undefined || handler === null) return;
   let byType = session.directEventHandlers.get(target);
@@ -1186,7 +1202,7 @@ export function observeDirectEventHandler(
 export function observeServerEventTarget(
   target: object,
 ): Readonly<Record<string, string>> {
-  const session = activeSession;
+  const session = currentResumeSession();
   if (session === undefined) return noMarkers;
 
   const previous = session.observations.get(target);

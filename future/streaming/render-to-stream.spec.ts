@@ -281,8 +281,10 @@ describe("renderToStream (M11.3)", () => {
     );
 
     // Exactly one balanced pair survives the split.
-    const starts = html.match(/<!--af:component:[\s\S]*?:start-->/g) ?? [];
-    const ends = html.match(/<!--af:component:[\s\S]*?:end-->/g) ?? [];
+    // (Corrected: the original lazy `[\s\S]*?` end-pattern swallowed the
+    // start marker into its match; an id contains no `:`, so match tightly.)
+    const starts = html.match(/<!--af:component:[^:]+:start-->/g) ?? [];
+    const ends = html.match(/<!--af:component:[^:]+:end-->/g) ?? [];
     expect(starts).toHaveLength(1);
     expect(ends).toHaveLength(1);
     expect(html.indexOf(starts[0]!)).toBeLessThan(html.indexOf(ends[0]!));

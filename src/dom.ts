@@ -8,6 +8,7 @@
  * Computation so they update only the minimal DOM node when deps change.
  */
 
+import { Effect, Exit, Fiber, Queue, Stream, type Scope } from "effect";
 import { Computation } from "./computation.js";
 import { runUntracked } from "./tracking.js";
 import { createRoot, mergeProps, onCleanup } from "./api.js";
@@ -18,13 +19,14 @@ import {
   withComponentScope,
 } from "./component-scope.js";
 import {
+  makeResumeSession,
   observeDirectEventHandler,
   observeRenderedExpression,
   observeRenderedExpressionTarget,
   observeServerEventTarget,
   runInResumeSession,
 } from "./resume-session.js";
-import { currentServerRenderState } from "./render-state.js";
+import { ServerRenderStateTag, currentServerRenderState } from "./render-state.js";
 import {
   inspectExpression,
   type ExpressionTargetValue,
@@ -1431,6 +1433,299 @@ export function renderToString(fn: () => unknown): string {
       }
     }
   }
+}
+
+// ─── Streaming SSR (M11.2/M11.3, ratified DQ-006) ───────────────────────────
+//
+// Async boundaries are AUTHORED: an unresolved `Component.renderEffect(...)`
+// (any Effect value) in the render tree is the boundary — page structure is
+// never a function of timing, so a synchronous region that merely takes
+// wall-clock time renders inline with no region. `renderToStream` lives here
+// beside `renderToString`, and ordered vs out-of-order is one option on the
+// call, not a second entry point.
+
+export interface RenderToStreamOptions {
+  /**
+   * `ordered` flushes regions in document order (no scripts at all);
+   * `out-of-order` emits placeholder regions up front and swaps each region's
+   * content in as it settles, via a nonce-carrying inline script.
+   */
+  readonly mode: "ordered" | "out-of-order";
+  readonly buildId: string;
+  /** CSP nonce stamped on out-of-order swap scripts. */
+  readonly nonce?: string;
+}
+
+let nextStreamSessionOrdinal = 0;
+
+export class RenderToStreamError extends Error {
+  override readonly name = "RenderToStreamError";
+}
+
+type StreamSegment =
+  | { readonly kind: "html"; readonly html: string }
+  | {
+      readonly kind: "async";
+      readonly id: string;
+      readonly effect: Effect.Effect<unknown, unknown, never>;
+    };
+
+const streamRegionStart = (id: string): string => `<!--af:region:${id}:start-->`;
+const streamRegionEnd = (id: string): string => `<!--af:region:${id}:end-->`;
+
+/**
+ * Run one synchronous render slice against a stable per-stream server
+ * document: the same install/restore discipline as `renderToString`, but the
+ * document persists across the stream's whole life so every region serializes
+ * into one coherent tree.
+ */
+function runStreamSlice<A>(
+  serverDoc: unknown,
+  session: ReturnType<typeof makeResumeSession>,
+  evaluate: () => A,
+): A {
+  const prevSSR = _ssrMode;
+  const prevDoc = _serverDoc;
+  const origDocument = typeof globalThis.document !== "undefined" ? globalThis.document : undefined;
+  const origNode = typeof globalThis.Node !== "undefined" ? globalThis.Node : undefined;
+  let dispose: (() => void) | undefined;
+  try {
+    _ssrMode = true;
+    _serverDoc = serverDoc;
+    (globalThis as Record<string, unknown>).document = serverDoc;
+    (globalThis as Record<string, unknown>).Node = ServerNode as unknown;
+    let out!: A;
+    runInResumeSession(session, () => {
+      createRoot((d) => {
+        dispose = d;
+        out = evaluate();
+      });
+    });
+    return out;
+  } finally {
+    try {
+      dispose?.();
+    } finally {
+      _ssrMode = prevSSR;
+      _serverDoc = prevDoc;
+      if (origNode !== undefined) {
+        (globalThis as Record<string, unknown>).Node = origNode;
+      } else {
+        delete (globalThis as Record<string, unknown>).Node;
+      }
+      if (origDocument !== undefined) {
+        (globalThis as Record<string, unknown>).document = origDocument;
+      } else {
+        delete (globalThis as Record<string, unknown>).document;
+      }
+    }
+  }
+}
+
+/**
+ * Fully settle one region's value: run every nested Effect (a component view
+ * may itself return an Effect) and resolve arrays element-wise, closing each
+ * setup's Scope after its snapshot — the same lifetime `renderToString`'s
+ * synchronous pass gives a component.
+ */
+function settleStreamValue(
+  value: unknown,
+): Effect.Effect<unknown, unknown, never> {
+  if (Effect.isEffect(value)) {
+    return Effect.scoped(
+      value as Effect.Effect<unknown, unknown, Scope.Scope>,
+    ).pipe(Effect.flatMap(settleStreamValue));
+  }
+  if (Array.isArray(value)) {
+    return Effect.forEach(value, settleStreamValue).pipe(
+      Effect.map((settled) => settled as unknown),
+    );
+  }
+  return Effect.succeed(value);
+}
+
+/** Split the shell pass's value tree into flushable segments. */
+function segmentStreamTree(
+  value: unknown,
+  segments: Array<StreamSegment>,
+  nextRegionOrdinal: { ordinal: number },
+): void {
+  if (Effect.isEffect(value)) {
+    const id = `r${nextRegionOrdinal.ordinal}`;
+    nextRegionOrdinal.ordinal += 1;
+    segments.push({ kind: "async", id, effect: settleStreamValue(value) });
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const child of value) segmentStreamTree(child, segments, nextRegionOrdinal);
+    return;
+  }
+  const html = serverValueToHTML(value);
+  const last = segments[segments.length - 1];
+  if (last !== undefined && last.kind === "html") {
+    segments[segments.length - 1] = { kind: "html", html: last.html + html };
+  } else if (html.length > 0) {
+    segments.push({ kind: "html", html });
+  }
+}
+
+/** The CSP-compatible out-of-order swap: template in, placeholder out. */
+function streamSwapChunk(id: string, html: string, nonce: string | undefined): string {
+  const nonceAttribute = nonce === undefined ? "" : ` nonce="${nonce}"`;
+  return (
+    `<template data-af-region="${id}">${html}</template>`
+    + `<script${nonceAttribute}>(function(d){var t=d.querySelector('template[data-af-region=\'${id}\']');if(!t)return;`
+    + `var w=d.createTreeWalker(d,128),s=null,e=null;while(w.nextNode()){var c=w.currentNode;`
+    + `if(c.data==="af:region:${id}:start")s=c;else if(c.data==="af:region:${id}:end"){e=c;break;}}`
+    + `if(s&&e&&s.parentNode===e.parentNode){while(s.nextSibling&&s.nextSibling!==e)s.parentNode.removeChild(s.nextSibling);`
+    + `s.parentNode.insertBefore(t.content,e);}if(t.parentNode)t.parentNode.removeChild(t);`
+    + `var x=d.currentScript;if(x&&x.parentNode)x.parentNode.removeChild(x);})(document);</script>`
+  );
+}
+
+/**
+ * Render a component tree to a stream of HTML chunks.
+ *
+ * The render thunk keeps `renderToString`'s shape; each Effect value in the
+ * tree is an authored async boundary that becomes an `af:region` comment-pair.
+ * Every chunk is emitted whole, so no chunk ever splits a resume marker.
+ */
+export function renderToStream(
+  fn: () => unknown,
+  options: RenderToStreamOptions,
+): Stream.Stream<string, unknown> {
+  return Stream.unwrap(
+    Effect.gen(function* () {
+      if (options.mode !== "ordered" && options.mode !== "out-of-order") {
+        return yield* Effect.fail(
+          new RenderToStreamError(
+            `Unknown renderToStream mode ${JSON.stringify(options.mode)}; expected "ordered" or "out-of-order".`,
+          ),
+        );
+      }
+      // The stream renders under one session and one document for its whole
+      // life: the ambient per-render state when composed inside
+      // `Resume.collectAsync`, or a stream-local pair otherwise — an
+      // addressable component's boundary markers must balance regardless of
+      // which chunk carries them.
+      const ambient = currentServerRenderState();
+      const session = ambient !== undefined
+        ? (ambient.session as ReturnType<typeof makeResumeSession>)
+        : makeResumeSession(`s${nextStreamSessionOrdinal++}`);
+      const serverDoc = ambient?.document ?? createServerDocument();
+      const segments: Array<StreamSegment> = [];
+      yield* Effect.try({
+        try: () => {
+          runStreamSlice(serverDoc, session, () => {
+            segmentStreamTree(fn(), segments, { ordinal: 0 });
+          });
+        },
+        catch: (error) =>
+          new RenderToStreamError(`Streaming shell render failed: ${String(error)}`),
+      });
+
+      // Every boundary starts computing immediately — ordering constrains
+      // FLUSHING only, never parallelism.
+      const regions: Array<{
+        readonly id: string;
+        readonly fiber: Fiber.Fiber<string, unknown>;
+      }> = [];
+      for (const segment of segments) {
+        if (segment.kind !== "async") continue;
+        const fiber = yield* Effect.forkDetach(
+          segment.effect.pipe(
+            Effect.map((settled) =>
+              runStreamSlice(serverDoc, session, () => serverValueToHTML(settled)),
+            ),
+            // The region effect runs on its own fiber, suspending freely; the
+            // per-render state travels with it so observation hooks (component
+            // boundaries, markers) fire against THIS stream's session.
+            Effect.provideService(ServerRenderStateTag, {
+              session,
+              document: serverDoc,
+            }),
+          ),
+        );
+        regions.push({ id: segment.id, fiber });
+      }
+      const fiberOf = (id: string): Fiber.Fiber<string, unknown> => {
+        const found = regions.find((region) => region.id === id);
+        if (found === undefined) {
+          throw new RenderToStreamError(`Unknown stream region "${id}".`);
+        }
+        return found.fiber;
+      };
+      const joinRegion = (id: string): Effect.Effect<string, unknown> =>
+        Fiber.await(fiberOf(id)).pipe(
+          Effect.flatMap((exit) => exit as Effect.Effect<string, unknown>),
+        );
+
+      if (options.mode === "ordered") {
+        // Document order: each region's start marker travels with the
+        // preceding shell chunk, its content and end marker flush when the
+        // region settles. Later regions wait behind earlier ones.
+        const pieces: Array<Stream.Stream<string, unknown>> = [];
+        let pendingHtml = "";
+        for (const segment of segments) {
+          if (segment.kind === "html") {
+            pendingHtml += segment.html;
+            continue;
+          }
+          const prefix = pendingHtml + streamRegionStart(segment.id);
+          pendingHtml = "";
+          pieces.push(Stream.succeed(prefix));
+          pieces.push(
+            Stream.fromEffect(
+              joinRegion(segment.id).pipe(
+                Effect.map((html) => html + streamRegionEnd(segment.id)),
+              ),
+            ),
+          );
+        }
+        if (pendingHtml.length > 0) pieces.push(Stream.succeed(pendingHtml));
+        return pieces.reduce(
+          (acc, piece) => Stream.concat(acc, piece),
+          Stream.empty as Stream.Stream<string, unknown>,
+        );
+      }
+
+      // Out-of-order: the whole shell — placeholder pairs included — flushes
+      // first; each region swaps in as it settles, fastest first.
+      let shell = "";
+      for (const segment of segments) {
+        shell += segment.kind === "html"
+          ? segment.html
+          : streamRegionStart(segment.id) + streamRegionEnd(segment.id);
+      }
+      const asyncIds = segments.flatMap((segment) =>
+        segment.kind === "async" ? [segment.id] : [],
+      );
+      const swapQueue = Stream.callback<string, unknown>((queue) =>
+        Effect.sync(() => {
+          let outstanding = asyncIds.length;
+          if (outstanding === 0) {
+            Queue.endUnsafe(queue);
+            return;
+          }
+          for (const id of asyncIds) {
+            fiberOf(id).addObserver((exit) => {
+              if (Exit.isSuccess(exit)) {
+                Queue.offerUnsafe(
+                  queue,
+                  streamSwapChunk(id, exit.value, options.nonce),
+                );
+                outstanding -= 1;
+                if (outstanding === 0) Queue.endUnsafe(queue);
+              } else {
+                Queue.failCauseUnsafe(queue, exit.cause as never);
+              }
+            });
+          }
+        }),
+      );
+      return Stream.concat(Stream.succeed(shell), swapQueue);
+    }),
+  ) as Stream.Stream<string, unknown>;
 }
 
 // ─── Hydration ────────────────────────────────────────────────────────────────
