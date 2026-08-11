@@ -226,6 +226,34 @@ export const Result = {
     }),
 
   /**
+   * Like `fromExit`, but preserves last-known-good data across a failed
+   * refresh: a *typed* failure with previous data becomes `Stale(error, data)`
+   * instead of blanking to `Failure`.
+   *
+   * This is the settle step every refreshing query wants. `fromExit` alone is
+   * correct only for a query that has never succeeded — using it on a refresh
+   * throws away data the user is currently looking at.
+   *
+   * Defects and interrupts are deliberately *not* preserved as `Stale`: they
+   * are not "the query failed with a value", and the live query path
+   * (`queryEffect`) publishes `Defect` for them regardless of prior data.
+   *
+   * @param exit     - The settled exit of the refresh attempt.
+   * @param previous - The result being replaced, if any.
+   */
+  fromExitWithPrevious: <A, E>(
+    exit: Exit.Exit<A, E>,
+    previous: Result<A, E> | undefined,
+  ): Result<A, E> => {
+    const next = Result.fromExit(exit);
+    if (next._tag !== "Failure" || previous === undefined) return next;
+    const data = Result.getData(previous);
+    return Option.isSome(data)
+      ? Result.stale(next.error, data.value)
+      : next;
+  },
+
+  /**
    * Convert to an Effect Exit. Returns `None` for `Loading`.
    * Uses the canonical `.exit` field for accurate round-trips.
    */

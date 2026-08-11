@@ -548,9 +548,21 @@ function hasTag(error: unknown, tag: string): error is { readonly _tag: string }
   return typeof error === "object" && error !== null && "_tag" in error && (error as { readonly _tag: string })._tag === tag;
 }
 
+/**
+ * Last-known-good loader data, if any.
+ *
+ * `Stale` is a *failure* carrying the data from the last success, which is
+ * precisely the case where a route should keep rendering what the user already
+ * has. Reading only `Success` here meant a failed loader refresh rendered as
+ * *no data* — the keep-stale-on-failure gap recorded in
+ * `RESULT_UNIFICATION_PLAN.md` finding 3.
+ */
 function loaderSuccess(result: UnknownRouteResult | undefined): { readonly value: unknown } | undefined {
   if (!result) return undefined;
   if (result._tag === "Success") return { value: result.value };
+  if (result._tag === "Stale") return { value: result.data };
+  // `Refreshing.previous` is typed to exclude `Stale`, so a refresh of stale
+  // data is represented as `Refreshing(Success(data))` and is covered here.
   if (result._tag === "Refreshing" && result.previous._tag === "Success") return { value: result.previous.value };
   return undefined;
 }

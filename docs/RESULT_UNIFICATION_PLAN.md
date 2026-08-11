@@ -466,6 +466,26 @@ migration.
    unification step: record it as a router finding (`R1`/`R5` territory) and
    do **not** fold it into a slice above, or the byte-neutrality claim stops
    being checkable.
+
+   **Fixed 2026-08-11, with a correction to this finding's severity.**
+   `loaderSuccess` now reads `Stale.data`. But "currently renders as *no data*"
+   is **wrong**: a grep for `Result.stale(` / `_tag === "Stale"` across
+   `Route.ts`, `router-runtime.ts`, and `RouterRuntime.ts` shows **nothing on
+   the router path constructs a `Stale`** — loaders settle through
+   `CoreResult.fromExit`, which only produces `Success`/`Failure`. The gap was
+   therefore **latent, not live**: unreachable until unification introduces
+   `Stale` on this path.
+
+   Consequently the fix ships **without a test**, deliberately. An end-to-end
+   test would have to fabricate a `Stale` the system cannot produce — seeding
+   the loader cache does not work either, because `renderRequest` re-runs
+   loaders rather than reading the cache. Writing one anyway would be a test
+   that proves the fixture, not the behaviour. When unification lands `Stale`
+   on the router path, that is the moment to add the covering test.
+
+   Note also that `Refreshing.previous` is *typed* to exclude `Stale`, so
+   `Refreshing(Stale)` is not representable and needs no branch — the compiler
+   rejected the one that was written first.
 4. **Resume query refresh (`Resume.ts:2055–2064`).** Hand-rolls
    `Stale → success(data) → refreshing(...)`. It survives unification
    untouched, but it is the second hand-rolled `Stale` unwrap in the repo;

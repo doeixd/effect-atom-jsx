@@ -10,7 +10,7 @@ are broader than the implementation**, and there are three real defects.
 
 ---
 
-## D1 — A restored query loses stale data on typed failure (`Stale` is never produced)
+## D1 — A restored query loses stale data on typed failure — **FIXED 2026-08-11**
 
 `src/Resume.ts:2258` writes `ResultState.fromExit(exit)`, which maps a typed error
 to `Result.failure` (`src/effect-ts.ts:218-226`). The **live** query path produces
@@ -24,6 +24,20 @@ blanks to `Failure`**.
 This directly contradicts acceptance criterion 2 (*"preserves `Result`, error …
 semantics"*), and it is the same keep-stale-on-failure family as the recorded
 Finding-5 and the router's `loaderSuccess` defect.
+
+**Fix.** A shared `ResultState.fromExitWithPrevious(exit, previous)` now settles
+a *typed* failure with prior data to `Stale(error, data)`; the restored query
+passes its pre-refresh state. Defects and interrupts are deliberately not
+preserved as `Stale` — they are not "the query failed with a value", and the
+live path publishes `Defect` for them regardless of prior data.
+
+Verified by reverting to `fromExit`: the new test settles to `Failure` and
+fails. A negative-control test pins that `Stale` requires data to keep, so an
+implementation returning `Stale(error, undefined)` unconditionally cannot pass.
+
+The router's `loaderSuccess` sibling was fixed in the same family, but it was
+**latent rather than live** — nothing on the router path constructs a `Stale`.
+See `RESULT_UNIFICATION_PLAN.md` finding 3.
 
 ## D2 — Behavior reattachment can only select elements from *snapshot* bindings
 

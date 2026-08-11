@@ -2286,7 +2286,10 @@ function restoreStateBindingsInScope<Props, Req, E, Bindings, Slots>(
               writeResult(current);
               return;
             }
-            writeResult(ResultState.fromExit(exit));
+            // `current` is the pre-refresh state, so a failed refresh settles
+            // to `Stale` and keeps showing the data the user already has —
+            // matching the live query path rather than blanking to `Failure`.
+            writeResult(ResultState.fromExitWithPrevious(exit, current));
           }).pipe(
             Effect.onInterrupt(() =>
               Effect.sync(() => {

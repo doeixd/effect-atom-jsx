@@ -30,6 +30,7 @@ import {
 } from "../dom.js";
 import * as Portable from "../Portable.js";
 import * as Reactivity from "../Reactivity.js";
+import { Result as ResultState } from "../effect-ts.js";
 import * as Resume from "../Resume.js";
 import * as Serialization from "../Serialization.js";
 import * as View from "../View.js";
@@ -3147,6 +3148,90 @@ describe("Resume portable queries", () => {
       refresh.pipe(Effect.provide(resolverLayer), Effect.flip),
     );
     expect(disposedFailure._tag).toBe("ResumeRestoredQueryDisposedError");
+  });
+
+  it("keeps restored data as Stale when a refresh fails with a typed error", async () => {
+    // The live query path publishes `Stale(error, previousData)` so a failed
+    // refresh keeps showing what the user already has. A restored query must
+    // not blank to `Failure` -- the same keep-stale-on-failure family as the
+    // router's `loaderSuccess` defect.
+    const QueryCard = makeQueryComponent();
+    const serverScope = Scope.makeUnsafe();
+    const result = collect(() =>
+      renderToString(() =>
+        Effect.runSync(
+          Component.renderEffect(QueryCard, {}).pipe(
+            Scope.provide(serverScope),
+          ),
+        ),
+      ),
+    );
+    Effect.runSync(Scope.close(serverScope, Exit.void));
+
+    const FailingQueryCode = Portable.code<
+      { readonly label: string },
+      { readonly label: string },
+      readonly [],
+      string,
+      string,
+      never
+    >({
+      id: "test.resume.query",
+      buildId: TestBuildId,
+      captures: Schema.Struct({ label: Schema.String }),
+      run: () => Effect.fail("offline"),
+    });
+    const resolver = Effect.runSync(
+      Portable.makeResolver({
+        "test.resume.query": () => Effect.succeed(FailingQueryCode),
+      }),
+    );
+    const resolverLayer = Layer.succeed(Portable.Resolver, resolver);
+
+    const restored = Effect.runSync(
+      Resume.restoreStateBindings(QueryCard, result.manifest, "c0"),
+    );
+    expect(restored.bindings.data()).toMatchObject({
+      _tag: "Success",
+      value: "server:todos",
+    });
+
+    await Effect.runPromise(
+      restored.queries["data"]!.refresh.pipe(Effect.provide(resolverLayer)),
+    );
+
+    const settled = restored.bindings.data();
+    expect(settled).toMatchObject({
+      _tag: "Stale",
+      error: "offline",
+      data: "server:todos",
+    });
+    // The point of Stale is that the view still renders the data.
+    expect(ResultState.getData(settled)).toEqual(Option.some("server:todos"));
+    expect(ResultState.getError(settled)).toEqual(Option.some("offline"));
+
+    Effect.runSync(restored.dispose);
+  });
+
+  it("blanks to Failure when a restored query never had data", async () => {
+    // Negative control: `Stale` is only correct when there is data to keep.
+    // Without it, an implementation that returned `Stale(error, undefined)`
+    // unconditionally would pass the test above.
+    const exit = Exit.fail("offline");
+    expect(ResultState.fromExitWithPrevious(exit, undefined)).toMatchObject({
+      _tag: "Failure",
+      error: "offline",
+    });
+    expect(
+      ResultState.fromExitWithPrevious(exit, ResultState.loading),
+    ).toMatchObject({ _tag: "Failure", error: "offline" });
+    // A defect is not "the query failed with a value", so prior data does not
+    // downgrade it to Stale -- this matches the live path.
+    const defected = ResultState.fromExitWithPrevious(
+      Exit.die("boom"),
+      ResultState.success("server:todos"),
+    );
+    expect(defected._tag).toBe("Defect");
   });
 
   it("revalidates a resumed query from its restored semantic keys", async () => {
