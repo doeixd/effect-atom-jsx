@@ -1450,6 +1450,27 @@ Acceptance:
 
 Status: **items 1-3 and 5-6 implemented** (2026-08-11); item 4 proposed.
 
+> **Item 2's async-setup half is done** (per ratified `DQ-005`):
+> `Resume.renderComponentAsync(component, props)` renders one component
+> inside a `collectAsync` render, awaiting its setup (and settling
+> `Component.from`'s Effect-valued views) before serializing the committed
+> view in one synchronous slice. `collectAsync` gained the request-level
+> `deadline` option and now scopes the render (`Effect.scoped`), so
+> resources a suspended setup acquired are released exactly once even when
+> the deadline interrupts it. An overrun is a PER-REGION fallback: one
+> `"async-setup-timeout"` diagnostic (`disposition: "fallback-required"`),
+> empty HTML for that region, nothing registered in the manifest, healthy
+> siblings unaffected — never a failed request. Purely synchronous renders
+> are byte- and manifest-identical through either entry point. `template()`
+> now works during suspension (fiber render-state fallback). Promoted:
+> `src/__tests__/async-ssr.test.ts`; two spec premises corrected in place
+> (DQ-009 per-collection scope ids break byte parity without an explicit
+> `installationId`; the later `opaque-component-setup` diagnostic fires on
+> both paths). REMAINDER: `renderToStream` regions do not yet route through
+> `renderComponentAsync`, so an async-SETUP component inside a streamed
+> region (and with it region events over a live stream) is the remaining
+> M11 integration gap — pair it with item 4.
+
 > **Items 5-6 — streaming manifest + live install — are done** (per ratified
 > `DQ-007`/`DQ-008`). `src/streaming-manifest.ts` is a leaf module (so
 > `dom.renderToStream` emits records without importing `Resume`): one

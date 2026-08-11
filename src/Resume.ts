@@ -1,5 +1,6 @@
 import {
   Cause,
+  type Duration,
   Effect,
   Exit,
   Fiber,
@@ -52,10 +53,15 @@ import {
   className as domClassName,
   createServerDocument,
   reconcileArrays as domReconcileArrays,
+  runStreamSlice,
+  serverValueToHTML,
   setAttribute as domSetAttribute,
   setStyleProperty as domSetStyleProperty,
 } from "./dom.js";
-import { ServerRenderStateTag } from "./render-state.js";
+import {
+  ServerRenderStateTag,
+  currentServerRenderState,
+} from "./render-state.js";
 import {
   StreamRecordSchema,
   type StreamRegionRecord,
@@ -96,6 +102,10 @@ export {
   snapshotQuery,
   snapshotState,
 };
+export type {
+  ResumeDiagnostic,
+  ResumeDiagnosticCode,
+} from "./resume-session.js";
 export type {
   ActionHandleInspection,
   BindingResumePolicy,
@@ -567,6 +577,14 @@ export interface CollectOptions {
    * because the ambiguous marker would already be in served HTML.
    */
   readonly installationId?: string;
+  /**
+   * Async-setup deadline (M11.2, ratified `DQ-005`): request-level in this
+   * slice, honored only by `collectAsync`. A component setup that exceeds it
+   * degrades to a per-region activation fallback (an `"async-setup-timeout"`
+   * diagnostic with `disposition: "fallback-required"`), never a failed
+   * request. The synchronous `collect` path carries no deadline machinery.
+   */
+  readonly deadline?: Duration.Input;
 }
 
 export interface CollectionResult {
@@ -1674,7 +1692,7 @@ export function collect(
  * two interleaved renders share no session, no document, and no diagnostics.
  */
 export function collectAsync<E = never, R = never>(
-  render: () => Effect.Effect<string, E, R>,
+  render: () => Effect.Effect<string | ReadonlyArray<string>, E, R>,
   options: CollectOptions,
 ): Effect.Effect<
   CollectionResult,
@@ -1684,13 +1702,102 @@ export function collectAsync<E = never, R = never>(
   return collectInternal(
     (session) =>
       Effect.suspend(render).pipe(
+        // A render effect may legitimately produce several rendered chunks
+        // (e.g. `Effect.all` over per-region renders); normalize to one
+        // document string.
+        Effect.map((value) =>
+          typeof value === "string" ? value : value.join("")
+        ),
         Effect.provideService(ServerRenderStateTag, {
           session,
           document: createServerDocument(),
+          ...(options.deadline === undefined
+            ? {}
+            : { deadline: options.deadline }),
         }),
+        // The request scope: resources a suspended setup acquires are
+        // released exactly once when the render completes — including setups
+        // the deadline interrupted.
+        Effect.scoped,
       ),
     options,
   ).pipe(Effect.withSpan("Resume.collectAsync"));
+}
+
+const asyncSetupTimedOut = Symbol.for(
+  "@effect-atom-jsx/Resume/asyncSetupTimedOut",
+);
+
+/**
+ * Render one component inside a `collectAsync` render, awaiting its setup
+ * (M11.2, ratified `DQ-005`: a separate entry point beside the synchronous
+ * path, so "no regression to the synchronous renderer" stays checkable at
+ * the type level).
+ *
+ * The setup Effect may suspend freely; the view then renders from the
+ * committed bindings inside one synchronous serialization slice. If the
+ * request's `deadline` elapses first, the region degrades to the existing
+ * fail-closed activation fallback: one `"async-setup-timeout"` diagnostic
+ * attributed to this region, empty HTML, and nothing registered in the
+ * manifest (the ghost-snapshot rule — never register what never rendered).
+ */
+export function renderComponentAsync<Props, Req, E, Bindings, SlotContract>(
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+  props: Props,
+): Effect.Effect<string, E | ResumeRenderError, Req> {
+  return Effect.gen(function* () {
+    const state = currentServerRenderState();
+    if (state === undefined) {
+      return yield* new ResumeRenderError({
+        message:
+          "renderComponentAsync must run inside a Resume.collectAsync render.",
+      });
+    }
+    // `Component.from` components surface their setup Effect as the view
+    // value; settle nested Effects until a renderable value remains — that
+    // suspension is exactly what this entry point exists to await.
+    const settleDeep = (candidate: unknown): Effect.Effect<unknown, E, Req> =>
+      Effect.isEffect(candidate)
+        ? (candidate as Effect.Effect<unknown, E, Req>).pipe(
+            Effect.flatMap(settleDeep),
+          )
+        : Effect.succeed(candidate);
+    const rendered = Component.renderEffect(component, props).pipe(
+      Effect.flatMap(settleDeep),
+    );
+    const value = yield* (state.deadline === undefined
+      ? rendered
+      : rendered.pipe(
+          Effect.timeoutOrElse({
+            duration: state.deadline,
+            orElse: () =>
+              Effect.sync(() => {
+                state.session.diagnostics.push({
+                  code: "async-setup-timeout",
+                  phase: "collect",
+                  severity: "warning",
+                  disposition: "fallback-required",
+                  reason:
+                    "Component setup exceeded the async render deadline; the region falls back to activation.",
+                });
+                return asyncSetupTimedOut;
+              }),
+          }),
+        ));
+    if (value === asyncSetupTimedOut) return "";
+    return yield* Effect.try({
+      try: () =>
+        runStreamSlice(
+          state.document,
+          state.session as ReturnType<typeof makeResumeSession>,
+          () => serverValueToHTML(value),
+        ),
+      catch: (error) =>
+        new ResumeRenderError({
+          message: `Async component render failed during serialization: ${String(error)}`,
+        }),
+    });
+  }).pipe(Effect.withSpan("Resume.renderComponentAsync"));
 }
 
 function collectInternal<E, R>(

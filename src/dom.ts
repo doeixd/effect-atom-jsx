@@ -61,7 +61,10 @@ export function template(
   let serverTemplate: ServerNode | undefined;
 
   return () => {
-    if (_ssrMode) {
+    // The fiber-carried render state (M11.2): a component setup suspended
+    // inside `Resume.collectAsync` builds DOM between synchronous slices,
+    // when `_ssrMode` is off — the server branch still applies there.
+    if (_ssrMode || currentServerRenderState() !== undefined) {
       if (serverTemplate === undefined) {
         serverTemplate = parseHTML(html)[0] ?? new ServerDocumentFragment();
       }
@@ -1347,7 +1350,8 @@ export function createServerDocument(): unknown {
 let _ssrMode = false;
 let _serverDoc: unknown = null;
 
-function serverValueToHTML(value: unknown): string {
+/** @internal Serialize a rendered server value; used by Resume async render. */
+export function serverValueToHTML(value: unknown): string {
   if (value instanceof ServerNode) {
     return value.toHTML();
   }
@@ -1498,7 +1502,8 @@ const streamRegionEnd = (id: string): string => `<!--af:region:${id}:end-->`;
  * document persists across the stream's whole life so every region serializes
  * into one coherent tree.
  */
-function runStreamSlice<A>(
+/** @internal One synchronous server render/serialize slice; used by Resume async render. */
+export function runStreamSlice<A>(
   serverDoc: unknown,
   session: ReturnType<typeof makeResumeSession>,
   evaluate: () => A,

@@ -63,7 +63,8 @@ export type ResumeDiagnosticCode =
   | "unresolved-expression-dependency"
   | "unsupported-expression-output"
   | "unsupported-expression-target"
-  | "missing-expression-boundary";
+  | "missing-expression-boundary"
+  | "async-setup-timeout";
 
 export type ResumeDiagnosticPhase = "collect";
 export type ResumeDiagnosticSeverity = "warning";

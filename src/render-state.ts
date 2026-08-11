@@ -22,12 +22,20 @@
  * state.
  */
 import { Context, Fiber } from "effect";
+import type { Duration } from "effect";
 import type { ResumeSession } from "./resume-session.js";
 
 export interface ServerRenderState {
   readonly session: ResumeSession;
   /** The render's own server document, stable across its render passes. */
   readonly document: unknown;
+  /**
+   * Request-level async-setup deadline (M11.2, ratified `DQ-005`): a
+   * suspended component setup exceeding it degrades to a per-region
+   * activation fallback rather than failing the request. `undefined` means
+   * no deadline.
+   */
+  readonly deadline?: Duration.Input;
 }
 
 export const ServerRenderStateTag =
