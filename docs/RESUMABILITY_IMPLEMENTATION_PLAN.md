@@ -1448,7 +1448,32 @@ Acceptance:
 
 ### Milestone 11 — Streaming SSR with parallel route data (resolves Open Question 9)
 
-Status: **items 1-3 implemented** (2026-08-11); items 4+ proposed.
+Status: **items 1-3 and 5-6 implemented** (2026-08-11); item 4 proposed.
+
+> **Items 5-6 — streaming manifest + live install — are done** (per ratified
+> `DQ-007`/`DQ-008`). `src/streaming-manifest.ts` is a leaf module (so
+> `dom.renderToStream` emits records without importing `Resume`): one
+> discriminated v5 record per flushed region plus a terminal completeness
+> record carrying the **region-id set** (set equality, never a count), byte
+> ceiling enforced cumulatively with the distinct attributed
+> `ResumeStreamPayloadTooLargeError`, records embedded as inert
+> `application/json` scripts with the manifest's HTML escapes.
+> `Resume.installClientStreaming` is the live handle — markers are
+> region-scoped per `DQ-009` (`"<regionId>:<eventId>"`, per-region event
+> tables so two regions' `e0` never collide), an interaction landing before
+> its region's record queues silently and replays exactly once on ingest,
+> and `endOfStream` without a matching terminal record fails CLOSED with
+> `ResumeStreamTruncatedError`, one `"stream-truncated"` diagnostic, and all
+> listeners removed. `DQ-008` holds in code: `installClientStreamed` (settled
+> list) and `Resume.mountFragment` (M11b item 1's door) both route through
+> the live handle's single `ingest` primitive — one identical record, three
+> doors, one identical outcome, one shared build-mismatch rejection.
+> Promoted: `src/__tests__/streaming-manifest.test.ts` and
+> `src/__tests__/live-stream-install.test.ts` (with the shared
+> `streaming-fake-dom.ts` double). Remainder tracked for the M11b lane:
+> component/expression deltas are not yet carried on stream records, and
+> activation handoff over a live stream reports a diagnostic instead of
+> dispatching.
 
 > **Items 2-3 — `renderToStream` — are done** (`src/dom.ts`, per ratified
 > `DQ-006`): async boundaries are *authored* — any Effect value in the render

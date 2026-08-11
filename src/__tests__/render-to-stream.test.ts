@@ -102,8 +102,14 @@ describe("renderToStream (M11.2/11.3)", () => {
 
     // Document order, despite the second region settling first.
     expect(html.indexOf("first")).toBeLessThan(html.indexOf("second"));
-    // Ordered mode needs no swap scripts at all.
-    expect(html).not.toContain("<script");
+    // Ordered mode needs no EXECUTABLE swap scripts at all. Inert
+    // `application/json` streaming-manifest records (M11.5) are data, not
+    // code, and are the only script tags allowed here.
+    const scripts = html.match(/<script[^>]*>/g) ?? [];
+    for (const tag of scripts) {
+      expect(tag).toContain('type="application/json"');
+      expect(tag).toContain("data-af-stream");
+    }
     for (const chunk of chunks) expect(splitsAMarker(chunk)).toBe(false);
   });
 

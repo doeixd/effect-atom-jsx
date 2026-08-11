@@ -1207,7 +1207,8 @@ export type ClientDiagnosticCode =
   | "expression-resolution-failure"
   | "expression-execution-failure"
   | "expression-patch-failure"
-  | "client-runtime-failure";
+  | "client-runtime-failure"
+  | "stream-truncated";
 
 export interface ClientDiagnostic {
   readonly code: ClientDiagnosticCode;
@@ -5834,97 +5835,449 @@ export interface InstallClientStreamedOptions<R, ER>
   readonly records: ReadonlyArray<unknown>;
 }
 
+export type InstallClientStreamingOptions<R, ER> = Omit<
+  ClientInstallOptions<R, ER>,
+  "manifest"
+>;
+
+export type StreamIngestError =
+  | ResumeManifestDecodeError
+  | ResumeClientBuildMismatchError;
+
+export interface StreamingClientInstallationInspection {
+  readonly disposed: boolean;
+  readonly ended: boolean;
+  readonly eventListeners: number;
+  readonly regions: number;
+  readonly queuedInteractions: number;
+}
+
 /**
- * Completeness-gated install over streamed manifest records (M11.5/M11.6,
- * `DQ-007`).
+ * The live handle a streaming transport feeds (M11.6, ratified `DQ-008`).
  *
- * Fails CLOSED, never partially: a stream without its terminal record — or
- * whose terminal id set disagrees with the records that actually arrived — is
- * a typed `ResumeStreamTruncatedError`; any record from another build is a
- * `ResumeClientBuildMismatchError` even if every other record agrees. Only a
- * complete, build-consistent record set is merged into one manifest and
- * handed to the ordinary `installClient` validation pipeline.
+ * `ingest` is THE record primitive: `installClientStreamed` and
+ * `Resume.mountFragment` are doors over the same call, which is what makes
+ * "a fetched fragment and a streamed flush are one operation" true in code.
+ */
+export interface StreamingClientInstallation {
+  readonly ingest: (record: unknown) => Effect.Effect<void, StreamIngestError>;
+  readonly endOfStream: () => Effect.Effect<void, ResumeStreamTruncatedError>;
+  readonly inspect: () => StreamingClientInstallationInspection;
+  readonly dispose: Effect.Effect<void>;
+}
+
+/**
+ * Install over a live record stream (M11 item 6).
+ *
+ * Marker scoping follows `DQ-009` with the REGION id as the scope: a streamed
+ * marker is `"<regionId>:<eventId>"`, and each region record registers its own
+ * event table, so two regions numbering their events identically can never
+ * collide in a flat id table.
+ *
+ * An interaction landing on a region whose record has not arrived yet is a
+ * wait, not a failure: it queues silently (no diagnostic) and replays exactly
+ * once when the record is ingested. `endOfStream` gates on the `DQ-007`
+ * terminal record — set equality over region ids — and on truncation fails
+ * CLOSED: one `"stream-truncated"` diagnostic, every listener removed, no
+ * further interaction claimed.
+ */
+export function installClientStreaming<R, ER>(
+  options: InstallClientStreamingOptions<R, ER>,
+): Effect.Effect<StreamingClientInstallation> {
+  return Effect.gen(function* () {
+    const resolver = yield* Portable.makeResolver(options.resolverEntries);
+    const report = (diagnostic: ClientDiagnostic): void => {
+      try {
+        options.onDiagnostic?.(diagnostic);
+      } catch {
+        // A throwing diagnostics callback must never break dispatch.
+      }
+    };
+
+    const regionEvents = new Map<
+      string,
+      Record<string, typeof EventEntrySchema.Type>
+    >();
+    const queued: Array<{
+      readonly region: string;
+      readonly eventId: string;
+      readonly eventType: EventType;
+    }> = [];
+    const listeners = new Map<EventType, EventListener>();
+    const claimedInteractions = new WeakSet<Event>();
+    const processed = new WeakMap<Event, Set<string>>();
+    const fibers = new Set<Fiber.Fiber<unknown, unknown>>();
+    let terminal: StreamTerminalRecord | undefined;
+    let disposed = false;
+    let torndown = false;
+
+    const teardown = (): void => {
+      if (torndown) return;
+      torndown = true;
+      for (const [eventType, listener] of listeners) {
+        try {
+          options.root.removeEventListener(eventType, listener, true);
+        } catch (error) {
+          report({
+            code: "client-runtime-failure",
+            eventType,
+            reason: `Resume event listener removal failed: ${String(error)}`,
+          });
+        }
+      }
+      listeners.clear();
+      queued.length = 0;
+    };
+
+    const launch = (
+      eventType: EventType,
+      marker: string,
+      entry: typeof PortableEventEntrySchema.Type,
+    ): void => {
+      let phase: "resolution" | "execution" = "resolution";
+      const dispatch = Effect.gen(function* () {
+        const resolved = yield* Portable.resolve<
+          readonly [],
+          unknown,
+          unknown,
+          unknown
+        >(entry.code);
+        phase = "execution";
+        return yield* Effect.scoped(resolved.run());
+      }).pipe(
+        Effect.provideService(Portable.Resolver, resolver),
+        Effect.exit,
+        Effect.tap((exit) =>
+          Exit.isFailure(exit) && !disposed
+            ? Effect.sync(() =>
+                report({
+                  code:
+                    phase === "resolution"
+                      ? "dispatch-resolution-failure"
+                      : "dispatch-execution-failure",
+                  eventType,
+                  eventId: marker,
+                  reason: Cause.pretty(exit.cause),
+                }),
+              )
+            : Effect.void,
+        ),
+      ) as Effect.Effect<Exit.Exit<unknown, unknown>, never, R>;
+
+      let fiber: Fiber.Fiber<unknown, unknown>;
+      try {
+        fiber = options.runtime.runFork(dispatch) as Fiber.Fiber<
+          unknown,
+          unknown
+        >;
+      } catch (error) {
+        report({
+          code: "client-runtime-failure",
+          eventType,
+          eventId: marker,
+          reason: `The managed runtime rejected the dispatch: ${String(error)}`,
+        });
+        return;
+      }
+      fibers.add(fiber);
+      fiber.addObserver((exit) => {
+        fibers.delete(fiber);
+        if (Exit.isFailure(exit) && !disposed) {
+          report({
+            code: "client-runtime-failure",
+            eventType,
+            eventId: marker,
+            reason: Cause.pretty(exit.cause),
+          });
+        }
+      });
+    };
+
+    const dispatchEntry = (
+      eventType: EventType,
+      marker: string,
+      entry: typeof EventEntrySchema.Type,
+    ): void => {
+      if (entry.invocation === ActivationProjection) {
+        // M11.6 remainder: component boundaries (and with them activation
+        // handoff) are not yet carried on stream records.
+        report({
+          code: "event-handoff-failure",
+          eventType,
+          eventId: marker,
+          reason: `Activation event "${marker}" arrived over a stream record; activation handoff is not yet supported over a live stream.`,
+        });
+        return;
+      }
+      launch(eventType, marker, entry);
+    };
+
+    const ensureListener = (eventType: EventType): void => {
+      if (torndown || disposed || listeners.has(eventType)) return;
+      const listener: EventListener = (event) => {
+        if (disposed || torndown) return;
+        const path = eventPathWithinRoot(event, options.root);
+        for (const target of path) {
+          const marker = readMarker(target, eventType);
+          if (marker === null) continue;
+          const separator = marker.indexOf(":");
+          if (separator <= 0 || separator === marker.length - 1) {
+            report({
+              code: "unknown-event-marker",
+              eventType,
+              eventId: marker,
+              reason: `Streamed event marker "${marker}" is not region-qualified.`,
+            });
+            continue;
+          }
+          const region = marker.slice(0, separator);
+          const eventId = marker.slice(separator + 1);
+          if (claimedInteractions.has(event)) return;
+          const table = regionEvents.get(region);
+          if (table === undefined) {
+            // The region's HTML flushed before its record arrived — a wait,
+            // not a failure. Queue silently; replayed exactly once on ingest.
+            claimedInteractions.add(event);
+            queued.push({ region, eventId, eventType });
+            return;
+          }
+          const entry = table[eventId];
+          if (entry === undefined) {
+            report({
+              code: "unknown-event-marker",
+              eventType,
+              eventId: marker,
+              reason: `No streamed record entry exists for event marker "${marker}".`,
+            });
+            continue;
+          }
+          if (entry.type !== eventType) {
+            report({
+              code: "event-type-mismatch",
+              eventType,
+              eventId: marker,
+              reason: `Event marker "${marker}" belongs to "${entry.type}", not "${eventType}".`,
+            });
+            continue;
+          }
+          let eventIds = processed.get(event);
+          if (eventIds === undefined) {
+            eventIds = new Set();
+            processed.set(event, eventIds);
+          }
+          if (eventIds.has(marker)) continue;
+          eventIds.add(marker);
+          claimedInteractions.add(event);
+          dispatchEntry(eventType, marker, entry);
+          return;
+        }
+      };
+      try {
+        options.root.addEventListener(eventType, listener, true);
+        listeners.set(eventType, listener);
+      } catch (error) {
+        report({
+          code: "client-runtime-failure",
+          eventType,
+          reason: `Resume event listener installation failed: ${String(error)}`,
+        });
+      }
+    };
+
+    // Listeners go up BEFORE any record arrives: the queue-then-replay
+    // guarantee is only meaningful if pre-record interactions are observed.
+    for (const eventType of discoverMarkerEventTypes(options.root)) {
+      ensureListener(eventType);
+    }
+
+    // THE record primitive (`DQ-008`): every ingestion door lands here.
+    const ingestRecord = (
+      record: unknown,
+    ): Effect.Effect<void, StreamIngestError> =>
+      Effect.gen(function* () {
+        const decoded = yield* Schema.decodeUnknownEffect(StreamRecordSchema)(
+          record,
+        ).pipe(
+          Effect.catchTag("SchemaError", (error) =>
+            Effect.fail(
+              new ResumeManifestDecodeError({
+                message: `Streamed manifest record failed decoding: ${String(error)}`,
+              }),
+            ),
+          ),
+        );
+        if (decoded.buildId !== options.expectedBuildId) {
+          return yield* new ResumeClientBuildMismatchError({
+            expected: options.expectedBuildId as typeof Portable.BuildId.Type,
+            actual: decoded.buildId as typeof Portable.BuildId.Type,
+            message: `Streamed manifest record belongs to build "${decoded.buildId}", not "${options.expectedBuildId}".`,
+          });
+        }
+        if ("complete" in decoded) {
+          terminal = decoded;
+          return;
+        }
+        const events: Record<string, typeof EventEntrySchema.Type> = {};
+        for (const [eventId, raw] of Object.entries(decoded.events)) {
+          events[eventId] = yield* Schema.decodeUnknownEffect(
+            EventEntrySchema,
+          )(raw).pipe(
+            Effect.catchTag("SchemaError", (error) =>
+              Effect.fail(
+                new ResumeManifestDecodeError({
+                  message: `Event "${eventId}" in streamed region "${decoded.region}" failed decoding: ${String(error)}`,
+                }),
+              ),
+            ),
+          );
+        }
+        regionEvents.set(decoded.region, events);
+        for (const entry of Object.values(events)) {
+          ensureListener(entry.type);
+        }
+        // Replay interactions that queued against this region, in arrival
+        // order, exactly once each (they are removed as they replay).
+        for (let index = 0; index < queued.length; ) {
+          const pending = queued[index]!;
+          if (pending.region !== decoded.region) {
+            index += 1;
+            continue;
+          }
+          queued.splice(index, 1);
+          const entry = events[pending.eventId];
+          if (entry === undefined) {
+            report({
+              code: "unknown-event-marker",
+              eventType: pending.eventType,
+              eventId: `${pending.region}:${pending.eventId}`,
+              reason: `A queued interaction referenced event "${pending.eventId}", which region "${pending.region}" does not describe.`,
+            });
+            continue;
+          }
+          if (entry.type !== pending.eventType) {
+            report({
+              code: "event-type-mismatch",
+              eventType: pending.eventType,
+              eventId: `${pending.region}:${pending.eventId}`,
+              reason: `Queued event "${pending.eventId}" belongs to "${entry.type}", not "${pending.eventType}".`,
+            });
+            continue;
+          }
+          dispatchEntry(
+            pending.eventType,
+            `${pending.region}:${pending.eventId}`,
+            entry,
+          );
+        }
+      });
+
+    const endOfStream = (): Effect.Effect<void, ResumeStreamTruncatedError> =>
+      Effect.suspend(() => {
+        const arrived = [...regionEvents.keys()];
+        const expected =
+          terminal === undefined ? undefined : [...terminal.regionIds];
+        // DQ-007: completeness is SET EQUALITY over region ids — robust to a
+        // duplicated or dropped flush in a way a counter is not.
+        const complete =
+          expected !== undefined
+          && expected.length === new Set(expected).size
+          && expected.length === arrived.length
+          && arrived.every((id) => expected.includes(id));
+        if (complete) return Effect.void;
+        const message =
+          terminal === undefined
+            ? "The record stream ended without its terminal completeness record; tearing the streamed installation down."
+            : `The record stream is incomplete: terminal record expects regions [${(expected ?? []).join(", ")}], received [${arrived.join(", ")}].`;
+        report({ code: "stream-truncated", reason: message });
+        teardown();
+        return Effect.fail(new ResumeStreamTruncatedError({ message }));
+      });
+
+    return {
+      ingest: (record) =>
+        ingestRecord(record).pipe(
+          Effect.withSpan("Resume.installClientStreaming.ingest"),
+        ),
+      endOfStream,
+      inspect: () => ({
+        disposed,
+        ended: torndown,
+        eventListeners: listeners.size,
+        regions: regionEvents.size,
+        queuedInteractions: queued.length,
+      }),
+      dispose: Effect.sync(() => {
+        disposed = true;
+        teardown();
+      }),
+    } satisfies StreamingClientInstallation;
+  }).pipe(Effect.withSpan("Resume.installClientStreaming"));
+}
+
+/**
+ * Completeness-gated install over a SETTLED record list (M11.5, `DQ-007`) —
+ * door one over the streaming primitive: every record goes through the same
+ * `ingest` a live transport would feed, then `endOfStream` applies the
+ * fail-closed completeness gate. A failure at any point tears the
+ * installation down before surfacing; nothing installs partially.
  */
 export function installClientStreamed<R, ER>(
   options: InstallClientStreamedOptions<R, ER>,
-): Effect.Effect<ClientInstallation, ClientInstallError | ResumeStreamTruncatedError> {
+): Effect.Effect<
+  StreamingClientInstallation,
+  StreamIngestError | ResumeStreamTruncatedError
+> {
+  const { records, ...rest } = options;
   return Effect.gen(function* () {
-    const decoded = yield* Effect.forEach(options.records, (record) =>
-      Schema.decodeUnknownEffect(StreamRecordSchema)(record).pipe(
-        Effect.catchTag("SchemaError", (error) =>
-          Effect.fail(
-            new ResumeManifestDecodeError({
-              message: `Streamed manifest record failed decoding: ${String(error)}`,
-            }),
-          ),
-        ),
-      ));
-
-    for (const record of decoded) {
-      if (record.buildId !== options.expectedBuildId) {
-        return yield* new ResumeClientBuildMismatchError({
-          expected: yield* decodeBuildId(options.expectedBuildId),
-          actual: record.buildId as typeof Portable.BuildId.Type,
-          message: `Streamed manifest record belongs to build "${record.buildId}", not "${options.expectedBuildId}".`,
-        });
-      }
-    }
-
-    const regionRecords = decoded.filter(
-      (record): record is StreamRegionRecord => !("complete" in record),
+    const installation = yield* installClientStreaming(rest);
+    const outcome = yield* Effect.exit(
+      Effect.gen(function* () {
+        for (const record of records) {
+          yield* installation.ingest(record);
+        }
+        yield* installation.endOfStream();
+      }),
     );
-    const terminals = decoded.filter(
-      (record): record is StreamTerminalRecord => "complete" in record,
-    );
-    if (terminals.length !== 1) {
-      return yield* new ResumeStreamTruncatedError({
-        message: terminals.length === 0
-          ? "The record stream ended without its terminal completeness record; refusing a partial install."
-          : `The record stream carried ${terminals.length} terminal records; exactly one is required.`,
-      });
+    if (Exit.isFailure(outcome)) {
+      yield* installation.dispose;
+      return yield* Effect.failCause(outcome.cause);
     }
-    const terminal = terminals[0]!;
-    // DQ-007: completeness is SET EQUALITY over region ids — robust to a
-    // duplicated or dropped flush in a way a counter is not.
-    const arrived = regionRecords.map((record) => record.region);
-    const expected = [...terminal.regionIds];
-    const arrivedSet = new Set(arrived);
-    const expectedSet = new Set(expected);
-    const setsAgree =
-      arrived.length === arrivedSet.size
-      && expected.length === expectedSet.size
-      && arrivedSet.size === expectedSet.size
-      && [...arrivedSet].every((id) => expectedSet.has(id));
-    if (!setsAgree) {
-      return yield* new ResumeStreamTruncatedError({
-        message: `The record stream is incomplete: terminal record expects regions [${expected.join(", ")}], received [${arrived.join(", ")}].`,
-      });
-    }
-
-    // Merge into one manifest; the ordinary install pipeline deep-validates
-    // it (schemas, freeze, markers) exactly as a static manifest.
-    const events: Record<string, unknown> = {};
-    for (const record of regionRecords) {
-      for (const [eventId, entry] of Object.entries(record.events)) {
-        events[eventId] = entry;
-      }
-    }
-    const first = regionRecords[0];
-    const merged = {
-      version: 5,
-      buildId: options.expectedBuildId,
-      ...(first?.installationId === undefined
-        ? {}
-        : { installationId: first.installationId }),
-      events,
-      components: {},
-      expressions: {},
-    };
-    return yield* installClient({
-      ...options,
-      manifest: merged as unknown as Manifest,
-    });
+    return installation;
   }).pipe(Effect.withSpan("Resume.installClientStreamed"));
+}
+
+export interface MountFragmentOptions {
+  readonly manifest: unknown;
+}
+
+/**
+ * Mount an out-of-band fragment into a live streamed page (`DQ-008`,
+ * M11b item 1): a fetched fragment IS a streamed record arriving out of
+ * band, so this door delegates to the installation's single `ingest`
+ * primitive after pinning that the record describes the region being
+ * mounted.
+ */
+export function mountFragment(
+  installation: StreamingClientInstallation,
+  regionId: string,
+  options: MountFragmentOptions,
+): Effect.Effect<void, StreamIngestError> {
+  return Effect.suspend(() => {
+    const record = options.manifest;
+    if (
+      typeof record === "object"
+      && record !== null
+      && "region" in record
+      && (record as { readonly region?: unknown }).region !== regionId
+    ) {
+      return Effect.fail(
+        new ResumeManifestDecodeError({
+          message: `Fragment record describes region "${String((record as { readonly region?: unknown }).region)}", not the mounted region "${regionId}".`,
+        }),
+      );
+    }
+    return installation.ingest(record);
+  }).pipe(Effect.withSpan("Resume.mountFragment"));
 }
 
 export function installClientScoped<R, ER>(
