@@ -69,7 +69,7 @@ manifest entry — plus a hard throw at module evaluation from
 runtime, so severity is bounded, but it is the one path that manufactures an
 orphan.
 
-### D2 — TDZ crash in the deferred function-nested case, and its test cannot catch it
+### D2 — TDZ crash in the deferred function-nested case — **FIXED 2026-08-11**
 
 `plugin.ts:1421-1423` appends deferred definitions with `pushContainer`, i.e.
 after *all* statements. If any statement invokes the enclosing function during
@@ -98,9 +98,27 @@ own dependencies and **false of its callers**.
 > module and assert the captures schema *decodes*, which proves the definition
 > closed over an initialized binding rather than merely appearing later in the
 > file. Verified to have teeth by replacing the bind captures with `{}`: both
-> tests fail, and neither could have before. The defect remains **unfixed** at
-> `src/compiler/resume-extract-plugin.ts:1423-1425`; the strengthened tests pin
-> the lazy-call shape that currently works.
+> tests fail, and neither could have before.
+
+**Fix (2026-08-11).** Each deferred definition is now placed **immediately after
+its last module-scope dependency** rather than after the whole body — the
+earliest legal position, so the largest number of callers work. Dependencies are
+found by walking the definition for referenced identifiers and keeping only
+those whose binding resolves to the *program* scope, so anything shadowed inside
+the definition does not constrain placement.
+
+Two things this surfaced that were not obvious from the audit:
+
+- **Relative order matters.** Two definitions sharing one anchor are each
+  inserted directly after it, so the last placed ends up first — reversing
+  source order and breaking the `~1` identity disambiguation, which resolves
+  collisions *in source order*. The loop walks `deferred` backwards to restore
+  it. Caught by two previously-passing auto-capture tests, not by reasoning.
+- **The mirror case cannot be fixed and should not be.** When a dependency
+  genuinely follows the module-scope caller, no placement satisfies both. The
+  definition still follows its dependency and the **author's** evaluation order
+  throws — papering over it would mean capturing an uninitialized binding. Pinned
+  by a test asserting the `ReferenceError`.
 
 ### D3 — Vite: stale entries survive file deletion and rename
 

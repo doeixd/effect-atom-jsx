@@ -976,6 +976,70 @@ const LabelSchema = Schema.Struct({ label: Schema.String });
     )).toBe("hi");
   });
 
+  it("places a deferred definition right after its last dependency, so a factory invoked at module scope still works", async () => {
+    const source = `
+import { extract } from "effect-atom-jsx/portable-extract";
+import { Effect, Schema } from "effect";
+export function makeSave() {
+  return extract((captures) => Effect.succeed(captures.label), {
+    captures: LabelSchema,
+    bind: { label: "hi" },
+  });
+}
+const LabelSchema = Schema.Struct({ label: Schema.String });
+export const first = makeSave();
+`;
+    // Appending the definition after *every* statement put it after
+    // `export const first = makeSave()`, so evaluating the module threw
+    // `ReferenceError: Cannot access '_afCode$...' before initialization`.
+    // The definition only needs to follow `LabelSchema`, not the whole body.
+    const output = transform(source);
+    const schemaIndex = output.indexOf("const LabelSchema");
+    const definitionIndex = output.indexOf("_afPortableCode(");
+    // The call, not the `export function makeSave()` declaration -- which
+    // also contains the bare text `makeSave()`.
+    const callerIndex = output.indexOf("= makeSave()");
+    expect(definitionIndex).toBeGreaterThan(schemaIndex);
+    expect(definitionIndex).toBeLessThan(callerIndex);
+
+    const module = await evaluateTransformed(source);
+    const first = module.first as Portable.AnyBoundCode;
+    expect(Portable.isBoundCode(first)).toBe(true);
+    expect(
+      Schema.decodeUnknownSync(first.code.captures as never)({ label: "hi" }),
+    ).toEqual({ label: "hi" });
+    expect(await Effect.runPromise(
+      Portable.execute(first) as Effect.Effect<unknown>,
+    )).toBe("hi");
+  });
+
+  it("keeps a deferred definition after a dependency that follows the caller", async () => {
+    // The mirror image: here the schema genuinely is declared after the
+    // module-scope call, so no placement can satisfy both. The definition
+    // must still follow its dependency, and the *author's* code is what
+    // throws -- we must not paper over it by capturing an uninitialized
+    // binding.
+    const source = `
+import { extract } from "effect-atom-jsx/portable-extract";
+import { Effect, Schema } from "effect";
+export function makeSave() {
+  return extract((captures) => Effect.succeed(captures.label), {
+    captures: LabelSchema,
+    bind: { label: "hi" },
+  });
+}
+export const eager = makeSave();
+const LabelSchema = Schema.Struct({ label: Schema.String });
+`;
+    const output = transform(source);
+    expect(output.indexOf("_afPortableCode(")).toBeGreaterThan(
+      output.indexOf("const LabelSchema"),
+    );
+    await expect(evaluateTransformed(source)).rejects.toThrow(
+      /before initialization/,
+    );
+  });
+
   it("rejects `this` in extracted arrows that inherit enclosing context", () => {
     expect(() =>
       transform(`

@@ -1421,7 +1421,56 @@ export default function resumeExtractPlugin(
           anchor.insertAfter(runtimeImports);
         }
         if (deferred.length > 0) {
+          // A deferred definition must follow every module-scope binding it
+          // reads, but appending it after the *whole* body is stronger than
+          // that and breaks a real pattern: a factory invoked at module scope
+          // (`export const first = makeSave()`) runs before the definition is
+          // initialized and throws a TDZ `ReferenceError`. Place each
+          // definition immediately after its last dependency instead — the
+          // earliest legal position, so the largest number of callers work.
+          //
+          // When a dependency genuinely follows the caller, no placement can
+          // satisfy both; the definition still follows its dependency and the
+          // author's own evaluation order is what throws.
           programPath.pushContainer("body", deferred);
+          programPath.scope.crawl();
+          // Reverse order: two definitions sharing one anchor are each inserted
+          // directly after it, so the last one placed ends up first. Walking
+          // backwards restores source order, which identity disambiguation
+          // (`~1` suffixes) depends on.
+          for (const node of [...deferred].reverse()) {
+            const currentBody = programPath.get("body");
+            const definitionIndex = currentBody.findIndex(
+              (statement) => statement.node === node,
+            );
+            if (definitionIndex < 0) continue;
+            let lastDependency = -1;
+            currentBody[definitionIndex]!.traverse({
+              Identifier(identifierPath) {
+                if (!identifierPath.isReferencedIdentifier()) return;
+                const binding = identifierPath.scope.getBinding(
+                  identifierPath.node.name,
+                );
+                // Only module-scope bindings constrain placement; anything
+                // shadowed inside the definition resolves to an inner scope.
+                if (binding === undefined) return;
+                if (binding.scope !== programPath.scope) return;
+                const owner = binding.path.find(
+                  (candidate) => candidate.parentPath?.isProgram() ?? false,
+                );
+                if (owner === null) return;
+                const ownerIndex = currentBody.findIndex(
+                  (statement) => statement.node === owner.node,
+                );
+                if (ownerIndex < 0 || ownerIndex >= definitionIndex) return;
+                if (ownerIndex > lastDependency) lastDependency = ownerIndex;
+              },
+            });
+            if (lastDependency >= 0 && lastDependency < definitionIndex - 1) {
+              currentBody[lastDependency]!.insertAfter(t.cloneNode(node, true));
+              currentBody[definitionIndex]!.remove();
+            }
+          }
         }
       },
     },
