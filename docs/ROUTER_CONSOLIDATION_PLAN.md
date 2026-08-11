@@ -192,6 +192,21 @@ uniquifying patterns as a reset workaround.
 
 ### R3 — One authoring tier (execute or reject ADR-006)
 
+> **Status 2026-08-11: the DQ-030 split is implemented.** `guard` is wired —
+> `RouterRuntime` runs `Route.runMatchedRouteGuards` in the navigation path
+> before any loader; a failing guard rolls the location back, runs no loader,
+> and commits no loader data. `loaderErrorCases` renders its tagged fallback in
+> `renderRequest`. `Route.transition` is deleted from the surface, the
+> decoration record, and the unified internals. `Component.route` is now
+> self-stamped sugar: its result IS a unified route (`stampSelfRoute`), with
+> the legacy `__route*` fields kept in sync as an internal projection, and its
+> TYPE carries the route facet so `Route.loader` composes without casts.
+> Covered by `src/__tests__/router-authoring-tier.test.ts` (promoted from
+> `future/router/authoring-tiers.spec.ts`, fully typed — no `any`, no casts).
+> Still open from the full ADR-006 recommendation: collapsing the three-way
+> dispatchers and node builders into pure sugar (the `__route*` projection
+> remains load-bearing for `Component.route`'s own setup path).
+
 Recommendation: **finish tier 3** — the unified `Route` value becomes
 canonical; `Component.route` and the node builders become thin sugar that
 construct unified routes; the three-way dispatchers collapse; the `__route*`
@@ -295,6 +310,33 @@ applied; `page.set(7)` against a slow router updates the atom immediately, and a
 failing navigation rolls it back with the error observable.
 
 ### R5 — Wire and error hygiene
+
+> **Status 2026-08-11: items 1–4 implemented.**
+> 1. The single-flight envelope is schema-validated at the trust boundary
+>    (`SingleFlightResponseSchema`, `Route.decodeSingleFlightResponse`, via the
+>    injected `Serialization` service when present); loader results cross the
+>    wire through the canonical `ResultWire` projection, whose values now ride
+>    a sparse rich-value tree (`encodeWireValue`/`decodeWireValue` in
+>    `result-wire.ts` — plain JSON passes through byte-identical, so the golden
+>    fixtures are unchanged and a `Date` survives both SSR and single-flight).
+> 2. `SingleFlightInvokeError` / `SingleFlightDecodeError` /
+>    `SingleFlightTransportError` / `RouteLoaderTimeoutError` are
+>    `Schema.TaggedErrorClass`es; a malformed response or body is a typed
+>    failure, never a defect, and hydrates nothing. `runCachedLoader`'s type
+>    now carries the timeout error.
+> 3. One resolution ladder — context transport → declared endpoint → local
+>    runner — in BOTH `Atom.action` forms; `single-flight-runtime.ts` (the
+>    process-global slot) is deleted, and the free form's `runEffect` returns
+>    the effect itself so caller context reaches the action.
+>    `SingleFlightTransportService.execute` was de-genericized: it moves an
+>    `unknown` envelope (validated downstream), so implementations and test
+>    doubles need no casts.
+> 4. One segment engine (`src/route-pattern.ts`): `:param`, `:param?`, `*` for
+>    `Route`, `ServerRoute`, and `Route.link` substitution (`DQ-038`), with
+>    `MergeParams` preserving optional modifiers so link params infer correctly.
+> Covered by `src/__tests__/router-wire-hygiene.test.ts` (promoted from
+> `future/router/wire-and-errors.spec.ts`, fully typed). Item 5 (single
+> namespace per module) remains open.
 
 1. Single-flight request/response validated through the `Serialization`
    service with declared schemas — one encoding for loader `Result`s across

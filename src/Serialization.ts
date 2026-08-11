@@ -88,6 +88,8 @@ export const resultFromWire: (
   wire: ResultWireValue,
 ) => CoreResultType<unknown, unknown> = fromWire;
 
+export { decodeWireValue, encodeWireValue } from "./result-wire.js";
+
 // ─── Pure synchronous codec ─────────────────────────────────────────────────
 
 /**

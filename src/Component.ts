@@ -2238,7 +2238,10 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
 ): <Props, Req, E, Bindings, SlotContract>(
   component: Component<Props, Req, E, Bindings, SlotContract>,
 ) => (Component<Props, Exclude<Req, Route.RouteContext<any, any, any>> | Route.RouterService, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract>
-  & Route.RoutedComponent<P, Q, H>) {
+  & Route.RoutedComponent<P, Q, H>
+  // R3: the sugar result IS a unified route (self-stamped), and the type says
+  // so — `Route.loader` and the runtime select the unified path without casts.
+  & Route.Route<any, P, Q, H, void, never>) {
   return <Props, Req, E, Bindings, SlotContract>(component: Component<Props, Req, E, Bindings, SlotContract>) => {
     const i = internals(component);
 
@@ -2471,7 +2474,13 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
       exact: options?.exact,
     };
     setRoutedMeta<P, Q, H>(wrapped, meta);
-    return wrapped as unknown as Component<Props, Exclude<Req, Route.RouteContext<any, any, any>> | Route.RouterService, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract> & Route.RoutedComponent<P, Q, H>;
+    // R3 (`DQ-030`): `Component.route` is thin sugar over the unified `Route`
+    // value, so the result *is* a unified route — self-stamped: the route's
+    // `component` is the routed component itself, which keeps it usable
+    // directly in JSX while `Route.collectAll` / `runMatchedLoaders` /
+    // `RouterRuntime` see the same identity `Route.path` would produce.
+    Route.stampSelfRoute(wrapped, meta);
+    return wrapped as unknown as Component<Props, Exclude<Req, Route.RouteContext<any, any, any>> | Route.RouterService, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract> & Route.RoutedComponent<P, Q, H> & Route.Route<any, P, Q, H, void, never>;
   };
 }
 

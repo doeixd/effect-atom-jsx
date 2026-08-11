@@ -32,7 +32,6 @@ import {
   trackReactivityRuntime,
   type ReactivityKeysInput as RuntimeReactivityKeysInput,
 } from "./reactivity-runtime.js";
-import { getInstalledSingleFlightTransport } from "./single-flight-runtime.js";
 import { SingleFlightTransportTag, type SingleFlightTransportService } from "./SingleFlightTransport.js";
 
 const TypeId = "~effect-atom-jsx/Atom" as const;
@@ -1180,22 +1179,25 @@ function runSingleFlightWithTransport<Input, A>(
       defect: error.message,
     } as const)));
 
-    if (!response.ok) {
-      return yield* Effect.fail({
+    // One wire contract for every transport: the envelope is schema-validated
+    // and loader results rehydrate through the canonical Result projection,
+    // exactly as `invokeSingleFlight` does (R5.1).
+    const payload = yield* Route.decodeSingleFlightResponse<A>(response).pipe(
+      Effect.mapError((error) => ({
         _tag: "ResultDefectError",
-        defect: typeof response.error === "object" ? JSON.stringify(response.error) : String(response.error),
-      } as const);
-    }
+        defect: error.message,
+      } as const)),
+    );
     if (config?.hydrate !== false) {
       const source = yield* Route.resolveRouteSource(config?.app as import("./Route.js").RouteSource | undefined);
       if (source !== undefined) {
         yield* Route.hydrateSingleFlightPayload(
-          response.payload as import("./Route.js").SingleFlightPayload<unknown>,
+          payload as import("./Route.js").SingleFlightPayload<unknown>,
           source,
         );
       }
     }
-    return response.payload.mutation;
+    return payload.mutation;
   });
 }
 
@@ -1267,8 +1269,8 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
       effect: (input: Input) => Effect.Effect<A, E2, RReq>,
       options?: ActionOptions<Input, E2>,
     ): ActionHandle<Input, E2 | ActionInputSchemaError, A> {
-      // Keep runtime-local SingleFlightTransportTag lookup (layer-provided
-      // transport) — free `action` only sees getInstalledSingleFlightTransport().
+      // DQ-033: one resolution ladder — context transport (from this runtime's
+      // layer) → declared endpoint → local runner. No process-global slot.
       const singleFlight = options?.singleFlight === false ? undefined : options?.singleFlight;
       const runBody = (input: Input): Effect.Effect<A, E2 | ResultDefectError, RReq> => {
         if (!shouldUseSingleFlight(options?.singleFlight)) {
@@ -1280,10 +1282,6 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
               return runSingleFlightWithTransport<Input, A>(maybeTransport.value as any, input, singleFlight, options?.name);
             }
             if (singleFlight?.endpoint) {
-              const installed = getInstalledSingleFlightTransport();
-              if (installed) {
-                return runSingleFlightWithTransport<Input, A>(installed as any, input, singleFlight, options?.name);
-              }
               return runSingleFlightWithDirectFetch<Input, A>(input, singleFlight, options?.name);
             }
             if (singleFlight?.mode === "force") {
@@ -1475,21 +1473,29 @@ export function action<A, E, R, Input = void>(
   const options = (hasRuntime ? arg3 : arg2) as ActionOptions<Input, E> | undefined;
   const singleFlight = options?.singleFlight === false ? undefined : options?.singleFlight;
 
+  // DQ-033: one resolution ladder — context transport → declared endpoint →
+  // local runner. The context rung comes first because the injected transport
+  // is the *request-scoped* value while `endpoint` is a static authoring hint;
+  // letting a static hint (or, worse, a process-global slot) outrank request
+  // scope is exactly how the cross-request bleed happened.
   const runBody = (input: Input): Effect.Effect<A, E | ResultDefectError, R> => {
     if (!shouldUseSingleFlight(options?.singleFlight)) {
       return effectFn(input) as Effect.Effect<A, E | ResultDefectError, R>;
     }
-    const installed = getInstalledSingleFlightTransport();
-    if (installed) {
-      return runSingleFlightWithTransport<Input, A>(installed as any, input, singleFlight, options?.name) as Effect.Effect<A, E | ResultDefectError, R>;
-    }
-    if (singleFlight?.endpoint) {
-      return runSingleFlightWithDirectFetch<Input, A>(input, singleFlight, options?.name) as Effect.Effect<A, E | ResultDefectError, R>;
-    }
-    if (singleFlight?.mode === "force") {
-      return Effect.fail({ _tag: "ResultDefectError", defect: "Single-flight transport required but unavailable" } as const) as Effect.Effect<A, E | ResultDefectError, R>;
-    }
-    return effectFn(input) as Effect.Effect<A, E | ResultDefectError, R>;
+    return Effect.serviceOption(SingleFlightTransportTag).pipe(
+      Effect.flatMap((maybeTransport): Effect.Effect<A, E | ResultDefectError, R> => {
+        if (maybeTransport._tag === "Some") {
+          return runSingleFlightWithTransport<Input, A>(maybeTransport.value as any, input, singleFlight, options?.name) as Effect.Effect<A, E | ResultDefectError, R>;
+        }
+        if (singleFlight?.endpoint) {
+          return runSingleFlightWithDirectFetch<Input, A>(input, singleFlight, options?.name) as Effect.Effect<A, E | ResultDefectError, R>;
+        }
+        if (singleFlight?.mode === "force") {
+          return Effect.fail({ _tag: "ResultDefectError", defect: "Single-flight transport required but unavailable" } as const) as Effect.Effect<A, E | ResultDefectError, R>;
+        }
+        return effectFn(input) as Effect.Effect<A, E | ResultDefectError, R>;
+      }),
+    ) as Effect.Effect<A, E | ResultDefectError, R>;
   };
 
   const execute = (input: Input): Effect.Effect<A, E | ActionInputSchemaError | ResultDefectError, R> =>
@@ -1533,11 +1539,20 @@ export function action<A, E, R, Input = void>(
     handle.run(input);
   }) as ActionHandle<Input, ActionE, A>;
   out.run = (input: Input) => handle.run(input);
-  out.runEffect = (input: Input) =>
-    Effect.tryPromise({
-      try: () => runPromiseWithRuntime(runtimeArg, execute(input)),
-      catch: (error) => error as ActionE | BridgeError | MutationSupersededError,
-    });
+  out.runEffect = runtimeArg === undefined
+    // Free form: return the effect itself so the CALLER's context reaches the
+    // action — a layer-provided single-flight transport must be visible here
+    // (DQ-033), which a detached bridge runtime would silently discard.
+    ? (input: Input) =>
+      execute(input) as unknown as Effect.Effect<
+        A,
+        ActionE | BridgeError | MutationSupersededError
+      >
+    : (input: Input) =>
+      Effect.tryPromise({
+        try: () => runPromiseWithRuntime(runtimeArg, execute(input)),
+        catch: (error) => error as ActionE | BridgeError | MutationSupersededError,
+      });
   out.effect = (input: Input) => handle.effect(input) as Effect.Effect<void, ActionE | BridgeError | MutationSupersededError>;
   out.result = handle.result as Accessor<Result<void, ActionE>>;
   out.pending = handle.pending;

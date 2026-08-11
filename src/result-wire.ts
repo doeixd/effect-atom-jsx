@@ -89,6 +89,75 @@ export type ResultWireValue = typeof ResultWire.Type;
 /** The `Success` arm of {@link ResultWireValue}. */
 export type SuccessWireValue = typeof SuccessWire.Type;
 
+// ─── Sparse rich-value tree ─────────────────────────────────────────────────
+//
+// R5.1: one encoding for loader values across SSR and single-flight means the
+// wire must carry the values loaders actually produce, and `Date` is the first
+// non-JSON type every real loader hits. The encoding is *sparse*: plain JSON
+// passes through structurally identical (which is what keeps the golden-byte
+// fixtures frozen), and only rich values gain a `{"$af": kind}` node. A user
+// object that happens to own a `$af` key is wrapped in a `Raw` node so it can
+// never be misread as an encoding.
+
+const RichValueKey = "$af";
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const proto = Object.getPrototypeOf(value) as object | null;
+  return proto === Object.prototype || proto === null;
+}
+
+/** Project one loader value into the sparse JSON-safe tree. */
+export function encodeWireValue(value: unknown): unknown {
+  if (value instanceof Date) {
+    return { [RichValueKey]: "Date", v: value.getTime() };
+  }
+  if (Array.isArray(value)) {
+    return value.map(encodeWireValue);
+  }
+  if (isPlainObject(value)) {
+    const encoded: Record<string, unknown> = {};
+    for (const [key, field] of Object.entries(value)) {
+      encoded[key] = encodeWireValue(field);
+    }
+    return Object.prototype.hasOwnProperty.call(value, RichValueKey)
+      ? { [RichValueKey]: "Raw", v: encoded }
+      : encoded;
+  }
+  return value;
+}
+
+/**
+ * Rehydrate one loader value from the sparse tree. Lenient: values that never
+ * went through {@link encodeWireValue} (foreign wire) pass through unchanged.
+ */
+export function decodeWireValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(decodeWireValue);
+  }
+  if (isPlainObject(value)) {
+    const marker = value[RichValueKey];
+    if (marker === "Date" && typeof value["v"] === "number") {
+      return new Date(value["v"]);
+    }
+    if (marker === "Raw" && isPlainObject(value["v"])) {
+      // The wrapped object's own `$af` field is user data; every field was
+      // encoded individually, so decode fields without re-reading the marker.
+      const inner: Record<string, unknown> = {};
+      for (const [key, field] of Object.entries(value["v"])) {
+        inner[key] = decodeWireValue(field);
+      }
+      return inner;
+    }
+    const decoded: Record<string, unknown> = {};
+    for (const [key, field] of Object.entries(value)) {
+      decoded[key] = decodeWireValue(field);
+    }
+    return decoded;
+  }
+  return value;
+}
+
 // ─── Encode: core `Result` → wire DTO ───────────────────────────────────────
 
 const initialWire = (waiting: boolean): ResultWireValue => ({ _tag: "Initial", waiting });
@@ -123,19 +192,23 @@ export function toWire(
     case "Refreshing":
       switch (result.previous._tag) {
         case "Success":
-          return successWire(result.previous.value, true, now());
+          return successWire(encodeWireValue(result.previous.value), true, now());
         case "Failure":
-          return failureWire(result.previous.error, true, null);
+          return failureWire(encodeWireValue(result.previous.error), true, null);
         case "Defect":
           return failureWire({ defect: result.previous.cause }, true, null);
       }
     // eslint-disable-next-line no-fallthrough
     case "Success":
-      return successWire(result.value, false, now());
+      return successWire(encodeWireValue(result.value), false, now());
     case "Failure":
-      return failureWire(result.error, false, null);
+      return failureWire(encodeWireValue(result.error), false, null);
     case "Stale":
-      return failureWire(result.error, false, successWire(result.data, false, now()));
+      return failureWire(
+        encodeWireValue(result.error),
+        false,
+        successWire(encodeWireValue(result.data), false, now()),
+      );
     case "Defect":
       return failureWire({ defect: result.cause }, false, null);
   }
@@ -170,8 +243,8 @@ export function fromWire(wire: ResultWireValue): CoreResultType<unknown, unknown
 
     case "Success":
       return wire.waiting
-        ? CoreResult.refreshing(CoreResult.success(wire.value))
-        : CoreResult.success(wire.value);
+        ? CoreResult.refreshing(CoreResult.success(decodeWireValue(wire.value)))
+        : CoreResult.success(decodeWireValue(wire.value));
 
     case "Failure": {
       if (isDefectError(wire.error)) {
@@ -179,20 +252,25 @@ export function fromWire(wire: ResultWireValue): CoreResultType<unknown, unknown
         // last-known-good data degrades to `Refreshing(Success)` — lossy, and
         // frozen that way.
         return wire.waiting && wire.previousSuccess !== null
-          ? CoreResult.refreshing(CoreResult.success(wire.previousSuccess.value))
+          ? CoreResult.refreshing(
+              CoreResult.success(decodeWireValue(wire.previousSuccess.value)),
+            )
           : CoreResult.defect(wire.error.defect);
       }
+      const error = decodeWireValue(wire.error);
       if (wire.previousSuccess !== null) {
         // Settled failure that still has last-known-good data is a failed
         // refresh: `Stale` once settled, `Refreshing` while in flight.
         return wire.waiting
-          ? CoreResult.refreshing(CoreResult.success(wire.previousSuccess.value))
-          : CoreResult.stale(wire.error, wire.previousSuccess.value);
+          ? CoreResult.refreshing(
+              CoreResult.success(decodeWireValue(wire.previousSuccess.value)),
+            )
+          : CoreResult.stale(error, decodeWireValue(wire.previousSuccess.value));
       }
       // No previous data: `waiting` carries no recoverable information, so a
       // waiting failure settles to `Failure` (lossy, frozen — see the row-5
       // note on the golden fixtures).
-      return CoreResult.failure(wire.error);
+      return CoreResult.failure(error);
     }
   }
 }

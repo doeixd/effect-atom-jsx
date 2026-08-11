@@ -7,7 +7,6 @@ import { Result } from "../effect-ts.js";
 import { clearLoaderCache, getLoaderCacheEntry, isFresh } from "../router-runtime.js";
 import * as Reactivity from "../Reactivity.js";
 import { installReactivityService } from "../reactivity-runtime.js";
-import { installSingleFlightTransport } from "../single-flight-runtime.js";
 
 function memoryRouter(initial: string) {
   const url = Atom.value(new URL(initial, "http://test.local")) as unknown as Atom.WritableAtom<URL>;
@@ -911,14 +910,17 @@ describe("Route loader", () => {
     await runtime.dispose();
   });
 
-  it("uses globally installed transport automatically in Atom.action", async () => {
+  it("uses a context-provided transport in free Atom.action (no process-global slot)", async () => {
+    // DQ-033: the process-global transport install is deleted. A free action
+    // reaches a transport exclusively through Effect context, so the caller
+    // provides it as a layer on `runEffect` — request-scoped by construction.
     clearLoaderCache();
     const AutoRoute = Route.loader((params: { readonly userId: string }) =>
       Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
       withUserIdRoute("/auto-global/users/:userId", Component.from<{}>(() => null)),
     );
     const routeId = routeIdOf(AutoRoute);
-    const restore = installSingleFlightTransport({
+    const transport = Layer.succeed(Route.SingleFlightTransportTag, {
       execute: () => Effect.succeed({
         ok: true as const,
         payload: {
@@ -927,19 +929,17 @@ describe("Route loader", () => {
           loaders: [{ routeId, result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } as any }],
         },
       }) as any,
-    });
+    } as any);
 
-    try {
-      const saveUser = Atom.action(
-        (userId: string) => Effect.succeed({ ok: userId }),
-        { name: "/api/sfm/auto-global", singleFlight: { app: AutoRoute } },
-      );
-      const result = await Effect.runPromise(saveUser.runEffect("alice"));
-      expect(result.ok).toBe("alice");
-      expect(getLoaderCacheEntry(routeId, { userId: "alice" })).toBeDefined();
-    } finally {
-      restore();
-    }
+    const saveUser = Atom.action(
+      (userId: string) => Effect.succeed({ ok: userId }),
+      { name: "/api/sfm/auto-global", singleFlight: { app: AutoRoute } },
+    );
+    const result = await Effect.runPromise(
+      saveUser.runEffect("alice").pipe(Effect.provide(transport)) as Effect.Effect<{ readonly ok: string }, never, never>,
+    );
+    expect(result.ok).toBe("alice");
+    expect(getLoaderCacheEntry(routeId, { userId: "alice" })).toBeDefined();
   });
 
   it("can seed loader payload directly from mutation result and skip rerun", () => {
@@ -1053,6 +1053,11 @@ describe("Route loader", () => {
 
     const entry = results.find((item) => item.routeId === routeId);
     expect(entry?.result._tag).toBe("Failure");
-    expect((entry?.result as any)?.error?._tag).toBe("TimeoutError");
+    // DQ-036: the timeout is attributable — it names the route and the budget,
+    // not a bare `TimeoutError` that names neither.
+    const error = (entry?.result as any)?.error;
+    expect(error?._tag).toBe("RouteLoaderTimeoutError");
+    expect(error?.routeId).toBe(routeId);
+    expect(error?.timeoutMs).toBe(20);
   });
 });

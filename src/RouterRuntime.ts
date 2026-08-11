@@ -657,6 +657,7 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       initialized = true;
       unsubscribeHistory = config.history.subscribe((event) => {
         historyAction = event.action;
+        const previousLocation = location;
         location = new URL(event.location.toString());
         const nextLocation = location;
         // Hand the superseded navigation fiber to the new run so it can be
@@ -671,6 +672,24 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
         }
         const body = Effect.gen(function* () {
           if (supersededFiber) yield* Fiber.interrupt(supersededFiber);
+          // R3 (`DQ-030`): guards run in the navigation path, before any
+          // loader. A failing guard refuses the navigation — the location is
+          // rolled back, no loader runs, and no loader data is committed. A
+          // guard that exists but does not gate would be an authorization API
+          // shipped as an auth bypass.
+          const guardExit = yield* Effect.exit(
+            Route.runMatchedRouteGuards(config.app, nextLocation),
+          );
+          if (guardExit._tag === "Failure") {
+            if (isCurrentTask("navigation", taskId)) {
+              location = previousLocation;
+              navigation = cancelledTask(nextLocation.pathname, navigation.outcome);
+              clearInFlight("navigation");
+              inFlightNavigationFiber = null;
+              emit();
+            }
+            return;
+          }
           const committed = yield* refreshMatchedLoadersGuarded(
             nextLocation,
             () => isCurrentTask("navigation", taskId),

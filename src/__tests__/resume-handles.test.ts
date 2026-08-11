@@ -221,7 +221,7 @@ describe("component wrappers preserve every decoration", () => {
     return Base.pipe(
       Route.loader(() => Effect.succeed(1)),
       Route.title("Decorated"),
-      Route.transition({ enter: Effect.void }),
+      Route.guard(Effect.void),
       Route.sitemapParams(() => Effect.succeed([{ id: "1" }])),
     );
   };
@@ -247,7 +247,7 @@ describe("component wrappers preserve every decoration", () => {
   ];
 
   for (const [name, wrap] of wrappers) {
-    it(`${name} preserves slot, route, loader, transition, and sitemap metadata`, () => {
+    it(`${name} preserves slot, route, loader, guard, and sitemap metadata`, () => {
       const source = makeRouted();
       const wrapped = wrap(source);
 
@@ -260,9 +260,10 @@ describe("component wrappers preserve every decoration", () => {
       for (const field of Route.RouteDecorationFields) {
         expect((wrapped as any)[field]).toBe((source as any)[field]);
       }
-      // The two decorations most recently added to the record; these were the
+      // The decorations most recently added to the record; these were the
       // fields silently dropped before the copy list was centralized.
-      expect((wrapped as any).__routeTransition).toBeDefined();
+      // (`__routeTransition` was deleted with `Route.transition` in R3.)
+      expect((wrapped as any).__routeGuards).toBeDefined();
       expect((wrapped as any).__routeSitemapParams).toBeDefined();
     });
   }

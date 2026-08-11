@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import { Result as CoreResult, type Result as CoreResultType } from "./effect-ts.js";
 import { makeResourceCacheIdentity } from "./cache-identity.js";
 import {
@@ -284,6 +284,19 @@ export function clearLoaderCache(routeId?: string, store?: LoaderCacheStore): vo
   }
 }
 
+/**
+ * A route loader exceeded its declared timeout budget (`DQ-036`).
+ *
+ * Schema-tagged like the resumability layer's errors: a real `Error` with a
+ * stack, carrying which route and against which budget.
+ */
+export class RouteLoaderTimeoutError extends Schema.TaggedErrorClass<RouteLoaderTimeoutError>(
+  "@effect-atom-jsx/RouteLoaderTimeoutError",
+)("RouteLoaderTimeoutError", {
+  routeId: Schema.String,
+  timeoutMs: Schema.Number,
+}) {}
+
 export function runCachedLoader<A, E>(
   routeId: string,
   params: unknown,
@@ -295,7 +308,7 @@ export function runCachedLoader<A, E>(
     readonly reactivityKeys?: ReactivityKeysInput;
     readonly timeout?: DurationInput;
   },
-): Effect.Effect<CoreResultType<A, E>, never> {
+): Effect.Effect<CoreResultType<A, E | RouteLoaderTimeoutError>, never> {
   return currentLoaderCacheStore.pipe(Effect.flatMap((store) => {
     const existing = getLoaderCacheEntry(routeId, params, store);
     if (existing && isFresh(existing)) {
@@ -335,8 +348,19 @@ function executeAndCache<A, E>(
 ): Effect.Effect<CoreResultType<A, E>, never> {
   const optionKeys = options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : [];
   const timeoutMs = durationToMillis(options?.timeout, 0);
+  // DQ-036: a loader timeout is attributable — it names the route and the
+  // budget — rather than a bare `TimeoutError` that names neither. A timeout
+  // is the single most likely loader failure an author wants distinct UI for.
   const timedRun = timeoutMs > 0
-    ? run.pipe(Effect.timeout(timeoutMs))
+    ? run.pipe(
+        Effect.timeoutOrElse({
+          duration: timeoutMs,
+          orElse: () =>
+            Effect.fail(
+              new RouteLoaderTimeoutError({ routeId, timeoutMs }) as unknown as E,
+            ),
+        }),
+      )
     : run;
   return Effect.sync(() => beginReactivityReadCapture()).pipe(
     Effect.flatMap((capture) => timedRun.pipe(

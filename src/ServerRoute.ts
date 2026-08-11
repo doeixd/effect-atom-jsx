@@ -1,5 +1,6 @@
 import { Cause, Effect, Option, Schema } from "effect";
 import * as Route from "./Route.js";
+import { extractPatternParams, matchPatternSegments } from "./route-pattern.js";
 import type { AnyRoute, AppRouteNode } from "./Route.js";
 
 export const ServerRouteNodeSymbol: unique symbol = Symbol.for("effect-atom-jsx/ServerRouteNode");
@@ -156,20 +157,12 @@ export type NotFoundSignal = {
   readonly _tag: "ServerNotFound";
 };
 
+// R5.4: one segment engine shared with `Route` (`route-pattern.ts`), which is
+// how `ServerRoute` gains optional segments and `Route` gains splats without a
+// second grammar. Server matching is exact (plus splat/optional semantics).
 function matchPath(pattern: string | undefined, pathname: string): boolean {
   if (!pattern) return false;
-  const patternParts = pattern.split("/").filter(Boolean);
-  const pathParts = pathname.split("/").filter(Boolean);
-  if (pathParts.length < patternParts.length) return false;
-  for (let i = 0; i < patternParts.length; i += 1) {
-    const current = patternParts[i];
-    const actual = pathParts[i];
-    if (!current || !actual) return false;
-    if (current === "*") return true;
-    if (current.startsWith(":")) continue;
-    if (current !== actual) return false;
-  }
-  return patternParts.length === pathParts.length || patternParts[patternParts.length - 1] === "*";
+  return matchPatternSegments(pattern, pathname, true);
 }
 
 function normalizeServerPattern(pattern: string | undefined): string {
@@ -223,18 +216,7 @@ function decodeSchemaOrDefault<A>(schema: Schema.Schema<A> | undefined, input: u
 
 function extractParams(pathPattern: string | undefined, pathname: string): Record<string, string> {
   if (!pathPattern) return {};
-  const patternParts = pathPattern.split("/").filter(Boolean);
-  const pathParts = pathname.split("/").filter(Boolean);
-  const out: Record<string, string> = {};
-  for (let i = 0; i < patternParts.length; i += 1) {
-    const pattern = patternParts[i];
-    const actual = pathParts[i];
-    if (!pattern || !actual) continue;
-    if (pattern.startsWith(":")) {
-      out[pattern.slice(1)] = decodeURIComponent(actual);
-    }
-  }
-  return out;
+  return extractPatternParams(pathPattern, pathname, true) ?? {};
 }
 
 async function formDataToObject(formData: FormData): Promise<Record<string, unknown>> {

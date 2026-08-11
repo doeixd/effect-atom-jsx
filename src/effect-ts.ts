@@ -69,8 +69,6 @@ import {
 } from "./component-scope.js";
 import { ReactivityTag } from "./Reactivity.js";
 import { installReactivityService } from "./reactivity-runtime.js";
-import { installSingleFlightTransport } from "./single-flight-runtime.js";
-import { SingleFlightTransportTag, type SingleFlightTransportService } from "./SingleFlightTransport.js";
 import type * as AtomTypes from "./Atom.js";
 
 // ─── Result ───────────────────────────────────────────────────────────────────
@@ -1720,15 +1718,10 @@ export function mountWithManagedRuntime(
     ? maybeReactivityOption.value
     : null;
   const restoreReactivity = installReactivityService(maybeReactivity);
-  const maybeSingleFlightTransportOption = managed.runSync(
-    Effect.serviceOption(SingleFlightTransportTag),
-  );
-  const maybeSingleFlightTransport = Option.isSome(
-      maybeSingleFlightTransportOption
-    )
-    ? maybeSingleFlightTransportOption.value
-    : null;
-  const restoreSingleFlightTransport = installSingleFlightTransport(maybeSingleFlightTransport);
+  // DQ-033: no ambient single-flight transport. A transport lives in a
+  // runtime's layer and reaches actions through Effect context only — a
+  // module-level slot can never be per-request, which is how the
+  // cross-request bleed happened.
   const rootScope = options?.scope ?? Scope.makeUnsafe();
   const disposeOwnedRuntime = (): void => {
     if (!ownsRuntime) return;
@@ -1755,7 +1748,6 @@ export function mountWithManagedRuntime(
     if (disposeRender !== undefined) attempt(disposeRender);
     if (ownsScope) attempt(() => closeComponentScope(rootScope));
     // Ambient services are stacks: release them in reverse installation order.
-    attempt(restoreSingleFlightTransport);
     attempt(restoreReactivity);
     disposeOwnedRuntime();
     if (failed) throw failure;
