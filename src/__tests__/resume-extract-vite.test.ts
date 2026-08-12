@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import type { ResumeExtractEntry } from "../compiler/resume-extract-plugin.js";
 import {
+  expandSourceModules,
   resolverEntriesModule,
   resumeExtract,
   virtualEntriesId,
@@ -263,6 +264,81 @@ describe("sourceModules force-loading", () => {
     await load.call(context, `\0${virtualEntriesId}`);
     expect(resolved).toEqual([]);
     expect(loaded).toEqual([]);
+  });
+});
+
+describe("glob sourceModules discovery (M10 item 5)", () => {
+  async function makeTree(): Promise<string> {
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "af-glob-"));
+    for (const file of [
+      "app/pin.ts",
+      "app/nested/deep.ts",
+      "app/readme.md",
+      "lib/other.ts",
+      "node_modules/dep/index.ts",
+      ".hidden/secret.ts",
+    ]) {
+      const absolute = path.join(root, file);
+      await fs.mkdir(path.dirname(absolute), { recursive: true });
+      await fs.writeFile(absolute, "export {};\n");
+    }
+    return root.replace(/\\/g, "/");
+  }
+
+  it("expands globs against the root, skipping node_modules and dot-dirs", async () => {
+    const root = await makeTree();
+    expect(await expandSourceModules(["/app/**/*.ts"], root)).toEqual([
+      "/app/nested/deep.ts",
+      "/app/pin.ts",
+    ]);
+    // `*` stays within one segment; `**` crosses.
+    expect(await expandSourceModules(["/app/*.ts"], root)).toEqual([
+      "/app/pin.ts",
+    ]);
+    // Literal specifiers pass through untouched (unverified against disk),
+    // and mix with glob matches.
+    expect(
+      await expandSourceModules(["/exact/entry.ts", "/lib/*.ts"], root),
+    ).toEqual(["/exact/entry.ts", "/lib/other.ts"]);
+    // A glob that matches nothing expands to nothing — never a literal path.
+    expect(await expandSourceModules(["/missing/**/*.ts"], root)).toEqual([]);
+    // Without a root, globs cannot expand; literals still pass.
+    expect(
+      await expandSourceModules(["/app/**/*.ts", "/exact.ts"], undefined),
+    ).toEqual(["/exact.ts"]);
+  });
+
+  it("force-loads every glob-discovered module through the plugin load hook", async () => {
+    const root = await makeTree();
+    const plugin = resumeExtract({
+      buildId: "build-1",
+      root,
+      sourceModules: ["/app/**/*.ts"],
+    });
+    const load = plugin.load as unknown as (
+      this: unknown,
+      id: string,
+    ) => Promise<string | undefined>;
+    const resolved: string[] = [];
+    const loaded: string[] = [];
+    const context = {
+      resolve: async (source: string) => {
+        resolved.push(source);
+        return { id: `${root}${source}` };
+      },
+      load: async ({ id }: { readonly id: string }) => {
+        loaded.push(id);
+      },
+    };
+    await load.call(context, `\0${virtualEntriesId}`);
+    expect(resolved).toEqual(["/app/nested/deep.ts", "/app/pin.ts"]);
+    expect(loaded).toEqual([
+      `${root}/app/nested/deep.ts`,
+      `${root}/app/pin.ts`,
+    ]);
   });
 });
 

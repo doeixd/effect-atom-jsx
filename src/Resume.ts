@@ -1005,6 +1005,7 @@ export class ResumePayloadTooLargeError extends Schema.TaggedErrorClass<ResumePa
   largestEntryId: Schema.optional(Schema.String),
   largestEntryBytes: Schema.optional(Schema.Finite),
   largestBindingName: Schema.optional(Schema.String),
+  largestCaptureName: Schema.optional(Schema.String),
   message: Schema.String,
 }) {}
 
@@ -1639,21 +1640,54 @@ function largestManifestEntry(manifest: Manifest): {
   readonly id: string;
   readonly bytes: number;
   readonly bindingName?: string;
+  readonly captureName?: string;
 } | undefined {
   const candidates: Array<{
     readonly kind: "event" | "component" | "expression";
     readonly id: string;
     readonly bytes: number;
     readonly bindingName?: string;
+    readonly captureName?: string;
   }> = [];
   const jsonBytes = (id: string, entry: unknown): number =>
     new TextEncoder().encode(JSON.stringify({ [id]: entry })).byteLength;
+  // M10 item 5: attribution reaches the *capture*. An event or expression
+  // entry's bytes are dominated by its descriptor's encoded captures, so the
+  // error names the capture key that contributes the most bytes — the value
+  // the author must shrink or drop.
+  const largestCaptureName = (entry: unknown): string | undefined => {
+    const captures = (entry as { readonly code?: { readonly captures?: unknown } })
+      ?.code?.captures;
+    if (
+      typeof captures !== "object" ||
+      captures === null ||
+      Array.isArray(captures)
+    ) {
+      return undefined;
+    }
+    let name: string | undefined;
+    let largest = -1;
+    for (const [key, value] of Object.entries(captures)) {
+      const bytes = jsonBytes(key, value);
+      if (bytes > largest) {
+        name = key;
+        largest = bytes;
+      }
+    }
+    return name;
+  };
   const measure = (
     kind: "event" | "component" | "expression",
     entries: Readonly<Record<string, unknown>>,
   ): void => {
     for (const [id, entry] of Object.entries(entries)) {
-      candidates.push({ kind, id, bytes: jsonBytes(id, entry) });
+      const captureName = largestCaptureName(entry);
+      candidates.push({
+        kind,
+        id,
+        bytes: jsonBytes(id, entry),
+        ...(captureName === undefined ? {} : { captureName }),
+      });
     }
   };
   measure("event", manifest.events);
@@ -1686,6 +1720,7 @@ function largestManifestEntry(manifest: Manifest): {
         readonly id: string;
         readonly bytes: number;
         readonly bindingName?: string;
+        readonly captureName?: string;
       }
     | undefined
   >(
@@ -2244,6 +2279,9 @@ function collectInternal<E, R>(
               ...(largest.bindingName === undefined
                 ? {}
                 : { largestBindingName: largest.bindingName }),
+              ...(largest.captureName === undefined
+                ? {}
+                : { largestCaptureName: largest.captureName }),
             }),
         message: `Resume manifest is ${actualBytes} bytes, exceeding the ${maximumBytes}-byte limit.${
           largest === undefined
@@ -2252,6 +2290,10 @@ function collectInternal<E, R>(
                 largest.bindingName === undefined
                   ? ""
                   : ` (largest binding: "${largest.bindingName}")`
+              }${
+                largest.captureName === undefined
+                  ? ""
+                  : ` (largest capture: "${largest.captureName}")`
               }.`
         }`,
       });

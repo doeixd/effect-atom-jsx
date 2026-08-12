@@ -327,8 +327,10 @@ export default defineConfig({
       buildId: BUILD_ID,
       root: import.meta.dirname,
       importPath: (entry) => `/${entry.moduleId}`,
-      // Modules reachable only through the virtual entries module:
-      sourceModules: ["/app/note-button.ts"],
+      // Modules reachable only through the virtual entries module. Glob
+      // specifiers expand against the root at load time (node_modules and
+      // dot-directories are never entered):
+      sourceModules: ["/app/**/*.ts"],
     }),
   ],
 })

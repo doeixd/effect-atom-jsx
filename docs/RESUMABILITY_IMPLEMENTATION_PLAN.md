@@ -44,8 +44,11 @@ captures, the `@affe/permissive` package with its Chromium Qwik-parity
 proof); **Milestone 9 is complete** (SPI freeze + `adapter-spi` subpath,
 diagnostics matrix, manifest compat fixtures, enforced-CSP proof + pre-ship
 audit checklist, server-side no-instrumentation/collection benchmarks, doc
-sync + source-doc archival); M11/M11b done. **The sole remaining item in
-this plan is M10 item 5** (capture-ergonomics polish).
+sync + source-doc archival); M11/M11b done. **M10 item 5 closed too**
+(per-capture attribution + glob `sourceModules`; the `deps.auto` assertion
+mode stays parked on open `DQ-021`). **Every buildable item in this plan is
+built** — what remains is `DQ-021` (unblocks `deps.auto`) and the
+explicitly deferred M10 item 6 (promise/stream captures, Open Question 9).
 
 **Browser tests and the benchmark have both been re-run** (7/7 Chromium; both
 heap gates pass), and the recorded baseline is **re-pinned from the post-widening
@@ -1565,6 +1568,23 @@ Work:
    diagnostics; a `deps.auto` assertion mode for expressions once SSR read
    capture is trusted (design doc open question 1); glob-based
    `sourceModules` discovery.
+   (closed 2026-08-12, two of three built and the third explicitly parked:
+   - **Per-capture attribution**: `ResumePayloadTooLargeError` gained
+     `largestCaptureName` — when the dominating manifest entry is an event
+     or expression, the error names the capture key contributing the most
+     encoded bytes, completing the entry → binding → capture attribution
+     chain. Pinned in `adapter-spi.test.ts` "[M10.5]".
+   - **Glob `sourceModules`**: `resumeExtract` expands glob specifiers
+     (`/app/**/*.ts`) against the project root at load time
+     (`expandSourceModules`, exported); `node_modules` and dot-directories
+     are never entered, a non-matching glob expands to nothing, and literal
+     specifiers pass through unchanged. Unit-tested in
+     `resume-extract-vite.test.ts` and proven end-to-end: the permissive
+     demo now discovers its module by glob and the Chromium suite passes.
+   - **`deps.auto` assertion mode**: NOT built — its stated precondition
+     ("once SSR read capture is trusted") is exactly open `DQ-021`, which
+     recommends assertion-mode-only but is unratified. Building it now
+     would guess a design decision; it stays parked on `DQ-021`.)
 6. **Deferred**: promise/stream captures (seroval's async forms) — blocked
    on the async/streaming SSR question (Open Question 9); no serialization
    of in-flight Effects.

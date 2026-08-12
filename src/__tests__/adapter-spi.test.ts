@@ -219,6 +219,55 @@ describe("Resume adapter SPI and wire stability", () => {
     ]);
   });
 
+  it("[M10.5] attributes an oversized event entry to its largest capture", () => {
+    const FatCode = Portable.code({
+      id: "future.resume.spi.fat-captures",
+      buildId: BuildId,
+      captures: Schema.Struct({
+        tiny: Schema.String,
+        huge: Schema.String,
+      }),
+      run: () => Effect.void,
+    });
+    const action = Effect.runSync(
+      Component.action(
+        Portable.bind(FatCode, { tiny: "t", huge: "x".repeat(4_000) }),
+      ),
+    );
+    const render = () =>
+      renderToString(() => {
+        const button = template("<button>Save")();
+        addEventListener(button, "click", Resume.event(action), true);
+        return button;
+      });
+
+    const exit = Effect.runSyncExit(
+      Resume.collect(render, { buildId: BuildId, maxPayloadBytes: 512 }).pipe(
+        Effect.provide(Serialization.layer),
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (!Exit.isFailure(exit)) return;
+    const error = Cause.findErrorOption(exit.cause).pipe(
+      Option.getOrElse(() => undefined),
+    );
+    expect(error?._tag).toBe("ResumePayloadTooLargeError");
+    if (error?._tag !== "ResumePayloadTooLargeError") return;
+    // M10 item 5: attribution reaches the *capture* — the author's next move
+    // is shrinking or dropping one captured value, so the error names it.
+    expect(error.largestEntryKind).toBe("event");
+    expect(error.largestCaptureName).toBe("huge");
+    expect(error.message).toContain('largest capture: "huge"');
+
+    // NEGATIVE CONTROL: under a roomy ceiling the same render collects.
+    const collected = Effect.runSync(
+      Resume.collect(render, { buildId: BuildId, maxPayloadBytes: 64_000 }).pipe(
+        Effect.provide(Serialization.layer),
+      ),
+    );
+    expect(Object.keys(collected.manifest.events)).toHaveLength(1);
+  });
+
   it("[M9] installs every frozen manifest fixture from v1 through v5", async () => {
     const SaveCode = Portable.code({
       id: "future.resume.spi.save",

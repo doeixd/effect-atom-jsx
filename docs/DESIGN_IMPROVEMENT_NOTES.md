@@ -66,6 +66,8 @@ policy below remain Milestone 9 work.
   boundaries have drifted during the program).
 - `ResumePayloadTooLargeError` needs per-component/per-binding size
   attribution before real applications hit the 64 KiB ceiling.
+  (**Done 2026-08-12**: entry, binding, AND capture attribution —
+  `largestEntryKind/Id/Bytes`, `largestBindingName`, `largestCaptureName`.)
 - Manifest v1/v2(/v3) decoding needs explicit cross-version fixture tests,
   not just union schemas.
 - ~~The `Behavior.attachScoped` `Exclude<Req, Scope>` cast should either gain
@@ -93,7 +95,8 @@ policy below remain Milestone 9 work.
 - `sourceModules` (first-build virtual-entry discovery) is a manual list;
   a glob option would remove the "forgot to register the module" failure
   mode, at the cost of a startup scan. Worth it once more than a handful of
-  extracted modules exist.
+  extracted modules exist. (**Done 2026-08-12**: glob specifiers expand
+  against the project root, M10 item 5.)
 
 ## 5. Renderer seams for M8c (medium, blocking attribute expressions)
 

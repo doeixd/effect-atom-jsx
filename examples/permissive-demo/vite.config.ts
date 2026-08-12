@@ -10,7 +10,10 @@ const preset = permissive({
     // Root-relative specifiers keep the generated dynamic imports valid in
     // both the SSR dev server and the client bundle.
     importPath: (entry) => `/${entry.moduleId}`,
-    sourceModules: ["/app/pin-board.ts"],
+    // M10 item 5: glob discovery — every module under app/ with extract
+    // markers is force-loaded, no hand-maintained list. The Chromium suite
+    // proves the discovered entry resolves at first click.
+    sourceModules: ["/app/**/*.ts"],
   },
 });
 

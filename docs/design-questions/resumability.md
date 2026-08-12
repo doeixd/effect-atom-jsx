@@ -490,6 +490,10 @@ has to override. Revisit with DQ-011.
 - **Owning plan:** `docs/RESUMABILITY_M8_FINE_GRAINED_DESIGN.md` §Open questions 1
   (with `RESUMABILITY_IMPLEMENTATION_PLAN.md` M10 item 5, `deps.auto`)
 - **Raised:** carried forward; still open
+- **Status update (2026-08-12):** M10 item 5 closed with its other two
+  sub-parts built (per-capture attribution, glob `sourceModules`); the
+  `deps.auto` assertion mode is now the ONLY thing waiting on this
+  question. Ratifying option 1 unblocks it directly.
 
 **What is undecided.** Whether `deps` can be inferred capture-only, with the
 declaration becoming an optional assertion. v1 requires declaration because

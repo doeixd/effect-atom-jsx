@@ -43,11 +43,98 @@ export interface ResumeExtractViteOptions extends
    * contain `extract` markers but are reachable only through the virtual
    * entries module itself. They are force-loaded before the virtual module
    * is generated, so their entries exist on first build.
+   *
+   * A specifier containing glob characters (`*`, `?`, `[`, `{`) is expanded
+   * against the project root at load time (M10 item 5): `"/app/**\/*.ts"`
+   * discovers every matching file instead of requiring a hand-maintained
+   * list. `node_modules` and dot-directories are never entered. A glob that
+   * matches nothing expands to nothing — the explicit-specifier path is
+   * unchanged and still resolves through Vite.
    */
   readonly sourceModules?: ReadonlyArray<string>;
 }
 
 const defaultInclude = /\.[cm]?[jt]sx?$/;
+
+const globCharacters = /[*?[{]/;
+
+/**
+ * Convert one root-relative glob specifier to a RegExp over root-relative
+ * paths. Supported syntax is the common subset: `**` (any depth, including
+ * none when followed by `/`), `*` (within one segment), `?` (one non-slash
+ * character). Character classes and brace alternation are NOT interpreted —
+ * they only mark the specifier as a glob so a typo fails loudly (matching
+ * nothing) instead of resolving as a literal path.
+ */
+function globToRegExp(glob: string): RegExp {
+  let pattern = "";
+  let index = 0;
+  while (index < glob.length) {
+    const char = glob[index]!;
+    if (char === "*") {
+      if (glob.startsWith("**/", index)) {
+        pattern += "(?:[^/]+/)*";
+        index += 3;
+        continue;
+      }
+      if (glob.startsWith("**", index)) {
+        pattern += ".*";
+        index += 2;
+        continue;
+      }
+      pattern += "[^/]*";
+      index += 1;
+      continue;
+    }
+    if (char === "?") {
+      pattern += "[^/]";
+      index += 1;
+      continue;
+    }
+    pattern += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    index += 1;
+  }
+  return new RegExp(`^${pattern}$`);
+}
+
+/**
+ * Expand glob specifiers in `sourceModules` against the project root.
+ * Non-glob specifiers pass through untouched. Results are root-relative Vite
+ * specifiers (leading `/`), sorted for deterministic force-load order.
+ */
+export async function expandSourceModules(
+  sourceModules: ReadonlyArray<string>,
+  root: string | undefined,
+): Promise<ReadonlyArray<string>> {
+  const literal = sourceModules.filter((s) => !globCharacters.test(s));
+  const globs = sourceModules.filter((s) => globCharacters.test(s));
+  if (globs.length === 0 || root === undefined) return literal;
+  root = normalizePath(root).replace(/\/$/, "");
+  const fs = await import("node:fs/promises");
+  const matchers = globs.map((glob) =>
+    globToRegExp(glob.startsWith("/") ? glob.slice(1) : glob)
+  );
+  const matches: string[] = [];
+  const walk = async (relative: string): Promise<void> => {
+    const absolute = relative === "" ? root : `${root}/${relative}`;
+    const entries = await fs.readdir(absolute, { withFileTypes: true }).catch(
+      () => [],
+    );
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      const childRelative = relative === ""
+        ? entry.name
+        : `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(childRelative);
+      } else if (matchers.some((matcher) => matcher.test(childRelative))) {
+        matches.push(`/${childRelative}`);
+      }
+    }
+  };
+  await walk("");
+  return [...literal, ...matches.sort()];
+}
 
 function normalizePath(value: string): string {
   return value.replace(/\\/g, "/");
@@ -152,7 +239,11 @@ export function resumeExtract(
         ) => Promise<{ readonly id: string } | null>;
         readonly load?: (options: { readonly id: string }) => Promise<unknown>;
       };
-      for (const specifier of new Set(options.sourceModules ?? [])) {
+      const sourceModules = await expandSourceModules(
+        options.sourceModules ?? [],
+        projectRoot,
+      );
+      for (const specifier of new Set(sourceModules)) {
         const resolved = await context.resolve?.(specifier);
         if (resolved != null) {
           await context.load?.({ id: resolved.id });
