@@ -1724,6 +1724,14 @@ acceptance criteria for the phase named, drawn from the research docs' own
    and nothing tests it. Require: a passed-in external atom is **not**
    overwritten on spawn; with no external atom, setup creates an internal
    `Component.state` that resume can snapshot.
+   (**DONE 2026-08-12** — `Component.bindable` (it allocates
+   `Component.state`, so it lives beside it, not in the behavior catalog):
+   a writable-atom argument is ADOPTED and branded via
+   `markControlledBinding`, and resume collection skips controlled
+   bindings without a fallback diagnostic — adoption is configuration,
+   not a failure ("snapshot only for setup-owned state"). The future spec
+   went fully green and was PROMOTED to `src/__tests__/bindable.test.ts`,
+   expanded with the no-diagnostic and edge-case coverage.)
 5. **`liveAnnounce` swaps as a service** — a mock `LiveAnnouncer` layer that
    captures polite/assertive messages, proving kit services swap wholesale
    in tests with **no DOM**. This is the concrete proof of the

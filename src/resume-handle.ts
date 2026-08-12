@@ -201,6 +201,39 @@ export interface InspectableActionHandle<A = unknown, E = unknown>
   readonly [HandleKindTypeId]: "action";
 }
 
+export const ControlledBindingTypeId: unique symbol = Symbol.for(
+  "effect-atom-jsx/Resume/ControlledBinding",
+);
+
+/**
+ * Mark an adopted caller-owned atom as a CONTROLLED binding
+ * (`Component.bindable`): the caller owns the value, so resume collection
+ * must never snapshot it — "snapshot only for setup-owned state"
+ * (`docs/kit-research/behaviors/controlled-uncontrolled.md`). Idempotent.
+ */
+export function markControlledBinding<T extends object>(value: T): T {
+  if (!(ControlledBindingTypeId in value)) {
+    Object.defineProperty(value, ControlledBindingTypeId, {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: true,
+    });
+  }
+  return value;
+}
+
+/** Is this value a caller-owned controlled binding adopted by `bindable`? */
+export function isControlledBinding(value: unknown): boolean {
+  return (
+    (typeof value === "object" || typeof value === "function")
+    && value !== null
+    && (value as { readonly [ControlledBindingTypeId]?: unknown })[
+        ControlledBindingTypeId
+      ] === true
+  );
+}
+
 /**
  * Is this value a live state handle — an annotated `Component.state` handle
  * or a writable atom (the framework's reactive primitives with hydration

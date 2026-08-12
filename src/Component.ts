@@ -27,6 +27,7 @@ import {
   type InspectableQueryHandle,
   type InspectableRefHandle,
   isStateHandleValue,
+  markControlledBinding,
   type InspectableStateHandle,
 } from "./resume-handle.js";
 import {
@@ -1329,6 +1330,36 @@ export type StateAtom<A> = Atom.WritableAtom<A> & InspectableStateHandle<A>;
  */
 export function isStateHandle(value: unknown): value is Atom.WritableAtom<unknown> {
   return isStateHandleValue(value);
+}
+
+/**
+ * Controlled/uncontrolled collapse: one mechanism, no `value`/`defaultValue`
+ * split (`docs/kit-research/behaviors/controlled-uncontrolled.md`).
+ *
+ * Given a caller's writable atom, ADOPT it: the widget reads and writes the
+ * caller's value directly, never overwrites it on spawn, and — because the
+ * caller owns it — resume collection deliberately skips its snapshot
+ * ("snapshot only for setup-owned state"). Given a plain initial value,
+ * allocate ordinary setup-owned `Component.state`, which the existing resume
+ * kernel snapshots with no new kernel code.
+ *
+ * Any writable atom argument is treated as controlled — a widget whose state
+ * VALUE is itself an atom cannot route it through `bindable`.
+ */
+export function bindable<A>(value: Atom.WritableAtom<A>): Effect.Effect<Atom.WritableAtom<A>>;
+export function bindable<A>(value: A): Effect.Effect<StateAtom<A>>;
+export function bindable<A>(
+  value: Atom.WritableAtom<A> | A,
+): Effect.Effect<Atom.WritableAtom<A>> {
+  if (
+    Atom.isAtom(value)
+    && Atom.isWritable(value as Atom.Atom<unknown>)
+  ) {
+    return Effect.sync(() =>
+      markControlledBinding(value as Atom.WritableAtom<A>)
+    );
+  }
+  return state(value as A);
 }
 
 /** Allocate a component-scoped writable atom during setup. */

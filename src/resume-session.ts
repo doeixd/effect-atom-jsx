@@ -25,6 +25,7 @@ import {
   BindingReactivityKeyPrefix,
   bindingReactivityKey,
   inspectHandle,
+  isControlledBinding,
   isBindingReactivityKey,
   type AnyBindingSnapshotPolicy,
   type AnyQuerySnapshotPolicy,
@@ -1032,6 +1033,13 @@ export function observeCommittedComponentBindings(
       });
     };
     if (step.resume.kind === "state") {
+      // A CONTROLLED binding (`Component.bindable` adopted the caller's
+      // atom) is deliberately not snapshotted: the caller owns the value and
+      // its own resume path serializes it. Like a named plan with nothing to
+      // resume, this is configuration, not a fallback — no diagnostic.
+      if (isControlledBinding(record[name])) {
+        continue;
+      }
       if (handle === undefined || handle.kind !== "state") {
         mismatch();
         continue;
