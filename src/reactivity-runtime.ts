@@ -36,10 +36,39 @@ export function isReactivityKeyWitness(value: unknown): value is ReactivityKeyWi
   return typeof value === "object" && value !== null && ReactivityKeyTypeId in value;
 }
 
+/**
+ * The reserved identity namespace (`DIN-2a`, `DQ-089`): every installation-
+ * owned identity — binding hydration/reactivity keys (`af:binding:`),
+ * expression ids (`af:expr:`), component ids (`af:component:`), and anything
+ * the framework mints in the future — lives under this prefix. Authored keys
+ * may never enter it; the vocabulary lives HERE, in exactly one place, so no
+ * seam can invent its own subset.
+ */
+export const ReservedIdentityPrefix = "af:";
+
+/** Is this key inside the reserved (installation-owned) identity namespace? */
+export function isReservedIdentityKey(key: string): boolean {
+  return key.startsWith(ReservedIdentityPrefix);
+}
+
+function assertAuthoredKey(key: string): void {
+  // Loose runtime input (a record nested in the array form) is not a string
+  // key; the reservation applies to keys, not to shapes normalization
+  // tolerates.
+  if (typeof key === "string" && isReservedIdentityKey(key)) {
+    throw new Error(
+      `Reactivity key ${JSON.stringify(key)} is reserved: the "${ReservedIdentityPrefix}" namespace is installation-owned (DQ-089). Authored keys may not name, invalidate, or masquerade as framework identities.`,
+    );
+  }
+}
+
 export function makeReactivityKeyWitness<Name extends string>(
   name: Name,
   ancestors: ReadonlyArray<NormalizedReactivityKey> = [],
 ): ReactivityKeyWitness<Name> {
+  // DIN-2a: hierarchical derivation must not smuggle a reserved key in
+  // (`Key.make("af").child("binding")` constructs "af:binding").
+  assertAuthoredKey(name);
   const keys: ReadonlyArray<NormalizedReactivityKey> = [...ancestors, name];
   return {
     [ReactivityKeyTypeId]: true,
@@ -105,7 +134,28 @@ export function onReactivityInvalidation(listener: (keys: ReadonlyArray<Normaliz
 const reactivityVersionMap = new Map<NormalizedReactivityKey, Accessor<number>>();
 const reactivityBumpMap = new Map<NormalizedReactivityKey, () => void>();
 
+/**
+ * Normalize AUTHORED reactivity keys — the single choke point every
+ * authoring seam (loader `reactivityKeys`, query keys, action keys,
+ * expression deps, invalidation calls) shares. Rejects the reserved `af:`
+ * namespace here, which is what makes the reservation hold by construction
+ * instead of by per-seam audits (`DIN-2b`).
+ *
+ * Library-computed key sets (a restored query's implicit `af:binding:` key,
+ * cache-identity derivation) are NOT authored input and go through
+ * {@link normalizeReactivityKeysDerived} instead — reservation constrains
+ * what an author may NAME, never what the library may COMPUTE (`DQ-089`).
+ */
 export function normalizeReactivityKeys(input: ReactivityKeysInput): ReadonlyArray<NormalizedReactivityKey> {
+  const normalized = normalizeReactivityKeysDerived(input);
+  for (const key of normalized) {
+    assertAuthoredKey(key);
+  }
+  return normalized;
+}
+
+/** The derivation-exempt normalization (`DQ-089`); see above. */
+export function normalizeReactivityKeysDerived(input: ReactivityKeysInput): ReadonlyArray<NormalizedReactivityKey> {
   if (Array.isArray(input)) {
     const out: NormalizedReactivityKey[] = [];
     for (const entry of input as ReadonlyArray<ReactivityKeyInput>) {
@@ -189,7 +239,11 @@ export function invalidateReactivityRuntime(input: ReactivityKeysInput): void {
 }
 
 export function trackReactivityRuntime(input: ReactivityKeysInput): void {
-  for (const key of normalizeReactivityKeys(input)) {
+  // DQ-089: TRACKING a reserved key is observation, not authorship -- a
+  // restored query legitimately subscribes to its implicit af:binding key,
+  // and subscribing grants no power to fire or impersonate the identity.
+  // Naming (Key.make) and invalidating stay guarded.
+  for (const key of normalizeReactivityKeysDerived(input)) {
     for (const capture of readCaptureStack) {
       capture.add(key);
     }

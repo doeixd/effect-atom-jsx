@@ -4734,8 +4734,12 @@ describe("Milestone 8 expression collection and text restoration", () => {
       bindingValues: 1,
       bindingOverrides: 0,
     });
-    Atom.invalidateReactivity(["af:binding:c0/count"]);
-    await Promise.resolve();
+    // DIN-2b strengthened the old pin: authored invalidation of an
+    // installation-owned binding key no longer silently does nothing — it is
+    // rejected at the reservation choke point.
+    expect(() =>
+      Atom.invalidateReactivity(["af:binding:c0/count"])
+    ).toThrow(/reserved/i);
     await Promise.resolve();
     expect(loads).toBe(0);
     Effect.runSync(

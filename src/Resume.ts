@@ -35,6 +35,7 @@ import {
 import { jsonValueIssue } from "./wire-json.js";
 import {
   normalizeReactivityKeys,
+  normalizeReactivityKeysDerived,
   onReactivityInvalidation,
 } from "./reactivity-runtime.js";
 import {
@@ -2510,7 +2511,10 @@ function restoreStateBindingsInScope<Props, Req, E, Bindings, Slots>(
         ),
       );
       const reactivityKeys = bindingSnapshot.kind === "query"
-        ? normalizeReactivityKeys(bindingSnapshot.reactivityKeys)
+        // DQ-089 derivation exemption: a restored query's key set is
+        // library-computed from the manifest and legitimately includes its
+        // implicit `af:binding:` key — this is not authored input.
+        ? normalizeReactivityKeysDerived(bindingSnapshot.reactivityKeys)
         : undefined;
       const cacheKey = bindingSnapshot.kind === "query"
         ? yield* Effect.try({
