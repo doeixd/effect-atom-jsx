@@ -197,4 +197,5 @@ export {
   serovalUnsafeEvalSerializerId,
   serializerEnvelopeKey,
   type SerovalOptions,
+  type StateHandleResolver,
 } from "./serialization-seroval.js";

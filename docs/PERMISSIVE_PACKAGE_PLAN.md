@@ -17,7 +17,13 @@ deliberately the SAME `serovalAsyncLayer` — the DQ-012 serializer stamp
 makes split codecs a fail-closed footgun, and async is the default because
 Promise captures are the point of permissive mode; `assertSpiCompatible()`
 runs at construction; reference codec ids/layers re-exported).
-Next: S4 (pluggable hydration-key resolver).
+S4 done (`Serialization.SerovalOptions.stateHandles?: StateHandleResolver`
+with `keyOf`/`resolve` and fall-back-to-reference-registry semantics —
+unknown keys still fail closed; `@affe/permissive` ships
+`createHandleRegistry()` and `permissive({stateHandles})`; keys are
+deliberately opaque to the codec because handles carry no intrinsic
+cross-process identity — the app registering the same stable keys on both
+sides IS the mechanism). Next: S5 (Chromium Qwik-parity demo).
 
 Ratified basis: TRIAGE-2026-08-12.md item 6 (build it as the next major
 milestone), `DQ-011` (the M9 adapter SPI is **blocked on** this package —

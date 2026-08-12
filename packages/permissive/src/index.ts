@@ -15,6 +15,10 @@ export {
   type PermissiveOptions,
   type PermissivePreset,
 } from "./preset.js";
+export {
+  createHandleRegistry,
+  type HandleRegistry,
+} from "./registry.js";
 // The reference codec pieces, re-exported so an app can wire them directly
 // or compare serializer identities in diagnostics.
 export {

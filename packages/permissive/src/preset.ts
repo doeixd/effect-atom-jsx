@@ -28,6 +28,15 @@ export interface PermissiveOptions {
   readonly buildId: string;
   /** Pass-through compiler-plugin options (include, sourceModules, …). */
   readonly vite?: Omit<ResumeExtractViteOptions, "buildId">;
+  /**
+   * Hydration identity for state-handle captures (S4). Wire
+   * `createHandleRegistry().resolver` here — registering handles under the
+   * same stable keys on server and client is what makes a serialized handle
+   * resolve to the CLIENT's live handle instead of a process-local ordinal
+   * that means nothing across the wire. Omitted: the core's process-local
+   * reference registry (in-process round-trips only).
+   */
+  readonly stateHandles?: Serialization.StateHandleResolver;
 }
 
 export interface PermissivePreset {
@@ -51,12 +60,15 @@ export interface PermissivePreset {
  */
 export function permissive(options: PermissiveOptions): PermissivePreset {
   assertSpiCompatible();
+  const codec = options.stateHandles === undefined
+    ? Serialization.serovalAsyncLayer
+    : Serialization.seroval({ async: true, stateHandles: options.stateHandles });
   return {
     vitePlugins: [
       resumeExtract({ buildId: options.buildId, ...options.vite }),
     ],
-    serverLayer: Serialization.serovalAsyncLayer,
-    clientLayer: Serialization.serovalAsyncLayer,
+    serverLayer: codec,
+    clientLayer: codec,
     spiVersion,
   };
 }

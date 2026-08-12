@@ -75,11 +75,12 @@ function schemaError(message: string, value?: unknown): Schema.SchemaError {
   );
 }
 
-// Hydration identity for state handles: minted per handle, stable for the
-// process, resolvable back to the SAME live handle. Cross-process restore
-// resolves the key against the client hydration registry once M10 item 4's
-// adapter wires it; in-process (SSR tests, same-runtime transfer) the
-// registry below is the resolver.
+// Reference hydration identity for state handles: minted per handle, stable
+// for the process, resolvable back to the SAME live handle. This is the
+// DEFAULT resolver — sufficient in-process (SSR tests, same-runtime
+// transfer). Cross-process restore goes through the pluggable
+// `StateHandleResolver` below (S4); `@affe/permissive`'s hydration registry
+// is the wiring that makes the keys the client's.
 const stateHandleKeys = new WeakMap<object, string>();
 const stateHandlesByKey = new Map<string, WeakRef<object>>();
 let nextStateHandleOrdinal = 0;
@@ -91,6 +92,30 @@ function hydrationKeyOf(handle: object): string {
   stateHandleKeys.set(handle, key);
   stateHandlesByKey.set(key, new WeakRef(handle));
   return key;
+}
+
+/**
+ * Pluggable hydration identity for state handles (M10 item 4 /
+ * `PERMISSIVE_PACKAGE_PLAN.md` S4). The reference registry above is
+ * process-local, which is only sufficient when serialize and deserialize
+ * share a process; a cross-process restore needs the *client* to own the
+ * key space. A resolver supplies both directions:
+ *
+ * - `keyOf` mints (or looks up) the wire key for a live handle at serialize
+ *   time. Returning `undefined` falls back to the process-local minting, so
+ *   a partial resolver still round-trips in-process.
+ * - `resolve` returns the live handle for a wire key at deserialize time.
+ *   Returning `undefined` falls back to the process-local registry, and a
+ *   miss in both still fails closed with the unknown-key error.
+ *
+ * The key is deliberately opaque to the codec: a handle object carries no
+ * intrinsic cross-process identity (binding names attach in component setup,
+ * after creation), so meaningful keys are exactly what the wiring layer —
+ * e.g. `@affe/permissive`'s hydration registry — exists to provide.
+ */
+export interface StateHandleResolver {
+  readonly keyOf?: (handle: object) => string | undefined;
+  readonly resolve?: (key: string) => object | undefined;
 }
 
 interface SerovalModule {
@@ -133,7 +158,15 @@ function isLiveResource(value: unknown): boolean {
   return false;
 }
 
-function makePlugins(seroval: SerovalModule, modules: CodecModules): ReadonlyArray<unknown> {
+function makePlugins(
+  seroval: SerovalModule,
+  modules: CodecModules,
+  resolver: StateHandleResolver = {},
+): ReadonlyArray<unknown> {
+  const mintKey = (handle: object): string =>
+    resolver.keyOf?.(handle) ?? hydrationKeyOf(handle);
+  const resolveKey = (key: string): object | undefined =>
+    resolver.resolve?.(key) ?? stateHandlesByKey.get(key)?.deref();
   const liveResourceGuard = seroval.createPlugin({
     tag: "af/live-resource-guard",
     test: isLiveResource,
@@ -164,18 +197,18 @@ function makePlugins(seroval: SerovalModule, modules: CodecModules): ReadonlyArr
     parse: {
       sync: (value: object) => ({
         kind: "state.hydration-key",
-        key: hydrationKeyOf(value),
+        key: mintKey(value),
       }),
       async: async (value: object) => ({
         kind: "state.hydration-key",
-        key: hydrationKeyOf(value),
+        key: mintKey(value),
       }),
     },
     serialize: () => {
       throw new Error("af/state-handle serializes in JSON-tree mode only.");
     },
     deserialize: (node: { readonly key: string }) => {
-      const live = stateHandlesByKey.get(node.key)?.deref();
+      const live = resolveKey(node.key);
       if (live === undefined) {
         throw new Error(
           `No live state handle is registered for hydration key "${node.key}".`,
@@ -234,8 +267,12 @@ function makePlugins(seroval: SerovalModule, modules: CodecModules): ReadonlyArr
   return [stateHandle, boundCode, safeHtml, liveResourceGuard];
 }
 
-function makeSerovalCodec(seroval: SerovalModule, modules: CodecModules): SerializationService {
-  const plugins = makePlugins(seroval, modules);
+function makeSerovalCodec(
+  seroval: SerovalModule,
+  modules: CodecModules,
+  resolver?: StateHandleResolver,
+): SerializationService {
+  const plugins = makePlugins(seroval, modules, resolver);
   return {
     id: serovalSerializerId,
     serialize: (schema, value) =>
@@ -291,8 +328,12 @@ function makeSerovalCodec(seroval: SerovalModule, modules: CodecModules): Serial
   };
 }
 
-function makeSerovalAsyncCodec(seroval: SerovalModule, modules: CodecModules): SerializationService {
-  const plugins = makePlugins(seroval, modules);
+function makeSerovalAsyncCodec(
+  seroval: SerovalModule,
+  modules: CodecModules,
+  resolver?: StateHandleResolver,
+): SerializationService {
+  const plugins = makePlugins(seroval, modules, resolver);
   return {
     id: serovalAsyncSerializerId,
     // M10.6: seroval's ASYNC tree form — a captured Promise is awaited on the
@@ -356,6 +397,16 @@ function makeSerovalAsyncCodec(seroval: SerovalModule, modules: CodecModules): S
 export interface SerovalOptions {
   /** Only `"json"` is constructible here; see {@link serovalUnsafeEval}. */
   readonly mode?: "json" | "eval";
+  /**
+   * Use the async JSON-tree form (`serovalAsyncLayer`'s codec): Promise and
+   * async-iterable captures await server-side and restore live.
+   */
+  readonly async?: boolean;
+  /**
+   * Pluggable hydration identity for state handles (S4). Defaults to the
+   * process-local reference registry; see {@link StateHandleResolver}.
+   */
+  readonly stateHandles?: StateHandleResolver;
 }
 
 /**
@@ -375,7 +426,9 @@ export function seroval(options: SerovalOptions = {}): Layer.Layer<Serialization
     Tag,
     Effect.promise(loadCodecModules).pipe(
       Effect.map(({ seroval: serovalModule, ...modules }) =>
-        makeSerovalCodec(serovalModule, modules)
+        options.async === true
+          ? makeSerovalAsyncCodec(serovalModule, modules, options.stateHandles)
+          : makeSerovalCodec(serovalModule, modules, options.stateHandles)
       ),
     ),
   );

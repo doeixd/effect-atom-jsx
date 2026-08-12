@@ -297,6 +297,67 @@ describe("reference plugins for framework values (M10.3)", () => {
     expect(Component.isStateHandle("state:key")).toBe(false);
   });
 
+  it("resolves state-handle keys through a pluggable resolver (S4, cross-process restore)", async () => {
+    // Server side: an app-owned resolver mints a stable, deployment-known key
+    // instead of the process-local ordinal.
+    const serverAtom = Atom.make(10);
+    const serverLayer = Serialization.seroval({
+      stateHandles: {
+        keyOf: (handle) => (handle === serverAtom ? "app:counter" : undefined),
+      },
+    });
+    const wire = await Effect.runPromise(
+      Effect.flatMap(Serialization.Tag, (codec) =>
+        codec.serialize(Schema.Unknown, { handle: serverAtom })
+      ).pipe(Effect.provide(serverLayer)),
+    );
+    expect(wire).toContain("app:counter");
+
+    // "Client" side: a DIFFERENT live handle registered under the same key.
+    // The process-local registry knows nothing about "app:counter", so a
+    // resolve hit here proves the pluggable path, not the fallback.
+    const clientAtom = Atom.make(0);
+    const clientLayer = Serialization.seroval({
+      stateHandles: {
+        resolve: (key) => (key === "app:counter" ? clientAtom : undefined),
+      },
+    });
+    const restored = await Effect.runPromise(
+      Effect.flatMap(Serialization.Tag, (codec) =>
+        codec.deserialize(Schema.Unknown, wire)
+      ).pipe(Effect.provide(clientLayer)),
+    ) as { readonly handle: unknown };
+    expect(restored.handle).toBe(clientAtom);
+
+    // A partial resolver falls back to the reference registry, so in-process
+    // round-trips keep working…
+    const untracked = Atom.make(2);
+    const partialWire = await Effect.runPromise(
+      Effect.flatMap(Serialization.Tag, (codec) =>
+        codec.serialize(Schema.Unknown, { handle: untracked })
+      ).pipe(Effect.provide(serverLayer)),
+    );
+    expect(partialWire).not.toContain("app:counter");
+    const partialBack = await Effect.runPromise(
+      Effect.flatMap(Serialization.Tag, (codec) =>
+        codec.deserialize(Schema.Unknown, partialWire)
+      ).pipe(Effect.provide(serverLayer)),
+    ) as { readonly handle: unknown };
+    expect(partialBack.handle).toBe(untracked);
+
+    // …and a key neither side knows still fails closed, never a fabricated
+    // handle.
+    const unknownExit = await Effect.runPromiseExit(
+      Effect.flatMap(Serialization.Tag, (codec) =>
+        codec.deserialize(
+          Schema.Unknown,
+          wire.replace("app:counter", "app:nobody"),
+        )
+      ).pipe(Effect.provide(clientLayer)),
+    );
+    expect(unknownExit._tag).toBe("Failure");
+  });
+
   it("serializes portable code as a descriptor and SafeHtml under its branding", async () => {
     const code = Portable.code({
       id: "test.m10.reference.code",
