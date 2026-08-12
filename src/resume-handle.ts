@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import * as Atom from "./Atom.js";
 import type * as Portable from "./Portable.js";
 import type { Result } from "./effect-ts.js";
@@ -44,16 +44,36 @@ export interface QuerySnapshotPolicy<A, Encoded> {
 
 export type AnyQuerySnapshotPolicy = QuerySnapshotPolicy<any, any>;
 
+/**
+ * Schema-backed projection policy for a HANDLE-SHAPED binding (`DQ-055`,
+ * ratified): the binding does not have to be an atom. `read` extracts the
+ * snapshot value from the live handle at collect time; `restore` rebuilds a
+ * LIVE handle from the decoded snapshot at restore time (running in the
+ * restoration Scope, without replaying setup). Wire kind stays `"state"`,
+ * so no manifest version change.
+ */
+export interface ViaSnapshotPolicy<Handle, A, Encoded> {
+  readonly kind: "state";
+  readonly strategy: "via";
+  readonly schema: Schema.Codec<A, Encoded>;
+  readonly read: (handle: Handle) => A;
+  readonly restore: (snapshot: A) => Effect.Effect<Handle, unknown, any>;
+}
+
+export type AnyViaSnapshotPolicy = ViaSnapshotPolicy<any, any, any>;
+
 export type AnyBindingSnapshotPolicy =
   | AnyStateSnapshotPolicy
-  | AnyQuerySnapshotPolicy;
+  | AnyQuerySnapshotPolicy
+  | AnyViaSnapshotPolicy;
 
 /** Resume policy accepted for a named setup binding in the current slice. */
 export type BindingResumePolicy<Binding> =
-  Binding extends Atom.WritableAtom<infer A> ? StateSnapshotPolicy<A, any>
+  | ViaSnapshotPolicy<Binding, any, any>
+  | (Binding extends Atom.WritableAtom<infer A> ? StateSnapshotPolicy<A, any>
     : Binding extends Atom.ReadonlyAtom<Result<infer A, any>, any>
       ? QuerySnapshotPolicy<A, any>
-    : never;
+    : never);
 
 /** Create an immutable, schema-backed state snapshot policy. */
 export function snapshotState<A, Encoded>(
@@ -74,6 +94,25 @@ export function snapshotQuery<A, Encoded>(
     kind: "query",
     strategy: "snapshot",
     schema,
+  });
+}
+
+/**
+ * Create an immutable, schema-backed PROJECTION snapshot policy for a
+ * handle-shaped binding (`DQ-055`): `read` extracts the snapshot from the
+ * handle, `restore` rebuilds a live handle from the decoded snapshot.
+ */
+export function snapshotVia<Handle, A, Encoded>(options: {
+  readonly schema: Schema.Codec<A, Encoded>;
+  readonly read: (handle: Handle) => A;
+  readonly restore: (snapshot: A) => Effect.Effect<Handle, unknown, any>;
+}): ViaSnapshotPolicy<Handle, A, Encoded> {
+  return Object.freeze({
+    kind: "state",
+    strategy: "via",
+    schema: options.schema,
+    read: options.read,
+    restore: options.restore,
   });
 }
 

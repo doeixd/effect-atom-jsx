@@ -1,8 +1,12 @@
 # Component Kit Plan (working name: @affe/kit)
 
 Date: 2026-07-29 (revised 2026-07-30)
-Status: active — K0 adapter landed (machine *resume binding* shape still
-owed); **K0b complete and K0c (Mixin) landed 2026-08-12**: the load-bearing
+Status: active — K0 adapter landed and the machine *resume binding* shape
+is DISCHARGED 2026-08-12 (`Resume.snapshotVia` projection policy +
+`Machine.resumable(definition)` as a statically visible
+`Component.BindingSource` — DQ-055 fully implemented, dormant widgets
+restore LIVE machines without setup replay); **K0b complete and K0c
+(Mixin) landed 2026-08-12**: the load-bearing
 five plus `presence` (+`ReducedMotion` service, DQ-071) and `liveAnnounce`
 (+`LiveAnnouncer` service, DQ-072); `compose` has last-wins truth types +
 `behavior:provides-override` diagnostic (DQ-057); `Mixin.create`/fragments/

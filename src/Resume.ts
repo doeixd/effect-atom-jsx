@@ -30,6 +30,7 @@ import {
   isBindingReactivityKey,
   snapshotQuery,
   snapshotState,
+  snapshotVia,
   type AnyBindingSnapshotPolicy,
 } from "./resume-handle.js";
 import { jsonValueIssue } from "./wire-json.js";
@@ -102,6 +103,7 @@ export {
   inspectHandle,
   snapshotQuery,
   snapshotState,
+  snapshotVia,
 };
 export type {
   ResumeDiagnostic,
@@ -2793,6 +2795,33 @@ function restoreStateBindingsInScope<Props, Req, E, Bindings, Slots>(
               reactivityKeys,
               refresh,
             },
+          });
+          continue;
+        }
+        // DQ-055: a `via` policy restores a LIVE handle through its
+        // projection, running in the restoration Scope — setup is never
+        // replayed. Via bindings claim no hydration key: the handle owns its
+        // own state, so there is nothing for the hydration registry to seed.
+        const viaPolicy = policyResult.policies.get(entry.name);
+        if (viaPolicy !== undefined && viaPolicy.kind === "state"
+          && viaPolicy.strategy === "via") {
+          const handle = yield* (
+            viaPolicy.restore(entry.value) as Effect.Effect<unknown, unknown, Scope.Scope>
+          ).pipe(
+            Scope.provide(scope),
+            Effect.catchCause((cause) =>
+              Effect.fail(
+                new ResumeStateSnapshotDecodeError({
+                  componentId,
+                  binding: entry.name,
+                  message: `Snapshot "${componentId}/${entry.name}" failed via-projection restore: ${Cause.pretty(cause)}`,
+                }),
+              )
+            ),
+          );
+          Object.defineProperty(restoredBindings, entry.name, {
+            enumerable: true,
+            value: handle,
           });
           continue;
         }
@@ -7358,6 +7387,7 @@ export const Resume = {
   inspectHandle,
   snapshotState,
   snapshotQuery,
+  snapshotVia,
   componentActivation,
   addressable,
   activationOf,

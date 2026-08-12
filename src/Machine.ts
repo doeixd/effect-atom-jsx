@@ -12,7 +12,9 @@ import { Effect, Schema, Scope, Stream } from "effect";
 import * as Component from "./Component.js";
 import {
   snapshotState as makeStateSnapshotPolicy,
+  snapshotVia,
   type StateSnapshotPolicy,
+  type ViaSnapshotPolicy,
 } from "./resume-handle.js";
 
 // ─── Re-export authoring / engine surface ────────────────────────────────────
@@ -82,6 +84,32 @@ export const EncodedSnapshotSchema = Schema.Struct({
 export type EncodedSnapshotValue = typeof EncodedSnapshotSchema.Type;
 
 /** Resume policy for a spawned machine's encoded-state atom. */
+/**
+ * One-call resumable machine binding (`DQ-055`, ratified: sugar over
+ * `Resume.snapshotVia`, never a second mechanism).
+ *
+ * Use as `setup().bind("machine", Machine.resumable(definition))` — the
+ * factory and its resume policy travel together as a statically visible
+ * `Component.BindingSource`, so the setup PLAN records the policy without a
+ * `{ resume }` option at the call site. (A thunk cannot do this: restoration
+ * inspects the plan and never runs factories.) The policy is exactly
+ * `snapshotVia({ schema: EncodedSnapshotSchema, read: state(), restore:
+ * spawn(definition, { snapshot }) })`, so `resumable` and the hand-written
+ * projection produce identical manifest entries and identical LIVE handles.
+ */
+export function resumable<Event = unknown, Error = never>(
+  definition: AnyMachine,
+): Component.BindingSource<SpawnedMachine<Event, Error>, unknown, Scope.Scope> {
+  return Component.bindingSource({
+    make: () => spawn<Event, Error>(definition),
+    resume: snapshotVia({
+      schema: EncodedSnapshotSchema,
+      read: (machine: SpawnedMachine<Event, Error>) => machine.state(),
+      restore: (snapshot) => spawn<Event, Error>(definition, { snapshot }),
+    }) as ViaSnapshotPolicy<SpawnedMachine<Event, Error>, EncodedSnapshotValue, unknown>,
+  });
+}
+
 export function snapshotPolicy(): StateSnapshotPolicy<
   EncodedSnapshotValue,
   EncodedSnapshotValue
@@ -310,6 +338,7 @@ export const Machine: {
   readonly decodeState: typeof decodeState;
   readonly EncodedSnapshotSchema: typeof EncodedSnapshotSchema;
   readonly snapshotPolicy: typeof snapshotPolicy;
+  readonly resumable: typeof resumable;
   readonly isFinal: any;
   readonly isInitialEvent: any;
   readonly InitialEvent: typeof InitialEvent;
@@ -334,6 +363,7 @@ export const Machine: {
   decodeState,
   EncodedSnapshotSchema,
   snapshotPolicy,
+  resumable,
   isFinal,
   isInitialEvent,
   InitialEvent,

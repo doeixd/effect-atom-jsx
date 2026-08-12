@@ -26,6 +26,7 @@ import {
   bindingReactivityKey,
   inspectHandle,
   isControlledBinding,
+  type AnyViaSnapshotPolicy,
   isBindingReactivityKey,
   type AnyBindingSnapshotPolicy,
   type AnyQuerySnapshotPolicy,
@@ -107,7 +108,7 @@ export type PendingEvent = PendingPortableEvent | PendingActivationEvent;
 export interface PendingStateBinding {
   readonly kind: "state";
   readonly name: string;
-  readonly policy: AnyStateSnapshotPolicy;
+  readonly policy: AnyStateSnapshotPolicy | AnyViaSnapshotPolicy;
   readonly value: unknown;
 }
 
@@ -1038,6 +1039,27 @@ export function observeCommittedComponentBindings(
       // its own resume path serializes it. Like a named plan with nothing to
       // resume, this is configuration, not a fallback — no diagnostic.
       if (isControlledBinding(record[name])) {
+        continue;
+      }
+      // DQ-055: a `via` policy snapshots THROUGH its projection — the
+      // binding is a handle, not an atom, so `read` extracts the value and
+      // no handle inspection is required.
+      if (step.resume.strategy === "via") {
+        try {
+          component.bindings.push({
+            kind: "state",
+            name,
+            policy: step.resume,
+            value: step.resume.read(record[name]),
+          });
+        } catch (error) {
+          recordFallbackDiagnostic(session, {
+            code: "snapshot-read-failure",
+            componentId,
+            binding: name,
+            reason: `Binding "${componentId}/${name}" could not be read through its via-projection: ${String(error)}`,
+          });
+        }
         continue;
       }
       if (handle === undefined || handle.kind !== "state") {

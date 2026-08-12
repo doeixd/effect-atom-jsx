@@ -169,6 +169,10 @@ export interface Setup<Props, Bindings, E = never, R = never> extends Pipeable<S
   readonly plan: SetupPlan;
   bind<const Name extends string, A, E2, R2>(
     name: NoDuplicateName<Bindings, Name>,
+    source: BindingSource<A, E2, R2, SetupInput<Props, Bindings>>,
+  ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E | E2, R | R2>;
+  bind<const Name extends string, A, E2, R2>(
+    name: NoDuplicateName<Bindings, Name>,
     f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E2, R2>,
     options?: BindOptions<A>,
   ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E | E2, R | R2>;
@@ -194,6 +198,38 @@ type SetupSource<Props, Bindings, E, R> =
 
 export interface BindOptions<A> {
   readonly resume?: BindingResumePolicy<A>;
+}
+
+const BindingSourceTypeId: unique symbol = Symbol.for(
+  "effect-atom-jsx/Component/BindingSource",
+);
+
+/**
+ * A binding factory PLUS its resume policy in one statically visible value
+ * (`DQ-055`: `Machine.resumable(definition)` is the canonical producer).
+ * `.bind(name, source)` records the policy on the setup plan without a
+ * `{ resume }` option at the call site — statically, because restoration
+ * inspects the PLAN and never runs the factory.
+ */
+export interface BindingSource<A, E = never, R = never, Deps = unknown> {
+  readonly [BindingSourceTypeId]: true;
+  readonly make: (input: Deps) => Effect.Effect<A, E, R>;
+  readonly resume: BindingResumePolicy<A>;
+}
+
+/** Package a factory + resume policy as a `.bind`-able source. */
+export function bindingSource<A, E = never, R = never, Deps = unknown>(
+  source: Omit<BindingSource<A, E, R, Deps>, typeof BindingSourceTypeId>,
+): BindingSource<A, E, R, Deps> {
+  return { ...source, [BindingSourceTypeId]: true };
+}
+
+export function isBindingSource(
+  value: unknown,
+): value is BindingSource<unknown, unknown, unknown> {
+  return (
+    typeof value === "object" && value !== null && BindingSourceTypeId in value
+  );
 }
 
 /** Any authored slot contract accepted by component/style/behavior APIs. */
@@ -420,23 +456,33 @@ function makeSetup<Props, Bindings, E, R>(
     plan: setupPlanFromSteps(steps),
     bind: (
       name: string,
-      f: (input: SetupInput<Props, Bindings>) => Effect.Effect<unknown, unknown, unknown>,
+      f:
+        | ((input: SetupInput<Props, Bindings>) => Effect.Effect<unknown, unknown, unknown>)
+        | BindingSource<unknown, unknown, unknown, SetupInput<Props, Bindings>>,
       options?: BindOptions<unknown>,
-    ) =>
-      makeSetup<Props, any, any, any>([
+    ) => {
+      // A BindingSource carries factory + policy in one statically visible
+      // value (DQ-055): the plan records its resume policy exactly as if the
+      // author had written the { resume } option by hand.
+      const factory = (isBindingSource(f) ? f.make : f) as (
+        input: SetupInput<Props, Bindings>,
+      ) => Effect.Effect<unknown, unknown, unknown>;
+      const resume = isBindingSource(f) ? f.resume : options?.resume;
+      return makeSetup<Props, any, any, any>([
         ...steps,
         {
           inspection: {
             kind: "binding",
             name,
-            ...(options?.resume === undefined ? {} : { resume: options.resume }),
+            ...(resume === undefined ? {} : { resume }),
           },
           run: (input) =>
-            f(input as unknown as SetupInput<Props, Bindings>).pipe(
+            factory(input as unknown as SetupInput<Props, Bindings>).pipe(
               Effect.map((value) => ({ [name]: value })),
             ),
         },
-      ]),
+      ]);
+    },
     value: (name: string, f: (input: SetupInput<Props, Bindings>) => unknown) =>
       makeSetup<Props, any, any, any>([
         ...steps,

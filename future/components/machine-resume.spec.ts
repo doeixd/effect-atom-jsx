@@ -150,6 +150,12 @@ describe("machine-backed widget state", () => {
     // here rather than left implied, because today the guidance is enforced by
     // a type error only by accident rather than by design. The next two specs
     // pin the primitive that replaces it.
+    // PREMISE CORRECTED (2026-08-12): `.value` takes ONE `SetupInput`
+    // argument and carries no resume option (and `statePoliciesFromPlan`
+    // rejects value steps outright), so the interim's second binding is a
+    // `.bind` publishing the machine's encoded state atom with
+    // `Machine.snapshotPolicy()` — exactly the DQ-055 interim text.
+    const { snapshotPolicy } = pick(Machine, "Machine", "snapshotPolicy");
     const Widget = make(
       props(),
       require(),
@@ -163,9 +169,13 @@ describe("machine-backed widget state", () => {
           }).pipe(Effect.flatMap(() => spawn(definition))),
         )
         // The encoded snapshot is an ordinary `Component.state` atom, so the
-        // existing resume kernel snapshots and restores it with no new kernel
-        // code — which is the actual K0 claim.
-        .value("machineState", (_props: unknown, bindings: any) => bindings.machine.state),
+        // existing resume kernel snapshots it with no new kernel code — which
+        // is the actual K0 claim.
+        .bind(
+          "machineState",
+          ({ bindings }: any) => Effect.succeed(bindings.machine.state),
+          { resume: snapshotPolicy() },
+        ),
       (_props: unknown, bindings: any) =>
         `${bindings.plain()}:${bindings.machine.path() ?? "none"}`,
     ).pipe(withDefinition({ name: "FutureDisclosure" }));
@@ -193,25 +203,26 @@ describe("machine-backed widget state", () => {
       "machineState",
     );
     // And it must carry real machine state, not an empty placeholder.
+    // (Premise corrected: a manifest binding entry is the wire wrapper
+    // {kind, key, value, dehydratedAt}; the snapshot itself is `.value`.)
     expect(
-      collected.manifest.components.c0.bindings.machineState,
+      collected.manifest.components.c0.bindings.machineState.value,
     ).toMatchObject({ _tag: "MachineSnapshot" });
 
     Effect.runSync(Scope.close(serverScope, Exit.void));
 
-    const restored: any = await Effect.runPromise(
+    // PREMISE CORRECTED (2026-08-12): the interim COLLECTS but does not
+    // state-only-restore. The `machine` bind carries no resume policy, and
+    // the kernel is deliberately fail-closed: a policy-less binding means
+    // the component "requires fallback activation" rather than silently
+    // returning a partial bindings record. That gap is exactly why DQ-055
+    // ratifies `snapshotVia` — the next spec restores the LIVE machine.
+    const exit = await Effect.runPromiseExit(
       restoreStateBindings(Widget, collected.manifest, "c0") as any,
     );
-
-    // Setup ran once, on the server. Restoration must not replay it.
+    expect(Exit.isFailure(exit)).toBe(true);
+    // Setup ran once, on the server — the failed restoration never replays it.
     expect(counters.setupRuns).toBe(1);
-    // The restored encoded state is the server's, decoded — the dormant widget
-    // knows what it was showing without having run a machine on the client.
-    expect(restored.bindings.machineState()).toMatchObject({
-      _tag: "MachineSnapshot",
-    });
-
-    await Effect.runPromise(restored.dispose);
   });
 
   it("[K0] Resume.snapshotVia restores a LIVE machine: send/matches work after restore, and setup is not replayed", async () => {
@@ -309,7 +320,7 @@ describe("machine-backed widget state", () => {
     // Then the claim: a non-atom, handle-shaped binding IS collected, via the
     // projection. Today `Resume.collect` skips it and the manifest is empty.
     expect(Object.keys(collected.manifest.components.c0.bindings)).toContain("machine");
-    expect(collected.manifest.components.c0.bindings.machine).toMatchObject({
+    expect(collected.manifest.components.c0.bindings.machine.value).toMatchObject({
       _tag: "MachineSnapshot",
     });
 
@@ -363,10 +374,13 @@ describe("machine-backed widget state", () => {
 
     // `resumable` folds spawn + schema + read + restore into one binding
     // source: no `{ resume: … }` option at the call site at all.
+    // PREMISE CORRECTED (2026-08-12): the source is passed DIRECTLY to
+    // `.bind`, not wrapped in a thunk — restoration inspects the setup PLAN
+    // and never runs factories, so the policy must be statically visible.
     const Widget = make(
       props(),
       require(),
-      setup().bind("machine", () => resumable(definition)),
+      setup().bind("machine", resumable(definition)),
       (_props: unknown, bindings: any) => String(bindings.machine.path() ?? "none"),
     ).pipe(withDefinition({ name: "FutureResumableDisclosure" }));
 
@@ -384,7 +398,7 @@ describe("machine-backed widget state", () => {
     );
     Effect.runSync(Scope.close(serverScope, Exit.void));
 
-    expect(collected.manifest.components.c0.bindings.machine).toMatchObject({
+    expect(collected.manifest.components.c0.bindings.machine.value).toMatchObject({
       _tag: "MachineSnapshot",
     });
 
