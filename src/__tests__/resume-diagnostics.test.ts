@@ -1,5 +1,6 @@
 /**
- * Diagnostics completeness.
+ * Diagnostics completeness. Promoted from
+ * `future/resumability/diagnostics.spec.ts` (all green 2026-08-12), retyped.
  *
  * Owning plans: `docs/RESUMABILITY_M8C_PLAN.md` 8c.8 (documentation and status
  * closure: "supported target/value tables, examples, diagnostics") and
@@ -15,22 +16,15 @@
 
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Option, Schema, Scope } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc } from "../harness.js";
-import { FakeDocument } from "./fake-dom.js";
-
-/**
- * The harness hands back `any`-shaped values on purpose, so `Effect.runSync`
- * cannot infer a success type from them. These thin wrappers keep the specs
- * readable without sprinkling casts through every assertion.
- */
-const runSync = (effect: any): any => Effect.runSync(effect);
-const runSyncExit = (effect: any): Exit.Exit<any, any> =>
-  Effect.runSyncExit(effect) as Exit.Exit<any, any>;
-const runPromise = (effect: any): Promise<any> => Effect.runPromise(effect);
-const runFork = (effect: any): any => Effect.runFork(effect);
-const decode = (schema: any) => (input: unknown): any =>
-  Schema.decodeUnknownSync(schema)(input);
-
+import * as babel from "@babel/core";
+import plugin from "../compiler/resume-extract-plugin.js";
+import * as Component from "../Component.js";
+import * as Portable from "../Portable.js";
+import * as Resume from "../Resume.js";
+import { addEventListener, insert, renderToString, template } from "../dom.js";
+import * as Serialization from "../Serialization.js";
+import { bindExpression, expressionCode } from "../portable-extract.js";
+import { FakeDocument } from "./resume-fake-dom.js";
 
 const BuildId = "future-resume-build";
 
@@ -45,57 +39,26 @@ function taggedFailure(exit: Exit.Exit<unknown, unknown>): string {
   );
 }
 
-async function kit() {
-  const Resume = await fromSrc(
-    "Resume",
-    "collect",
-    "decodeManifest",
-    "installClient",
-    "event",
-    "snapshotState",
-  );
-  const Component = await fromSrc(
-    "Component",
-    "make",
-    "props",
-    "require",
-    "setup",
-    "state",
-    "action",
-    "renderEffect",
-    "withDefinition",
-  );
-  const dom = await fromSrc(
-    "dom",
-    "renderToString",
-    "template",
-    "insert",
-    "addEventListener",
-  );
-  const Serialization = await fromSrc("Serialization", "layer");
-  const Portable = await fromSrc("Portable", "code", "bind");
-  const extract = await fromSrc("portable-extract", "expressionCode", "bindExpression");
+/** V1 manifests carry no `expressions` record at all; every later version does. */
+function manifestExpressions(
+  manifest: Resume.Manifest,
+): Record<string, unknown> {
+  return "expressions" in manifest ? manifest.expressions : {};
+}
 
-  const collect = (render: () => string, options: Record<string, unknown> = {}) =>
-    runSync(
-      // DQ-009 (implemented with M11.1): event markers are scope-qualified
-      // as "<installationId>:<eventId>"; a stable id keeps fixtures exact.
-      Resume.collect(render, { buildId: BuildId, installationId: "page0", ...options }).pipe(
-        Effect.provide(Serialization.layer),
-      ),
-    );
-
-  return { Resume, Component, dom, Serialization, Portable, extract, collect };
+function collect(render: () => string, options: Partial<Resume.CollectOptions> = {}) {
+  return Effect.runSync(
+    // DQ-009 (implemented with M11.1): event markers are scope-qualified as
+    // "<installationId>:<eventId>"; a stable id keeps fixtures exact.
+    Resume.collect(render, { buildId: BuildId, installationId: "page0", ...options }).pipe(
+      Effect.provide(Serialization.layer),
+    ),
+  );
 }
 
 describe("Resumability diagnostics completeness", () => {
-  it("[M9] reports an oversized capture as a source-located build diagnostic, not a throw", async () => {
-    const babel = await import("@babel/core");
-    const { default: plugin } = await fromSrc(
-      "compiler/resume-extract-plugin",
-      "default",
-    );
-    const diagnostics: Array<any> = [];
+  it("[M9] reports an oversized capture as a source-located build diagnostic, not a throw", () => {
+    const diagnostics: Array<Record<string, unknown>> = [];
     const output = babel.transformSync(
       `import { extract } from "effect-atom-jsx/portable-extract";
 import { Effect, Schema } from "effect";
@@ -116,7 +79,7 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
             buildId: BuildId,
             root: "C:/app",
             maxBindSourceLength: 8,
-            onDiagnostic: (diagnostic: any) => diagnostics.push(diagnostic),
+            onDiagnostic: (diagnostic: Record<string, unknown>) => diagnostics.push(diagnostic),
           },
         ]],
       },
@@ -137,7 +100,7 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     // diagnostic at all, and still lowers. Without this, a transform that
     // warned "oversized-bind" on every `bind` would satisfy the assertions
     // above forever.
-    const clean: Array<any> = [];
+    const clean: Array<Record<string, unknown>> = [];
     const cleanOutput = babel.transformSync(
       `import { extract } from "effect-atom-jsx/portable-extract";
 import { Effect, Schema } from "effect";
@@ -158,7 +121,7 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
             buildId: BuildId,
             root: "C:/app",
             maxBindSourceLength: 8_000,
-            onDiagnostic: (diagnostic: any) => clean.push(diagnostic),
+            onDiagnostic: (diagnostic: Record<string, unknown>) => clean.push(diagnostic),
           },
         ]],
       },
@@ -167,9 +130,7 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     expect(clean).toEqual([]);
   });
 
-  it("[M9] classifies unsupported policy, missing snapshot bindings, and unresolvable dependencies as collect diagnostics with a disposition", async () => {
-    const { Resume, Component, dom, Portable, extract, collect } = await kit();
-
+  it("[M9] classifies unsupported policy, missing snapshot bindings, and unresolvable dependencies as collect diagnostics with a disposition", () => {
     // 1. Unsupported policy: action concurrency semantics the wire cannot carry.
     const SaveCode = Portable.code({
       id: "future.resume.diag.save",
@@ -177,17 +138,17 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
       captures: Schema.Struct({ label: Schema.String }),
       run: () => Effect.void,
     });
-    const queued = runSync(
+    const queued = Effect.runSync(
       Component.action(Portable.bind(SaveCode, { label: "Save" }), {
         concurrency: "queue",
       }),
     );
     const policy = collect(() =>
-      dom.renderToString(() => {
-        const button = dom.template("<button>Save")();
-        dom.addEventListener(button, "click", Resume.event(queued), true);
+      renderToString(() => {
+        const button = template("<button>Save")();
+        addEventListener(button, "click", Resume.event(queued), true);
         return button;
-      }),
+      })
     );
     expect(policy.manifest.events).toEqual({});
     expect(policy.diagnostics).toMatchObject([
@@ -202,22 +163,22 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     // NEGATIVE CONTROL for (1). The same action with wire-expressible
     // semantics ships a manifest entry and *no* diagnostic — so "diagnose
     // every portable action" cannot pass this spec.
-    const supported = runSync(
+    const supported = Effect.runSync(
       Component.action(Portable.bind(SaveCode, { label: "Save" })),
     );
     const supportedCollect = collect(() =>
-      dom.renderToString(() => {
-        const button = dom.template("<button>Save")();
-        dom.addEventListener(button, "click", Resume.event(supported), true);
+      renderToString(() => {
+        const button = template("<button>Save")();
+        addEventListener(button, "click", Resume.event(supported), true);
         return button;
-      }),
+      })
     );
     expect(Object.keys(supportedCollect.manifest.events)).toEqual(["e0"]);
     expect(supportedCollect.diagnostics).toEqual([]);
 
     // 2. Missing codec/identity: an expression dependency that is not a
     //    resumable state binding has no serializable identity.
-    const Expression = extract.expressionCode({
+    const Expression = expressionCode({
       id: "future.resume.diag.expression",
       buildId: BuildId,
       captures: Schema.Struct({}),
@@ -225,32 +186,29 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
       render: (_captures: unknown, [count]: readonly [number]) => `v${count}`,
     });
     const Unsnapshotted = Component.make(
-      Component.props(),
-      Component.require(),
+      Component.props<{}>(),
+      Component.require<never>(),
       // No `resume:` codec, so the handle has no wire identity.
-      Component.setup().bind("count", () => Component.state(1)),
-      (_props: unknown, bindings: any) => {
-        const span = dom.template("<span>")();
-        dom.insert(
-          span,
-          extract.bindExpression(Expression, {}, [bindings.count]),
-        );
+      Component.setup<{}>().bind("count", () => Component.state(1)),
+      (_props, bindings) => {
+        const span = template("<span>")();
+        insert(span, bindExpression(Expression, {}, [bindings.count]));
         return span;
       },
     ).pipe(Component.withDefinition({ name: "FutureDiagUnsnapshotted" }));
     const scope = Scope.makeUnsafe();
     const unresolved = collect(() =>
-      dom.renderToString(() =>
-        runSync(
+      renderToString(() =>
+        Effect.runSync(
           Component.renderEffect(Unsnapshotted, {}).pipe(Scope.provide(scope)),
-        ),
-      ),
+        )
+      )
     );
-    runSync(Scope.close(scope, Exit.void));
+    Effect.runSync(Scope.close(scope, Exit.void));
 
     // The region falls back rather than shipping an unaddressable dependency.
     expect(
-      unresolved.diagnostics.map((diagnostic: any) => diagnostic.code),
+      unresolved.diagnostics.map((diagnostic) => diagnostic.code),
     ).toContain("unresolved-expression-dependency");
     for (const diagnostic of unresolved.diagnostics) {
       expect(diagnostic).toMatchObject({
@@ -261,63 +219,59 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
       expect(typeof diagnostic.reason).toBe("string");
     }
     // A diagnosed region must not leave a half-installed manifest entry.
-    expect(Object.keys(unresolved.manifest.expressions ?? {})).toEqual([]);
+    expect(Object.keys(manifestExpressions(unresolved.manifest))).toEqual([]);
 
     // NEGATIVE CONTROL for (2). The same component with a `resume:` codec on
     // the dependency ships the expression entry and emits nothing.
     const Snapshotted = Component.make(
-      Component.props(),
+      Component.props<{}>(),
       Component.require(),
       Component.setup().bind("count", () => Component.state(1), {
         resume: Resume.snapshotState(Schema.Number),
       }),
       (_props: unknown, bindings: any) => {
-        const span = dom.template("<span>")();
-        dom.insert(
-          span,
-          extract.bindExpression(Expression, {}, [bindings.count]),
-        );
+        const span = template("<span>")();
+        insert(span, bindExpression(Expression, {}, [bindings.count]));
         return span;
       },
     ).pipe(Component.withDefinition({ name: "FutureDiagSnapshotted" }));
     const cleanScope = Scope.makeUnsafe();
     const resolved = collect(() =>
-      dom.renderToString(() =>
-        runSync(
+      renderToString(() =>
+        Effect.runSync(
           Component.renderEffect(Snapshotted, {}).pipe(
             Scope.provide(cleanScope),
           ),
-        ),
-      ),
+        )
+      )
     );
-    runSync(Scope.close(cleanScope, Exit.void));
+    Effect.runSync(Scope.close(cleanScope, Exit.void));
     expect(resolved.diagnostics).toEqual([]);
-    expect(Object.keys(resolved.manifest.expressions ?? {})).toEqual(["x0"]);
+    expect(Object.keys(manifestExpressions(resolved.manifest))).toEqual(["x0"]);
   });
 
   it("[M9] classifies build mismatch, stale markers, and duplicate installs as tagged errors", async () => {
-    const { Resume, Component, Portable, dom, Serialization, collect } = await kit();
     const SaveCode = Portable.code({
       id: "future.resume.diag.tagged",
       buildId: BuildId,
       captures: Schema.Struct({ label: Schema.String }),
       run: () => Effect.void,
     });
-    const action = runSync(
+    const action = Effect.runSync(
       Component.action(Portable.bind(SaveCode, { label: "Save" })),
     );
     const collected = collect(() =>
-      dom.renderToString(() => {
-        const button = dom.template("<button>Save")();
-        dom.addEventListener(button, "click", Resume.event(action), true);
+      renderToString(() => {
+        const button = template("<button>Save")();
+        addEventListener(button, "click", Resume.event(action), true);
         return button;
-      }),
+      })
     );
     expect(Object.keys(collected.manifest.events)).toEqual(["e0"]);
 
     // Build mismatch — server payload from another deploy.
     const mismatchTag = taggedFailure(
-      runSyncExit(
+      Effect.runSyncExit(
         Resume.decodeManifest(collected.serializedManifest, "another-build").pipe(
           Effect.provide(Serialization.layer),
         ),
@@ -326,7 +280,7 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     expect(mismatchTag).toBe("ResumeClientBuildMismatchError");
     // NEGATIVE CONTROL: the *matching* build id decodes, so "reject every
     // payload" cannot satisfy the assertion above.
-    const decoded = runSync(
+    const decoded = Effect.runSync(
       Resume.decodeManifest(collected.serializedManifest, BuildId).pipe(
         Effect.provide(Serialization.layer),
       ),
@@ -339,8 +293,9 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     ]);
     const runtime = ManagedRuntime.make(Layer.empty);
     const staleTag = taggedFailure(
-      runSyncExit(
+      Effect.runSyncExit(
         Resume.installClient({
+          // boundary: fake DOM stands in for `Document` at the install boundary.
           root: staleRoot.asDocument(),
           manifest: collected.manifest,
           expectedBuildId: BuildId,
@@ -357,8 +312,9 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     const goodRoot = new FakeDocument([
       { kind: "element", attributes: { "data-af-event-click": "page0:e0" } },
     ]);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
+        // boundary: fake DOM stands in for `Document` at the install boundary.
         root: goodRoot.asDocument(),
         manifest: collected.manifest,
         expectedBuildId: BuildId,
@@ -371,8 +327,9 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
 
     // Duplicate install — one root may only be installed once.
     const duplicateTag = taggedFailure(
-      runSyncExit(
+      Effect.runSyncExit(
         Resume.installClient({
+          // boundary: fake DOM stands in for `Document` at the install boundary.
           root: goodRoot.asDocument(),
           manifest: collected.manifest,
           expectedBuildId: BuildId,
@@ -387,7 +344,7 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     // generic "the payload is bad" error would otherwise pass all three.
     expect(new Set([mismatchTag, staleTag, duplicateTag]).size).toBe(3);
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 

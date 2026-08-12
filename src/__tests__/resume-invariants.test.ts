@@ -1,6 +1,9 @@
 /**
  * Invariants that are already fixed and must never regress.
  *
+ * Promoted from `future/resumability/invariants.spec.ts` (all green
+ * 2026-08-12), retyped.
+ *
  * Owning plans: the "M0-7 Test Audit Findings" and "M8 Test Audit Findings"
  * sections of `docs/RESUMABILITY_IMPLEMENTATION_PLAN.md` (findings 4, 5, 6, 8
  * and M8 findings 2, 5), plus `RESUMABILITY_M8C_PLAN.md`'s ownership
@@ -24,6 +27,7 @@
  */
 
 import {
+  Context,
   Effect,
   Exit,
   Fiber,
@@ -33,22 +37,13 @@ import {
   Scope,
 } from "effect";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { fromSrc } from "../harness.js";
-import { FakeDocument, type FakeNode } from "./fake-dom.js";
-
-/**
- * The harness hands back `any`-shaped values on purpose, so `Effect.runSync`
- * cannot infer a success type from them. These thin wrappers keep the specs
- * readable without sprinkling casts through every assertion.
- */
-const runSync = (effect: any): any => Effect.runSync(effect);
-const runSyncExit = (effect: any): Exit.Exit<any, any> =>
-  Effect.runSyncExit(effect) as Exit.Exit<any, any>;
-const runPromise = (effect: any): Promise<any> => Effect.runPromise(effect);
-const runFork = (effect: any): any => Effect.runFork(effect);
-const decode = (schema: any) => (input: unknown): any =>
-  Schema.decodeUnknownSync(schema)(input);
-
+import * as Component from "../Component.js";
+import { renderToString, template, insert } from "../dom.js";
+import * as Portable from "../Portable.js";
+import * as Resume from "../Resume.js";
+import * as Serialization from "../Serialization.js";
+import { bindExpression, expressionCode } from "../portable-extract.js";
+import { FakeDocument, type FakeNode } from "./resume-fake-dom.js";
 
 const BuildId = "future-resume-build";
 
@@ -56,109 +51,78 @@ interface SaveLog {
   readonly saves: Array<string>;
 }
 
-async function kit() {
-  const Resume = await fromSrc(
-    "Resume",
-    "collect",
-    "installClient",
-    "restoreStateBindings",
-    "snapshotState",
-    "snapshotQuery",
-    "addressable",
-    "activationOf",
-    "inspectHandle",
-    "event",
+interface SaveServiceShape {
+  readonly save: (label: string) => Effect.Effect<void>;
+}
+
+const SaveService = Context.Service<SaveServiceShape>(
+  "future/resume/SaveService",
+);
+
+const ClientSaveCode = Portable.code<
+  { readonly label: string },
+  { readonly label: string },
+  readonly [],
+  void,
+  never,
+  SaveServiceShape
+>({
+  id: "future.resume.invariants.save",
+  buildId: BuildId,
+  captures: Schema.Struct({ label: Schema.String }),
+  run: (captures) =>
+    Effect.gen(function* () {
+      const saves = yield* SaveService;
+      yield* saves.save(captures.label);
+    }),
+});
+
+function saveRuntime(log: SaveLog) {
+  return ManagedRuntime.make(
+    Layer.succeed(SaveService, {
+      save: (label: string) =>
+        Effect.sync(() => {
+          log.saves.push(label);
+        }),
+    }),
   );
-  const Component = await fromSrc(
-    "Component",
-    "make",
-    "props",
-    "require",
-    "setup",
-    "state",
-    "query",
-    "action",
-    "renderEffect",
-    "withDefinition",
-  );
-  const dom = await fromSrc("dom", "renderToString", "template", "insert");
-  const Serialization = await fromSrc("Serialization", "layer");
-  const Portable = await fromSrc(
-    "Portable",
-    "code",
-    "bind",
-    "describe",
-    "makeResolver",
-    "BuildId",
-    "Resolver",
-  );
-  const extract = await fromSrc("portable-extract", "expressionCode", "bindExpression");
-  const Context = await import("effect").then((m) => m.Context);
-  const SaveService = Context.Service<{
-    readonly save: (label: string) => Effect.Effect<void>;
-  }>("future/resume/SaveService");
-  const ClientSaveCode = Portable.code({
-    id: "future.resume.invariants.save",
-    buildId: BuildId,
-    captures: Schema.Struct({ label: Schema.String }),
-    run: (captures: any) =>
-      Effect.gen(function* () {
-        const saves = yield* SaveService;
-        yield* saves.save(captures.label);
-      }),
-  });
-  const saveRuntime = (log: SaveLog) =>
-    ManagedRuntime.make(
-      Layer.succeed(SaveService, {
-        save: (label: string) =>
-          Effect.sync(() => {
-            log.saves.push(label);
-          }),
-      }),
-    );
-  const portableEventEntry = (label: string) => ({
+}
+
+function portableEventEntry(label: string) {
+  return {
     type: "click",
     invocation: "deferred-no-args",
-    code: runSync(
+    code: Effect.runSync(
       Portable.describe(Portable.bind(ClientSaveCode, { label })),
     ),
-  });
-  const activationEventEntry = {
-    type: "click",
-    invocation: "activation-projection",
-    projection: "mouse-v1",
-    targetKey: "save",
-  };
-  const makeActivationCode = (id: string) =>
-    Portable.code({
-      id,
-      buildId: BuildId,
-      captures: Schema.Struct({}),
-      run: () => Effect.succeed({ dispose: Effect.void }),
-    });
-  const componentEntry = (executable: unknown) => ({
-    region: { kind: "comment-pair" },
-    activation: runSync(Portable.describe(executable)),
-    bindings: {},
-  });
-  const buildId = decode(Portable.BuildId)(BuildId);
-
-  return {
-    Resume,
-    Component,
-    dom,
-    Serialization,
-    Portable,
-    extract,
-    ClientSaveCode,
-    saveRuntime,
-    portableEventEntry,
-    activationEventEntry,
-    makeActivationCode,
-    componentEntry,
-    buildId,
-  };
+  } as const;
 }
+
+const activationEventEntry = {
+  type: "click",
+  invocation: "activation-projection",
+  projection: "mouse-v1",
+  targetKey: "save",
+} as const;
+
+function makeActivationCode(id: string) {
+  return Portable.code({
+    id,
+    buildId: BuildId,
+    captures: Schema.Struct({}),
+    run: () => Effect.succeed({ dispose: Effect.void }),
+  });
+}
+
+function componentEntry(executable: Portable.AnyBoundCode) {
+  return {
+    region: { kind: "comment-pair" },
+    activation: Effect.runSync(Portable.describe(executable)),
+    bindings: {},
+  } as const;
+}
+
+const buildId = Schema.decodeUnknownSync(Portable.BuildId)(BuildId);
 
 describe("Resumability invariants (regression detectors)", () => {
   beforeAll(() => {
@@ -169,8 +133,6 @@ describe("Resumability invariants (regression detectors)", () => {
   });
 
   it("[M0-7.4] lets exactly one owner consume an interaction crossing two portable markers", async () => {
-    const { Resume, ClientSaveCode, saveRuntime, portableEventEntry, buildId } =
-      await kit();
     const root = new FakeDocument([
       { kind: "element", attributes: { "data-af-event-click": "e1" } },
       { kind: "element", attributes: { "data-af-event-click": "e0" } },
@@ -183,11 +145,12 @@ describe("Resumability invariants (regression detectors)", () => {
       version: 1,
       buildId,
       events: { e0: portableEventEntry("child"), e1: portableEventEntry("parent") },
-    };
+    } as Resume.Manifest;
     const log: SaveLog = { saves: [] };
     const runtime = saveRuntime(log);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
+        // boundary: fake DOM stands in for a real Document.
         root: root.asDocument(),
         manifest,
         expectedBuildId: BuildId,
@@ -205,22 +168,11 @@ describe("Resumability invariants (regression detectors)", () => {
     // must not also fire.
     expect(log.saves).toEqual(["child"]);
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 
   it("[M0-7.4] claims exclusively at an activation marker below a portable ancestor marker", async () => {
-    const {
-      Resume,
-      ClientSaveCode,
-      saveRuntime,
-      portableEventEntry,
-      activationEventEntry,
-      makeActivationCode,
-      componentEntry,
-      Portable,
-      buildId,
-    } = await kit();
     const ActivationCode = makeActivationCode(
       "future.resume.invariants.claim-child-activation",
     );
@@ -245,10 +197,10 @@ describe("Resumability invariants (regression detectors)", () => {
       buildId,
       events: { e0: portableEventEntry("parent"), e1: activationEventEntry },
       components: { c0: componentEntry(Portable.bind(ActivationCode, {})) },
-    };
+    } as Resume.Manifest;
     const log: SaveLog = { saves: [] };
     const runtime = saveRuntime(log);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -270,22 +222,11 @@ describe("Resumability invariants (regression detectors)", () => {
     // the same event type must not run a second owner.
     expect(log.saves).toEqual([]);
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 
   it("[M0-7.4] does not start an ancestor activation when a closer portable marker consumed the event", async () => {
-    const {
-      Resume,
-      ClientSaveCode,
-      saveRuntime,
-      portableEventEntry,
-      activationEventEntry,
-      makeActivationCode,
-      componentEntry,
-      Portable,
-      buildId,
-    } = await kit();
     const ActivationCode = makeActivationCode(
       "future.resume.invariants.claim-ancestor-activation",
     );
@@ -310,10 +251,10 @@ describe("Resumability invariants (regression detectors)", () => {
       buildId,
       events: { e0: portableEventEntry("child"), e1: activationEventEntry },
       components: { c0: componentEntry(Portable.bind(ActivationCode, {})) },
-    };
+    } as Resume.Manifest;
     const log: SaveLog = { saves: [] };
     const runtime = saveRuntime(log);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -334,31 +275,29 @@ describe("Resumability invariants (regression detectors)", () => {
     });
     expect(installation.boundaryState("c0")).toEqual({ status: "dormant" });
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 
   it("[M8.2] rolls a typed activation failure back to dormant ownership and permits one retry", async () => {
-    const { Resume, Component, dom, Serialization, Portable, extract } = await kit();
-    const Expression = extract.expressionCode({
+    const Expression = expressionCode({
       id: "future.resume.invariants.expression",
       buildId: BuildId,
       captures: Schema.Struct({ label: Schema.String }),
       dependencies: Schema.Tuple([Schema.Number]),
-      render: (captures: any, [count]: readonly [number]) =>
-        `${captures.label}: ${count}`,
+      render: (captures, [count]) => `${captures.label}: ${count}`,
     });
     const Counter = Component.make(
-      Component.props(),
-      Component.require(),
-      Component.setup().bind("count", () => Component.state(1), {
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>().bind("count", () => Component.state(1), {
         resume: Resume.snapshotState(Schema.Number),
       }),
-      (_props: unknown, bindings: any) => {
-        const span = dom.template("<span>")();
-        dom.insert(
+      (_props, bindings) => {
+        const span = template("<span>")();
+        insert(
           span,
-          extract.bindExpression(Expression, { label: "Count" }, [bindings.count]),
+          bindExpression(Expression, { label: "Count" }, [bindings.count]),
         );
         return span;
       },
@@ -371,18 +310,18 @@ describe("Resumability invariants (regression detectors)", () => {
       }),
     );
     const scope = Scope.makeUnsafe();
-    const collected = runSync(
+    const collected = Effect.runSync(
       Resume.collect(
         () =>
-          dom.renderToString(() =>
-            runSync(
+          renderToString(() =>
+            Effect.runSync(
               Component.renderEffect(Counter, {}).pipe(Scope.provide(scope)),
             ),
           ),
         { buildId: BuildId },
       ).pipe(Effect.provide(Serialization.layer)),
     );
-    runSync(Scope.close(scope, Exit.void));
+    Effect.runSync(Scope.close(scope, Exit.void));
 
     const activation = Resume.activationOf(Counter);
     let loadAttempts = 0;
@@ -410,7 +349,7 @@ describe("Resumability invariants (regression detectors)", () => {
       { kind: "component", id: "c0", edge: "end" },
     ]);
     const runtime = ManagedRuntime.make(Layer.empty);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest: collected.manifest,
@@ -429,7 +368,7 @@ describe("Resumability invariants (regression detectors)", () => {
       }),
     );
 
-    const failure = await runPromise(
+    const failure = await Effect.runPromise(
       installation.activate("c0").pipe(Effect.flip),
     );
     expect(failure._tag).toBe("ResumeComponentActivationResolutionError");
@@ -439,11 +378,11 @@ describe("Resumability invariants (regression detectors)", () => {
       expressionControllers: 1,
       expressionSubscriptions: 1,
     });
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
     await vi.waitFor(() => expect(root.regionText("x0")).toBe("Count: 2"));
 
     // And the retry succeeds, taking ownership exactly once.
-    await runPromise(installation.activate("c0"));
+    await Effect.runPromise(installation.activate("c0"));
     expect({ loadAttempts, executions }).toEqual({
       loadAttempts: 2,
       executions: 1,
@@ -454,19 +393,18 @@ describe("Resumability invariants (regression detectors)", () => {
       expressionSubscriptions: 0,
     });
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     expect(disposals).toBe(1);
     await runtime.dispose();
   });
 
   it("[M0-7.6] rolls a failed restored render back to SSR content before exactly one activation mount", async () => {
-    const { Resume, Component, dom, Serialization } = await kit();
     let setupRuns = 0;
     let viewRuns = 0;
     const Exploding = Component.make(
-      Component.props(),
-      Component.require(),
-      Component.setup().bind(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>().bind(
         "count",
         () =>
           Effect.sync(() => {
@@ -490,39 +428,39 @@ describe("Resumability invariants (regression detectors)", () => {
       }),
     );
     const scope = Scope.makeUnsafe();
-    const collected = runSync(
+    const collected = Effect.runSync(
       Resume.collect(
         () =>
-          dom.renderToString(() =>
-            runSync(
+          renderToString(() =>
+            Effect.runSync(
               Component.renderEffect(Exploding, {}).pipe(Scope.provide(scope)),
             ),
           ),
         { buildId: BuildId },
       ).pipe(Effect.provide(Serialization.layer)),
     );
-    runSync(Scope.close(scope, Exit.void));
+    Effect.runSync(Scope.close(scope, Exit.void));
     expect({ setupRuns, viewRuns }).toEqual({ setupRuns: 1, viewRuns: 1 });
 
     const activation = Resume.activationOf(Exploding);
-    const diagnostics: Array<any> = [];
+    const diagnostics: Array<Resume.ClientDiagnostic> = [];
     const root = new FakeDocument([
       { kind: "component", id: "c0", edge: "start" },
       { kind: "component", id: "c0", edge: "end" },
     ]);
     const runtime = ManagedRuntime.make(Layer.empty);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest: collected.manifest,
         expectedBuildId: BuildId,
         resolverEntries: { [activation.id]: activation },
         runtime,
-        onDiagnostic: (diagnostic: any) => diagnostics.push(diagnostic),
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
       }),
     );
 
-    await runPromise(installation.resume("c0"));
+    await Effect.runPromise(installation.resume("c0"));
 
     // One classified fallback, one mount, never a terminal failure and never a
     // second copy of the region.
@@ -532,7 +470,7 @@ describe("Resumability invariants (regression detectors)", () => {
       { code: "component-resumption-fallback", componentId: "c0" },
     ]);
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 
@@ -541,33 +479,32 @@ describe("Resumability invariants (regression detectors)", () => {
   // one componentId"), not numbered finding 8 (deep-freeze bypass), which this
   // spec does not exercise at all.
   it("[M0-7.smaller] fails closed when one component boundary is restored twice", async () => {
-    const { Resume, Component, dom, Serialization } = await kit();
     const Counter = Component.make(
-      Component.props(),
-      Component.require(),
-      Component.setup().bind("count", () => Component.state(7), {
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>().bind("count", () => Component.state(7), {
         resume: Resume.snapshotState(Schema.Number),
       }),
       () => null,
     ).pipe(Component.withDefinition({ name: "FutureDoubleRestore" }));
     const scope = Scope.makeUnsafe();
-    const collected = runSync(
+    const collected = Effect.runSync(
       Resume.collect(
         () =>
-          dom.renderToString(() =>
-            runSync(
+          renderToString(() =>
+            Effect.runSync(
               Component.renderEffect(Counter, {}).pipe(Scope.provide(scope)),
             ),
           ),
         { buildId: BuildId },
       ).pipe(Effect.provide(Serialization.layer)),
     );
-    runSync(Scope.close(scope, Exit.void));
+    Effect.runSync(Scope.close(scope, Exit.void));
 
-    const first = runSync(
+    const first = Effect.runSync(
       Resume.restoreStateBindings(Counter, collected.manifest, "c0"),
     );
-    const duplicate = runSync(
+    const duplicate = Effect.runSync(
       Resume.restoreStateBindings(Counter, collected.manifest, "c0").pipe(
         Effect.flip,
       ),
@@ -575,26 +512,25 @@ describe("Resumability invariants (regression detectors)", () => {
     expect(duplicate._tag).toBe("ResumeDuplicateComponentRestorationError");
 
     // Disposal releases the claim, so a legitimate later restore still works.
-    runSync(first.dispose);
-    const second = runSync(
+    Effect.runSync(first.dispose);
+    const second = Effect.runSync(
       Resume.restoreStateBindings(Counter, collected.manifest, "c0"),
     );
     expect(second.registry.get(second.bindings.count)).toBe(7);
-    runSync(second.dispose);
+    Effect.runSync(second.dispose);
   });
 
   it("[M0-7.smaller] rolls a restored query back to its settled state when a refresh is interrupted", async () => {
-    const { Resume, Component, dom, Serialization, Portable } = await kit();
     const ServerQueryCode = Portable.code({
       id: "future.resume.invariants.query",
       buildId: BuildId,
       captures: Schema.Struct({ label: Schema.String }),
-      run: (captures: any) => Effect.succeed(`server:${captures.label}`),
+      run: (captures) => Effect.succeed(`server:${captures.label}`),
     });
     const QueryCard = Component.make(
-      Component.props(),
-      Component.require(),
-      Component.setup().bind(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>().bind(
         "data",
         () =>
           Component.query(Portable.bind(ServerQueryCode, { label: "todos" }), {
@@ -602,24 +538,24 @@ describe("Resumability invariants (regression detectors)", () => {
           }),
         { resume: Resume.snapshotQuery(Schema.String) },
       ),
-      (_props: unknown, bindings: any) => {
+      (_props, bindings) => {
         const result = bindings.data();
         return result._tag === "Success" ? result.value : "pending";
       },
     ).pipe(Component.withDefinition({ name: "FutureInterruptQueryCard" }));
     const scope = Scope.makeUnsafe();
-    const collected = runSync(
+    const collected = Effect.runSync(
       Resume.collect(
         () =>
-          dom.renderToString(() =>
-            runSync(
+          renderToString(() =>
+            Effect.runSync(
               Component.renderEffect(QueryCard, {}).pipe(Scope.provide(scope)),
             ),
           ),
         { buildId: BuildId },
       ).pipe(Effect.provide(Serialization.layer)),
     );
-    runSync(Scope.close(scope, Exit.void));
+    Effect.runSync(Scope.close(scope, Exit.void));
 
     let releaseRun!: () => void;
     const runGate = new Promise<void>((resolve) => {
@@ -629,16 +565,16 @@ describe("Resumability invariants (regression detectors)", () => {
       id: ServerQueryCode.id,
       buildId: BuildId,
       captures: Schema.Struct({ label: Schema.String }),
-      run: (captures: any) =>
+      run: (captures) =>
         Effect.promise(async () => {
           await runGate;
           return `client:${captures.label}`;
         }),
     });
-    const resolver = runSync(
+    const resolver = Effect.runSync(
       Portable.makeResolver({ [GatedClientCode.id]: GatedClientCode }),
     );
-    const restored = runSync(
+    const restored = Effect.runSync(
       Resume.restoreStateBindings(QueryCard, collected.manifest, "c0"),
     );
     const settled = Resume.inspectHandle(restored.bindings.data)!;
@@ -647,13 +583,13 @@ describe("Resumability invariants (regression detectors)", () => {
       value: "server:todos",
     });
 
-    const fiber = runFork(
+    const fiber = Effect.runFork(
       restored.queries["data"]!.refresh.pipe(
         Effect.provideService(Portable.Resolver, resolver),
       ),
     );
     await vi.waitFor(() => expect(settled.read()._tag).toBe("Refreshing"));
-    await runPromise(Fiber.interrupt(fiber));
+    await Effect.runPromise(Fiber.interrupt(fiber));
     releaseRun();
     await new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -662,6 +598,6 @@ describe("Resumability invariants (regression detectors)", () => {
       _tag: "Success",
       value: "server:todos",
     });
-    runSync(restored.dispose);
+    Effect.runSync(restored.dispose);
   });
 });

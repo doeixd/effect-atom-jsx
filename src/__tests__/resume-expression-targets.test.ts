@@ -1,174 +1,160 @@
 /**
  * Non-text expression targets: the compiler directive seam and the attribute /
- * class / style-property vertical slice.
+ * class / style-property vertical slice. Promoted from
+ * `future/resumability/expression-targets.spec.ts` (all green 2026-08-12),
+ * retyped.
  *
  * Owning plans: `docs/RESUMABILITY_M8C_PLAN.md` 8c.3, 8c.4, 8c.5 and the
  * "Ratify the Non-Text Target Protocol" section of 8c.2.
  *
  * The protocol foundation is built (manifest v4 discriminated targets, the
  * `data-af-expr` installation-only marker, `scanExpressionTargets`, the
- * conservative name allowlist). What is not built is the *patch strategy*:
- * `installClient` deliberately rejects every schema-valid non-text target. So
- * these specs drive collection → manifest → install → invalidate → assert the
- * patched DOM, and go green exactly when 8c.4/8c.5 land.
+ * conservative name allowlist), and so is the patch strategy (8c.4/8c.5): these
+ * specs drive collection → manifest → install → invalidate → assert the
+ * patched DOM.
  */
 
 import { Effect, Exit, Layer, ManagedRuntime, Schema, Scope } from "effect";
 import { describe, expect, it, vi } from "vitest";
-import { fromSrc, unbuilt } from "../harness.js";
-import { nonTextFixture } from "./fake-dom.js";
-
-/**
- * The harness hands back `any`-shaped values on purpose, so `Effect.runSync`
- * cannot infer a success type from them. These thin wrappers keep the specs
- * readable without sprinkling casts through every assertion.
- */
-const runSync = (effect: any): any => Effect.runSync(effect);
-const runSyncExit = (effect: any): Exit.Exit<any, any> =>
-  Effect.runSyncExit(effect) as Exit.Exit<any, any>;
-const runPromise = (effect: any): Promise<any> => Effect.runPromise(effect);
-const runFork = (effect: any): any => Effect.runFork(effect);
-const decode = (schema: any) => (input: unknown): any =>
-  Schema.decodeUnknownSync(schema)(input);
-
+import plugin from "../compiler/resume-extract-plugin.js";
+import * as Component from "../Component.js";
+import {
+  exprAttribute,
+  exprClass,
+  exprStyleProperty,
+  insert,
+  renderToString,
+  template,
+} from "../dom.js";
+import {
+  bindExpression,
+  expressionCode,
+  type ExpressionCode,
+  type ExpressionOutput,
+} from "../portable-extract.js";
+import * as Resume from "../Resume.js";
+import * as Serialization from "../Serialization.js";
+import { nonTextFixture } from "./resume-fake-dom.js";
 
 const BuildId = "future-resume-build";
 
-/** Everything a non-text target spec needs, loaded inside the spec body. */
-async function kit() {
-  const Resume = await fromSrc(
-    "Resume",
-    "collect",
-    "installClient",
-    "snapshotState",
-    "ExpressionElementMarkerAttribute",
-    "ExpressionId",
-    "ExpressionStylePropertyName",
-    "decodeManifest",
-  );
-  const Component = await fromSrc(
-    "Component",
-    "make",
-    "props",
-    "require",
-    "setup",
-    "state",
-    "renderEffect",
-    "withDefinition",
-  );
-  const dom = await fromSrc("dom", "renderToString", "template", "insert");
-  const Serialization = await fromSrc("Serialization", "layer");
-  const extract = await fromSrc("portable-extract", "expressionCode", "bindExpression");
+const expressionId = (raw: string) => Schema.decodeUnknownSync(Resume.ExpressionId)(raw);
 
-  const expressionId = (raw: string) =>
-    decode(Resume.ExpressionId)(raw);
+/** Narrow a collected manifest to v4 and return its expression map. */
+function expressionsOf(manifest: Resume.CollectionResult["manifest"]) {
+  if (manifest.version !== 4) {
+    throw new Error(`Expected a v4 manifest, received v${manifest.version}.`);
+  }
+  return manifest.expressions;
+}
 
-  /**
-   * One component owning one expression whose only dependency is the
-   * component's own resumable `count` state binding. Collected through real
-   * SSR so the manifest, ownership, dependency keys, and code descriptor are
-   * the genuine wire values.
-   */
-  const collectCounter = (
-    code: any,
-    captures: Record<string, unknown> = { label: "Count" },
-  ) => {
-    const Counter = Component.make(
-      Component.props(),
-      Component.require(),
-      Component.setup().bind("count", () => Component.state(1), {
-        resume: Resume.snapshotState(Schema.Number),
-      }),
-      (_props: unknown, bindings: any) => {
-        const span = dom.template("<span>")();
-        dom.insert(span, extract.bindExpression(code, captures, [bindings.count]));
-        return span;
-      },
-    ).pipe(Component.withDefinition({ name: "FutureNonTextCounter" }));
-    const scope = Scope.makeUnsafe();
-    const result = runSync(
-      Resume.collect(
-        () =>
-          dom.renderToString(() =>
-            runSync(
-              Component.renderEffect(Counter, {}).pipe(Scope.provide(scope)),
-            ),
+/**
+ * Same as `expressionsOf`, but a collection that never reached v4 (every
+ * target refused, so the manifest stayed at whatever version preceded it)
+ * counts as "no expressions" rather than a spec-breaking assertion failure.
+ */
+function expressionsOfOrEmpty(manifest: Resume.CollectionResult["manifest"]) {
+  return manifest.version === 4 ? manifest.expressions : {};
+}
+
+/**
+ * One component owning one expression whose only dependency is the
+ * component's own resumable `count` state binding. Collected through real
+ * SSR so the manifest, ownership, dependency keys, and code descriptor are
+ * the genuine wire values.
+ */
+function collectCounter<Captures, EncodedCaptures, A extends ExpressionOutput>(
+  code: ExpressionCode<Captures, EncodedCaptures, readonly [number], readonly [number], A>,
+  captures: Captures,
+) {
+  const Counter = Component.make(
+    Component.props<{}>(),
+    Component.require<never>(),
+    Component.setup<{}>().bind("count", () => Component.state(1), {
+      resume: Resume.snapshotState(Schema.Number),
+    }),
+    (_props, bindings) => {
+      const span = template("<span>")();
+      insert(span, bindExpression(code, captures, [bindings.count]));
+      return span;
+    },
+  ).pipe(Component.withDefinition({ name: "FutureNonTextCounter" }));
+  const scope = Scope.makeUnsafe();
+  const result = Effect.runSync(
+    Resume.collect(
+      () =>
+        renderToString(() =>
+          Effect.runSync(
+            Component.renderEffect(Counter, {}).pipe(Scope.provide(scope)),
           ),
-        { buildId: BuildId },
-      ).pipe(Effect.provide(Serialization.layer)),
-    );
-    // Closing before returning is deliberate and is *not* the
-    // "teardown before assertion" defect: the returned value is the serialized
-    // collect snapshot (html + manifest), not a live handle map. A real server
-    // closes the render scope before it serializes.
-    runSync(Scope.close(scope, Exit.void));
-    return result;
-  };
+        ),
+      { buildId: BuildId },
+    ).pipe(Effect.provide(Serialization.layer)),
+  );
+  // Closing before returning is deliberate and is *not* the
+  // "teardown before assertion" defect: the returned value is the serialized
+  // collect snapshot (html + manifest), not a live handle map. A real server
+  // closes the render scope before it serializes.
+  Effect.runSync(Scope.close(scope, Exit.void));
+  return result;
+}
 
-  /**
-   * The 8c.4 authoring path: SSR renders a host element and the compiler-facing
-   * `expr*` helpers attach the resumable target(s) to it. `attach` receives the
-   * host element and the already-bound branded expression, mirroring what the
-   * §8c.3 directive hands the runtime.
-   */
-  const collectViaHelper = (
-    code: any,
-    attach: (element: any, bound: any) => void,
-    captures: Record<string, unknown> = {},
-  ) => {
-    const Host = Component.make(
-      Component.props(),
-      Component.require(),
-      Component.setup().bind("count", () => Component.state(1), {
-        resume: Resume.snapshotState(Schema.Number),
-      }),
-      (_props: unknown, bindings: any) => {
-        const element = dom.template("<span>")();
-        attach(element, extract.bindExpression(code, captures, [bindings.count]));
-        return element;
-      },
-    ).pipe(Component.withDefinition({ name: "FutureHelperHost" }));
-    const scope = Scope.makeUnsafe();
-    const result = runSync(
-      Resume.collect(
-        () =>
-          dom.renderToString(() =>
-            runSync(Component.renderEffect(Host, {}).pipe(Scope.provide(scope))),
-          ),
-        { buildId: BuildId },
-      ).pipe(Effect.provide(Serialization.layer)),
-    );
-    runSync(Scope.close(scope, Exit.void));
-    return result;
-  };
+/**
+ * The 8c.4 authoring path: SSR renders a host element and the compiler-facing
+ * `expr*` helpers attach the resumable target(s) to it. `attach` receives the
+ * host element and the already-bound branded expression, mirroring what the
+ * §8c.3 directive hands the runtime.
+ */
+function collectViaHelper<Captures, EncodedCaptures, A extends ExpressionOutput>(
+  code: ExpressionCode<Captures, EncodedCaptures, readonly [number], readonly [number], A>,
+  attach: (element: Element, bound: unknown) => void,
+  captures: Captures,
+) {
+  const Host = Component.make(
+    Component.props<{}>(),
+    Component.require<never>(),
+    Component.setup<{}>().bind("count", () => Component.state(1), {
+      resume: Resume.snapshotState(Schema.Number),
+    }),
+    (_props, bindings) => {
+      const element = template("<span>")();
+      attach(element, bindExpression(code, captures, [bindings.count]));
+      return element;
+    },
+  ).pipe(Component.withDefinition({ name: "FutureHelperHost" }));
+  const scope = Scope.makeUnsafe();
+  const result = Effect.runSync(
+    Resume.collect(
+      () =>
+        renderToString(() =>
+          Effect.runSync(Component.renderEffect(Host, {}).pipe(Scope.provide(scope))),
+        ),
+      { buildId: BuildId },
+    ).pipe(Effect.provide(Serialization.layer)),
+  );
+  Effect.runSync(Scope.close(scope, Exit.void));
+  return result;
+}
 
-  /** Re-target one collected v4 text entry, optionally fanning it out. */
-  const retarget = (
-    manifest: any,
-    targets: Readonly<Record<string, unknown>>,
-  ) => {
-    if (manifest.version !== 4) {
-      throw new Error(`Expected a v4 manifest, received v${manifest.version}.`);
-    }
-    const base = manifest.expressions[expressionId("x0")];
-    if (base === undefined) throw new Error("Expected a collected x0 entry.");
-    const expressions: Record<string, unknown> = {};
-    for (const [id, target] of Object.entries(targets)) {
-      expressions[expressionId(id)] = { ...base, target };
-    }
-    return { ...manifest, expressions };
-  };
-
+/** Re-target one collected v4 text entry, optionally fanning it out. */
+function retarget(
+  manifest: Resume.CollectionResult["manifest"],
+  targets: Readonly<Record<string, unknown>>,
+) {
+  if (manifest.version !== 4) {
+    throw new Error(`Expected a v4 manifest, received v${manifest.version}.`);
+  }
+  const base = manifest.expressions[expressionId("x0")];
+  if (base === undefined) throw new Error("Expected a collected x0 entry.");
+  const expressions: Record<string, unknown> = {};
+  for (const [id, target] of Object.entries(targets)) {
+    expressions[expressionId(id)] = { ...base, target };
+  }
+  // boundary: retargeting deliberately swaps in arbitrary discriminated
+  // targets to build fixtures the ordinary collector never produces.
   return {
-    Resume,
-    Component,
-    dom,
-    Serialization,
-    extract,
-    expressionId,
-    collectCounter,
-    collectViaHelper,
-    retarget,
+    ...manifest,
+    expressions: expressions as typeof manifest.expressions,
   };
 }
 
@@ -177,10 +163,6 @@ describe("Non-text expression targets", () => {
 
   it("[M8c.3] refuses to lower an expr(...) in an unsupported JSX context, with a source location", async () => {
     const babel = await import("@babel/core");
-    const { default: plugin } = await fromSrc(
-      "compiler/resume-extract-plugin",
-      "default",
-    );
 
     const compile = (jsx: string) =>
       babel.transformSync(
@@ -242,10 +224,6 @@ export const view = () => (${jsx});
     // is what makes the generated code and the single `data-af-expr` marker
     // agree by construction rather than by the runtime re-grouping N calls.
     const babel = await import("@babel/core");
-    const { default: plugin } = await fromSrc(
-      "compiler/resume-extract-plugin",
-      "default",
-    );
 
     const compile = (jsx: string): string => {
       const output = babel.transformSync(
@@ -309,16 +287,14 @@ export const view = () => (${jsx});
   // ─── 8c.4 — ordinary attribute vertical slice ─────────────────────────────
 
   it("[M8c.4] patches a dormant attribute on first invalidation, loading only that expression's chunk", async () => {
-    const { Resume, extract, collectCounter, retarget } = await kit();
-    const AttributeExpression = extract.expressionCode({
+    const AttributeExpression = expressionCode({
       id: "future.resume.expr.attribute",
       buildId: BuildId,
       captures: Schema.Struct({ label: Schema.String }),
       dependencies: Schema.Tuple([Schema.Number]),
-      render: (captures: any, [count]: readonly [number]) =>
-        `${captures.label}: ${count}`,
+      render: (captures, [count]) => `${captures.label}: ${count}`,
     });
-    const collected = collectCounter(AttributeExpression);
+    const collected = collectCounter(AttributeExpression, { label: "Count" });
     const manifest = retarget(collected.manifest, {
       x0: { kind: "attribute", name: "aria-label" },
     });
@@ -333,9 +309,9 @@ export const view = () => (${jsx});
     const element = root.element();
 
     let loads = 0;
-    const diagnostics: Array<any> = [];
+    const diagnostics: Array<unknown> = [];
     const runtime = ManagedRuntime.make(Layer.empty);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -348,7 +324,7 @@ export const view = () => (${jsx});
             }),
         },
         runtime,
-        onDiagnostic: (diagnostic: any) => diagnostics.push(diagnostic),
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
       }),
     );
 
@@ -362,7 +338,7 @@ export const view = () => (${jsx});
       runningExpressions: 0,
     });
 
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
     await vi.waitFor(() => {
       expect(element.getAttribute!("aria-label")).toBe("Count: 2");
       expect(installation.pending()).toBe(0);
@@ -373,13 +349,13 @@ export const view = () => (${jsx});
     expect(diagnostics).toEqual([]);
 
     // Warm update: memoized module, no second load.
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 3));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 3));
     await vi.waitFor(() => {
       expect(element.getAttribute!("aria-label")).toBe("Count: 3");
     });
     expect(loads).toBe(1);
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     expect(installation.inspect()).toMatchObject({
       disposed: true,
       pendingFibers: 0,
@@ -391,20 +367,19 @@ export const view = () => (${jsx});
   });
 
   it("[M8c.4] never runs component setup or view to patch a dormant attribute", async () => {
-    const { Resume, Component, dom, Serialization, extract, retarget } = await kit();
     let setupRuns = 0;
     let viewRuns = 0;
-    const AttributeExpression = extract.expressionCode({
+    const AttributeExpression = expressionCode({
       id: "future.resume.expr.attribute.no-setup",
       buildId: BuildId,
       captures: Schema.Struct({}),
       dependencies: Schema.Tuple([Schema.Number]),
-      render: (_captures: unknown, [count]: readonly [number]) => `v${count}`,
+      render: (_captures, [count]) => `v${count}`,
     });
     const Counter = Component.make(
-      Component.props(),
-      Component.require(),
-      Component.setup().bind(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>().bind(
         "count",
         () =>
           Effect.sync(() => {
@@ -412,29 +387,26 @@ export const view = () => (${jsx});
           }).pipe(Effect.flatMap(() => Component.state(1))),
         { resume: Resume.snapshotState(Schema.Number) },
       ),
-      (_props: unknown, bindings: any) => {
+      (_props, bindings) => {
         viewRuns += 1;
-        const span = dom.template("<span>")();
-        dom.insert(
-          span,
-          extract.bindExpression(AttributeExpression, {}, [bindings.count]),
-        );
+        const span = template("<span>")();
+        insert(span, bindExpression(AttributeExpression, {}, [bindings.count]));
         return span;
       },
     ).pipe(Component.withDefinition({ name: "FutureNoSetupCounter" }));
     const scope = Scope.makeUnsafe();
-    const collected = runSync(
+    const collected = Effect.runSync(
       Resume.collect(
         () =>
-          dom.renderToString(() =>
-            runSync(
+          renderToString(() =>
+            Effect.runSync(
               Component.renderEffect(Counter, {}).pipe(Scope.provide(scope)),
             ),
           ),
         { buildId: BuildId },
       ).pipe(Effect.provide(Serialization.layer)),
     );
-    runSync(Scope.close(scope, Exit.void));
+    Effect.runSync(Scope.close(scope, Exit.void));
     expect({ setupRuns, viewRuns }).toEqual({ setupRuns: 1, viewRuns: 1 });
 
     const manifest = retarget(collected.manifest, {
@@ -446,7 +418,7 @@ export const view = () => (${jsx});
       attributes: { "data-state": "v1" },
     });
     const runtime = ManagedRuntime.make(Layer.empty);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -456,7 +428,7 @@ export const view = () => (${jsx});
       }),
     );
 
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 9));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 9));
     await vi.waitFor(() => {
       expect(root.element().getAttribute!("data-state")).toBe("v9");
     });
@@ -464,21 +436,19 @@ export const view = () => (${jsx});
     expect({ setupRuns, viewRuns }).toEqual({ setupRuns: 1, viewRuns: 1 });
     expect(installation.boundaryState("c0")).toEqual({ status: "dormant" });
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 
   // ─── 8c.5 — class-string and single-style-property widening ───────────────
 
   it("[M8c.5] fans one dependency out to text, attribute, class, and style-property targets with one chunk load", async () => {
-    const { Resume, extract, collectCounter, retarget } = await kit();
-    const Shared = extract.expressionCode({
+    const Shared = expressionCode({
       id: "future.resume.expr.shared-target",
       buildId: BuildId,
       captures: Schema.Struct({ label: Schema.String }),
       dependencies: Schema.Tuple([Schema.Number]),
-      render: (captures: any, [count]: readonly [number]) =>
-        `${captures.label}-${count}`,
+      render: (captures, [count]) => `${captures.label}-${count}`,
     });
     // Pass the captures explicitly: `collectCounter`'s default is
     // `{ label: "Count" }`, so relying on it here would assert `"state-2"`
@@ -491,9 +461,7 @@ export const view = () => (${jsx});
       x2: { kind: "class" },
       x3: {
         kind: "style-property",
-        name: decode(Resume.ExpressionStylePropertyName)(
-          "--progress",
-        ),
+        name: Schema.decodeUnknownSync(Resume.ExpressionStylePropertyName)("--progress"),
       },
     });
 
@@ -510,7 +478,7 @@ export const view = () => (${jsx});
 
     let loads = 0;
     const runtime = ManagedRuntime.make(Layer.empty);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -532,7 +500,7 @@ export const view = () => (${jsx});
       expressionSubscriptions: 4,
     });
 
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
     await vi.waitFor(() => {
       expect(root.regionText("x0")).toBe("state-2");
       expect(element.getAttribute!("aria-label")).toBe("state-2");
@@ -543,7 +511,7 @@ export const view = () => (${jsx});
     // One code identity ⇒ at most one in-flight module load, ever.
     expect(loads).toBe(1);
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     expect(installation.inspect()).toMatchObject({
       expressionControllers: 0,
       expressionDependencyKeys: 0,
@@ -553,22 +521,19 @@ export const view = () => (${jsx});
   });
 
   it("[M8c.5] coerces a numeric style-property value exactly like the ordinary style helper", async () => {
-    const { Resume, extract, collectCounter, retarget } = await kit();
-    const Numeric = extract.expressionCode({
+    const Numeric = expressionCode({
       id: "future.resume.expr.numeric-style",
       buildId: BuildId,
       captures: Schema.Struct({}),
       dependencies: Schema.Tuple([Schema.Number]),
       // A number reaches the patch strategy unstringified.
-      render: (_captures: unknown, [count]: readonly [number]) => count / 4,
+      render: (_captures, [count]) => count / 4,
     });
     const collected = collectCounter(Numeric, {});
     const manifest = retarget(collected.manifest, {
       x0: {
         kind: "style-property",
-        name: decode(Resume.ExpressionStylePropertyName)(
-          "opacity",
-        ),
+        name: Schema.decodeUnknownSync(Resume.ExpressionStylePropertyName)("opacity"),
       },
     });
     const root = nonTextFixture({
@@ -577,7 +542,7 @@ export const view = () => (${jsx});
       style: { opacity: "0.25" },
     });
     const runtime = ManagedRuntime.make(Layer.empty);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -587,17 +552,17 @@ export const view = () => (${jsx});
       }),
     );
 
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
     await vi.waitFor(() => {
       expect(root.element().style!.getPropertyValue("opacity")).toBe("0.5");
     });
     // Repeated identical writes must be idempotent, not accumulate.
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
     await vi.waitFor(() => expect(installation.pending()).toBe(0));
     expect(root.element().style!.getPropertyValue("opacity")).toBe("0.5");
     expect([...root.element().style!.properties.keys()]).toEqual(["opacity"]);
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 
@@ -606,14 +571,13 @@ export const view = () => (${jsx});
     // `ExpressionOutput = string | number | null | undefined`, and `null` and
     // `undefined` both mean **remove** — the same semantics as the ordinary
     // helpers, which Decision 7 requires the resumable path to match exactly.
-    const { Resume, extract, collectCounter, retarget } = await kit();
-    const Removing = extract.expressionCode({
+    const Removing = expressionCode({
       id: "future.resume.expr.removal",
       buildId: BuildId,
       captures: Schema.Struct({}),
       dependencies: Schema.Tuple([Schema.Number]),
       // 1 → a value; 2 → `undefined`; 3 → `null`; 4 → the empty string.
-      render: (_captures: unknown, [count]: readonly [number]) =>
+      render: (_captures, [count]) =>
         count === 1 ? "on" : count === 2 ? undefined : count === 3 ? null : "",
     });
     const collected = collectCounter(Removing, {});
@@ -621,7 +585,7 @@ export const view = () => (${jsx});
       x0: { kind: "attribute", name: "aria-label" },
       x1: {
         kind: "style-property",
-        name: decode(Resume.ExpressionStylePropertyName)("opacity"),
+        name: Schema.decodeUnknownSync(Resume.ExpressionStylePropertyName)("opacity"),
       },
     });
 
@@ -633,20 +597,20 @@ export const view = () => (${jsx});
     });
     const element = root.element();
     const runtime = ManagedRuntime.make(Layer.empty);
-    const diagnostics: Array<any> = [];
-    const installation = runSync(
+    const diagnostics: Array<unknown> = [];
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
         expectedBuildId: BuildId,
         resolverEntries: { [Removing.id]: Removing },
         runtime,
-        onDiagnostic: (diagnostic: any) => diagnostics.push(diagnostic),
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
       }),
     );
 
     // `undefined` removes — the attribute is absent, not set to "undefined".
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
     await vi.waitFor(() => {
       expect(element.hasAttribute!("aria-label")).toBe(false);
       expect(installation.pending()).toBe(0);
@@ -654,14 +618,14 @@ export const view = () => (${jsx});
     expect([...element.style!.properties.keys()]).toEqual([]);
 
     // …and it comes back on a later value: removal is not terminal.
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 1));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 1));
     await vi.waitFor(() => {
       expect(element.getAttribute!("aria-label")).toBe("on");
       expect(element.style!.getPropertyValue("opacity")).toBe("on");
     });
 
     // `null` removes identically: one authored concept, one behaviour.
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 3));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 3));
     await vi.waitFor(() => {
       expect(element.hasAttribute!("aria-label")).toBe(false);
     });
@@ -670,7 +634,7 @@ export const view = () => (${jsx});
     // NEGATIVE CONTROL. The empty string is a *value*, not an absence: an
     // implementation that removed on every falsy output would pass every
     // assertion above and silently break `aria-hidden=""`-style attributes.
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 4));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 4));
     await vi.waitFor(() => {
       expect(installation.pending()).toBe(0);
       expect(element.hasAttribute!("aria-label")).toBe(true);
@@ -680,7 +644,7 @@ export const view = () => (${jsx});
     expect(diagnostics).toEqual([]);
     expect(element.getAttribute!("title")).toBe("untouched");
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 
@@ -697,53 +661,53 @@ export const view = () => (${jsx});
     // bump. What the wire must do is refuse to grow an output field by accident,
     // because a manifest-carried initial value would be a second source of truth
     // for something the served HTML already states.
-    const { Resume, Serialization } = await kit();
     const entry = (extra: string) =>
       `{"version":4,"buildId":"${BuildId}","events":{},"components":{},"expressions":{"x0":{"target":{"kind":"attribute","name":"title"},${extra}"code":{"version":1,"kind":"portable.code","id":"future.resume.expr.absent","buildId":"${BuildId}","captures":{}},"deps":["k"]}}}`;
 
-    const decode = (extra: string) =>
-      runSync(
+    const decodeManifest = (extra: string) =>
+      Effect.runSync(
         Resume.decodeManifest(entry(extra), BuildId).pipe(
           Effect.provide(Serialization.layer),
         ),
       );
 
     // The canonical entry decodes, and exposes no output channel.
-    const plain: any = decode("");
-    expect(plain.expressions.x0.target).toMatchObject({ kind: "attribute", name: "title" });
-    expect("output" in plain.expressions.x0).toBe(false);
+    const plain = decodeManifest("") as {
+      readonly expressions: Record<string, { readonly target: unknown }>;
+    };
+    expect(plain.expressions.x0!.target).toMatchObject({ kind: "attribute", name: "title" });
+    expect("output" in plain.expressions.x0!).toBe(false);
 
     // NEGATIVE CONTROL / the actual guarantee: a manifest that *does* carry an
     // output must not silently become authoritative. Either it is rejected, or
     // it is dropped — but it must never survive into the decoded entry, because
     // that would reintroduce the second source of truth this decision removed.
-    let smuggled: any;
+    let smuggled: { readonly expressions: Record<string, unknown> } | undefined;
     try {
-      smuggled = decode(`"output":"Count: 1",`);
+      smuggled = decodeManifest(`"output":"Count: 1",`) as typeof smuggled;
     } catch {
       smuggled = undefined; // rejected outright is also acceptable
     }
     if (smuggled !== undefined) {
-      expect("output" in smuggled.expressions.x0).toBe(false);
+      expect("output" in (smuggled.expressions.x0 as Record<string, unknown>)).toBe(false);
     }
 
     // And the same for an explicit null, which was the spelling the superseded
     // ratification worried about. It has no wire meaning either way.
-    let nulled: any;
+    let nulled: { readonly expressions: Record<string, unknown> } | undefined;
     try {
-      nulled = decode(`"output":null,`);
+      nulled = decodeManifest(`"output":null,`) as typeof nulled;
     } catch {
       nulled = undefined;
     }
     if (nulled !== undefined) {
-      expect("output" in nulled.expressions.x0).toBe(false);
+      expect("output" in (nulled.expressions.x0 as Record<string, unknown>)).toBe(false);
     }
   });
 
   // ─── conservative target-name allowlist ──────────────────────────────────
 
   it("[M8c.2] fails a wire manifest closed when a target names a fenced attribute or style property", async () => {
-    const { Resume, Serialization } = await kit();
     const entry = (target: string) =>
       `{"version":4,"buildId":"${BuildId}","events":{},"components":{},"expressions":{"x0":{"target":${target},"code":{"version":1,"kind":"portable.code","id":"future.resume.expr.fenced","buildId":"${BuildId}","captures":{}},"deps":["k"]}}}`;
 
@@ -757,7 +721,7 @@ export const view = () => (${jsx});
       '{"kind":"property","name":"innerHTML"}',
     ];
     for (const target of fenced) {
-      const failure = runSync(
+      const failure = Effect.runSync(
         Resume.decodeManifest(entry(target), BuildId).pipe(
           Effect.flip,
           Effect.provide(Serialization.layer),
@@ -769,13 +733,13 @@ export const view = () => (${jsx});
     }
 
     // …and the allowlisted ones decode and survive the round trip.
-    const allowed = runSync(
+    const allowed = Effect.runSync(
       Resume.decodeManifest(
         entry('{"kind":"attribute","name":"title"}'),
         BuildId,
       ).pipe(Effect.provide(Serialization.layer)),
     );
-    expect(allowed.expressions.x0.target).toEqual({
+    expect((allowed as { expressions: Record<string, { target: unknown }> }).expressions.x0!.target).toEqual({
       kind: "attribute",
       name: "title",
     });
@@ -787,41 +751,34 @@ export const view = () => (${jsx});
     // `exprClass`, `exprStyleProperty` — each delegating to one
     // `observeRenderedExpressionTarget` registrar that owns target validation.
     // So the authoring gate now has a call to make.
-    const { Resume, extract, collectViaHelper } = await kit();
-    const { exprAttribute, exprStyleProperty, exprClass } = await fromSrc(
-      "dom",
-      "exprAttribute",
-      "exprStyleProperty",
-      "exprClass",
-    );
-    const Code = extract.expressionCode({
+    const Code = expressionCode({
       id: "future.resume.expr.collect-gate",
       buildId: BuildId,
       captures: Schema.Struct({}),
       dependencies: Schema.Tuple([Schema.Number]),
-      render: (_captures: unknown, [count]: readonly [number]) => `v${count}`,
+      render: (_captures, [count]) => `v${count}`,
     });
 
-    const collectWith = (attach: (element: any, bound: any) => void) =>
-      collectViaHelper(Code, attach);
+    const collectWith = (attach: (element: Element, bound: unknown) => void) =>
+      collectViaHelper(Code, attach, {});
 
     // A fenced attribute, a fenced style property, and a forbidden name — all
     // refused during collection, so no HTML and no manifest entry ships.
     for (const attach of [
-      (element: any, bound: any) => exprAttribute(element, bound, "href"),
-      (element: any, bound: any) => exprAttribute(element, bound, "onclick"),
-      (element: any, bound: any) =>
-        exprStyleProperty(element, bound, "background-image"),
+      (element: Element, bound: unknown) => exprAttribute(element, bound, "href"),
+      (element: Element, bound: unknown) => exprAttribute(element, bound, "onclick"),
+      (element: Element, bound: unknown) =>
+        exprStyleProperty(element as HTMLElement, bound, "background-image"),
     ]) {
       const collected = collectWith(attach);
       expect(
-        collected.diagnostics.map((diagnostic: any) => diagnostic.code),
+        collected.diagnostics.map((diagnostic) => diagnostic.code),
       ).toContain("unsupported-expression-target");
       expect(collected.diagnostics[0]).toMatchObject({
         phase: "collect",
         disposition: "fallback-required",
       });
-      expect(Object.keys(collected.manifest.expressions ?? {})).toEqual([]);
+      expect(Object.keys(expressionsOfOrEmpty(collected.manifest))).toEqual([]);
       expect(collected.html).not.toContain(
         Resume.ExpressionElementMarkerAttribute,
       );
@@ -832,21 +789,24 @@ export const view = () => (${jsx});
     // refused every target would satisfy the loop above forever.
     for (const [attach, target] of [
       [
-        (element: any, bound: any) => exprAttribute(element, bound, "title"),
+        (element: Element, bound: unknown) => exprAttribute(element, bound, "title"),
         { kind: "attribute", name: "title" },
       ],
-      [(element: any, bound: any) => exprClass(element, bound), { kind: "class" }],
       [
-        (element: any, bound: any) =>
-          exprStyleProperty(element, bound, "opacity"),
+        (element: Element, bound: unknown) => exprClass(element, bound),
+        { kind: "class" },
+      ],
+      [
+        (element: Element, bound: unknown) =>
+          exprStyleProperty(element as HTMLElement, bound, "opacity"),
         { kind: "style-property", name: "opacity" },
       ],
     ] as const) {
-      const ok = collectWith(attach as any);
+      const ok = collectWith(attach);
       expect(ok.diagnostics).toEqual([]);
-      const entries = Object.values(ok.manifest.expressions ?? {}) as any[];
+      const entries = Object.values(expressionsOf(ok.manifest));
       expect(entries).toHaveLength(1);
-      expect(entries[0].target).toEqual(target);
+      expect(entries[0]!.target).toEqual(target);
       // The ordinary helper ran too: SSR emitted the initial value, which is
       // what Decision 7's "the ordinary call sits inside the resumable one"
       // structurally guarantees.
@@ -859,24 +819,22 @@ export const view = () => (${jsx});
     // load-bearing rather than stylistic: it is what makes two expressions on
     // one host element produce ONE `data-af-expr` marker listing both instance
     // ids, matching what the v4 wire format already assumes.
-    const { Resume, extract, collectViaHelper } = await kit();
-    const { exprAttribute, exprStyleProperty } = await fromSrc(
-      "dom",
-      "exprAttribute",
-      "exprStyleProperty",
-    );
-    const Code = extract.expressionCode({
+    const Code = expressionCode({
       id: "future.resume.expr.one-marker",
       buildId: BuildId,
       captures: Schema.Struct({}),
       dependencies: Schema.Tuple([Schema.Number]),
-      render: (_captures: unknown, [count]: readonly [number]) => `v${count}`,
+      render: (_captures, [count]) => `v${count}`,
     });
 
-    const both = collectViaHelper(Code, (element: any, bound: any) => {
-      exprAttribute(element, bound, "title");
-      exprStyleProperty(element, bound, "opacity");
-    });
+    const both = collectViaHelper(
+      Code,
+      (element, bound) => {
+        exprAttribute(element, bound, "title");
+        exprStyleProperty(element as HTMLElement, bound, "opacity");
+      },
+      {},
+    );
 
     const marker = Resume.ExpressionElementMarkerAttribute;
     const occurrences = both.html.split(`${marker}=`).length - 1;
@@ -884,13 +842,17 @@ export const view = () => (${jsx});
     // …and the one marker lists both instance ids.
     const listed = /data-af-expr="([^"]*)"/.exec(both.html)?.[1] ?? "";
     expect(listed.split(/\s+/).filter(Boolean)).toHaveLength(2);
-    expect(Object.keys(both.manifest.expressions ?? {})).toHaveLength(2);
+    expect(Object.keys(expressionsOf(both.manifest))).toHaveLength(2);
 
     // NEGATIVE CONTROL. One expression yields one marker with one id, so a
     // registrar that always emitted a two-id marker cannot pass.
-    const single = collectViaHelper(Code, (element: any, bound: any) => {
-      exprAttribute(element, bound, "title");
-    });
+    const single = collectViaHelper(
+      Code,
+      (element, bound) => {
+        exprAttribute(element, bound, "title");
+      },
+      {},
+    );
     expect(single.html.split(`${marker}=`).length - 1).toBe(1);
     expect(
       (/data-af-expr="([^"]*)"/.exec(single.html)?.[1] ?? "")

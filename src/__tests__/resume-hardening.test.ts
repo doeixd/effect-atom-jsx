@@ -1,5 +1,7 @@
 /**
  * 8c.6 — race, security, and ownership hardening for element targets.
+ * Promoted from `future/resumability/hardening.spec.ts` (all green
+ * 2026-08-12), retyped.
  *
  * Owning plan: `docs/RESUMABILITY_M8C_PLAN.md` 8c.6.
  *
@@ -12,108 +14,76 @@
 
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Option, Schema, Scope } from "effect";
 import { describe, expect, it, vi } from "vitest";
-import { fromSrc } from "../harness.js";
-import { FakeDocument, nonTextFixture } from "./fake-dom.js";
-
-/**
- * The harness hands back `any`-shaped values on purpose, so `Effect.runSync`
- * cannot infer a success type from them. These thin wrappers keep the specs
- * readable without sprinkling casts through every assertion.
- */
-const runSync = (effect: any): any => Effect.runSync(effect);
-const runSyncExit = (effect: any): Exit.Exit<any, any> =>
-  Effect.runSyncExit(effect) as Exit.Exit<any, any>;
-const runPromise = (effect: any): Promise<any> => Effect.runPromise(effect);
-const runFork = (effect: any): any => Effect.runFork(effect);
-const decode = (schema: any) => (input: unknown): any =>
-  Schema.decodeUnknownSync(schema)(input);
-
+import * as Component from "../Component.js";
+import { insert, renderToString, template } from "../dom.js";
+import { bindExpression, expressionCode } from "../portable-extract.js";
+import * as Resume from "../Resume.js";
+import * as Serialization from "../Serialization.js";
+import { FakeDocument, nonTextFixture } from "./resume-fake-dom.js";
 
 const BuildId = "future-resume-build";
 
-async function kit() {
-  const Resume = await fromSrc(
-    "Resume",
-    "collect",
-    "installClient",
-    "scanExpressionTargets",
-    "snapshotState",
-    "ExpressionElementMarkerAttribute",
-    "ExpressionId",
-  );
-  const Component = await fromSrc(
-    "Component",
-    "make",
-    "props",
-    "require",
-    "setup",
-    "state",
-    "renderEffect",
-    "withDefinition",
-  );
-  const dom = await fromSrc("dom", "renderToString", "template", "insert");
-  const Serialization = await fromSrc("Serialization", "layer");
-  const extract = await fromSrc("portable-extract", "expressionCode", "bindExpression");
+const Expression = expressionCode({
+  id: "future.resume.expr.hardening",
+  buildId: BuildId,
+  captures: Schema.Struct({ label: Schema.String }),
+  dependencies: Schema.Tuple([Schema.Number]),
+  render: (captures, [count]) => `${captures.label}-${count}`,
+});
 
-  const Expression = extract.expressionCode({
-    id: "future.resume.expr.hardening",
-    buildId: BuildId,
-    captures: Schema.Struct({ label: Schema.String }),
-    dependencies: Schema.Tuple([Schema.Number]),
-    render: (captures: any, [count]: readonly [number]) =>
-      `${captures.label}-${count}`,
-  });
-
-  const collectCounter = (componentName = "FutureHardeningCounter") => {
-    const Counter = Component.make(
-      Component.props(),
-      Component.require(),
-      Component.setup().bind("count", () => Component.state(1), {
-        resume: Resume.snapshotState(Schema.Number),
-      }),
-      (_props: unknown, bindings: any) => {
-        const span = dom.template("<span>")();
-        dom.insert(
-          span,
-          extract.bindExpression(Expression, { label: "state" }, [bindings.count]),
-        );
-        return span;
-      },
-    ).pipe(Component.withDefinition({ name: componentName }));
-    const scope = Scope.makeUnsafe();
-    const result = runSync(
-      Resume.collect(
-        () =>
-          dom.renderToString(() =>
-            runSync(
-              Component.renderEffect(Counter, {}).pipe(Scope.provide(scope)),
-            ),
+function collectCounter(componentName = "FutureHardeningCounter") {
+  const Counter = Component.make(
+    Component.props<{}>(),
+    Component.require<never>(),
+    Component.setup<{}>().bind("count", () => Component.state(1), {
+      resume: Resume.snapshotState(Schema.Number),
+    }),
+    (_props, bindings) => {
+      const span = template("<span>")();
+      insert(
+        span,
+        bindExpression(Expression, { label: "state" }, [bindings.count]),
+      );
+      return span;
+    },
+  ).pipe(Component.withDefinition({ name: componentName }));
+  const scope = Scope.makeUnsafe();
+  const result = Effect.runSync(
+    Resume.collect(
+      () =>
+        renderToString(() =>
+          Effect.runSync(
+            Component.renderEffect(Counter, {}).pipe(Scope.provide(scope)),
           ),
-        { buildId: BuildId },
-      ).pipe(Effect.provide(Serialization.layer)),
-    );
-    // Closing before returning is deliberate and is *not* the
-    // "teardown before assertion" defect: the value under test is the
-    // serialized collect snapshot (html + manifest), not a live handle map.
-    // A real server closes the render scope before it serializes, so a spec
-    // that asserted against an open scope would be modelling the wrong thing.
-    runSync(Scope.close(scope, Exit.void));
-    return result;
-  };
+        ),
+      { buildId: BuildId },
+    ).pipe(Effect.provide(Serialization.layer)),
+  );
+  // Closing before returning is deliberate and is *not* the
+  // "teardown before assertion" defect: the value under test is the
+  // serialized collect snapshot (html + manifest), not a live handle map.
+  // A real server closes the render scope before it serializes, so a spec
+  // that asserted against an open scope would be modelling the wrong thing.
+  Effect.runSync(Scope.close(scope, Exit.void));
+  return result;
+}
 
-  const expressionId = (raw: string) =>
-    decode(Resume.ExpressionId)(raw);
+const expressionId = (raw: string): Resume.ExpressionId =>
+  Schema.decodeUnknownSync(Resume.ExpressionId)(raw);
 
-  const retarget = (manifest: any, targets: Readonly<Record<string, unknown>>) => {
-    const base = manifest.expressions[expressionId("x0")];
-    const expressions: Record<string, unknown> = {};
-    for (const [id, target] of Object.entries(targets)) {
-      expressions[expressionId(id)] = { ...base, target };
-    }
-    return { ...manifest, expressions };
-  };
-
-  return { Resume, Expression, extract, collectCounter, retarget, expressionId };
+function retarget(
+  manifest: Resume.Manifest,
+  targets: Readonly<Record<string, unknown>>,
+): Resume.Manifest {
+  const base = (manifest as { readonly expressions: Record<string, unknown> })
+    .expressions[expressionId("x0")];
+  const expressions: Record<string, unknown> = {};
+  for (const [id, target] of Object.entries(targets)) {
+    expressions[expressionId(id)] = { ...(base as object), target };
+  }
+  // boundary: retargeting swaps in a synthetic expression map for a manifest
+  // built for a different fixture, which the wire type cannot express.
+  return { ...manifest, expressions } as unknown as Resume.Manifest;
 }
 
 /** A failure must be a classified error, never a defect. */
@@ -128,7 +98,6 @@ function classifiedTag(exit: Exit.Exit<unknown, unknown>): string {
 
 describe("Non-text target hardening", () => {
   it("[M8c.6] rejects malformed, unknown, duplicate, and missing element markers with four distinct errors, and accepts a well-formed one", async () => {
-    const { Resume, collectCounter, retarget } = await kit();
     const manifest = retarget(collectCounter().manifest, {
       x0: { kind: "attribute", name: "title" },
     });
@@ -188,7 +157,7 @@ describe("Non-text target hardening", () => {
 
     for (const [label, root, expectedTag] of cases) {
       const runtime = ManagedRuntime.make(Layer.empty);
-      const exit = runSyncExit(
+      const exit = Effect.runSyncExit(
         Resume.installClient({
           root: root.asDocument(),
           manifest,
@@ -228,7 +197,7 @@ describe("Non-text target hardening", () => {
       attributes: { title: "state-1" },
     });
     const validRuntime = ManagedRuntime.make(Layer.empty);
-    const validExit = runSyncExit(
+    const validExit = Effect.runSyncExit(
       Resume.installClient({
         root: validRoot.asDocument(),
         manifest,
@@ -242,13 +211,12 @@ describe("Non-text target hardening", () => {
     // published DOM carries no protocol residue.
     expect(validRoot.element().getAttribute!(marker)).toBeNull();
     if (!Exit.isFailure(validExit)) {
-      await runPromise(validExit.value.dispose);
+      await Effect.runPromise(validExit.value.dispose);
     }
     await validRuntime.dispose();
   });
 
   it("[M8c.6] rejects a manifest target naming an element its component does not own", async () => {
-    const { Resume, collectCounter, retarget } = await kit();
     const manifest = retarget(collectCounter().manifest, {
       x0: { kind: "attribute", name: "title" },
     });
@@ -263,7 +231,7 @@ describe("Non-text target hardening", () => {
       Resume.ExpressionElementMarkerAttribute,
     );
     const runtime = ManagedRuntime.make(Layer.empty);
-    const exit = runSyncExit(
+    const exit = Effect.runSyncExit(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -291,7 +259,7 @@ describe("Non-text target hardening", () => {
       attributes: { title: "state-1" },
     });
     const ownedRuntime = ManagedRuntime.make(Layer.empty);
-    const ownedExit = runSyncExit(
+    const ownedExit = Effect.runSyncExit(
       Resume.installClient({
         root: ownedRoot.asDocument(),
         manifest,
@@ -302,13 +270,12 @@ describe("Non-text target hardening", () => {
     );
     expect(classifiedTag(ownedExit)).toBe("success");
     if (!Exit.isFailure(ownedExit)) {
-      await runPromise(ownedExit.value.dispose);
+      await Effect.runPromise(ownedExit.value.dispose);
     }
     await ownedRuntime.dispose();
   });
 
   it("[M8c.6] fails closed when target metadata is tampered to a kind the marker contradicts", async () => {
-    const { Resume, collectCounter, retarget } = await kit();
     // A tampered payload says "text" while the DOM *also* carries an element
     // marker for the same instance.
     const textManifest = retarget(collectCounter().manifest, {
@@ -328,7 +295,7 @@ describe("Non-text target hardening", () => {
       attributes: { title: "state-1" },
     });
     const runtime = ManagedRuntime.make(Layer.empty);
-    const exit = runSyncExit(
+    const exit = Effect.runSyncExit(
       Resume.installClient({
         root: root.asDocument(),
         manifest: textManifest,
@@ -357,7 +324,7 @@ describe("Non-text target hardening", () => {
       elementExpressions: [],
     });
     const cleanRuntime = ManagedRuntime.make(Layer.empty);
-    const cleanExit = runSyncExit(
+    const cleanExit = Effect.runSyncExit(
       Resume.installClient({
         root: cleanRoot.asDocument(),
         manifest: textManifest,
@@ -368,7 +335,7 @@ describe("Non-text target hardening", () => {
     );
     expect(classifiedTag(cleanExit)).toBe("success");
     if (!Exit.isFailure(cleanExit)) {
-      await runPromise(cleanExit.value.dispose);
+      await Effect.runPromise(cleanExit.value.dispose);
     }
     await cleanRuntime.dispose();
 
@@ -378,7 +345,7 @@ describe("Non-text target hardening", () => {
     });
     const boundarylessRuntime = ManagedRuntime.make(Layer.empty);
     const boundarylessTag = classifiedTag(
-      runSyncExit(
+      Effect.runSyncExit(
         Resume.installClient({
           root: boundarylessRoot.asDocument(),
           manifest: textManifest,
@@ -394,7 +361,6 @@ describe("Non-text target hardening", () => {
   });
 
   it("[M8c.6] coalesces concurrent invalidations into one patch carrying the latest value", async () => {
-    const { Resume, Expression, extract, collectCounter, retarget } = await kit();
     const manifest = retarget(collectCounter().manifest, {
       x0: { kind: "attribute", name: "title" },
     });
@@ -407,18 +373,18 @@ describe("Non-text target hardening", () => {
     let renders = 0;
     let loads = 0;
     // The client-side module for the same code identity, instrumented.
-    const CountingExpression = extract.expressionCode({
+    const CountingExpression = expressionCode({
       id: Expression.id,
       buildId: BuildId,
       captures: Schema.Struct({ label: Schema.String }),
       dependencies: Schema.Tuple([Schema.Number]),
-      render: (captures: any, [count]: readonly [number]) => {
+      render: (captures, [count]) => {
         renders += 1;
         return `${captures.label}-${count}`;
       },
     });
     const runtime = ManagedRuntime.make(Layer.empty);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -435,7 +401,7 @@ describe("Non-text target hardening", () => {
     );
 
     for (const value of [2, 3, 4, 5]) {
-      runSync(
+      Effect.runSync(
         installation.writeBinding("c0", "count", Schema.Number, value),
       );
     }
@@ -453,12 +419,11 @@ describe("Non-text target hardening", () => {
     expect(renders).toBeLessThan(4);
     expect(element.getAttribute!("title")).toBe("state-5");
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 
   it("[M8c.6] makes disposal terminal and idempotent for element targets", async () => {
-    const { Resume, Expression, collectCounter, retarget } = await kit();
     const manifest = retarget(collectCounter().manifest, {
       x0: { kind: "attribute", name: "title" },
     });
@@ -470,7 +435,7 @@ describe("Non-text target hardening", () => {
     const element = root.element();
     let loads = 0;
     const runtime = ManagedRuntime.make(Layer.empty);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -490,13 +455,13 @@ describe("Non-text target hardening", () => {
     // The pre-disposal write is asserted to *succeed*: it is the negative
     // control for the post-disposal failure below, without which an
     // implementation that rejected every write would satisfy this spec.
-    const beforeDisposal = runSyncExit(
+    const beforeDisposal = Effect.runSyncExit(
       installation.writeBinding("c0", "count", Schema.Number, 2),
     );
     expect(classifiedTag(beforeDisposal)).toBe("success");
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     // Idempotent: a second dispose is a no-op, not a failure.
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     // Terminal: queued work can never patch after disposal.
@@ -510,7 +475,7 @@ describe("Non-text target hardening", () => {
       queuedExpressions: 0,
     });
     // A write after disposal is a classified failure, not a silent patch.
-    const exit = runSyncExit(
+    const exit = Effect.runSyncExit(
       installation.writeBinding("c0", "count", Schema.Number, 3),
     );
     expect(classifiedTag(exit)).toBe("ResumeBindingSnapshotWriteDisposedError");
@@ -520,7 +485,6 @@ describe("Non-text target hardening", () => {
   });
 
   it("[M8c.6] does not patch an element that left the document while work was in flight", async () => {
-    const { Resume, Expression, collectCounter, retarget } = await kit();
     const manifest = retarget(collectCounter().manifest, {
       x0: { kind: "attribute", name: "title" },
     });
@@ -530,9 +494,9 @@ describe("Non-text target hardening", () => {
       attributes: { title: "state-1" },
     });
     const element = root.element();
-    const diagnostics: Array<any> = [];
+    const diagnostics: Array<{ readonly code: string }> = [];
     const runtime = ManagedRuntime.make(Layer.empty);
-    const installation = runSync(
+    const installation = Effect.runSync(
       Resume.installClient({
         root: root.asDocument(),
         manifest,
@@ -542,11 +506,11 @@ describe("Non-text target hardening", () => {
             Effect.succeed(Expression).pipe(Effect.delay("30 millis")),
         },
         runtime,
-        onDiagnostic: (diagnostic: any) => diagnostics.push(diagnostic),
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
       }),
     );
 
-    runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
+    Effect.runSync(installation.writeBinding("c0", "count", Schema.Number, 2));
     // Ownership is rechecked immediately before the DOM write, so removing the
     // element mid-resolution must abandon the patch — classified, not silent.
     root.removeChild(element);
@@ -561,12 +525,11 @@ describe("Non-text target hardening", () => {
       "expression-patch-failure",
     ]);
 
-    await runPromise(installation.dispose);
+    await Effect.runPromise(installation.dispose);
     await runtime.dispose();
   });
 
   it("[M8c.6] keeps two installations from observing each other's reserved binding keys", async () => {
-    const { Resume, Expression, collectCounter, retarget } = await kit();
     const manifest = retarget(collectCounter().manifest, {
       x0: { kind: "attribute", name: "title" },
     });
@@ -580,7 +543,7 @@ describe("Non-text target hardening", () => {
     const second = makeRoot();
     const runtime = ManagedRuntime.make(Layer.empty);
     const install = (root: FakeDocument) =>
-      runSync(
+      Effect.runSync(
         Resume.installClient({
           root: root.asDocument(),
           manifest,
@@ -592,7 +555,7 @@ describe("Non-text target hardening", () => {
     const a = install(first);
     const b = install(second);
 
-    runSync(a.writeBinding("c0", "count", Schema.Number, 7));
+    Effect.runSync(a.writeBinding("c0", "count", Schema.Number, 7));
     await vi.waitFor(() => {
       expect(first.element().getAttribute!("title")).toBe("state-7");
     });
@@ -600,14 +563,14 @@ describe("Non-text target hardening", () => {
     // `af:binding:c0/count` key name, and must still be isolated.
     expect(second.element().getAttribute!("title")).toBe("state-1");
 
-    runSync(b.writeBinding("c0", "count", Schema.Number, 9));
+    Effect.runSync(b.writeBinding("c0", "count", Schema.Number, 9));
     await vi.waitFor(() => {
       expect(second.element().getAttribute!("title")).toBe("state-9");
     });
     expect(first.element().getAttribute!("title")).toBe("state-7");
 
-    await runPromise(a.dispose);
-    await runPromise(b.dispose);
+    await Effect.runPromise(a.dispose);
+    await Effect.runPromise(b.dispose);
     await runtime.dispose();
   });
 });
