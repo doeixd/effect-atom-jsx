@@ -12,7 +12,7 @@
  * attach. A view must never observe a half-resolved binding, and a failed
  * setup must attach nothing and leak nothing.
  */
-import { Cause, Deferred, Effect, Exit, Scope } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Scope } from "effect";
 import { describe, expect, it } from "vitest";
 import * as Behavior from "../Behavior.js";
 import * as Component from "../Component.js";
@@ -196,6 +196,71 @@ describe("bindings commit boundary", () => {
     const view = Component.renderViewWithBindings(Widget, {}, bindings!);
     expect(view?.slots.root.getStyle("padding")).toBe(16);
     expect(order).toEqual(["setup:late", "behavior:attach"]);
+  });
+
+  it("an interrupted setup releases resources exactly once and attaches nothing", async () => {
+    // Promotion-expansion (2026-08-12): the file pinned the FAILURE path but
+    // not interruption — the other way a suspended setup ends early (a
+    // navigation away, a request deadline). The commit boundary's promise is
+    // identical: nothing downstream runs, everything acquired is released
+    // exactly once.
+    const anatomy = View.Slots.define({
+      root: { capability: Element.Capability.Container },
+    });
+    const never = Effect.runSync(Deferred.make<string>());
+    let attachments = 0;
+    let viewRuns = 0;
+    let released = 0;
+
+    const Widget = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>()
+        .bind("root", () => Component.slotContainer())
+        .value("slots", ({ bindings }) => ({ root: bindings.root }))
+        .bind("resource", () =>
+          Effect.acquireRelease(
+            Effect.succeed("acquired"),
+            () =>
+              Effect.sync(() => {
+                released += 1;
+              }),
+          ))
+        .bind("parked", () => Deferred.await(never)),
+      () => {
+        viewRuns += 1;
+        return "rendered";
+      },
+    ).pipe(
+      Behavior.attachToSlots(
+        Behavior.forSlots(anatomy)(() =>
+          Effect.sync(() => {
+            attachments += 1;
+            return {};
+          })
+        ),
+        anatomy,
+      ),
+    );
+
+    const fiber = Effect.runFork(
+      Effect.scoped(Component.setupEffect(Widget, {})),
+    );
+    await flush();
+    // Parked mid-suspension: the resource is held, nothing committed.
+    expect(released).toBe(0);
+    expect(viewRuns).toBe(0);
+
+    const exit = await Effect.runPromise(
+      Fiber.interrupt(fiber).pipe(Effect.flatMap(() => Fiber.await(fiber))),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+
+    // Exactly one release, no attachment, no view — same promise as the
+    // failure path, on the interruption path.
+    expect(released).toBe(1);
+    expect(attachments).toBe(0);
+    expect(viewRuns).toBe(0);
   });
 
   it("bindings are a committed snapshot, not re-derived per render", () => {

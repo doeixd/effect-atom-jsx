@@ -38,7 +38,7 @@ import {
 } from "effect";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as Component from "../Component.js";
-import { renderToString, template, insert } from "../dom.js";
+import { addEventListener, renderToString, template, insert } from "../dom.js";
 import * as Portable from "../Portable.js";
 import * as Resume from "../Resume.js";
 import * as Serialization from "../Serialization.js";
@@ -599,5 +599,90 @@ describe("Resumability invariants (regression detectors)", () => {
       value: "server:todos",
     });
     Effect.runSync(restored.dispose);
+  });
+});
+
+describe("Exactly-once claim over the MODERN collect path (DQ-009 qualified markers)", () => {
+  beforeAll(() => {
+    vi.stubGlobal("Node", class {});
+  });
+  afterAll(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Promotion-expansion (2026-08-12): every claim-walk pin above hand-builds
+  // a LEGACY manifest with unqualified markers ("e0"). No test walked a
+  // two-marker chain on the modern path — a real `collect` with DQ-009
+  // scope-qualified markers and its real manifest — where the unscope step
+  // sits between the marker and the claim. The markers here are extracted
+  // from the actually served HTML, not hand-spelled, so a marker-spelling
+  // drift between collect and install fails this test rather than both
+  // sides agreeing with each other.
+  it("lets exactly one owner consume an interaction across two qualified portable markers", async () => {
+    const action = (label: string) =>
+      Effect.runSync(
+        Component.action(Portable.bind(ClientSaveCode, { label })).pipe(
+          Effect.provideService(SaveService, {
+            save: () => Effect.die("the server must never run the action"),
+          }),
+        ),
+      );
+    const collected = await Effect.runPromise(
+      Resume.collect(
+        () =>
+          renderToString(() => {
+            const child = template("<button>Child")();
+            addEventListener(child, "click", Resume.event(action("child")), true);
+            const parent = template("<button>Parent")();
+            addEventListener(parent, "click", Resume.event(action("parent")), true);
+            return [child, parent];
+          }),
+        { buildId: BuildId, installationId: "page0" },
+      ).pipe(Effect.provide(Serialization.layer)),
+    );
+
+    // Markers come from the REAL html: qualified, one per button.
+    const markers = [
+      ...collected.html.matchAll(/data-af-event-click="([^"]+)"/g),
+    ].map((match) => match[1]!);
+    expect(markers).toHaveLength(2);
+    for (const marker of markers) expect(marker).toMatch(/^page0:/);
+
+    const root = new FakeDocument([
+      { kind: "element", attributes: { "data-af-event-click": markers[1]! } },
+      { kind: "element", attributes: { "data-af-event-click": markers[0]! } },
+    ]);
+    const ancestor = root.element(0);
+    const child = root.element(1);
+
+    const log: SaveLog = { saves: [] };
+    const runtime = saveRuntime(log);
+    const installation = Effect.runSync(
+      Resume.installClient({
+        root: root.asDocument(),
+        manifest: collected.manifest,
+        expectedBuildId: BuildId,
+        resolverEntries: { [ClientSaveCode.id]: ClientSaveCode },
+        runtime,
+      }),
+    );
+
+    root.dispatchPath("click", [child, ancestor]);
+    await vi.waitFor(() => {
+      expect(installation.pending()).toBe(0);
+      expect(log.saves.length).toBeGreaterThan(0);
+    });
+    // The closest QUALIFIED marker claims and stops the walk: the ancestor's
+    // same-type marker must not also fire.
+    expect(log.saves).toEqual(["child"]);
+
+    // Still live for a second interaction — exact-once is per interaction.
+    root.dispatchPath("click", [child, ancestor]);
+    await vi.waitFor(() => {
+      expect(log.saves).toEqual(["child", "child"]);
+    });
+
+    await Effect.runPromise(installation.dispose);
+    await runtime.dispose();
   });
 });

@@ -15,6 +15,7 @@ import * as Behavior from "../Behavior.js";
 import * as Element from "../Element.js";
 import { collection } from "../behaviors/collection.js";
 import { rovingTabindex } from "../behaviors/roving-tabindex.js";
+import { createEffect, createRoot, flush } from "../api.js";
 
 /** Three focusable items plus a collection handle over them, fresh per spec. */
 function itemsFixture(count = 3) {
@@ -206,6 +207,57 @@ describe("collection: isolation and disposal", () => {
     expect(() => handle.set([items[0]!, late])).not.toThrow();
     expect(late.getAttr("aria-posinset")).toBeUndefined();
     expect(late.getAttr("aria-setsize")).toBeUndefined();
+  });
+});
+
+describe("collection: invalidation granularity (characterization)", () => {
+  // Promotion-expansion (2026-08-12): the original spec WITHDREW this
+  // observation for lack of a subscription harness — `createRoot` +
+  // `createEffect` is that harness. KIT_LAYER_SPEC_FINDINGS §4 records that
+  // `collection` bumps a single version atom, so ANY item change invalidates
+  // EVERY derived value. This pins the current behaviour as a canary: the
+  // negative control proves the harness has teeth (no change → no rerun),
+  // and the metadata-only case documents the over-invalidation. If the
+  // granularity is ever fixed, the last assertion flips — update it, and
+  // celebrate.
+  it("a metadata-only change invalidates the membership projection too", () => {
+    const { items, handle } = itemsFixture(3);
+    const attached = Effect.runSync(
+      Behavior.attachScoped(collection(), { items: handle }),
+    );
+
+    let membershipRuns = 0;
+    const mounted = createRoot((dispose) => {
+      createEffect(() => {
+        attached.bindings.items();
+        membershipRuns += 1;
+        return undefined;
+      });
+      return { dispose };
+    });
+    flush();
+    expect(membershipRuns).toBe(1);
+
+    // NEGATIVE CONTROL: no change → no recompute. Without this, "reruns on
+    // everything" and "reruns on schedule" would be indistinguishable.
+    flush();
+    expect(membershipRuns).toBe(1);
+
+    // A REAL membership change reruns the subscriber — the harness observes
+    // genuine invalidation, not polling.
+    handle.set([items[0]!, items[2]!]);
+    flush();
+    expect(membershipRuns).toBe(2);
+
+    // The documented over-invalidation: a disabled-flag change (pure
+    // metadata — membership is untouched) also reruns the membership
+    // subscriber, because one version atom carries every projection.
+    attached.bindings.setDisabled(items[0]!, true);
+    flush();
+    expect(membershipRuns).toBe(3);
+
+    mounted.dispose();
+    Effect.runSync(attached.dispose);
   });
 });
 

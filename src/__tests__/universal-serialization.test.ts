@@ -13,15 +13,16 @@
  * its resolvable descriptor, `SafeHtml` under its branding); live resources
  * are refused.
  */
-import { Effect, Schema, Scope } from "effect";
-import { describe, expect, it } from "vitest";
+import { Context, Effect, Layer, ManagedRuntime, Schema, Scope } from "effect";
+import { describe, expect, it, vi } from "vitest";
 import * as Atom from "../Atom.js";
 import * as Component from "../Component.js";
 import * as Portable from "../Portable.js";
 import * as Resume from "../Resume.js";
 import * as SafeHtml from "../SafeHtml.js";
 import * as Serialization from "../Serialization.js";
-import { renderToString } from "../dom.js";
+import { addEventListener, renderToString, template } from "../dom.js";
+import { asDocument, elementWith, fakeDocument } from "./streaming-fake-dom.js";
 
 const TestBuildId = "universal-serialization-test-build";
 
@@ -128,6 +129,154 @@ describe("universal value codec (M10.2)", () => {
       ),
     );
     expect(decoded.serializer).toBe(serovalId);
+  });
+});
+
+describe("rich captures through a REAL manifest round trip (M10.1+M10.2 integration)", () => {
+  // Promotion-expansion (2026-08-12): the envelope path and the manifest path
+  // were only tested separately — the codec specs serialize loose values and
+  // the capture specs call describe/resolve directly. This walks the actual
+  // product path: collect a page whose EVENT captures a Map under the seroval
+  // layer, decode the manifest, install, dispatch — and pins the fail-closed
+  // half (a client runtime WITHOUT the codec refuses to misdecode instead of
+  // running with garbage).
+  it("dispatches an event whose captures rode the codec envelope, and fails closed without it", async () => {
+    interface RichRecorder {
+      readonly record: (labels: ReadonlyArray<string>) => Effect.Effect<void>;
+    }
+    const Recorder = Context.Service<RichRecorder>(
+      "effect-atom-jsx/test/RichCaptureRecorder",
+    );
+    const code = Portable.code<
+      { readonly tags: unknown },
+      { readonly tags: unknown },
+      readonly [],
+      void,
+      never,
+      RichRecorder
+    >({
+      id: "test.m10.rich-capture.save",
+      buildId: TestBuildId,
+      captures: Schema.Struct({ tags: Schema.Unknown }),
+      run: (captures) =>
+        Effect.gen(function* () {
+          const recorder = yield* Recorder;
+          // The capture must arrive as a LIVE Map, not a JSON-shaped copy.
+          const tags = captures.tags;
+          if (!(tags instanceof Map)) {
+            return yield* Effect.die("captures.tags did not survive as a Map");
+          }
+          yield* recorder.record([...tags.keys()].sort());
+        }),
+    });
+
+    const action = Effect.runSync(
+      Component.action(
+        Portable.bind(code, { tags: new Map([["a", 1], ["b", 2]]) }),
+      ).pipe(
+        Effect.provideService(Recorder, {
+          record: () => Effect.die("the server must never run the action"),
+        }),
+      ),
+    );
+    const collected = await Effect.runPromise(
+      Resume.collect(
+        () =>
+          renderToString(() => {
+            const button = template("<button>Rich")();
+            addEventListener(button, "click", Resume.event(action), true);
+            return button;
+          }),
+        { buildId: TestBuildId, installationId: "page0" },
+      ).pipe(Effect.provide(Serialization.serovalLayer)),
+    );
+
+    // The manifest entry carries the codec envelope, not a mangled Map.
+    expect(collected.serializedManifest).toContain("$afCapturesCodec");
+
+    const manifest = await Effect.runPromise(
+      Resume.decodeManifest(collected.serializedManifest, TestBuildId).pipe(
+        Effect.provide(Serialization.serovalLayer),
+      ),
+    );
+
+    // FAIL-CLOSED HALF: a client runtime without the codec layer must refuse
+    // to resolve the captures (a dispatch-resolution diagnostic), never run
+    // the action with misdecoded data.
+    const bareCalls: Array<ReadonlyArray<string>> = [];
+    const bareRuntime = ManagedRuntime.make(
+      Layer.succeed(Recorder, {
+        record: (labels) =>
+          Effect.sync(() => {
+            bareCalls.push(labels);
+          }),
+      }),
+    );
+    const bareDiagnostics: Resume.ClientDiagnostic[] = [];
+    const doc = fakeDocument([
+      {
+        kind: "element",
+        tag: "button",
+        attributes: { "data-af-event-click": "page0:e0" },
+      },
+    ]);
+    const bareInstallation = await Effect.runPromise(
+      Resume.installClient({
+        root: asDocument(doc),
+        manifest,
+        expectedBuildId: TestBuildId,
+        resolverEntries: { [code.id]: code },
+        runtime: bareRuntime,
+        onDiagnostic: (diagnostic) => bareDiagnostics.push(diagnostic),
+      }),
+    );
+    doc.dispatch("click", elementWith(doc, "data-af-event-click"));
+    await vi.waitFor(() => {
+      expect(bareInstallation.pending()).toBe(0);
+    });
+    expect(bareCalls).toEqual([]);
+    expect(
+      bareDiagnostics.map((diagnostic) => diagnostic.code),
+    ).toContain("dispatch-resolution-failure");
+    await Effect.runPromise(bareInstallation.dispose);
+    await bareRuntime.dispose();
+
+    // HAPPY HALF: the same install with the codec in the client runtime's
+    // layer dispatches, and the Map is live inside the handler.
+    const calls: Array<ReadonlyArray<string>> = [];
+    const runtime = ManagedRuntime.make(
+      Layer.merge(
+        Layer.succeed(Recorder, {
+          record: (labels) =>
+            Effect.sync(() => {
+              calls.push(labels);
+            }),
+        }),
+        Serialization.serovalLayer,
+      ),
+    );
+    const doc2 = fakeDocument([
+      {
+        kind: "element",
+        tag: "button",
+        attributes: { "data-af-event-click": "page0:e0" },
+      },
+    ]);
+    const installation = await Effect.runPromise(
+      Resume.installClient({
+        root: asDocument(doc2),
+        manifest,
+        expectedBuildId: TestBuildId,
+        resolverEntries: { [code.id]: code },
+        runtime,
+      }),
+    );
+    doc2.dispatch("click", elementWith(doc2, "data-af-event-click"));
+    await vi.waitFor(() => {
+      expect(calls).toEqual([["a", "b"]]);
+    });
+    await Effect.runPromise(installation.dispose);
+    await runtime.dispose();
   });
 });
 
