@@ -1,5 +1,6 @@
 import { Effect, Exit, Schema, Scope } from "effect";
 import * as Component from "./Component.js";
+import * as Diagnostics from "./Diagnostics.js";
 import * as Element from "./Element.js";
 import * as Portable from "./Portable.js";
 import * as View from "./View.js";
@@ -541,30 +542,69 @@ export function emits<const Contract extends OutEventContract>(
   };
 }
 
-export function compose<E1, B1, R1, Err1, D1, E2, B2, R2, Err2, D2>(
-  first: Behavior<E1, B1, R1, Err1, D1>,
-  second: Behavior<E2, B2, R2, Err2, D2>,
-): Behavior<E1 & E2, B1 & B2, R1 | R2, Err1 | Err2, D1 & D2>;
-export function compose<E1, B1, R1, Err1, D1, E2, B2, R2, Err2, D2, E3, B3, R3, Err3, D3>(
-  first: Behavior<E1, B1, R1, Err1, D1>,
-  second: Behavior<E2, B2, R2, Err2, D2>,
-  third: Behavior<E3, B3, R3, Err3, D3>,
-): Behavior<E1 & E2 & E3, B1 & B2 & B3, R1 | R2 | R3, Err1 | Err2 | Err3, D1 & D2 & D3>;
+/** Merge where B's keys override A's — the runtime's last-wins truth. */
+type MergeBindings<A, B> =
+  & { readonly [K in Exclude<keyof A, keyof B>]: A[K] }
+  & { readonly [K in keyof B]: B[K] };
+
+/** Fold a tuple of binding maps left to right, later members overriding. */
+type MergeAllBindings<Members extends readonly Behavior.Any[]> =
+  Members extends readonly [infer Only extends Behavior.Any] ? BindingsOf<Only>
+    : Members extends readonly [
+      infer Head extends Behavior.Any,
+      ...infer Rest extends readonly Behavior.Any[],
+    ] ? MergeBindings<BindingsOf<Head>, MergeAllBindings<Rest>>
+      : never;
+
+type UnionToIntersection<U> =
+  (U extends unknown ? (u: U) => void : never) extends (i: infer I) => void ? I
+    : never;
+
+export declare namespace Behavior {
+  export type Any = Behavior<any, any, any, any, any>;
+}
+
 /**
- * Compose behaviors into one behavior.
+ * Compose behaviors into one behavior (`DQ-057`, ratified).
  *
- * Requirements, typed errors, contributed bindings, and metadata are combined.
- * Runtime attachment runs each behavior in order and merges returned bindings.
+ * Runtime attachment runs each member in order and merges returned bindings
+ * with LAST-WINS semantics — and the types tell that truth: the composed
+ * bindings are `MergeAll` over the member tuple, so REPLACE-by-compose (the
+ * sanctioned customization path) types as the replacement, not as a
+ * near-uninhabited intersection. Element requirements and deps intersect
+ * (inputs); requirements and errors union.
+ *
+ * A later member overriding an earlier member's `provides` key is legal but
+ * REPORTED: a `behavior:provides-override` diagnostic goes through the same
+ * opt-in reporter channel as `component:duplicate-attachment` (`DQ-058`) at
+ * attach time. Composition never silently blocks.
  */
-export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any>>): Behavior<any, any, any, any> {
+export function compose<
+  const Members extends readonly [Behavior.Any, Behavior.Any, ...Behavior.Any[]],
+>(
+  ...behaviors: Members
+): Behavior<
+  UnionToIntersection<ElementsOf<Members[number]>>,
+  MergeAllBindings<Members>,
+  RequirementsOf<Members[number]>,
+  ErrorsOf<Members[number]>,
+  UnionToIntersection<DepsOf<Members[number]>>
+>;
+export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any, any>>): Behavior<any, any, any, any, any> {
   let metadataEvents: BehaviorEventMap<any> | undefined;
   let metadataProvides: BindingContract | undefined;
   let metadataEmits: OutEventContract | undefined;
+  const providesOverrides: Array<string> = [];
   for (const behavior of behaviors) {
     if (behavior.metadata?.events !== undefined) {
       metadataEvents = { ...metadataEvents, ...behavior.metadata.events };
     }
     if (behavior.metadata?.provides !== undefined) {
+      for (const key of Object.keys(behavior.metadata.provides)) {
+        if (metadataProvides !== undefined && key in metadataProvides) {
+          providesOverrides.push(key);
+        }
+      }
       metadataProvides = { ...metadataProvides, ...behavior.metadata.provides };
     }
     if (behavior.metadata?.emits !== undefined) {
@@ -591,6 +631,22 @@ export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any>
   return attachPipe({
     ...make((elements, deps) =>
       Effect.gen(function* () {
+        // DQ-057: overriding an earlier member's provides key is legal but
+        // reported, exactly like DQ-058's duplicate-attachment.
+        if (providesOverrides.length > 0) {
+          const maybeReporter = yield* Effect.serviceOption(Diagnostics.ReporterTag);
+          if (maybeReporter._tag === "Some") {
+            for (const key of providesOverrides) {
+              maybeReporter.value.reporter.report({
+                source: "behavior",
+                severity: "warning",
+                code: "behavior:provides-override",
+                message:
+                  `Behavior composition overrides the earlier provided binding "${key}" (last member wins).`,
+              });
+            }
+          }
+        }
         const out: Record<string, unknown> = {};
         for (const behavior of behaviors) {
           const next = yield* behavior.run(elements, deps);

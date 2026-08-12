@@ -13,21 +13,17 @@ here except where a real choice sits behind them (see the last section).
 | ID | Question | Severity | Owning plan |
 | --- | --- | --- | --- |
 | DQ-056 | What subscribes to a binding-conditional style, and at what granularity? | deferrable | `COMPONENT_KIT_PLAN.md` (seq. step 5) |
-| DQ-057 | `compose`: last-wins or intersection, conflicting `provides`, arity, pipeability? | deferrable | `COMPONENT_KIT_PLAN.md` K0b |
 | DQ-059 | What is the shipped component setup/render surface, and does the library owe a scoped test helper? | deferrable | DIN-20 |
 | DQ-060 | `setup()` builder or positional `make(props(), require(), …)` — which ships? | deferrable | DIN-20 |
 | DQ-061 | How does Theme express a two-level palette across layers? | deferrable | DIN-18 / K1 |
 | DQ-062 | What is the slot-widening form for recipes? | deferrable | `COMPONENT_KIT_PLAN.md` K1 |
 | DQ-063 | CSS-Tags: absorb as `@affe/css` or depend externally? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-8 |
 | DQ-064 | How does static CSS extraction survive a cross-module `Style.compose` chain? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-9 |
-| DQ-065 | K0c `Mixin` timing relative to fixing the three hand-written factories? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-7 |
 | DQ-066 | Where does interruptible behaviour timing come from? | deferrable | `COMPONENT_KIT_PLAN.md` K0b |
 | DQ-067 | What is `collection`'s invalidation granularity? | deferrable | `COMPONENT_KIT_PLAN.md` K0b |
 | DQ-068 | What is the attribute value type and coercion contract? | deferrable | DIN-17 |
 | DQ-069 | Batch: three closed-union / exhaustiveness tightenings. | cosmetic | `COMPONENT_KIT_PLAN.md` §4 items |
 | DQ-070 | Does a slot become an addressable named region (slot-as-projection)? | deferrable | DIN-11 |
-| DQ-071 | `presence` catalog packaging: reduced-motion entry point + element/bindings contract | deferrable | `COMPONENT_KIT_PLAN.md` K0b items 6/9 |
-| DQ-072 | `LiveAnnouncer` service interface: message call vs queue handles; clear-after-timeout policy | deferrable | `COMPONENT_KIT_PLAN.md` K0b item 5 |
 
 ---
 
@@ -47,6 +43,10 @@ still resolves. The decision and its rejected alternatives live in the plan.
 | DQ-054 | Delete `Style.forSlots`; fold contract-awareness into one `make` that keeps binding inference. Full slot coverage is **opt-in** exhaustive, not default-required. | `COMPONENT_KIT_PLAN.md` |
 | DQ-055 | `Resume.snapshotVia({schema, read, restore})` is the primitive (it generalises to every handle-shaped binding, incl. `DQ-053` state); `Machine.resumable(def)` is sugar on it. Interim: bind `machine.state`. | `COMPONENT_KIT_PLAN.md` |
 | DQ-058 | Double-attach is LEGAL but reported: attach records behaviour identity + elements, a repeat emits `component:duplicate-attachment` through the opt-in diagnostics reporter, and nothing is ever silently de-duplicated. | implemented in `src/Component.ts` (`recordBehaviorAttachment`), tested in `src/__tests__/lifecycle-disposal.test.ts` |
+| DQ-057 | Last-wins TRUTH types: variadic `compose` over a tuple with `MergeAll` bindings (later keys override), `provides`/`events`/`emits` stay last-wins with a `behavior:provides-override` diagnostic through the DQ-058 reporter channel (report, never block). Deps stay intersection (inputs). Pipe landed. Rejected: intersection-with-conflict-errors — it outlaws the sanctioned REPLACE path. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b |
+| DQ-065 | Option 1 confirmed and DISCHARGED: the five factories were fixed first and now prove the boilerplate; `Mixin` (K0c) proceeds, extracted from the working shape — it must collapse the three observed repetitions (factory name, doubled witness names, options pick-list) and desugar to the same Schema+Behavior patterns, never a second runtime. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0c |
+| DQ-071 | `presence` packages as option 1: a `ReducedMotion` Context service (boolean reader, static default `false`, `Layer`-swappable per subtree) + `PresenceOptions` Schema for per-instance knobs; bindings are `isPresent` + `phase` (machine handle stays internal); the `animationend` listener attaches to the single `root` element. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b item 6 |
+| DQ-072 | `LiveAnnouncer` is option 1: one `announce(message, politeness?)` method; clear-after-timeout is the LAYER's policy (`makeLiveAnnouncer({ clearAfterMs })`); a mock Layer captures `[message, politeness]` tuples. Queue handles deferred until a consumer needs backpressure. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b item 5 |
 
 
 
@@ -123,6 +123,8 @@ resumability lane for dormancy semantics, findings §1.4.
 ---
 
 ## DQ-057 — `compose`: last-wins or intersection, what happens to conflicting `provides`, what arity, and is `Behavior` pipeable?
+
+> **RATIFIED 2026-08-12** — option 1 per the status update below: last-wins truth types (`MergeAll` over a variadic tuple), `behavior:provides-override` diagnostic via the DQ-058 reporter channel, deps stay intersection, pipe already landed. Decision row in the Decided table; implementation is the K0b compose-types slice.
 
 - **Severity:** deferrable
 - **Owning plan:** `docs/COMPONENT_KIT_PLAN.md` K0b
@@ -573,6 +575,8 @@ OQ-9.
 
 ## DQ-065 — Does K0c `Mixin` land before or as the fix to the three hand-written factories?
 
+> **RATIFIED 2026-08-12** — option 1 confirmed and its precondition discharged (all five factories fixed first). `Mixin` proceeds per the plan's K0c design, extracted from the working factory shape; it must collapse the three repetitions listed in the status update and desugar to Schema+Behavior — never a second runtime.
+
 - **Severity:** deferrable
 - **Owning plan:** `docs/COMPONENT_KIT_PLAN.md` "Open questions" 7
 - **Raised:** 2026-07-30, triaging the `unbuilt` in `behavior-catalog.spec.ts`
@@ -961,6 +965,8 @@ questions.
 
 ## DQ-071 — Where does `presence`'s reduced-motion input enter, and what is its catalog contract?
 
+> **RATIFIED 2026-08-12** — option 1 (the provisional pick): `ReducedMotion` Context service + `PresenceOptions` Schema; `isPresent`/`phase` bindings; `root` listener.
+
 - **Severity:** deferrable
 - **Owning plan:** `docs/COMPONENT_KIT_PLAN.md` K0b mandated coverage items 6 and 9
 - **Raised:** 2026-08-12, triaging the last red in `future/components/presence.spec.ts`
@@ -1014,6 +1020,8 @@ provision. Ratifying option 1 means: `ReducedMotion` service with a
 ---
 
 ## DQ-072 — What is the `LiveAnnouncer` service interface, and who owns clear-after-timeout?
+
+> **RATIFIED 2026-08-12** — option 1 (the provisional pick): one `announce(message, politeness?)` method; timeout policy on the Layer maker.
 
 - **Severity:** deferrable
 - **Owning plan:** `docs/COMPONENT_KIT_PLAN.md` K0b mandated coverage item 5

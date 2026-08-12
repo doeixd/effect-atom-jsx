@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Cause, Effect, Exit, Option, Schema, Scope } from "effect";
 import * as Behavior from "../Behavior.js";
+import * as Diagnostics from "../Diagnostics.js";
 import * as Behaviors from "../behaviors.js";
 import * as Element from "../Element.js";
 
@@ -301,5 +302,60 @@ describe("Behavior API hardening", () => {
     // the structured issue survives beside the flattened message
     expect(error.issue).toBeDefined();
     expect(error.message).toContain("probe");
+  });
+});
+
+describe("compose last-wins truth types (DQ-057)", () => {
+  it("REPLACE-by-compose types as the replacement, arity is unbounded, override is reported", () => {
+    type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends
+      (<T>() => T extends B ? 1 : 2) ? true : false;
+
+    const base = Behavior.make((_e: {}) => Effect.succeed({ value: 1 as number, keep: "k" }));
+    const override = Behavior.make((_e: {}) => Effect.succeed({ value: "replaced" as string }));
+    const extraA = Behavior.make((_e: {}) => Effect.succeed({ a: true }));
+    const extraB = Behavior.make((_e: {}) => Effect.succeed({ b: 2 as number }));
+
+    // Four members: past the old three-member overload ceiling, still typed.
+    const stacked = Behavior.compose(base, override, extraA, extraB);
+    type Bindings = Behavior.BindingsOf<typeof stacked>;
+    // Last-wins TRUTH: `value` is the replacement's string, not number & string.
+    const exact: Eq<Bindings["value"], string> = true;
+    const kept: Eq<Bindings["keep"], string> = true;
+    const merged: Eq<Bindings["a"] | Bindings["b"], boolean | number> = true;
+    void exact; void kept; void merged;
+
+    const attached = Effect.runSync(Behavior.attachScoped(stacked, {}));
+    expect(attached.bindings).toEqual({ value: "replaced", keep: "k", a: true, b: 2 });
+    Effect.runSync(attached.dispose);
+  });
+
+  it("overriding an earlier provides key emits behavior:provides-override, never blocks", () => {
+    const first = Behavior.make((_e: {}) => Effect.succeed({ value: 1 })).pipe(
+      Behavior.provides({ value: Behavior.binding<"value", number>("value") }),
+    );
+    const second = Behavior.make((_e: {}) => Effect.succeed({ value: 2 })).pipe(
+      Behavior.provides({ value: Behavior.binding<"value", number>("value") }),
+    );
+    const stacked = Behavior.compose(first, second);
+
+    const seen: Array<Diagnostics.Diagnostic> = [];
+    const attached = Effect.runSync(
+      Behavior.attachScoped(stacked, {}).pipe(
+        Effect.provideService(Diagnostics.ReporterTag, {
+          reporter: Diagnostics.reporter((diagnostic) => seen.push(diagnostic)),
+        }),
+      ),
+    );
+    // Composition is legal and last-wins…
+    expect(attached.bindings).toEqual({ value: 2 });
+    // …and the override is REPORTED through the opt-in channel.
+    expect(seen.map((d) => d.code)).toEqual(["behavior:provides-override"]);
+    expect(seen[0]!.message).toContain('"value"');
+    Effect.runSync(attached.dispose);
+
+    // Without a reporter provided, nothing throws and nothing is reported.
+    const silent = Effect.runSync(Behavior.attachScoped(stacked, {}));
+    expect(silent.bindings).toEqual({ value: 2 });
+    Effect.runSync(silent.dispose);
   });
 });
