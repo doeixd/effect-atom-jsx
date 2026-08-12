@@ -17,14 +17,19 @@ export const CollectionOptions = Schema.Struct({
    * When false, `enabledItems` / navigation helpers skip disabled entries.
    * Disabled items remain in `items` for index stability.
    */
-  trackDisabled: Schema.optionalKey(Schema.Boolean),
+  trackDisabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   /** When true, set aria-posinset / aria-setsize on each item. */
-  setPosInSet: Schema.optionalKey(Schema.Boolean),
+  setPosInSet: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
 });
 
 export type CollectionOptions = typeof CollectionOptions.Type;
 
-export type CollectionConfig = CollectionOptions;
+/** Caller-facing config: every Schema knob optional (defaults decode in). */
+export type CollectionConfig = typeof CollectionOptions.Encoded;
 
 export type CollectionItemMeta = {
   readonly disabled?: boolean;
@@ -44,44 +49,31 @@ export type CollectionBindings<E extends Element.Handle = Element.Handle> = {
   readonly enabledItems: () => ReadonlyArray<E>;
 };
 
-// TODO(kit): widened so resolved options stay `boolean` rather than the
-// literal defaults; revisit when the kit settles its options contract.
-const defaultOptions: Required<CollectionOptions> = {
-  trackDisabled: true,
-  setPosInSet: false,
-};
-
-function decodeOptions(config: CollectionConfig = {}): typeof defaultOptions {
-  const partial = Schema.decodeUnknownSync(CollectionOptions)(config);
-  return {
-    trackDisabled: partial.trackDisabled ?? defaultOptions.trackDisabled,
-    setPosInSet: partial.setPosInSet ?? defaultOptions.setPosInSet,
-  };
-}
-
 /**
  * Expose ordered access + skippable metadata over an `Element.Collection`.
  *
  * Parent code still owns `collection.set([...])`; this behavior tracks
  * changes reactively and optional per-item disabled flags.
+ *
+ * Options decode against `CollectionOptions` at attach time: defaults come
+ * from the Schema, and a malformed config fails the attach Effect with a
+ * typed `Behavior.BehaviorOptionsError` — the factory itself never throws.
  */
 export const collection = <E extends Element.Handle = Element.Handle>(
   config: CollectionConfig = {},
-) => {
-  const options = decodeOptions(config);
-
-  // TODO(kit): `Behavior` is not pipeable; use the applied `provides` form.
-  return Behavior.provides({
-    items: Behavior.binding<"items", Atom.ReadonlyAtom<ReadonlyArray<E>>>("items"),
-    size: Behavior.binding<"size", Atom.ReadonlyAtom<number>>("size"),
-  })(
-    Behavior.make<
+) =>
+  Behavior.make<
     { readonly items: Element.Collection<E> },
     CollectionBindings<E>,
     never,
-    never
+    Behavior.BehaviorOptionsError
   >((elements) =>
     Effect.gen(function* () {
+      const options = yield* Behavior.decodeOptions(
+        "collection",
+        CollectionOptions,
+        config,
+      );
       const version = yield* Component.state(0);
       const disabled = new WeakMap<Element.Handle, boolean>();
 
@@ -154,7 +146,10 @@ export const collection = <E extends Element.Handle = Element.Handle>(
         enabledIndices,
         enabledItems,
       } satisfies CollectionBindings<E>;
+    })
+  ).pipe(
+    Behavior.provides({
+      items: Behavior.binding<"items", Atom.ReadonlyAtom<ReadonlyArray<E>>>("items"),
+      size: Behavior.binding<"size", Atom.ReadonlyAtom<number>>("size"),
     }),
-    ),
   );
-};

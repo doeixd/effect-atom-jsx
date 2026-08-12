@@ -10,18 +10,25 @@ import * as Component from "../Component.js";
 import type * as Element from "../Element.js";
 
 export const RovingTabindexOptions = Schema.Struct({
-  orientation: Schema.optionalKey(
-    Schema.Literals(["vertical", "horizontal", "both"]),
+  orientation: Schema.Literals(["vertical", "horizontal", "both"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("vertical" as const)),
   ),
-  loop: Schema.optionalKey(Schema.Boolean),
+  loop: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   /** When true, only update currentIndex (no element.focus). */
-  virtual: Schema.optionalKey(Schema.Boolean),
-  initialIndex: Schema.optionalKey(Schema.Number),
+  virtual: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  initialIndex: Schema.Number.pipe(
+    Schema.withDecodingDefault(Effect.succeed(0)),
+  ),
 });
 
 export type RovingTabindexOptions = typeof RovingTabindexOptions.Type;
 
-export type RovingTabindexConfig = RovingTabindexOptions & {
+/** Caller-facing config: every Schema knob optional (defaults decode in). */
+export type RovingTabindexConfig = typeof RovingTabindexOptions.Encoded & {
   /** Optional filter: return false to skip an item (e.g. disabled). */
   readonly isItemDisabled?: (item: Element.Focusable, index: number) => boolean;
 };
@@ -39,57 +46,38 @@ export type RovingTabindexBindings = {
   }) => void;
 };
 
-// TODO(kit): widened so resolved options keep the full option unions
-// (e.g. orientation) rather than the literal defaults; revisit when the kit
-// settles its options contract.
-const defaultOptions: Required<RovingTabindexOptions> = {
-  orientation: "vertical",
-  loop: true,
-  virtual: false,
-  initialIndex: 0,
-};
-
-function decodeOptions(config: RovingTabindexConfig): typeof defaultOptions {
-  const partial = Schema.decodeUnknownSync(RovingTabindexOptions)({
-    orientation: config.orientation,
-    loop: config.loop,
-    virtual: config.virtual,
-    initialIndex: config.initialIndex,
-  });
-  return {
-    orientation: partial.orientation ?? defaultOptions.orientation,
-    loop: partial.loop ?? defaultOptions.loop,
-    virtual: partial.virtual ?? defaultOptions.virtual,
-    initialIndex: partial.initialIndex ?? defaultOptions.initialIndex,
-  };
-}
-
 /**
  * Roving focus over a focusable collection.
  *
  * Requires a focusable collection and a container that receives keydown
  * (typically the group root). Sets tabIndex 0 on the current item and -1 on
  * others (non-virtual mode).
+ *
+ * Options decode against `RovingTabindexOptions` at attach time: defaults
+ * come from the Schema, and a malformed config fails the attach Effect with a
+ * typed `Behavior.BehaviorOptionsError` — the factory itself never throws.
  */
-export const rovingTabindex = (config: RovingTabindexConfig = {}) => {
-  const options = decodeOptions(config);
-
-  // TODO(kit): `Behavior` is not pipeable; use the applied `provides` form.
-  return Behavior.provides({
-    currentIndex: Behavior.binding<"currentIndex", Atom.WritableAtom<number>>(
-      "currentIndex",
-    ),
-  })(
-    Behavior.make<
+export const rovingTabindex = (config: RovingTabindexConfig = {}) =>
+  Behavior.make<
     {
       readonly container: Element.Interactive;
       readonly items: Element.Collection<Element.Focusable>;
     },
     RovingTabindexBindings,
     never,
-    never
+    Behavior.BehaviorOptionsError
   >((elements) =>
     Effect.gen(function* () {
+      const options = yield* Behavior.decodeOptions(
+        "rovingTabindex",
+        RovingTabindexOptions,
+        {
+          orientation: config.orientation,
+          loop: config.loop,
+          virtual: config.virtual,
+          initialIndex: config.initialIndex,
+        },
+      );
       const currentIndex = yield* Component.state(options.initialIndex);
 
       const list = (): ReadonlyArray<Element.Focusable> => elements.items.items();
@@ -228,7 +216,11 @@ export const rovingTabindex = (config: RovingTabindexConfig = {}) => {
         last,
         handleKeyDown,
       } satisfies RovingTabindexBindings;
+    })
+  ).pipe(
+    Behavior.provides({
+      currentIndex: Behavior.binding<"currentIndex", Atom.WritableAtom<number>>(
+        "currentIndex",
+      ),
     }),
-    ),
   );
-};

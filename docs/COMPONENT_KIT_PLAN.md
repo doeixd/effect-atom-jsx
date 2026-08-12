@@ -2,9 +2,11 @@
 
 Date: 2026-07-29 (revised 2026-07-30)
 Status: active — K0 adapter landed (machine *resume binding* shape still
-owed); next: Schema-first catalog (K0b) — two of the load-bearing five are
-currently broken, see Known defects — Mixin module (K0c, designed), recipe
-merge (K1). API decisions previously left open were ratified 2026-07-30 in
+owed); K0b in progress — the two Known defects (Schema defaults + typed
+decode; pipeable `Behavior`) are FIXED 2026-08-12 and the first six
+`behavior-catalog.spec.ts` specs are green; remaining K0b: the deps channel
+(decided `DQ-052`), `dismissableLayer` + `anchorPosition` (the load-bearing
+five's last two) — then Mixin module (K0c, designed), recipe merge (K1). API decisions previously left open were ratified 2026-07-30 in
 the two foundation sections.
 
 A first-party component library with the combined power of Radix/Base
@@ -387,19 +389,29 @@ by a type error only by accident rather than by design.
 These are proven, not suspected, and they are what the `TODO(kit)` comments
 in `src/behaviors/` owe:
 
-1. **`press()` and `rovingTabindex()` throw `SchemaError` on default or
-   partial config.** `decodeOptions` forwards explicit `undefined` into
+1. **FIXED (2026-08-12).** Defaults now live in the Schema
+   (`Schema.withDecodingDefault`) for `press`, `rovingTabindex`, AND
+   `collection`; decode happens inside the behavior's `run` and fails closed
+   as the typed `Behavior.BehaviorOptionsError` (via the new
+   `Behavior.decodeOptions`), so the factory never throws. Config types are
+   the Schema's `Encoded` side (every knob optional) plus function props.
+   Pinned by `future/components/behavior-catalog.spec.ts` tests 1-4 (green).
+   Original record: **`press()` and `rovingTabindex()` throw `SchemaError`
+   on default or partial config.** `decodeOptions` forwards explicit `undefined` into
    `Schema.optionalKey` fields, so `press()` — the documented call — fails.
    Two of the load-bearing five are unusable as documented, and **no test
    in `src/__tests__` exercises either factory**. Fix direction: defaults
    belong in the Schema (`Schema.withDecodingDefault`), and decode must be
    fail-closed **typed** (a tagged error), never a thrown `ParseError` —
    the same rule as Mixin acceptance item 4.
-2. **`Behavior` has no `pipe`**, which the documented
-   `Behavior.make(...).pipe(Behavior.provides({…}))` authoring form
-   requires; `src/behaviors/press.ts:81` carries the `TODO(kit)` and uses
-   the applied form instead. Either add `pipe` to `Behavior` or change the
-   plan's examples — the plan currently teaches a form that does not exist.
+2. **FIXED (2026-08-12).** `Behavior` is pipeable: every construction site
+   (`make`, `portable`, `withMetadata`, `compose`) attaches a
+   non-enumerable `pipe` bound to the constructed value (non-enumerable so
+   an object spread drops it instead of copying a stale-self closure). All
+   three catalog factories now use the documented
+   `Behavior.make(...).pipe(Behavior.provides({…}))` form and the
+   `TODO(kit)` comments are gone. Original record: **`Behavior` has no
+   `pipe`**, which the documented authoring form requires.
 3. **Binding-conditional styles are resolved once at view-transform time**,
    so a machine transition does not restyle. This directly contradicts
    "styles subscribe to machine tags" (advantage 6) — the reactive

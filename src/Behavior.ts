@@ -1,4 +1,4 @@
-import { Effect, Exit, Scope } from "effect";
+import { Effect, Exit, Schema, Scope } from "effect";
 import * as Component from "./Component.js";
 import * as Element from "./Element.js";
 import * as Portable from "./Portable.js";
@@ -33,6 +33,29 @@ export interface Behavior<Elements, Bindings, Req, E> {
    * closures and require fallback activation on a resumed client.
    */
   readonly attachment?: BehaviorAttachment;
+  /** Pipeable: `Behavior.make(...).pipe(Behavior.provides({...}))`. */
+  pipe(): Behavior<Elements, Bindings, Req, E>;
+  pipe<B>(ab: (self: this) => B): B;
+  pipe<B, C>(ab: (self: this) => B, bc: (b: B) => C): C;
+  pipe<B, C, D>(ab: (self: this) => B, bc: (b: B) => C, cd: (c: C) => D): D;
+  pipe<B, C, D, F>(
+    ab: (self: this) => B,
+    bc: (b: B) => C,
+    cd: (c: C) => D,
+    df: (d: D) => F,
+  ): F;
+}
+
+// `pipe` is defined non-enumerably so an object spread (`{ ...behavior }`)
+// drops it instead of copying a closure bound to the ORIGINAL object; every
+// construction site re-attaches a pipe bound to the new value.
+function attachPipe<T extends object>(behavior: T): T {
+  Object.defineProperty(behavior, "pipe", {
+    value: (...fns: ReadonlyArray<(value: unknown) => unknown>) =>
+      fns.reduce<unknown>((value, fn) => fn(value), behavior),
+    enumerable: false,
+  });
+  return behavior;
 }
 
 /**
@@ -60,6 +83,40 @@ export function inspectAttachment(
   behavior: Behavior<any, any, any, any>,
 ): BehaviorAttachment {
   return behavior.attachment ?? opaqueAttachment;
+}
+
+/**
+ * Typed failure for a catalog behavior whose configuration does not satisfy
+ * its options Schema. Constructing a behavior is not an Effect, so decode
+ * happens where an error channel exists — inside `run`, surfacing on attach —
+ * never as a synchronous throw at the factory call site.
+ */
+export class BehaviorOptionsError extends Schema.TaggedErrorClass<BehaviorOptionsError>(
+  "@effect-atom-jsx/BehaviorOptionsError",
+)("BehaviorOptionsError", {
+  behavior: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
+ * Decode a catalog behavior's options against its Schema, failing closed with
+ * a typed `BehaviorOptionsError`. Defaults belong in the Schema
+ * (`Schema.withDecodingDefault`), so a partial — or absent — config decodes to
+ * the full option type.
+ */
+export function decodeOptions<S extends Schema.Top>(
+  behaviorName: string,
+  schema: S,
+  input: unknown,
+): Effect.Effect<S["Type"], BehaviorOptionsError> {
+  return Schema.decodeUnknownEffect(schema)(input).pipe(
+    Effect.mapError((error) =>
+      new BehaviorOptionsError({
+        behavior: behaviorName,
+        message: `Invalid ${behaviorName} options: ${error.message}`,
+      })
+    ),
+  ) as Effect.Effect<S["Type"], BehaviorOptionsError>;
 }
 
 /** Extract the element map required by a behavior. */
@@ -238,7 +295,7 @@ export function make<Elements, Bindings = {}, Req = never, E = never>(
   run: (elements: Elements) => Effect.Effect<Bindings, E, Req>,
   metadata?: BehaviorMetadata<Elements>,
 ): Behavior<Elements, Bindings, Req, E> {
-  return {
+  return attachPipe({
     [BehaviorTypeId]: {
       Elements: undefined as unknown as Elements,
       Bindings: undefined as unknown as Bindings,
@@ -247,7 +304,7 @@ export function make<Elements, Bindings = {}, Req = never, E = never>(
     },
     run,
     metadata,
-  };
+  }) as Behavior<Elements, Bindings, Req, E>;
 }
 
 /**
@@ -277,7 +334,7 @@ export function portable<
   >,
   metadata?: BehaviorMetadata<Elements>,
 ): Behavior<Elements, Bindings, Req, E> {
-  return {
+  return attachPipe({
     ...make<Elements, Bindings, Req, E>(
       (elements) => Portable.execute(executable, elements),
       metadata,
@@ -286,7 +343,7 @@ export function portable<
       kind: "portable",
       executables: Object.freeze([executable as Portable.AnyBoundCode]),
     }) as BehaviorAttachment,
-  };
+  }) as Behavior<Elements, Bindings, Req, E>;
 }
 
 /**
@@ -360,7 +417,7 @@ export function withMetadata<Elements, Bindings, Req, E>(
   behavior: Behavior<Elements, Bindings, Req, E>,
   metadata: BehaviorMetadata<Elements>,
 ): Behavior<Elements, Bindings, Req, E> {
-  return {
+  return attachPipe({
     ...behavior,
     metadata: {
       ...behavior.metadata,
@@ -378,7 +435,7 @@ export function withMetadata<Elements, Bindings, Req, E>(
         ...metadata.emits,
       },
     },
-  };
+  }) as Behavior<Elements, Bindings, Req, E>;
 }
 
 /** Declare the bindings a behavior contributes. */
@@ -475,7 +532,7 @@ export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any>
         ),
       }) as BehaviorAttachment
       : opaqueAttachment;
-  return {
+  return attachPipe({
     ...make((elements) =>
       Effect.gen(function* () {
         const out: Record<string, unknown> = {};
@@ -486,7 +543,7 @@ export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any>
         return out;
       }), metadata),
     attachment,
-  };
+  }) as Behavior<any, any, any, any>;
 }
 
 export function decorator<Elements, Bindings, Req, E>(

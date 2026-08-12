@@ -13,14 +13,19 @@ import type * as Element from "../Element.js";
 
 export const PressOptions = Schema.Struct({
   /** When true, do not move focus to the target on pointer press. */
-  preventFocusOnPress: Schema.optionalKey(Schema.Boolean),
+  preventFocusOnPress: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   /** Track `isPressed` atom for styling. Default true. */
-  trackPressed: Schema.optionalKey(Schema.Boolean),
+  trackPressed: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
 });
 
 export type PressOptions = typeof PressOptions.Type;
 
-export type PressConfig = PressOptions & {
+/** Caller-facing config: every Schema knob optional (defaults decode in). */
+export type PressConfig = typeof PressOptions.Encoded & {
   readonly onPress?: () => void;
   readonly onPressStart?: () => void;
   readonly onPressEnd?: () => void;
@@ -50,45 +55,28 @@ type ClickLike = {
   readonly pointerType?: string;
 };
 
-// TODO(kit): widened so resolved options stay `boolean` rather than the
-// literal defaults; revisit when the kit settles its options contract.
-const defaultOptions: Required<PressOptions> = {
-  preventFocusOnPress: false,
-  trackPressed: true,
-};
-
-function decodeOptions(config: PressConfig): typeof defaultOptions {
-  const partial = Schema.decodeUnknownSync(PressOptions)({
-    preventFocusOnPress: config.preventFocusOnPress,
-    trackPressed: config.trackPressed,
-  });
-  return {
-    preventFocusOnPress:
-      partial.preventFocusOnPress ?? defaultOptions.preventFocusOnPress,
-    trackPressed: partial.trackPressed ?? defaultOptions.trackPressed,
-  };
-}
-
 /**
  * Attach press handlers to an interactive element.
  *
  * Keyboard: Enter / Space. Pointer: primary button down+up on target.
  * Cancels if pointer leaves before up. Virtual click (detail 0) fires once.
+ *
+ * Options decode against `PressOptions` at attach time: defaults come from
+ * the Schema, and a malformed config fails the attach Effect with a typed
+ * `Behavior.BehaviorOptionsError` — the factory itself never throws.
  */
-export const press = (config: PressConfig = {}) => {
-  const options = decodeOptions(config);
-
-  // TODO(kit): `Behavior` is not pipeable; use the applied `provides` form.
-  return Behavior.provides({
-    isPressed: Behavior.binding<"isPressed", Atom.WritableAtom<boolean>>("isPressed"),
-  })(
-    Behavior.make<
+export const press = (config: PressConfig = {}) =>
+  Behavior.make<
     { readonly target: Element.Interactive },
     PressBindings,
     never,
-    never
+    Behavior.BehaviorOptionsError
   >((elements) =>
     Effect.gen(function* () {
+      const options = yield* Behavior.decodeOptions("press", PressOptions, {
+        preventFocusOnPress: config.preventFocusOnPress,
+        trackPressed: config.trackPressed,
+      });
       const isPressed = yield* Component.state(false);
       let pointerDown = false;
       let activePointerId: number | undefined;
@@ -192,7 +180,9 @@ export const press = (config: PressConfig = {}) => {
           end(true);
         },
       } satisfies PressBindings;
+    })
+  ).pipe(
+    Behavior.provides({
+      isPressed: Behavior.binding<"isPressed", Atom.WritableAtom<boolean>>("isPressed"),
     }),
-    ),
   );
-};
