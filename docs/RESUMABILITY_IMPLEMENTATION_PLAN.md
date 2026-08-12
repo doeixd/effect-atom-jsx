@@ -1368,6 +1368,14 @@ Work:
    (fixture tests landed: manifest-compat.test.ts)
 5. Add CSP tests and an audit checklist for secret leakage and untrusted action
    input.
+   (closed 2026-08-12: the permissive demo now serves under an ENFORCED
+   `script-src 'self'` CSP — no inline scripts, no nonce — and
+   `browser-tests/permissive-demo.spec.ts` proves both that the page resumes
+   under it and that the policy actually blocks an injected inline script;
+   inert-embedding pins live in `adapter-spi.test.ts`; the operator-facing
+   "Pre-ship audit checklist" landed in `RESUMABILITY_GUIDE.md` §Security
+   rules, covering secrets/captures, untrusted input, and per-codec CSP
+   posture including `serovalUnsafeEval`'s named cost.)
 6. Add no-instrumentation and collection benchmarks.
 7. Update the AF-UI contract and current-status document as each capability
    lands; archive the exploratory source document once its decisions are

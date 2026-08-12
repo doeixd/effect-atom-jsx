@@ -36,8 +36,40 @@ test("resumes through the permissive preset: zero setup on load, live Map on cli
 
   await page.goto(`${baseUrl}/`);
   await expect
-    .poll(() => page.evaluate(() => window.__PERMISSIVE_TEST__.ready))
+    .poll(() => page.evaluate(() => window.__PERMISSIVE_TEST__?.ready ?? false))
     .toBe(true);
+
+  // M9 item 5: the page is served under an ENFORCED CSP (script-src 'self',
+  // no unsafe-inline, no nonce) — resuming under it is the claim. Both
+  // halves are proven: nothing the framework did violated the policy…
+  const cspReport = await page.evaluate(() => {
+    const violations: string[] = [];
+    document.addEventListener("securitypolicyviolation", (event) => {
+      violations.push(event.violatedDirective);
+    });
+    return violations;
+  });
+  expect(cspReport).toEqual([]);
+  // …and the policy is genuinely enforced: an injected inline script (the
+  // attacker shape the inert-JSON manifest exists to rule out) is blocked.
+  const injected = await page.evaluate(async () => {
+    const violated = new Promise<string>((resolve) => {
+      document.addEventListener(
+        "securitypolicyviolation",
+        (event) => resolve(event.violatedDirective),
+        { once: true },
+      );
+    });
+    const script = document.createElement("script");
+    script.textContent = "window.__CSP_ESCAPE__ = true;";
+    document.body.appendChild(script);
+    return {
+      directive: await violated,
+      executed: (window as { __CSP_ESCAPE__?: boolean }).__CSP_ESCAPE__ === true,
+    };
+  });
+  expect(injected.executed).toBe(false);
+  expect(injected.directive).toContain("script-src");
 
   // The Qwik-parity claim: the SSR'd button is live, but NOTHING about the
   // component has executed client-side — no setup, no view, no loader.

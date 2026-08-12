@@ -26,5 +26,14 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 4179,
     strictPort: true,
+    // M9 item 5: the resumable page runs under an ENFORCED CSP with no
+    // unsafe-inline and no nonce — the manifest is inert application/json,
+    // handlers attach from module code, and nothing needs eval. The
+    // Playwright spec proves both halves: the page resumes, and an injected
+    // inline script is actually blocked (so the header is really enforced).
+    headers: {
+      "Content-Security-Policy":
+        "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'",
+    },
   },
 });

@@ -15,18 +15,10 @@
       </p>
       <div id="root"><!--__SSR_HTML__--></div>
     </main>
-    <script>
-      window.__PERMISSIVE_TEST__ = {
-        setupRuns: 0,
-        viewRuns: 0,
-        loaderCalls: 0,
-        clicks: [],
-        diagnostics: [],
-        serializerId: "",
-        ready: false,
-        disposed: false
-      };
-    </script>
+    <!-- No inline executable scripts: this page runs under an enforced
+         script-src 'self' CSP (see vite.config.ts preview headers). The test
+         state object is created by the bootstrap module; the manifest below
+         is inert application/json, which CSP never executes. -->
     <!--__RESUME_MANIFEST__-->
     <script type="module" src="/client/bootstrap.ts"></script>
   </body>

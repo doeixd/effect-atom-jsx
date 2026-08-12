@@ -2,13 +2,10 @@ import { Effect, ManagedRuntime } from "effect";
 import * as Resume from "effect-atom-jsx/Resume";
 import { permissiveClient } from "@affe/permissive/client";
 import { resolverEntries } from "virtual:af-resume-entries";
-import { browserState } from "../shared/browser-state.js";
+import { initBrowserState } from "../shared/browser-state.js";
 import { BuildId } from "../shared/build.js";
 
-const state = browserState();
-if (state === undefined) {
-  throw new Error("The permissive-demo browser state was not initialized.");
-}
+const state = initBrowserState();
 
 const manifestElement = document.querySelector<HTMLScriptElement>(
   "script[data-af-resume]",

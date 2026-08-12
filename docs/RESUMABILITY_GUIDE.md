@@ -207,6 +207,60 @@ execution, and tests prove no server service instance survives the boundary.
 6. **Duplicate installation is rejected.** One active client installation per
    root; installers own only their listeners and dispatch fibers.
 
+### Pre-ship audit checklist (M9 item 5)
+
+Run this before shipping a resumable surface. Each line names the proof that
+already exists, so "checked" means "the pinned behavior applies to you", not
+"someone eyeballed it".
+
+**Secrets and captures**
+
+- [ ] No secret-named captures. The compiler rejects credential-looking
+      capture names as a hard error by default (`secretCaptureSeverity:
+      "error"`); if you lowered it to `"warning"`, grep your build output for
+      `secret-prone-capture` and treat every hit as a bug.
+- [ ] Grep your served HTML for material that must not be public. Everything
+      in `data-af-resume` is embedded in the page: captures, state snapshots,
+      loader results. A value you would not put in a cookie does not belong
+      in a capture — cross the boundary with a typed `R` requirement and
+      resolve it from the client Layer instead.
+- [ ] Live resources cannot leak: Scope/Fiber/Layer/services/DOM nodes are
+      refused by the codec guard (both sync and async parse paths), and the
+      permissive codec serializes state handles as opaque hydration KEYS,
+      never their internals.
+
+**Untrusted input**
+
+- [ ] The manifest is data, never authority: unknown code ids fail
+      (`PortableCodeNotFoundError`), the expected build id comes from your
+      deployment, captures re-validate against the loaded definition's
+      schema at resolve time, and a validated manifest is deeply frozen
+      before it is trusted (`DQ-099`).
+- [ ] Adapter escape hatches stay validated: `writeBindingEncoded` bypasses
+      the domain codec but not schema validation — a rejected value produces
+      a classified diagnostic and the last good DOM stands.
+- [ ] Alert on the `errorTag` values worth waking up for (see the
+      diagnostics reference): `PortableCaptureDecodeError` in production
+      usually means a client shipped without the codec layer its server uses.
+
+**CSP posture**
+
+- [ ] The default and seroval-JSON codecs need **no CSP concessions**: the
+      manifest is inert `application/json`, handlers attach from module
+      code, nothing needs `unsafe-inline`, `unsafe-eval`, or a nonce.
+      Proven under an enforced `script-src 'self'` policy in
+      `browser-tests/permissive-demo.spec.ts` (the spec also proves the
+      policy is really enforced, by watching an injected inline script get
+      blocked).
+- [ ] If you chose `serovalUnsafeEval`, its name is the warning: payloads
+      deserialize by evaluating server-produced JavaScript, which requires
+      relaxing CSP and moves the payload outside the inert-JSON trust story.
+      Its serializer id differs, so such payloads can never be decoded by
+      the safe codec by accident — but the CSP cost is yours.
+- [ ] No inline scripts crept into your shell. If your page template carries
+      inline bootstrap state, either move it into a module (as the demo
+      does) or consciously budget the nonce.
+
 ## Deployment-version rules
 
 - Every `Portable.code` carries the `buildId` of the deployment that produced
