@@ -2,8 +2,9 @@
 
 This guide explains what resumability means in AF-UI, how it differs from
 hydration, which APIs opt a component into it, and the security and deployment
-rules every adapter must follow. It documents the runtime protocol as of
-Milestones 0–6 of `RESUMABILITY_IMPLEMENTATION_PLAN.md`.
+rules every adapter must follow. It documents the runtime protocol of
+`RESUMABILITY_IMPLEMENTATION_PLAN.md` through Milestone 11 and the
+`@affe/permissive` preset package.
 
 ## The three capability levels
 
@@ -61,12 +62,15 @@ than repeating an identical region object per expression. Legacy manifest v3
 text records remain decodable and installable. The records carry semantic
 dependency keys, and the client installs lightweight
 dormant subscribers without importing their modules, then lazily resolves and
-patches only the affected SSR text region on the first invalidation. Lists,
-branch replacement, portals, suspense, nested expressions, and HTML still fail
-closed or require activation. Manifest v4 also ratifies
-attribute/class/style-property target metadata and its validated element-marker
-scanner, but client patch strategies and compiler lowering remain fenced until
-the next Milestone 8c slices.
+patches only the affected SSR text region on the first invalidation.
+Attribute, class, and style-property expression targets are fully landed —
+manifest v4 target metadata, the validated element-marker scanner, compiler
+lowering, and the client patch strategies all ship (Milestone 8c). Authored
+structural regions resume too: manifest v5's `structural` member
+(Milestone 8d) resumes keyed lists and single-row branch replacement through
+per-instance child scopes and identity-preserving reconciliation — rows carry
+text content only in this slice. Portals, suspense, nested expressions, and
+HTML content still fail closed or require activation.
 
 ## Core protocol pieces
 

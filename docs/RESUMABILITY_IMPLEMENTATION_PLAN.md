@@ -41,9 +41,11 @@ per-instance child `Scope`s, `data-af-key` fenced at compile time, and one
 
 **Current (2026-08-12):** M10 items 1-4 and 6 done (universal codec, async
 captures, the `@affe/permissive` package with its Chromium Qwik-parity
-proof); M9 item 2 done (`Resume.spiVersion` + the `adapter-spi` subpath);
-M11/M11b done. Remaining: the rest of M9 (unblocked — `DQ-099` is resolved),
-M10 item 5.
+proof); **Milestone 9 is complete** (SPI freeze + `adapter-spi` subpath,
+diagnostics matrix, manifest compat fixtures, enforced-CSP proof + pre-ship
+audit checklist, server-side no-instrumentation/collection benchmarks, doc
+sync + source-doc archival); M11/M11b done. **The sole remaining item in
+this plan is M10 item 5** (capture-ergonomics polish).
 
 **Browser tests and the benchmark have both been re-run** (7/7 Chromium; both
 heap gates pass), and the recorded baseline is **re-pinned from the post-widening
@@ -105,7 +107,9 @@ hardening/SPI review remains pending.
 > 5 findings were disproven and are pinned as passing tests. The pins flip
 > automatically when a bug is fixed — treat them as the fix worklist.
 
-This plan turns the exploration in `resummeability.txt` into an implementation
+This plan turns the exploration in `archive/resummeability.txt` (archived
+2026-08-12, M9 item 7 — its decisions are represented canonically in this plan
+and `RESUMABILITY_GUIDE.md`) into an implementation
 sequence for AF-UI. The source document correctly identifies the library's
 setup-to-bindings-to-view boundary as a strong foundation, but the target is not
 to copy Qwik or to declare the existing hydration path resumable.
@@ -1322,11 +1326,20 @@ Open:
 
 ### Milestone 9 — Hardening, documentation, and adapter stability
 
-Status: deferred
+Status: **complete** (2026-08-12) — all seven items closed; acceptance
+verified below.
 
 Work:
 
 1. Document the ordinary, partial, and fully addressable authoring paths.
+   (audited and closed 2026-08-12: `RESUMABILITY_GUIDE.md` §"The three
+   capability levels" documents hydration (ordinary), partial portability,
+   and resumability with the current API names (`Resume.event`,
+   `Resume.snapshotState`, `Resume.addressable`, portable queries and
+   behaviors, `expr(...)` regions). The audit fixed the two stale claims:
+   the header no longer scopes the guide to "Milestones 0–6", and the
+   fine-grained section now states that 8c attribute/class/style patching
+   and 8d structural regions are landed rather than "fenced".)
 2. Publish the adapter SPI only after the proof adapter and at least one
    external-style consumer exercise it.
    (landed 2026-08-12, `PERMISSIVE_PACKAGE_PLAN.md` S1: `Resume.spiVersion`
@@ -1377,11 +1390,37 @@ Work:
    rules, covering secrets/captures, untrusted input, and per-codec CSP
    posture including `serovalUnsafeEval`'s named cost.)
 6. Add no-instrumentation and collection benchmarks.
+   (closed 2026-08-12: `src/__bench__/resume-collection.bench.ts` — the
+   server side the Chromium harness does not cover. Measured: a 24-handler
+   SSR page with portable `Resume.event` handlers and NO `Resume.collect`
+   scope renders within ~2% of plain closures (noise-level — the
+   no-instrumentation claim), and collection costs ~14 µs per portable
+   event (~0.10 ms for 1 event, ~0.41 ms for 24, same page).
+   Characterization via `npm run bench`; the client dormant-vs-eager
+   protocol stays gated by `benchmarks/resumability/`.)
 7. Update the AF-UI contract and current-status document as each capability
    lands; archive the exploratory source document once its decisions are
    represented canonically.
+   (closed 2026-08-12: `docs/archive/AF_UI_CONTRACT.md` audited — its
+   portable-code/inspection text is current and correctly scoped;
+   `CURRENT_STATUS_IN_REDESIGN_PLAN.md` refreshed through the permissive
+   milestone; the exploratory source `resummeability.txt` is archived to
+   `docs/archive/` with its decisions represented canonically in this plan
+   and `RESUMABILITY_GUIDE.md`.)
 
-Acceptance:
+Acceptance (verified 2026-08-12):
+
+- Public docs never call ordinary state hydration resumability — the guide's
+  capability-level section is explicit that hydration replays setup/view and
+  is not resumability.
+- SPI versioning policy: `Resume.spiVersion` (`DQ-011`) plus the frozen
+  `adapter-spi` member list pinned by `src/__tests__/adapter-spi.test.ts`.
+- Unsupported cases fail closed or activate through tested fallbacks
+  (item 3's diagnostic matrix; fence tests in `resume.test.ts`).
+- Normal runtime performance holds: item 6's no-instrumentation result plus
+  the Chromium heap/slope gates on the pinned baseline.
+
+Original acceptance list:
 
 - Public docs never call ordinary state hydration resumability.
 - The adapter SPI has a versioning policy.

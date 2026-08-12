@@ -1,6 +1,7 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-08-12 (permissive package milestone complete)
+Last updated: 2026-08-12 (permissive package milestone complete; resumability
+plan Milestone 9 complete — only M10 item 5 remains in that plan)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`
