@@ -2614,15 +2614,9 @@ function restoreStateBindingsInScope<Props, Req, E, Bindings, Slots>(
             // run only re-enters after writing `fromExit`), but narrow the
             // Loading/Refreshing arms for the type checker regardless.
             if (current._tag !== "Loading") {
-              writeResult(
-                ResultState.refreshing(
-                  current._tag === "Stale"
-                    ? ResultState.success(current.data)
-                    : current._tag === "Refreshing"
-                    ? current.previous
-                    : current,
-                ),
-              );
+              // Risk 4: the Stale unwrap has exactly one definition — the
+              // core model's `toRefreshing` — never a hand-derived match.
+              writeResult(ResultState.toRefreshing(current));
             }
             const resolved = yield* Portable.resolve(executor).pipe(
               Effect.onError(() =>

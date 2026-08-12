@@ -182,6 +182,29 @@ export const Result = {
   /** Wrap a previously settled result as Refreshing. */
   refreshing: <A, E>(previous: Success<A> | Failure<E> | Defect): Refreshing<A, E> => ({ _tag: "Refreshing", previous }),
 
+  /**
+   * Wrap any result as Refreshing — the SINGLE definition of the Stale
+   * unwrap: `Stale`'s last-good data becomes the refreshed-from `Success`.
+   * Consumers ask this helper; they never pattern-match the tag themselves,
+   * so the keep-stale rule cannot drift between modules. Idempotent on an
+   * already-`Refreshing` value; `Loading` has nothing to refresh from and
+   * passes through unchanged.
+   */
+  toRefreshing: <A, E>(result: Result<A, E>): Result<A, E> => {
+    switch (result._tag) {
+      case "Loading":
+      case "Refreshing":
+        return result;
+      case "Stale":
+        return {
+          _tag: "Refreshing",
+          previous: { _tag: "Success", value: result.data, exit: Exit.succeed(result.data) },
+        };
+      default:
+        return { _tag: "Refreshing", previous: result };
+    }
+  },
+
   /** Create a Success result, backed by `Exit.succeed(value)`. */
   success: <A>(value: A): Success<A> => ({ _tag: "Success", value, exit: Exit.succeed(value) }),
 
