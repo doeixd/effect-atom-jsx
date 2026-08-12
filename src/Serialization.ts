@@ -190,7 +190,9 @@ export const live = layer;
 export {
   seroval,
   serovalLayer,
+  serovalAsyncLayer,
   serovalUnsafeEval,
+  serovalAsyncSerializerId,
   serovalSerializerId,
   serovalUnsafeEvalSerializerId,
   serializerEnvelopeKey,

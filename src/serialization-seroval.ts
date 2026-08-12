@@ -64,6 +64,7 @@ function loadCodecModules(): Promise<CodecModules & { readonly seroval: SerovalM
 
 export const serovalSerializerId = "af.seroval-json.v1";
 export const serovalUnsafeEvalSerializerId = "af.seroval-eval.v1";
+export const serovalAsyncSerializerId = "af.seroval-async-json.v1";
 
 /** The wire envelope key carrying the serializer identity (`DQ-012`). */
 export const serializerEnvelopeKey = "$afSerializer";
@@ -94,12 +95,14 @@ function hydrationKeyOf(handle: object): string {
 
 interface SerovalModule {
   readonly toJSON: (value: unknown, options?: { readonly plugins?: ReadonlyArray<unknown> }) => unknown;
+  readonly toJSONAsync: (value: unknown, options?: { readonly plugins?: ReadonlyArray<unknown> }) => Promise<unknown>;
   readonly fromJSON: (tree: unknown, options?: { readonly plugins?: ReadonlyArray<unknown> }) => unknown;
   readonly createPlugin: (definition: {
     readonly tag: string;
     readonly test: (value: unknown) => boolean;
     readonly parse: {
       readonly sync?: (value: never, ctx: { readonly parse: (value: unknown) => unknown }) => unknown;
+      readonly async?: (value: never, ctx: { readonly parse: (value: unknown) => Promise<unknown> }) => Promise<unknown>;
     };
     readonly serialize: (node: never, ctx: unknown) => string;
     readonly deserialize: (node: never, ctx: { readonly deserialize: (node: unknown) => unknown }) => unknown;
@@ -140,6 +143,13 @@ function makePlugins(seroval: SerovalModule, modules: CodecModules): ReadonlyArr
           `Live resources (Scope, Fiber, Layer, services, DOM nodes) are not serializable values; found ${Object.prototype.toString.call(value)}. Cross the boundary with a typed R requirement instead.`,
         );
       },
+      // The ASYNC parser consults its own hook — without this, the guard
+      // would silently not run under `toJSONAsync`.
+      async: async (value: object) => {
+        throw new Error(
+          `Live resources (Scope, Fiber, Layer, services, DOM nodes) are not serializable values; found ${Object.prototype.toString.call(value)}. Cross the boundary with a typed R requirement instead.`,
+        );
+      },
     },
     serialize: () => {
       throw new Error("af/live-resource-guard never serializes.");
@@ -153,6 +163,10 @@ function makePlugins(seroval: SerovalModule, modules: CodecModules): ReadonlyArr
     test: modules.isStateHandleValue,
     parse: {
       sync: (value: object) => ({
+        kind: "state.hydration-key",
+        key: hydrationKeyOf(value),
+      }),
+      async: async (value: object) => ({
         kind: "state.hydration-key",
         key: hydrationKeyOf(value),
       }),
@@ -183,6 +197,15 @@ function makePlugins(seroval: SerovalModule, modules: CodecModules): ReadonlyArr
           captures: Schema.encodeUnknownSync(value.code.captures)(value.captures),
         },
       }),
+      async: async (value: import("./Portable.js").AnyBoundCode) => ({
+        descriptor: {
+          version: 1,
+          kind: "portable.code",
+          id: value.code.id,
+          buildId: value.code.buildId,
+          captures: Schema.encodeUnknownSync(value.code.captures)(value.captures),
+        },
+      }),
     },
     serialize: () => {
       throw new Error("af/bound-code serializes in JSON-tree mode only.");
@@ -196,6 +219,7 @@ function makePlugins(seroval: SerovalModule, modules: CodecModules): ReadonlyArr
     test: (value): boolean => modules.SafeHtml.isSafeHtml(value),
     parse: {
       sync: (value: import("./SafeHtml.js").SafeHtml) => ({ html: modules.SafeHtml.unwrap(value) }),
+      async: async (value: import("./SafeHtml.js").SafeHtml) => ({ html: modules.SafeHtml.unwrap(value) }),
     },
     serialize: () => {
       throw new Error("af/safe-html serializes in JSON-tree mode only.");
@@ -267,6 +291,68 @@ function makeSerovalCodec(seroval: SerovalModule, modules: CodecModules): Serial
   };
 }
 
+function makeSerovalAsyncCodec(seroval: SerovalModule, modules: CodecModules): SerializationService {
+  const plugins = makePlugins(seroval, modules);
+  return {
+    id: serovalAsyncSerializerId,
+    // M10.6: seroval's ASYNC tree form — a captured Promise is awaited on the
+    // server and restored as a live, already-resolved Promise on the client.
+    // Live resources (including in-flight Effects, which carry `~effect/`
+    // keys) stay refused by the same guard plugin the sync codec uses:
+    // a Promise is a settleable VALUE, an Effect is a live computation.
+    serialize: (schema, value) =>
+      Schema.encodeEffect(schema)(value).pipe(
+        Effect.flatMap((encoded) =>
+          Effect.tryPromise({
+            try: async () => {
+              const tree = await seroval.toJSONAsync(encoded, { plugins });
+              return escapeJsonForHtml(
+                JSON.stringify({ [serializerEnvelopeKey]: serovalAsyncSerializerId, tree }),
+              );
+            },
+            catch: (cause) =>
+              schemaError(
+                `Value is not serializable by the seroval async codec (live resources — Scope, Fiber, Layer, Effects, services, DOM nodes — are not values): ${
+                  cause instanceof Error ? cause.message : String(cause)
+                }`,
+                value,
+              ),
+          })
+        ),
+      ),
+    deserialize: (schema, wire) =>
+      Effect.try({
+        try: () => JSON.parse(wire) as { readonly [serializerEnvelopeKey]?: unknown; readonly tree?: unknown },
+        catch: (cause) =>
+          schemaError(
+            `Malformed seroval async wire payload: ${cause instanceof Error ? cause.message : String(cause)}`,
+            wire,
+          ),
+      }).pipe(
+        Effect.flatMap((parsed) => {
+          const stamp = parsed?.[serializerEnvelopeKey];
+          if (stamp !== serovalAsyncSerializerId) {
+            return Effect.fail(
+              schemaError(
+                `Wire payload was produced by serializer ${JSON.stringify(stamp)}, not "${serovalAsyncSerializerId}".`,
+                wire,
+              ),
+            );
+          }
+          return Effect.try({
+            try: () => seroval.fromJSON(parsed.tree, { plugins }),
+            catch: (cause) =>
+              schemaError(
+                `seroval async tree restore failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+                wire,
+              ),
+          });
+        }),
+        Effect.flatMap(Schema.decodeUnknownEffect(schema)),
+      ),
+  };
+}
+
 export interface SerovalOptions {
   /** Only `"json"` is constructible here; see {@link serovalUnsafeEval}. */
   readonly mode?: "json" | "eval";
@@ -302,6 +388,26 @@ export function seroval(options: SerovalOptions = {}): Layer.Layer<Serialization
  */
 export const serovalLayer: Layer.Layer<SerializationService> = Layer.suspend(
   () => seroval(),
+);
+
+/**
+ * The seroval ASYNC JSON-tree codec (M10.6): like {@link serovalLayer}, plus
+ * seroval's async forms — a captured `Promise` (or async iterable) is
+ * awaited during serialization and restored as a live Promise on the
+ * client. In-flight `Effect`s remain refused: an Effect is a computation
+ * with requirements, not a value, and crosses the boundary as a descriptor
+ * or a typed `R` requirement instead.
+ */
+export const serovalAsyncLayer: Layer.Layer<SerializationService> = Layer.suspend(
+  () =>
+    Layer.effect(
+      Tag,
+      Effect.promise(loadCodecModules).pipe(
+        Effect.map(({ seroval: serovalModule, ...modules }) =>
+          makeSerovalAsyncCodec(serovalModule, modules)
+        ),
+      ),
+    ),
 );
 
 /**

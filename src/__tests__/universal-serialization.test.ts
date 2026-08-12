@@ -1,9 +1,7 @@
 /**
- * M10.2/M10.3 — the universal value codec and its reference plugins. Typed
- * unit coverage for the six green specs in
- * `future/streaming/universal-serialization.spec.ts`; that file stays in
- * `future/` because its seventh spec (M10.6 async captures) is deliberately
- * unbuilt until its real assertions are authored.
+ * M10.2/M10.3/M10.6 — the universal value codec, its reference plugins, and
+ * the async forms. Promoted from
+ * `future/streaming/universal-serialization.spec.ts` (all green 2026-08-12).
  *
  * Ratified `DQ-012`: eval output is prohibited by default (the opt-in is the
  * separately NAMED `serovalUnsafeEval`); every layer names itself
@@ -353,5 +351,55 @@ describe("reference plugins for framework values (M10.3)", () => {
       ),
     );
     expect(ok._tag).toBe("Success");
+  });
+});
+
+describe("async captures (M10.6)", () => {
+  it("a captured promise resolves on the client exactly once, and an in-flight Effect is still refused", async () => {
+    let settlements = 0;
+    const wire = await Effect.runPromise(
+      Effect.flatMap(Serialization.Tag, (codec) =>
+        codec.serialize(Schema.Unknown, {
+          eventual: Promise.resolve("later").then((value) => {
+            settlements += 1;
+            return value;
+          }),
+        })
+      ).pipe(Effect.provide(Serialization.serovalAsyncLayer)),
+    );
+    // Awaited ON THE SERVER, exactly once, into inert JSON.
+    expect(settlements).toBe(1);
+    expect(() => JSON.parse(wire)).not.toThrow();
+    expect(wire).not.toMatch(/function|=>/);
+
+    const back = (await Effect.runPromise(
+      Effect.flatMap(Serialization.Tag, (codec) =>
+        codec.deserialize(Schema.Unknown, wire)
+      ).pipe(Effect.provide(Serialization.serovalAsyncLayer)),
+    )) as { readonly eventual: Promise<string> };
+    // Restored as a LIVE promise with stable identity: awaiting twice is one
+    // resolution observed twice, never a re-execution.
+    expect(back.eventual instanceof Promise).toBe(true);
+    expect(back.eventual).toBe(back.eventual);
+    expect(await back.eventual).toBe("later");
+    expect(await back.eventual).toBe("later");
+    expect(settlements).toBe(1);
+
+    // An in-flight Effect is still refused: an Effect is a computation with
+    // requirements, not a settleable value — same guard as the sync codec.
+    const refused = await Effect.runPromise(
+      Effect.exit(
+        Effect.flatMap(Serialization.Tag, (codec) =>
+          codec.serialize(Schema.Unknown, { work: Effect.succeed(1) })
+        ).pipe(Effect.provide(Serialization.serovalAsyncLayer)),
+      ),
+    );
+    expect(refused._tag).toBe("Failure");
+
+    // Identity discriminates the async codec from the sync one (DQ-012), so
+    // a promise-bearing payload can never be misdecoded by the sync layer.
+    expect(await idOf(Serialization.serovalAsyncLayer)).not.toBe(
+      await idOf(Serialization.serovalLayer),
+    );
   });
 });
