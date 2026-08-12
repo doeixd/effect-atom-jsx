@@ -218,10 +218,16 @@
   "bugs": {
     "url": "https://github.com/doeixd/effect-atom-jsx/issues"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "dev": "tsc --watch",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:permissive",
+    "test:permissive": "npm run test -w @affe/permissive",
+    "typecheck:permissive": "tsc --noEmit -p packages/permissive/tsconfig.json",
+    "build:permissive": "npm run build -w @affe/permissive",
     "test:watch": "vitest",
     "test:future": "vitest run --config vitest.future.config.ts",
     "test:all": "npm test && npm run test:future",
@@ -243,7 +249,7 @@
     "typecheck:examples": "tsc --noEmit -p tsconfig.examples.json",
     "typecheck:browser": "tsc --noEmit -p tsconfig.browser.json",
     "typecheck:effect": "effect-tsgo diagnostics --project tsconfig.build.json",
-    "typecheck:all": "npm run typecheck && npm run typecheck:tests && npm run typecheck:examples && npm run typecheck:browser && npm run typecheck:effect",
+    "typecheck:all": "npm run typecheck && npm run typecheck:tests && npm run typecheck:examples && npm run typecheck:browser && npm run typecheck:permissive && npm run typecheck:effect",
     "check": "npm run typecheck:all && npm run test",
     "prepack": "npm run build"
   },

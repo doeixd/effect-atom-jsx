@@ -5,7 +5,13 @@ attribution: `largestBindingName`). S1 done (`Resume.spiVersion`, the
 `effect-atom-jsx/adapter-spi` subpath with a pinned member list;
 `adapter-spi.spec.ts` went 6/6 and was promoted to
 `src/__tests__/adapter-spi.test.ts`, emptying `future/resumability/`).
-Next: S2 (workspace scaffold).
+S2 done (npm workspaces; `packages/permissive` with its own
+tsconfig/vitest wired into root scripts — root `npm test` runs both suites;
+the core resolves via `"effect-atom-jsx": "file:../.."` because a bare `*`
+made npm fetch the published registry copy instead of linking the repo
+root; `spi-consumer.test.ts` enforces public-subpath-only imports against
+the core's live `exports` map and pins the fail-closed
+`SpiVersionMismatchError`). Next: S3 (the `permissive()` preset).
 
 Ratified basis: TRIAGE-2026-08-12.md item 6 (build it as the next major
 milestone), `DQ-011` (the M9 adapter SPI is **blocked on** this package —
