@@ -9,8 +9,14 @@ decode; pipeable `Behavior`) are FIXED 2026-08-12 and the first six
 `make((elements, deps) => …)`, `attachScoped(behavior, elements, { deps })`,
 `compose` intersecting member deps, and `Behavior.attachTo(behavior, remap)`
 per `DQ-051` resolving deps from the component's own bindings — 8/13 specs
-green); remaining K0b: `dismissableLayer` + `anchorPosition` (the
-load-bearing five's last two) — then Mixin module (K0c, designed), recipe
+green); `dismissableLayer` + `anchorPosition` landed 2026-08-12 — the
+load-bearing five all exist as Schema-option factories, and
+`behavior-catalog.spec.ts` is 12/13 with only the deliberate K0c Mixin
+placeholder red. `DismissLayerStack` is a Context service (fresh stack per
+Layer provision, never a module global); `anchorPosition` takes injected
+`measure`/`autoUpdate` seams (handles carry no geometry — the DOM adapter
+supplies floating-ui; attaching with no seam fails closed as
+`AnchorPositionMeasureError`). Next: Mixin module (K0c, designed), recipe
 merge (K1). API decisions previously left open were ratified 2026-07-30 in
 the two foundation sections.
 
