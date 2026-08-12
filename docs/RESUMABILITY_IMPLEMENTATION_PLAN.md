@@ -1448,7 +1448,28 @@ Acceptance:
 
 ### Milestone 11 — Streaming SSR with parallel route data (resolves Open Question 9)
 
-Status: **items 1-3 and 5-6 implemented** (2026-08-11); item 4 proposed.
+Status: **all items (1-6) implemented** (2026-08-11) — Milestone 11 is closed.
+
+> **Item 4 — parallel fetch-and-render — is done** (per `DQ-017`'s
+> recommendation: fix in place, then a new entry point over it).
+> `runStreamingNavigationInternal`'s critical-then-all double loader pass is
+> now ONE concurrent pass (`includeDeferred: true`, split by priority
+> afterwards), so every navigation — streaming or not — starts all matched
+> loaders before any result gates anything, and each runs exactly once.
+> `Route.renderRequestStream(app, {request, layer?})` returns a
+> `Stream<string>`: the loaders fork detached under the request, the shell
+> flushes immediately, and once every loader settles one chunk of `DQ-034`
+> handoff entries follows (critical results ride the same inert
+> `data-af-loader` scripts as deferred ones), so `hydrateLoaderHandoff`
+> fills the client cache instead of refetching. Slice limits documented on
+> the function: unified-route head enrichment and `loaderErrorCases`
+> fallbacks (both derived from critical results) stay on `renderRequest`;
+> loader-data-dependent components belong behind async regions once regions
+> route through `renderComponentAsync` (the one remaining M11-adjacent
+> integration piece, tracked below). Promoted:
+> `src/__tests__/parallel-loaders.test.ts`; two spec premises corrected in
+> place (absolute child route paths per R1; the DQ-034 entry-script wire
+> replaced the window global the spec asserted).
 
 > **Item 2's async-setup half is done** (per ratified `DQ-005`):
 > `Resume.renderComponentAsync(component, props)` renders one component

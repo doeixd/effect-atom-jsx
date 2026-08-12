@@ -1,4 +1,4 @@
-import { Effect, Layer, Schema, Context } from "effect";
+import { Context, Effect, Fiber, Layer, Schema, Stream } from "effect";
 import * as Atom from "./Atom.js";
 import { createComponent } from "./dom.js";
 import { getRequestEvent, renderToString, setRequestEvent } from "./dom.js";
@@ -1956,12 +1956,22 @@ function runStreamingNavigationInternal(
   readonly deferredScripts: ReadonlyArray<string>;
 }, never> {
   return Effect.gen(function* () {
-    const critical = yield* runMatchedLoadersInternal(entries, url, { includeDeferred: false });
+    // DQ-017 (fixed in place, 2026-08-11): ONE pass over all matched loaders.
+    // Critical and deferred loaders fork together — waves only where
+    // `dependsOnParent` orders them — so every loader starts before any
+    // result gates anything and each runs exactly once per request. The old
+    // critical-then-all double pass re-ran cache-missing loaders twice.
     const all = yield* runMatchedLoadersInternal(entries, url, { includeDeferred: true });
-    const criticalIds = new Set(critical.map((c) => c.routeId));
+    const matched = matchedRouteEntries(entries, url.pathname);
+    const deferredIds = new Set(
+      matched
+        .filter((entry) => entry.loaderOptions?.priority === "deferred")
+        .map((entry) => entry.routeId),
+    );
     const patternByRouteId = new Map(entries.map((entry) => [entry.routeId, entry.fullPattern] as const));
+    const critical = all.filter((item) => !deferredIds.has(item.routeId));
     const deferred = all
-      .filter((item) => !criticalIds.has(item.routeId))
+      .filter((item) => deferredIds.has(item.routeId))
       .map((item) => {
         const pattern = patternByRouteId.get(item.routeId);
         return {
@@ -2264,6 +2274,137 @@ export function renderRequest(
       deferred: streaming.deferredScripts,
     } satisfies RenderRequestResult;
   });
+}
+
+/**
+ * Streaming server navigation (M11 item 4, `DQ-017`): fork ALL matched
+ * loaders — critical and deferred — as one concurrent pass under the request,
+ * and flush the shell immediately instead of `renderRequest`'s
+ * loaders-then-render sequence. The stream emits the shell HTML first, then
+ * one chunk of `DQ-034` loader-handoff entries (inert `data-af-loader` JSON
+ * scripts — the same wire `renderRequest` uses, no new format) once every
+ * loader settles, so client hydration fills the loader cache instead of
+ * refetching.
+ *
+ * Slice limits, deliberate: the shell renders WITHOUT waiting on critical
+ * loader data, so unified-route head enrichment and `loaderErrorCases`
+ * fallbacks (both derived from critical results) stay on `renderRequest`;
+ * a component that must render FROM loader data belongs behind an async
+ * region (`renderComponentAsync`) once regions route through it.
+ */
+export function renderRequestStream<T extends AppRouteNode<any, any, any, any, any, any>>(
+  app: T,
+  options: {
+    readonly request: Request;
+    readonly layer?: Layer.Layer<any>;
+  },
+): Stream.Stream<string, never>;
+export function renderRequestStream(
+  app: AnyRoute | AppRouteNode<any, any, any, any, any, any>,
+  options: {
+    readonly request: Request;
+    readonly layer?: Layer.Layer<any>;
+  },
+): Stream.Stream<string, never>;
+export function renderRequestStream(
+  app: AnyRoute | AppRouteNode<any, any, any, any, any, any>,
+  options: {
+    readonly request: Request;
+    readonly layer?: Layer.Layer<any>;
+  },
+): Stream.Stream<string, never> {
+  return Stream.unwrap(
+    Effect.gen(function* () {
+      const requestUrl = new URL(options.request.url);
+      const headerMap = new Map<string, Array<string>>();
+      let status = 200;
+      const responseService = {
+        setStatus: (next: number) => {
+          status = next;
+        },
+        setHeader: (name: string, value: string) => {
+          headerMap.set(name.toLowerCase(), [value]);
+        },
+        appendHeader: (name: string, value: string) => {
+          const key = name.toLowerCase();
+          headerMap.set(key, [...(headerMap.get(key) ?? []), value]);
+        },
+        redirect: (location: string, nextStatus = 302) => {
+          status = nextStatus;
+          headerMap.set("location", [location]);
+        },
+        notFound: () => {
+          status = 404;
+        },
+        snapshot: () => ({ status, headers: headerMap as ReadonlyMap<string, ReadonlyArray<string>> }),
+      };
+      const headStore = makeRouteHeadStore({ applyToDocument: false });
+      const loaderCache = makeLoaderCacheStore();
+      const routeEntries = routeEntriesOf(app);
+
+      // Every matched loader is in flight BEFORE any component renders.
+      // Detached, as renderToStream's region fibers are: the unwrap effect's
+      // own fiber ends once the stream is built, and a child fiber would be
+      // interrupted with it before the handoff chunk joins.
+      const loadersFiber = yield* Effect.forkDetach(
+        runStreamingNavigationInternal(routeEntries, requestUrl).pipe(
+          Effect.provideService(LoaderCacheTag, loaderCache),
+        ),
+      );
+
+      const appComponent = isUnifiedRoute(app) ? app.component : componentOf(app);
+      let effect = ComponentRuntime.renderEffect(appComponent, {}).pipe(
+        Effect.provide(Server({ url: requestUrl.toString() })),
+        Effect.provideService(ServerRequestTag, { request: options.request, url: requestUrl }),
+        Effect.provideService(ServerResponseTag, responseService),
+        Effect.provideService(RouteHeadTag, headStore),
+        Effect.provideService(LoaderCacheTag, loaderCache),
+        Effect.provideService(RouteSourceTag, { source: app }),
+      ) as Effect.Effect<unknown, never, never>;
+      if (options.layer) {
+        effect = effect.pipe(Effect.provide(options.layer)) as Effect.Effect<unknown, never, never>;
+      }
+
+      const shell = Effect.sync(() => {
+        const previousRequestEvent = getRequestEvent();
+        setRequestEvent({ request: options.request, url: requestUrl });
+        try {
+          return runInRouteHeadStore(headStore, () =>
+            runInLoaderCacheStore(loaderCache, () => renderToString(() => Effect.runSync(effect))));
+        } finally {
+          setRequestEvent(previousRequestEvent);
+        }
+      });
+
+      // One handoff chunk once every loader settles: critical results ride
+      // the same DQ-034 entry scripts as deferred ones, so the client cache
+      // fill (`hydrateLoaderHandoff`) covers the whole navigation.
+      const patternByRouteId = new Map(
+        routeEntries.map((entry) => [entry.routeId, entry.fullPattern] as const),
+      );
+      const handoff = Fiber.join(loadersFiber).pipe(
+        Effect.map(({ critical, deferredScripts }) => {
+          const criticalScripts = streamDeferredLoaderScripts(
+            critical.map((item) => {
+              const pattern = patternByRouteId.get(item.routeId);
+              return {
+                ...item,
+                params:
+                  (pattern ? extractParams(pattern, requestUrl.pathname) : null)
+                    ?? {},
+              };
+            }),
+          );
+          return [...criticalScripts, ...deferredScripts].join("");
+        }),
+      );
+
+      return Stream.fromEffect(shell).pipe(
+        Stream.concat(Stream.fromEffect(handoff)),
+        Stream.filter((chunk) => chunk.length > 0),
+      );
+    }),
+  );
 }
 
 export type RouteLink<P, Q> = ((paramsValue: P, options?: { readonly query?: Partial<Q>; readonly hash?: string }) => string) & {

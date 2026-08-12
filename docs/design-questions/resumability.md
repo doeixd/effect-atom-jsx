@@ -353,6 +353,13 @@ markers.
 
 **Related.** DQ-006.
 
+**Outcome (2026-08-11, discovery append).** Implemented as recommended:
+option 3 landed first (`runStreamingNavigationInternal` is one concurrent
+pass; the double sequential run is gone for every caller), then option 1 on
+top — `Route.renderRequestStream` returning a `Stream<string>`, sharing the
+same loader-forking implementation. Specs promoted to
+`src/__tests__/parallel-loaders.test.ts`.
+
 ---
 
 ## DQ-018 — What is the exact typed error union for code loading, manifest lookup, capture decode, and build mismatch?
