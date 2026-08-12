@@ -91,6 +91,10 @@
       "import": "./dist/Machine.js",
       "types": "./dist/Machine.d.ts"
     },
+    "./Mixin": {
+      "import": "./dist/Mixin.js",
+      "types": "./dist/Mixin.d.ts"
+    },
     "./Element": {
       "import": "./dist/Element.js",
       "types": "./dist/Element.d.ts"

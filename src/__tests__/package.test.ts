@@ -20,6 +20,7 @@ describe("package release surface", () => {
       "./Component",
       "./Behavior",
       "./Machine",
+      "./Mixin",
       "./Style",
       "./Route",
       "./ServerRoute",
