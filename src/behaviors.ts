@@ -353,18 +353,18 @@ export const combobox = <T>(options: {
     const disclosureBindings = yield* disclosure.run({
       trigger: elements.trigger,
       content: elements.content,
-    });
+    }, {});
 
     const trapBindings = yield* focusTrap().run({
       container: elements.content,
-    });
+    }, {});
 
     const searchBindings = yield* searchFilter<T>({
       filter: options.filter,
     }).run({
       input: elements.input,
       items: options.items,
-    });
+    }, {});
 
     const getFiltered = (): ReadonlyArray<T> => searchBindings.filtered();
 
@@ -373,7 +373,7 @@ export const combobox = <T>(options: {
     }).run({
       items: elements.optionElements,
       getItem: (index) => getFiltered()[index],
-    });
+    }, {});
 
     const navBindings = yield* keyboardNav<T>({
       onSelect: (item) => {
@@ -386,7 +386,7 @@ export const combobox = <T>(options: {
     }).run({
       container: elements.listbox,
       items: getFiltered,
-    });
+    }, {});
 
     const open = (): void => {
       disclosureBindings.open();

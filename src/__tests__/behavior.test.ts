@@ -180,3 +180,77 @@ describe("Behavior", () => {
     expect(prevented).toBe(1);
   });
 });
+
+describe("Behavior deps channel (DQ-052)", () => {
+  it("typed deps flow from attachScoped options into run, per instance", () => {
+    // Fully typed authoring: no casts anywhere in this test. If any appear
+    // necessary, that is an API bug per the project quality bar.
+    const bump = Behavior.make(
+      (
+        elements: { readonly target: Element.Interactive },
+        deps: { readonly step: number; readonly log: Array<number> },
+      ) =>
+        Effect.gen(function* () {
+          yield* elements.target.on("click", () => deps.log.push(deps.step));
+          return { step: deps.step };
+        }),
+    );
+
+    // Compile-time pins for the new type axis.
+    const _deps: Behavior.DepsOf<typeof bump> = { step: 1, log: [] };
+    void _deps;
+
+    const left = { target: Element.interactive(), log: [] as Array<number> };
+    const right = { target: Element.interactive(), log: [] as Array<number> };
+    const a = Effect.runSync(
+      Behavior.attachScoped(bump, { target: left.target }, {
+        deps: { step: 1, log: left.log },
+      }),
+    );
+    const b = Effect.runSync(
+      Behavior.attachScoped(bump, { target: right.target }, {
+        deps: { step: 100, log: right.log },
+      }),
+    );
+    expect(a.bindings.step).toBe(1);
+    expect(b.bindings.step).toBe(100);
+
+    left.target.emit("click", {});
+    right.target.emit("click", {});
+    right.target.emit("click", {});
+    expect(left.log).toEqual([1]);
+    expect(right.log).toEqual([100, 100]);
+
+    Effect.runSync(a.dispose);
+    Effect.runSync(b.dispose);
+  });
+
+  it("a deps-free behavior still attaches without an options argument", () => {
+    const plain = Behavior.make((elements: { readonly target: Element.Interactive }) =>
+      Effect.succeed({ ok: elements.target !== undefined })
+    );
+    const attached = Effect.runSync(
+      Behavior.attachScoped(plain, { target: Element.interactive() }),
+    );
+    expect(attached.bindings.ok).toBe(true);
+    Effect.runSync(attached.dispose);
+  });
+
+  it("compose intersects the deps of its members and forwards one deps object", () => {
+    const first = Behavior.make(
+      (_elements: {}, deps: { readonly a: number }) => Effect.succeed({ a: deps.a }),
+    );
+    const second = Behavior.make(
+      (_elements: {}, deps: { readonly b: string }) => Effect.succeed({ b: deps.b }),
+    );
+    const stacked = Behavior.compose(first, second);
+    // Compile-time: composed deps require BOTH members' dependencies.
+    const _deps: Behavior.DepsOf<typeof stacked> = { a: 1, b: "x" };
+    void _deps;
+    const attached = Effect.runSync(
+      Behavior.attachScoped(stacked, {}, { deps: { a: 7, b: "seven" } }),
+    );
+    expect(attached.bindings).toEqual({ a: 7, b: "seven" });
+    Effect.runSync(attached.dispose);
+  });
+});

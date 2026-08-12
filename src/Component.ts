@@ -2589,8 +2589,8 @@ function recordBehaviorAttachment(
   }
 }
 
-export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings>, SlotContract = {}>(
-  behavior: Behavior.Behavior<Elements, AddedBindings, BR, BE>,
+export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bindings, Deps = {}, Slots = SlotsFromBindings<Bindings>, SlotContract = {}>(
+  behavior: Behavior.Behavior<Elements, AddedBindings, BR, BE, Deps>,
   selectElements: (bindings: Bindings, props: Props) => Elements,
   merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
 ): (
@@ -2610,7 +2610,9 @@ export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bin
             Effect.gen(function* () {
               const current = bindings as Bindings;
               const elements = selectElements(current, props as Props);
-              const added = yield* behavior.run(elements);
+              // DQ-052: behavior-to-behavior dependencies resolve from the
+              // component's existing bindings by name.
+              const added = yield* behavior.run(elements, current as unknown as Deps);
               return merge
                 ? merge(current, added)
                 : { ...(current as any), ...(added as any) };
@@ -2637,7 +2639,7 @@ export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bin
             maybeReporter._tag === "Some" ? maybeReporter.value : undefined,
           );
         }
-        const added: AddedBindings = yield* (behavior.run(elements) as any);
+        const added: AddedBindings = yield* (behavior.run(elements, base as unknown as Deps) as any);
         const result = merge
           ? merge(base, added)
           : { ...(base as any), ...(added as any) };

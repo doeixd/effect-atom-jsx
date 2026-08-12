@@ -4,9 +4,14 @@ Date: 2026-07-29 (revised 2026-07-30)
 Status: active — K0 adapter landed (machine *resume binding* shape still
 owed); K0b in progress — the two Known defects (Schema defaults + typed
 decode; pipeable `Behavior`) are FIXED 2026-08-12 and the first six
-`behavior-catalog.spec.ts` specs are green; remaining K0b: the deps channel
-(decided `DQ-052`), `dismissableLayer` + `anchorPosition` (the load-bearing
-five's last two) — then Mixin module (K0c, designed), recipe merge (K1). API decisions previously left open were ratified 2026-07-30 in
+`behavior-catalog.spec.ts` specs are green; the deps channel landed
+2026-08-12 (`DQ-052` both halves: `Behavior<…, Deps>` axis with
+`make((elements, deps) => …)`, `attachScoped(behavior, elements, { deps })`,
+`compose` intersecting member deps, and `Behavior.attachTo(behavior, remap)`
+per `DQ-051` resolving deps from the component's own bindings — 8/13 specs
+green); remaining K0b: `dismissableLayer` + `anchorPosition` (the
+load-bearing five's last two) — then Mixin module (K0c, designed), recipe
+merge (K1). API decisions previously left open were ratified 2026-07-30 in
 the two foundation sections.
 
 A first-party component library with the combined power of Radix/Base

@@ -19,14 +19,22 @@ const BehaviorTypeId: unique symbol = Symbol.for("effect-atom-jsx/Behavior");
  *   Effect.succeed({ focus: () => elements.input.focus?.() })
  * )
  */
-export interface Behavior<Elements, Bindings, Req, E> {
+export interface Behavior<Elements, Bindings, Req, E, Deps = {}> {
   readonly [BehaviorTypeId]: {
     readonly Elements: Elements;
     readonly Bindings: Bindings;
     readonly Req: Req;
     readonly E: E;
+    readonly Deps: Deps;
   };
-  readonly run: (elements: Elements) => Effect.Effect<Bindings, E, Req>;
+  /**
+   * `Deps` is the behavior's per-instance dependency channel (`DQ-052`):
+   * caller-supplied values arrive via `attachScoped(behavior, elements,
+   * { deps })`, and component attachment resolves them from the component's
+   * own bindings by name. Dependencies are NOT Effect requirements — a
+   * service would be shared across attachments, losing per-instance identity.
+   */
+  readonly run: (elements: Elements, deps: Deps) => Effect.Effect<Bindings, E, Req>;
   readonly metadata?: BehaviorMetadata<Elements>;
   /**
    * Optional portable attachment descriptor. Behaviors without one are opaque
@@ -34,7 +42,7 @@ export interface Behavior<Elements, Bindings, Req, E> {
    */
   readonly attachment?: BehaviorAttachment;
   /** Pipeable: `Behavior.make(...).pipe(Behavior.provides({...}))`. */
-  pipe(): Behavior<Elements, Bindings, Req, E>;
+  pipe(): Behavior<Elements, Bindings, Req, E, Deps>;
   pipe<B>(ab: (self: this) => B): B;
   pipe<B, C>(ab: (self: this) => B, bc: (b: B) => C): C;
   pipe<B, C, D>(ab: (self: this) => B, bc: (b: B) => C, cd: (c: C) => D): D;
@@ -120,13 +128,15 @@ export function decodeOptions<S extends Schema.Top>(
 }
 
 /** Extract the element map required by a behavior. */
-export type ElementsOf<T> = T extends Behavior<infer E, any, any, any> ? E : never;
+export type ElementsOf<T> = T extends Behavior<infer E, any, any, any, any> ? E : never;
 /** Extract bindings contributed by a behavior. */
-export type BindingsOf<T> = T extends Behavior<any, infer B, any, any> ? B : never;
+export type BindingsOf<T> = T extends Behavior<any, infer B, any, any, any> ? B : never;
 /** Extract Effect requirements needed by a behavior. */
-export type RequirementsOf<T> = T extends Behavior<any, any, infer R, any> ? R : never;
+export type RequirementsOf<T> = T extends Behavior<any, any, infer R, any, any> ? R : never;
 /** Extract typed errors that can fail while a behavior attaches. */
-export type ErrorsOf<T> = T extends Behavior<any, any, any, infer E> ? E : never;
+export type ErrorsOf<T> = T extends Behavior<any, any, any, infer E, any> ? E : never;
+/** Extract the per-instance dependency channel of a behavior. */
+export type DepsOf<T> = T extends Behavior<any, any, any, any, infer D> ? D : never;
 
 type SlotMapLike = Record<string, unknown>;
 type SlotContractRecord = Record<string, View.Slot.Any>;
@@ -291,20 +301,21 @@ type CompatibleSlotKey<Slots extends SlotMapLike, Needed> = {
  * Any Effect requirements or typed errors are preserved on the behavior and
  * bubble through component attachment.
  */
-export function make<Elements, Bindings = {}, Req = never, E = never>(
-  run: (elements: Elements) => Effect.Effect<Bindings, E, Req>,
+export function make<Elements, Bindings = {}, Req = never, E = never, Deps = {}>(
+  run: (elements: Elements, deps: Deps) => Effect.Effect<Bindings, E, Req>,
   metadata?: BehaviorMetadata<Elements>,
-): Behavior<Elements, Bindings, Req, E> {
+): Behavior<Elements, Bindings, Req, E, Deps> {
   return attachPipe({
     [BehaviorTypeId]: {
       Elements: undefined as unknown as Elements,
       Bindings: undefined as unknown as Bindings,
       Req: undefined as unknown as Req,
       E: undefined as unknown as E,
+      Deps: undefined as unknown as Deps,
     },
     run,
     metadata,
-  }) as Behavior<Elements, Bindings, Req, E>;
+  }) as unknown as Behavior<Elements, Bindings, Req, E, Deps>;
 }
 
 /**
@@ -366,14 +377,18 @@ export interface AttachedBehavior<Bindings> {
  * component setup is not rerun, and every resource the behavior acquires is
  * released by `dispose` (or automatically if attachment itself fails).
  */
-export function attachScoped<Elements, Bindings, Req, E>(
-  behavior: Behavior<Elements, Bindings, Req, E>,
+export function attachScoped<Elements, Bindings, Req, E, Deps = {}>(
+  behavior: Behavior<Elements, Bindings, Req, E, Deps>,
   elements: Elements,
+  options?: { readonly deps?: Deps },
 ): Effect.Effect<AttachedBehavior<Bindings>, E, Exclude<Req, Scope.Scope>> {
   return Effect.gen(function* () {
     const scope = yield* Scope.make();
     const bindings = yield* (
-      behavior.run(elements) as Effect.Effect<Bindings, E, Req | Scope.Scope>
+      behavior.run(
+        elements,
+        options?.deps ?? ({} as Deps),
+      ) as Effect.Effect<Bindings, E, Req | Scope.Scope>
     ).pipe(
       Scope.provide(scope),
       Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause))),
@@ -485,15 +500,15 @@ export function emits<const Contract extends OutEventContract>(
   };
 }
 
-export function compose<E1, B1, R1, Err1, E2, B2, R2, Err2>(
-  first: Behavior<E1, B1, R1, Err1>,
-  second: Behavior<E2, B2, R2, Err2>,
-): Behavior<E1 & E2, B1 & B2, R1 | R2, Err1 | Err2>;
-export function compose<E1, B1, R1, Err1, E2, B2, R2, Err2, E3, B3, R3, Err3>(
-  first: Behavior<E1, B1, R1, Err1>,
-  second: Behavior<E2, B2, R2, Err2>,
-  third: Behavior<E3, B3, R3, Err3>,
-): Behavior<E1 & E2 & E3, B1 & B2 & B3, R1 | R2 | R3, Err1 | Err2 | Err3>;
+export function compose<E1, B1, R1, Err1, D1, E2, B2, R2, Err2, D2>(
+  first: Behavior<E1, B1, R1, Err1, D1>,
+  second: Behavior<E2, B2, R2, Err2, D2>,
+): Behavior<E1 & E2, B1 & B2, R1 | R2, Err1 | Err2, D1 & D2>;
+export function compose<E1, B1, R1, Err1, D1, E2, B2, R2, Err2, D2, E3, B3, R3, Err3, D3>(
+  first: Behavior<E1, B1, R1, Err1, D1>,
+  second: Behavior<E2, B2, R2, Err2, D2>,
+  third: Behavior<E3, B3, R3, Err3, D3>,
+): Behavior<E1 & E2 & E3, B1 & B2 & B3, R1 | R2 | R3, Err1 | Err2 | Err3, D1 & D2 & D3>;
 /**
  * Compose behaviors into one behavior.
  *
@@ -533,17 +548,17 @@ export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any>
       }) as BehaviorAttachment
       : opaqueAttachment;
   return attachPipe({
-    ...make((elements) =>
+    ...make((elements, deps) =>
       Effect.gen(function* () {
         const out: Record<string, unknown> = {};
         for (const behavior of behaviors) {
-          const next = yield* behavior.run(elements);
+          const next = yield* behavior.run(elements, deps);
           Object.assign(out, next);
         }
         return out;
       }), metadata),
     attachment,
-  }) as Behavior<any, any, any, any>;
+  }) as Behavior<any, any, any, any, any>;
 }
 
 export function decorator<Elements, Bindings, Req, E>(
@@ -677,6 +692,53 @@ export function attachToSlots<
     map[key] = witnesses[key]!;
   }
   return attachBySlotContract(behavior as any, map as any, merge) as any;
+}
+
+/**
+ * Attach a behavior to a component by naming which component slot fills each
+ * behavior element (`DQ-051`: the capability contract comes from the
+ * component). The behavior's `Deps` channel resolves from the component's own
+ * bindings by name (`DQ-052`, half two), so the call site never restates a
+ * value the component already publishes.
+ *
+ * @example
+ * Component.make(...).pipe(
+ *   Component.withSlots(Anatomy),
+ *   Behavior.attachTo(mirror, { root: "root" }),
+ * )
+ */
+export function attachTo<
+  Elements extends SlotMapLike,
+  AddedBindings,
+  BR,
+  BE,
+  Deps,
+  Props,
+  Req,
+  E,
+  Slots extends SlotMapLike,
+  Bindings extends { readonly slots: Slots } & Deps,
+  SlotContract = Slots,
+>(
+  behavior: Behavior<Elements, AddedBindings, BR, BE, Deps>,
+  elementMap: { readonly [K in keyof Elements]: CompatibleSlotKey<Slots, Elements[K]> },
+  merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
+): (
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract> {
+  return Component.withBehavior(
+    behavior,
+    (bindings: Bindings) => {
+      const out: Record<string, unknown> = {};
+      for (const [behaviorKey, slotKey] of Object.entries(elementMap)) {
+        out[behaviorKey] = (bindings.slots as Record<string, unknown>)[String(slotKey)];
+      }
+      return out as Elements;
+    },
+    merge,
+  ) as (
+    component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+  ) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract>;
 }
 
 /** Attach a behavior to every slot whose capability satisfies `capability`. */
