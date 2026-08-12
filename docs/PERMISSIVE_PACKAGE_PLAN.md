@@ -30,7 +30,15 @@ the handler and the inferred Map capture arrives live, serializer stamp is
 missing client boundary — importing `permissive()` from client code pulled
 babel into a 1.3 MB chunk — fixed by the new `@affe/permissive/client`
 entry (`permissiveClient()`), with chunk-size pins in the spec).
-Next: S6 (acceptance sweep).
+S6 done — **milestone complete 2026-08-12**: strict-mode byte proof landed
+as `browser-tests/strict-mode-bytes.spec.ts` (the precise claim: rollup
+emits a seroval chunk on disk for every build because the lazy import sits
+in the public `Serialization` module, but a strict page never FETCHES the
+library — the framework's id constants in the entry are the only trace,
+and they serve the `DQ-012` gate); API.md gained the `@affe/permissive`
+section; `RESUMABILITY_IMPLEMENTATION_PLAN.md` M10 status and
+`CURRENT_STATUS_IN_REDESIGN_PLAN.md` updated. Open per P1: the publishable
+scope/name, revisited at first publish. Deferred per P4: store-proxy layer.
 
 Ratified basis: TRIAGE-2026-08-12.md item 6 (build it as the next major
 milestone), `DQ-011` (the M9 adapter SPI is **blocked on** this package —

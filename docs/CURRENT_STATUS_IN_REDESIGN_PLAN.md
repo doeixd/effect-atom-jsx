@@ -1,6 +1,6 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-07-29 (resumability Milestone 8c.2 protocol foundation)
+Last updated: 2026-08-12 (permissive package milestone complete)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`
@@ -204,6 +204,17 @@ High-level state of what has landed:
   internal binding keys, preserves compiler initialization order, and removes
   stale Vite resolver entries on marker deletion. That patch-strategy slice is
   next.
+- Streaming SSR + resumability convergence (Milestones 11/11b): streaming
+  manifests, `installClientStreaming`, out-of-band fragments
+  (`Resume.mountFragment`, `ServerRoute.fragment`), async component setup,
+  parallel loader streaming — all Chromium-proven.
+- The `@affe/permissive` package (M10 item 4, `PERMISSIVE_PACKAGE_PLAN.md`
+  S0–S6 complete 2026-08-12): the published adapter SPI
+  (`effect-atom-jsx/adapter-spi` + `Resume.spiVersion`), npm workspace with
+  `packages/permissive`, the `permissive()` preset (extract.auto + async
+  seroval codec), the browser-safe `@affe/permissive/client` entry, a
+  pluggable cross-process state-handle resolver, a Chromium Qwik-parity
+  demo, and the strict-mode zero-seroval-bytes proof.
 - Docs modernization passes aligning README/API/plan docs to current names.
 
 For any "when/how did X land" question, consult the archive log.

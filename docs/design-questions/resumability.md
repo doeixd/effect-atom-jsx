@@ -49,7 +49,7 @@ still resolves. The decision and its rejected alternatives live in the plan.
 | DQ-008 | One internal `ingestRecord` behind `installClientStreamed`, `installClientStreaming.ingest`, and `mountFragment` — making "a fragment and a flush are one operation" true in code. | plan §Ratified `DQ-005`–`DQ-012` |
 | DQ-009 | `"<scopeId>:<eventId>"` with `:` reserved; **the page installation gets an explicit scope id too** — an unqualified page marker is how a fragment id eventually collides with it. | plan §Ratified `DQ-005`–`DQ-012` |
 | DQ-010 | Expose `dom.reconcileChildren(...)` (face 1 is not a design question); keyed-list and branch targets **deferred to a named milestone after 8c.7's go/no-go**. Lean: the region owns its subscribers. | plan §Ratified `DQ-005`–`DQ-012` |
-| DQ-011 | M9 item 2 is **blocked on** M10 item 4, not merely deferred. Commit now only to a runtime-readable `spiVersion` so adapters fail closed on mismatch. | plan §Ratified `DQ-005`–`DQ-012` |
+| DQ-011 | M9 item 2 is **blocked on** M10 item 4, not merely deferred. Commit now only to a runtime-readable `spiVersion` so adapters fail closed on mismatch. **Fully discharged 2026-08-12:** M10 item 4 shipped (`PERMISSIVE_PACKAGE_PLAN.md` S0-S6), `Resume.spiVersion` + the `adapter-spi` subpath published, member list frozen by the external consumer's actual usage. | plan §Ratified `DQ-005`–`DQ-012` |
 | DQ-012 | `readonly id` on `SerializationService` — the client's own id is the id of the layer it provided. Stamp `manifest.serializer` beside `buildId`. Eval mode is `serovalUnsafeEval`. | plan §Ratified `DQ-005`–`DQ-012` |
 
 

@@ -2250,6 +2250,39 @@ JSON-safe.
 
 <br />
 
+## @affe/permissive (`packages/permissive`)
+
+Qwik-parity as a configuration, not a fork: auto-capture plus the universal
+seroval codec bundled as one preset. Lives in the workspace as a separate
+package that builds against **public `effect-atom-jsx` subpaths only** — it
+doubles as the external-style consumer of the published adapter SPI
+(`effect-atom-jsx/adapter-spi`, gated by `Resume.spiVersion`).
+
+Two entries, split on purpose:
+
+- **`@affe/permissive`** (build/server): `permissive({ buildId, vite?,
+  stateHandles? })` returns `{ vitePlugins, serverLayer, clientLayer,
+  spiVersion }` — the `extract.auto`-capable compiler plugin and the async
+  seroval codec. Both layer fields are the same layer: the `DQ-012`
+  serializer stamp makes mismatched codecs fail closed, so split codecs
+  would be a footgun. Import this from vite configs and server code only.
+- **`@affe/permissive/client`** (browser-safe): `permissiveClient({
+  stateHandles? })` returns the codec layer the client runtime must include,
+  plus `createHandleRegistry()` and the fail-closed SPI gate. Importing the
+  main entry from client code drags the compiler (babel) into the bundle —
+  the chunk-size pins in `browser-tests/permissive-demo.spec.ts` guard this.
+
+`createHandleRegistry()` closes the cross-process state-handle gap: register
+each resumable handle under the same stable key on server and client, and a
+serialized handle restores to the *client's* live handle. Unknown keys fail
+closed.
+
+Strict-mode projects that never construct a permissive/seroval layer fetch
+zero seroval bytes — pinned by `browser-tests/strict-mode-bytes.spec.ts`.
+End-to-end usage: `examples/permissive-demo`.
+
+<br />
+
 ## SafeHtml (`SafeHtml`, `effect-atom-jsx/SafeHtml`)
 
 Small brand for already-sanitized HTML payloads.

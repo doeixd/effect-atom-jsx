@@ -39,8 +39,10 @@ representation, branch owner) are now specified: **`DQ-100` ratifies
 per-instance child `Scope`s, `data-af-key` fenced at compile time, and one
 `structural` manifest member at v5.** See §Milestone 8d.
 
-**Not started:** M9 (deferred, blocked by `DQ-099`, with item 2 separately
-blocked on M10 item 4); M10 beyond `extract.auto`; M11/M11b.
+**Current (2026-08-12):** M10 items 1-4 and 6 done (universal codec, async
+captures, the `@affe/permissive` package with its Chromium Qwik-parity
+proof); M9 item 2 done (`Resume.spiVersion` + the `adapter-spi` subpath);
+M11/M11b done. Remaining: the rest of M9 (blocked by `DQ-099`), M10 item 5.
 
 **Browser tests and the benchmark have both been re-run** (7/7 Chromium; both
 heap gates pass), and the recorded baseline is **re-pinned from the post-widening
@@ -1360,8 +1362,14 @@ Acceptance:
 > [`PERMISSIVE_PACKAGE_PLAN.md`](PERMISSIVE_PACKAGE_PLAN.md) (planned
 > 2026-08-12: slices S0-S6, provisional picks P1-P4).
 
-Status: **items 1-3 implemented** (2026-08-11); item 4 (permissive package)
-awaits the M9 SPI freeze, item 5 open, item 6 unblocked but unauthored.
+Status: **items 1-4 and 6 implemented** (item 4 landed 2026-08-12 via
+`PERMISSIVE_PACKAGE_PLAN.md` S0-S6: `packages/permissive` with `permissive()`
+and the browser-safe `@affe/permissive/client` entry, the pluggable
+state-handle resolver, the Chromium Qwik-parity demo, and the strict-mode
+byte proof in `browser-tests/strict-mode-bytes.spec.ts`; the store-proxy
+layer is deferred per the ratified v1 scope. Item 6's promise captures
+landed earlier as M10.6 `serovalAsyncLayer`). Item 5 (capture ergonomics
+polish) remains open.
 
 > **Items 2-3 — the universal codec — are done** (per ratified `DQ-012`).
 > `Serialization.serovalLayer` (in `src/serialization-seroval.ts`, re-exported
