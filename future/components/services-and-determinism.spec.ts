@@ -18,7 +18,7 @@
  */
 import { Context, Effect, Exit, Layer, Scope } from "effect";
 import { describe, expect, it } from "vitest";
-import { loadSrc, pick, unbuilt } from "../harness.js";
+import { fromSrc, loadSrc, pick, unbuilt } from "../harness.js";
 
 /** What a captured announcement looks like, for the mock below. */
 type Announcement = { readonly politeness: "polite" | "assertive"; readonly message: string };
@@ -97,16 +97,34 @@ describe("services swap wholesale in tests", () => {
   });
 
   it("[K0b] the kit's own LiveAnnouncer service + liveAnnounce behavior", async () => {
-    // The mechanism is proven above; what is missing is the kit's service.
-    // `src/behaviors/live-announce.ts` does not exist, and neither the service
-    // interface (is it `announce(message, politeness)`, or a queue handle with
-    // `polite`/`assertive` writers?) nor the clear-after-timeout policy the
-    // research doc mentions is decided. Pinning either here would be an
-    // unratified design decision, so this stays declarative until K0b names it.
-    unbuilt(
-      "behaviors/live-announce: the LiveAnnouncer service (one region per document, polite/assertive queues, clear-after-timeout) and the liveAnnounce behavior over it",
-      "K0b",
+    // DQ-072 ratified and built: one announce(message, politeness?) method,
+    // clear-after-timeout on the Layer maker, mock captures with no DOM.
+    const { liveAnnounce, LiveAnnouncer, makeLiveAnnouncer } = await fromSrc(
+      "behaviors/live-announce",
+      "liveAnnounce",
+      "LiveAnnouncer",
+      "makeLiveAnnouncer",
     );
+    const { attachScoped } = await fromSrc("Behavior", "attachScoped");
+
+    const captured: Array<Announcement> = [];
+    const announcer = makeLiveAnnouncer({
+      onAnnounce: (message: string, politeness: "polite" | "assertive") =>
+        captured.push({ politeness, message }),
+    });
+    const attached: any = Effect.runSync(
+      (attachScoped(liveAnnounce(), {}) as Effect.Effect<any>).pipe(
+        Effect.provideService(LiveAnnouncer, announcer),
+      ),
+    );
+    attached.bindings.announce("3 results");
+    attached.bindings.announce("loading", "assertive");
+    expect(captured).toEqual([
+      { politeness: "polite", message: "3 results" },
+      { politeness: "assertive", message: "loading" },
+    ]);
+    expect(typeof (globalThis as any).document).toBe("undefined");
+    Effect.runSync(attached.dispose);
   });
 });
 
