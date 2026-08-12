@@ -1351,7 +1351,9 @@ Acceptance:
 > reference plugins) exist in core, and ratified `DQ-011` makes the package
 > the prerequisite for the M9 SPI freeze. It is also the home for the MCP
 > adapter per ratified `DQ-096`. v1 scope: what exists today; the
-> store-proxy layer stays deferred.
+> store-proxy layer stays deferred. Milestone plan:
+> [`PERMISSIVE_PACKAGE_PLAN.md`](PERMISSIVE_PACKAGE_PLAN.md) (planned
+> 2026-08-12: slices S0-S6, provisional picks P1-P4).
 
 Status: **items 1-3 implemented** (2026-08-11); item 4 (permissive package)
 awaits the M9 SPI freeze, item 5 open, item 6 unblocked but unauthored.
