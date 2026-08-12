@@ -187,6 +187,11 @@ export function toWire(
   now: () => number = Date.now,
 ): ResultWireValue {
   switch (result._tag) {
+    // DQ-092 (ratified 2026-08-12): `Idle` claims the previously-unreachable
+    // `Initial{waiting:false}` slot; `Loading` keeps `waiting: true`, so the
+    // two stay distinguishable on the wire.
+    case "Idle":
+      return initialWire(false);
     case "Loading":
       return initialWire(true);
     case "Refreshing":
@@ -237,9 +242,12 @@ function isDefectError(error: unknown): error is { readonly defect: string } {
 export function fromWire(wire: ResultWireValue): CoreResultType<unknown, unknown> {
   switch (wire._tag) {
     case "Initial":
-      // `waiting: false` is the historically unreachable slot reserved for a
-      // future `Idle`; today both booleans decode to `Loading`.
-      return CoreResult.loading;
+      // DQ-092 (ratified 2026-08-12): the reserved `waiting: false` slot now
+      // decodes to `Idle`. This is the ONE sanctioned edit to a frozen §2.3
+      // row (Decision 7's explicitly wire-versioned `Idle` change): a legacy
+      // payload carrying `Initial{waiting:false}` was unreachable on encode,
+      // so no real producer ever emitted it.
+      return wire.waiting ? CoreResult.loading : CoreResult.idle;
 
     case "Success":
       return wire.waiting

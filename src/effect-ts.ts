@@ -74,6 +74,13 @@ import type * as AtomTypes from "./Atom.js";
 // ─── Result ───────────────────────────────────────────────────────────────────
 
 export type Loading = { readonly _tag: "Loading" };
+/**
+ * `Idle` — not started, and not going to start unless asked (ratified
+ * `DQ-092`): the state of a manual/deferred query before its first trigger.
+ * Distinct from `Loading`, which asserts work is IN FLIGHT; conflating the
+ * two is exactly what the wire slot reservation exists to prevent.
+ */
+export type Idle = { readonly _tag: "Idle" };
 export type Success<A> = {
   readonly _tag: "Success";
   readonly value: A;
@@ -114,7 +121,7 @@ export type Refreshing<A, E> = {
   readonly previous: Success<A> | Failure<E> | Defect;
 };
 
-export type Result<A, E> = Loading | Refreshing<A, E> | Success<A> | Failure<E> | Stale<A, E> | Defect;
+export type Result<A, E> = Idle | Loading | Refreshing<A, E> | Success<A> | Failure<E> | Stale<A, E> | Defect;
 
 export type ResultLoadingError = {
   readonly _tag: "ResultLoadingError";
@@ -147,6 +154,7 @@ export type MutationFailure<E> = E | ResultDefectError;
  *   error, `Defect` with a `ResultDefectError` envelope.
  */
 export interface ResultBuilderHandlers<A, E, R> {
+  onIdle?: () => R;
   onLoading?: () => R;
   onRefreshing?: (previous: Success<A> | Failure<E> | Defect) => R;
   onSuccess?: (value: A) => R;
@@ -157,6 +165,7 @@ export interface ResultBuilderHandlers<A, E, R> {
 
 /** Fluent matcher returned by `Result.builder(...)`. */
 export interface ResultBuilder<A, E, R> {
+  onIdle<R2>(f: () => R2): ResultBuilder<A, E, R | R2>;
   onLoading<R2>(f: () => R2): ResultBuilder<A, E, R | R2>;
   onRefreshing<R2>(f: (previous: Success<A> | Failure<E> | Defect) => R2): ResultBuilder<A, E, R | R2>;
   onSuccess<R2>(f: (value: A) => R2): ResultBuilder<A, E, R | R2>;
@@ -179,6 +188,12 @@ export const Result = {
   /** Singleton Loading value. */
   loading: { _tag: "Loading" } as Loading,
 
+  /**
+   * Singleton Idle value (`DQ-092`): not started, and not going to start
+   * unless asked. NOT `Loading` — nothing is in flight.
+   */
+  idle: { _tag: "Idle" } as Idle,
+
   /** Wrap a previously settled result as Refreshing. */
   refreshing: <A, E>(previous: Success<A> | Failure<E> | Defect): Refreshing<A, E> => ({ _tag: "Refreshing", previous }),
 
@@ -192,6 +207,7 @@ export const Result = {
    */
   toRefreshing: <A, E>(result: Result<A, E>): Result<A, E> => {
     switch (result._tag) {
+      case "Idle":
       case "Loading":
       case "Refreshing":
         return result;
@@ -226,7 +242,7 @@ export const Result = {
 
   /** Extract the settled value (skipping Loading, unwrapping Refreshing). */
   settled: <A, E>(r: Result<A, E>): Option.Option<Success<A> | Failure<E> | Stale<A, E> | Defect> => {
-    if (r._tag === "Loading") return Option.none();
+    if (r._tag === "Loading" || r._tag === "Idle") return Option.none();
     if (r._tag === "Refreshing") return Option.some(r.previous);
     return Option.some(r);
   },
@@ -321,6 +337,7 @@ export const Result = {
   // ─── Type Guards ────────────────────────────────────────────────────────
 
   isLoading: <A, E>(r: Result<A, E>): r is Loading => r._tag === "Loading",
+  isIdle: <A, E>(r: Result<A, E>): r is Idle => r._tag === "Idle",
   isRefreshing: <A, E>(r: Result<A, E>): r is Refreshing<A, E> => r._tag === "Refreshing",
   isSuccess: <A, E>(r: Result<A, E>): r is Success<A> => r._tag === "Success",
   isFailure: <A, E>(r: Result<A, E>): r is Failure<E> => r._tag === "Failure",
@@ -335,6 +352,12 @@ export const Result = {
   match: <A, E, R>(
     r: Result<A, E>,
     handlers: {
+      /**
+       * Optional: an `Idle`-unaware matcher degrades `Idle` to `onLoading`
+       * as "not ready" — handle `onIdle` wherever the idle-vs-in-flight
+       * distinction matters (`DQ-092`).
+       */
+      readonly onIdle?: () => R;
       readonly onLoading: () => R;
       readonly onRefreshing: (previous: Success<A> | Failure<E> | Defect) => R;
       readonly onSuccess: (value: A) => R;
@@ -344,6 +367,8 @@ export const Result = {
     },
   ): R => {
     switch (r._tag) {
+      case "Idle":
+        return handlers.onIdle !== undefined ? handlers.onIdle() : handlers.onLoading();
       case "Loading": return handlers.onLoading();
       case "Refreshing": return handlers.onRefreshing(r.previous);
       case "Success": return handlers.onSuccess(r.value);
@@ -442,6 +467,10 @@ export const Result = {
     };
 
     const api: ResultBuilder<A, E, R> = {
+      onIdle: (f) => {
+        handlers.onIdle = f;
+        return api as any;
+      },
       onLoading: (f) => {
         handlers.onLoading = f;
         return api as any;
@@ -467,6 +496,7 @@ export const Result = {
         return api as any;
       },
       render: () => {
+        if (r._tag === "Idle") return handlers.onIdle?.();
         if (r._tag === "Loading") return handlers.onLoading?.();
         if (r._tag === "Refreshing") {
           return handlers.onRefreshing !== undefined
@@ -483,7 +513,7 @@ export const Result = {
   /**
    * Combine a tuple of results into one result of a tuple.
    *
-   * Short-circuit priority is `Defect > Failure > Stale > Loading >
+   * Short-circuit priority is `Defect > Failure > Stale > Loading > Idle >
    * Refreshing > Success`: the most-informative bad news wins, and an
    * in-flight state only surfaces once nothing has failed.
    *
@@ -503,6 +533,7 @@ export const Result = {
     let firstStale: Stale<any, any> | undefined;
     let firstRefreshing = false;
     let anyLoading = false;
+    let anyIdle = false;
 
     for (const r of results) {
       if (r._tag === "Defect") return r as Out;
@@ -511,6 +542,7 @@ export const Result = {
       if (r._tag === "Failure") return Result.failure(r.error) as Out;
       if (r._tag === "Stale") firstStale ??= r;
       if (r._tag === "Loading") anyLoading = true;
+      if (r._tag === "Idle") anyIdle = true;
       if (r._tag === "Refreshing") firstRefreshing = true;
     }
 
@@ -533,6 +565,10 @@ export const Result = {
         : Result.failure(firstStale.error)) as Out;
     }
     if (anyLoading) return Result.loading as Out;
+    // DQ-092: an in-flight input outranks a not-started one, so `Idle`
+    // surfaces only when nothing is loading — the combination has not
+    // started, and will not until asked.
+    if (anyIdle) return Result.idle as Out;
     if (firstRefreshing) {
       return (complete
         ? Result.refreshing(Result.success(data as unknown as ResultAllValues<T>))
@@ -908,6 +944,9 @@ function resultAccessorToEffect<A, E>(
   if (state._tag === "Success") return Effect.succeed(state.value);
     if (state._tag === "Stale") return Effect.fail<E | BridgeError>(state.error);
     if (state._tag === "Failure") return Effect.fail<E | BridgeError>(state.error);
+    if (state._tag === "Idle") {
+      return Effect.fail<E | BridgeError>({ _tag: "ResultLoadingError", message: "Result is Idle" });
+    }
     return Effect.fail<E | BridgeError>({ _tag: "ResultDefectError", defect: state.cause });
 }
 
@@ -1432,6 +1471,10 @@ function mutationEffect<A, E, R>(
                 reject(state.error);
                 return;
               }
+              if (state._tag === "Idle") {
+                reject({ _tag: "ResultLoadingError", message: "Result is Idle" } as const);
+                return;
+              }
               reject({ _tag: "ResultDefectError", defect: state.cause } as const);
             });
           });
@@ -1833,6 +1876,8 @@ export function Async<A, E>(props: {
   };
 
   const r = props.result;
+  // DQ-092: an Idle-unaware renderer treats Idle as not-ready.
+  if (r._tag === "Idle") return props.loading?.() ?? null;
   if (r._tag === "Loading") return props.loading?.() ?? null;
   if (r._tag === "Refreshing") return props.refreshing?.(r.previous) ?? renderSettled(r.previous);
   if (r._tag === "Stale") return props.stale?.(r.error, r.data) ?? props.error?.(r.error) ?? props.success(r.data);

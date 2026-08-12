@@ -241,7 +241,9 @@ export interface FragmentActionOptions<Args extends ReadonlyArray<unknown>> {
   /** Optional explicit installation scope id for the collection (`DQ-009`). */
   readonly installationId?: string;
   /** Render the fragment for one call — evaluated inside `renderToString`. */
-  readonly render: (...args: Args) => unknown;
+  // NoInfer: `Args` must infer from the SCHEMA (readonly tuples included),
+  // never from the render callback's parameter list.
+  readonly render: (...args: NoInfer<{ -readonly [K in keyof Args]: Args[K] }>) => unknown;
   /**
    * Loader revalidation source: the app route tree whose matched loaders are
    * re-run for the request URL and returned IN THE SAME payload, riding the

@@ -195,6 +195,8 @@ function toEffectResult<A, E>(
   value: Result<A, E>,
 ): Effect.Effect<A, E | BridgeError> {
   switch (value._tag) {
+    case "Idle":
+      return Effect.fail({ _tag: "ResultLoadingError", message: "Result is Idle" } as const);
     case "Loading":
       return Effect.fail({ _tag: "ResultLoadingError", message: "Atom is Loading" } as const);
     case "Refreshing":

@@ -124,7 +124,7 @@ describe("result-wire: the frozen §2.3 mapping", () => {
       row10: tagOf({ _tag: "Failure", error: { defect: "kaboom" }, waiting: true, previousSuccess: null }),
     }).toEqual({
       row1: "Loading",
-      row2: "Loading",
+      row2: "Idle" /* DQ-092 landed: the reserved row decodes to Idle */,
       row3: "Success",
       row4: "Refreshing(Success)",
       row5: "Failure",
@@ -280,7 +280,10 @@ describe("result-wire: the frozen §2.3 mapping", () => {
     // (b) The decode-side claim, asserted directly, so "the slot is free" cannot
     // be re-asserted without this spec going red. Today those bytes ARE
     // `Loading`, indistinguishably from `Initial{waiting:true}`.
-    expect(fromWire({ _tag: "Initial", waiting: false } as never)._tag).toBe("Loading");
+    // DQ-092 landed (2026-08-12): this pin is DELIBERATELY edited — the
+    // reserved bytes now decode to `Idle`, exactly the cost part (c) makes
+    // explicit. `waiting: true` is untouched.
+    expect(fromWire({ _tag: "Initial", waiting: false } as never)._tag).toBe("Idle");
     expect(fromWire({ _tag: "Initial", waiting: true } as never)._tag).toBe("Loading");
 
     // (c) What `Idle` would have to mean, and — the load-bearing part — what

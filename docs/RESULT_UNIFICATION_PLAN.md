@@ -328,8 +328,15 @@ Consequences to settle before `Idle` is attempted (tracked as `DQ-092`):
   emitted it, which determines whether this is theoretical or real; or
 - give `Idle` its own wire representation and drop the "byte-free" claim.
 
-Until that is decided, treat §2.3 row 2 as authoritative and this paragraph's
-"zero wire version bumps" as **unproven**. The acceptance-criteria reference to
+**Resolved (2026-08-12, ratified `DQ-092` via TRIAGE-2026-08-12.md):** `Idle`
+means "not started, and not going to start unless asked"; the decode of
+`Initial{waiting:false}` changed to `Idle` as the one sanctioned
+wire-versioned edit to the frozen table (no real producer ever emitted those
+bytes — the encode side was unreachable). Row 2 of the golden fixtures was
+edited deliberately with a `DQ-092` note.
+
+The original caveat, for history: until that was decided, §2.3 row 2 was
+authoritative and this paragraph's "zero wire version bumps" was **unproven**. The acceptance-criteria reference to
 `Idle` being "byte-free" inherits the same caveat.
 
 **Decision 6 (scope fence):** `Idle` is *not* added in this work, and neither

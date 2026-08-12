@@ -256,10 +256,13 @@ describe("Serialization", () => {
         readonly assert: (decoded: CoreResultType<unknown, unknown>) => void;
       }> = [
         {
-          row: "2. Initial{waiting:false} -> Loading (slot reserved for Idle)",
+          // DQ-092 (ratified 2026-08-12): the reserved slot is claimed. This
+          // row is the ONE sanctioned edit to the frozen Slice-1 table
+          // (Decision 7's explicitly wire-versioned `Idle` change).
+          row: "2. Initial{waiting:false} -> Idle (DQ-092)",
           wire: { _tag: "Initial", waiting: false },
           assert: (decoded) => {
-            expect(decoded._tag).toBe("Loading");
+            expect(decoded._tag).toBe("Idle");
           },
         },
         {
