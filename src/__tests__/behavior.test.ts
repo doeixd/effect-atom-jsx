@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Exit, Scope } from "effect";
+import { Cause, Effect, Exit, Option, Schema, Scope } from "effect";
 import * as Behavior from "../Behavior.js";
 import * as Behaviors from "../behaviors.js";
 import * as Element from "../Element.js";
@@ -252,5 +252,54 @@ describe("Behavior deps channel (DQ-052)", () => {
     );
     expect(attached.bindings).toEqual({ a: 7, b: "seven" });
     Effect.runSync(attached.dispose);
+  });
+});
+
+describe("Behavior API hardening", () => {
+  it("forgetting { deps } for a deps-requiring behavior is a compile error", () => {
+    const needsDeps = Behavior.make(
+      (_e: { readonly target: Element.Interactive }, deps: { readonly step: number }) =>
+        Effect.succeed({ step: deps.step }),
+    );
+    // @ts-expect-error — a behavior with real dependencies requires them at
+    // attach; this used to compile and crash reading deps.step of {}.
+    const missing = () => Behavior.attachScoped(needsDeps, { target: Element.interactive() });
+    void missing;
+    const attached = Effect.runSync(
+      Behavior.attachScoped(needsDeps, { target: Element.interactive() }, {
+        deps: { step: 3 },
+      }),
+    );
+    expect(attached.bindings.step).toBe(3);
+    Effect.runSync(attached.dispose);
+  });
+
+  it("isBehavior detects a spread copy that silently lost pipe", () => {
+    const behavior = Behavior.make((_e: {}) => Effect.succeed({}));
+    expect(Behavior.isBehavior(behavior)).toBe(true);
+    const spread = { ...behavior };
+    expect(Behavior.isBehavior(spread)).toBe(false);
+    expect((spread as { readonly pipe?: unknown }).pipe).toBeUndefined();
+  });
+
+  it("BehaviorOptionsError carries the structured schema issue", () => {
+    const exit = Effect.runSyncExit(
+      Behavior.decodeOptions(
+        "probe",
+        Schema.Struct({ flag: Schema.Boolean }),
+        { flag: "nope" },
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (!Exit.isFailure(exit)) return;
+    const error = Cause.findErrorOption(exit.cause).pipe(
+      Option.getOrElse(() => undefined),
+    );
+    expect(error?._tag).toBe("BehaviorOptionsError");
+    if (error?._tag !== "BehaviorOptionsError") return;
+    expect(error.behavior).toBe("probe");
+    // the structured issue survives beside the flattened message
+    expect(error.issue).toBeDefined();
+    expect(error.message).toContain("probe");
   });
 });

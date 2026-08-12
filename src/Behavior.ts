@@ -41,7 +41,16 @@ export interface Behavior<Elements, Bindings, Req, E, Deps = {}> {
    * closures and require fallback activation on a resumed client.
    */
   readonly attachment?: BehaviorAttachment;
-  /** Pipeable: `Behavior.make(...).pipe(Behavior.provides({...}))`. */
+  /**
+   * Pipeable: `Behavior.make(...).pipe(Behavior.provides({...}))`.
+   *
+   * `pipe` is defined NON-enumerably, so an object spread
+   * (`{ ...behavior }`) produces a value with no `pipe` — deliberately, as a
+   * copied closure would still pipe the ORIGINAL object. Never spread a
+   * behavior to modify it; use `withMetadata` / `provides` / `compose`,
+   * which re-attach a correctly bound `pipe`. `isBehavior` guards a value
+   * that may have lost the contract.
+   */
   pipe(): Behavior<Elements, Bindings, Req, E, Deps>;
   pipe<B>(ab: (self: this) => B): B;
   pipe<B, C>(ab: (self: this) => B, bc: (b: B) => C): C;
@@ -86,6 +95,23 @@ const opaqueAttachment: BehaviorAttachment = Object.freeze({
   kind: "opaque",
 }) as BehaviorAttachment;
 
+/**
+ * Is this value a complete `Behavior` (brand AND a callable `pipe`)? A spread
+ * copy (`{ ...behavior }`) fails this check — it silently drops the
+ * non-enumerable `pipe` — so use this to fail loudly where a behavior may
+ * have been reconstructed instead of transformed.
+ */
+export function isBehavior(
+  value: unknown,
+): value is Behavior<unknown, unknown, unknown, unknown, unknown> {
+  return (
+    typeof value === "object"
+    && value !== null
+    && BehaviorTypeId in value
+    && typeof (value as { readonly pipe?: unknown }).pipe === "function"
+  );
+}
+
 /** Read the declarative attachment record; absent metadata reads as opaque. */
 export function inspectAttachment(
   behavior: Behavior<any, any, any, any>,
@@ -104,6 +130,8 @@ export class BehaviorOptionsError extends Schema.TaggedErrorClass<BehaviorOption
 )("BehaviorOptionsError", {
   behavior: Schema.String,
   message: Schema.String,
+  /** The structured schema issue, for debugging dynamic configs. */
+  issue: Schema.optional(Schema.Unknown),
 }) {}
 
 /**
@@ -122,6 +150,7 @@ export function decodeOptions<S extends Schema.Top>(
       new BehaviorOptionsError({
         behavior: behaviorName,
         message: `Invalid ${behaviorName} options: ${error.message}`,
+        issue: error.issue,
       })
     ),
   ) as Effect.Effect<S["Type"], BehaviorOptionsError>;
@@ -377,6 +406,18 @@ export interface AttachedBehavior<Bindings> {
  * component setup is not rerun, and every resource the behavior acquires is
  * released by `dispose` (or automatically if attachment itself fails).
  */
+export function attachScoped<Elements, Bindings, Req, E>(
+  behavior: Behavior<Elements, Bindings, Req, E, {}>,
+  elements: Elements,
+  options?: { readonly deps?: {} },
+): Effect.Effect<AttachedBehavior<Bindings>, E, Exclude<Req, Scope.Scope>>;
+export function attachScoped<Elements, Bindings, Req, E, Deps>(
+  behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  elements: Elements,
+  // A behavior with real dependencies REQUIRES them at attach: forgetting
+  // `{ deps }` is a compile error, not a runtime undefined-property crash.
+  options: { readonly deps: Deps },
+): Effect.Effect<AttachedBehavior<Bindings>, E, Exclude<Req, Scope.Scope>>;
 export function attachScoped<Elements, Bindings, Req, E, Deps = {}>(
   behavior: Behavior<Elements, Bindings, Req, E, Deps>,
   elements: Elements,

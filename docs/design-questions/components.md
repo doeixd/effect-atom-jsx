@@ -598,6 +598,20 @@ being unusable-as-documented is a bigger cost than doing the boilerplate twice.
 question), findings §1.2/§5, `COMPONENT_KIT_PLAN.md` OQ-7 and the K0c
 acceptance additions.
 
+**Status update (2026-08-12) — Option 1's precondition is now satisfied, and
+the boilerplate is proven.** All FIVE load-bearing factories exist fixed and
+working (`collection`, `press`, `rovingTabindex`, `dismissableLayer`,
+`anchorPosition`), each hand-written in the same shape:
+`Behavior.make(...)` + `Behavior.decodeOptions(name, Schema, picks)` +
+`.pipe(Behavior.provides({...}))`. The shared repetition Mixin should
+collapse, observed across all five: (a) the factory name is restated as
+`decodeOptions`'s first argument; (b) every `provides` witness spells its
+binding name twice (`Behavior.binding<"isPressed", T>("isPressed")` — a typo
+between the two compiles); (c) the options pick-list restates the Schema's
+field names. A ratified Mixin (or a thinner `Behavior.catalog` convention)
+should infer all three from one declaration. This is input to the
+ratification, not a decision.
+
 ---
 
 ## DQ-066 — Where does interruptible behaviour timing come from?

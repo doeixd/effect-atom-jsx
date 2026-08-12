@@ -82,6 +82,11 @@ export class AnchorPositionMeasureError extends Schema.TaggedErrorClass<AnchorPo
   message: Schema.String,
 }) {}
 
+type AnchorPositionElements = {
+  readonly anchor: Element.Interactive;
+  readonly floating: Element.Container;
+};
+
 /**
  * Position a floating container relative to an anchor element.
  *
@@ -93,9 +98,38 @@ export class AnchorPositionMeasureError extends Schema.TaggedErrorClass<AnchorPo
  * Options decode against `AnchorPositionOptions` at attach time: defaults
  * come from the Schema, and a malformed config fails the attach Effect with a
  * typed `Behavior.BehaviorOptionsError` — the factory itself never throws.
+ *
+ * The error channel is honest about the seam: a config that statically
+ * includes `measure` cannot fail with `AnchorPositionMeasureError`, so that
+ * error appears in `E` only when `measure` may be absent.
  */
-export const anchorPosition = (config: AnchorPositionConfig = {}) =>
-  Behavior.make<
+export function anchorPosition(
+  config: AnchorPositionConfig & {
+    readonly measure: (context: AnchorMeasureContext) => AnchorCoords;
+  },
+): Behavior.Behavior<
+  AnchorPositionElements,
+  AnchorPositionBindings,
+  Scope.Scope,
+  Behavior.BehaviorOptionsError
+>;
+export function anchorPosition(
+  config?: AnchorPositionConfig,
+): Behavior.Behavior<
+  AnchorPositionElements,
+  AnchorPositionBindings,
+  Scope.Scope,
+  Behavior.BehaviorOptionsError | AnchorPositionMeasureError
+>;
+export function anchorPosition(
+  config: AnchorPositionConfig = {},
+): Behavior.Behavior<
+  AnchorPositionElements,
+  AnchorPositionBindings,
+  Scope.Scope,
+  any
+> {
+  return Behavior.make<
     {
       readonly anchor: Element.Interactive;
       readonly floating: Element.Container;
@@ -151,3 +185,4 @@ export const anchorPosition = (config: AnchorPositionConfig = {}) =>
       update: Behavior.binding<"update", () => void>("update"),
     }),
   );
+}

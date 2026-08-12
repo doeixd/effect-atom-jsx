@@ -151,3 +151,27 @@ describe("anchorPosition", () => {
     ).toMatchObject({ placement: "bottom-start", strategy: "absolute", offset: 0 });
   });
 });
+
+describe("anchorPosition error-channel honesty", () => {
+  it("a config with a static measure seam excludes the measure error from E", () => {
+    type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends
+      (<T>() => T extends B ? 1 : 2) ? true : false;
+
+    const withMeasure = anchorPosition({ measure: () => ({ x: 0, y: 0 }) });
+    const withoutMeasure = anchorPosition({ placement: "top" });
+
+    // With `measure` present the attach can only fail on options decode…
+    const exact1: Eq<
+      Behavior.ErrorsOf<typeof withMeasure>,
+      Behavior.BehaviorOptionsError
+    > = true;
+    // …without it, the guaranteed-failure case is honestly in the channel.
+    const exact2: Eq<
+      Behavior.ErrorsOf<typeof withoutMeasure>,
+      Behavior.BehaviorOptionsError | import("../behaviors/anchor-position.js").AnchorPositionMeasureError
+    > = true;
+    void exact1;
+    void exact2;
+    expect(Behavior.isBehavior(withMeasure)).toBe(true);
+  });
+});
