@@ -218,7 +218,7 @@ describe("presence: catalog packaging", () => {
     // does not exist yet.
     unbuilt(
       "behaviors/presence as a Schema-option catalog behavior, plus the injected ReducedMotion service its a11y-matrix row needs",
-      "K0b",
+      "DQ-071",
     );
   });
 });

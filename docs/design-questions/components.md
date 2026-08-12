@@ -27,6 +27,7 @@ here except where a real choice sits behind them (see the last section).
 | DQ-068 | What is the attribute value type and coercion contract? | deferrable | DIN-17 |
 | DQ-069 | Batch: three closed-union / exhaustiveness tightenings. | cosmetic | `COMPONENT_KIT_PLAN.md` §4 items |
 | DQ-070 | Does a slot become an addressable named region (slot-as-projection)? | deferrable | DIN-11 |
+| DQ-071 | `presence` catalog packaging: reduced-motion entry point + element/bindings contract | deferrable | `COMPONENT_KIT_PLAN.md` K0b items 6/9 |
 
 ---
 
@@ -895,3 +896,46 @@ questions.
   or the plan. `bindable`'s controlled/uncontrolled split is the closest to a
   question — it is a `value`/`defaultValue` API choice — but no call site has
   hit it yet; raise it when one does.
+
+---
+
+## DQ-071 — Where does `presence`'s reduced-motion input enter, and what is its catalog contract?
+
+- **Severity:** deferrable
+- **Owning plan:** `docs/COMPONENT_KIT_PLAN.md` K0b mandated coverage items 6 and 9
+- **Raised:** 2026-08-12, triaging the last red in `future/components/presence.spec.ts`
+- **Blocks specs:** `future/components/presence.spec.ts` "catalog packaging"
+  (`unbuilt("behaviors/presence as a Schema-option catalog behavior…", "K0b")`)
+
+**What I was doing.** The presence machine's semantics are green (Exiting parks
+until animationEnd; reduced motion force-unmounts; dispose aborts). The
+remaining red is packaging it as `src/behaviors/presence.ts`, and the spec
+itself declares the packaging design undecided.
+
+**What is undecided.**
+
+1. **Where reduced motion enters.** A `PresenceOptions` Schema field, or a
+   `ReducedMotion` Context service provided per subtree. The services-not-
+   globals house rule and the a11y matrix (reduced motion as a *testable
+   dimension*) both point at the service, but no such service exists in `src/`
+   and nothing else consumes it yet.
+2. **The element contract and published bindings.** Which slot the
+   `animationend` listener attaches to (`root`? the exiting content?), and
+   whether consumers read `isPresent`, `phase`, or the raw machine handle.
+
+**Why it matters.** The first `ReducedMotion` consumer sets the pattern every
+motion-sensitive behavior copies; a Schema-field choice here would make the
+a11y matrix untestable without config plumbing at every call site.
+
+**Options.** (1) `ReducedMotion` service with a static default layer +
+`PresenceOptions` for the rest of the knobs. (2) Schema field only. (3) Both,
+field overriding service.
+
+**Provisional pick.** Option 1 — matches `DismissLayerStack`'s precedent
+(service for cross-cutting environment, Schema for per-instance knobs) and
+keeps reduced motion a swappable test dimension. Bindings: `isPresent` +
+`phase` (machine handle stays internal), listener on the single `root` slot.
+Not built pending ratification.
+
+**Related.** DQ-066 (behavior timing source), the a11y matrix row, the
+services-not-globals house rule.
