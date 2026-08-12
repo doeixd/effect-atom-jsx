@@ -2689,18 +2689,133 @@ const attachmentRegistryKey = Symbol.for(
   "effect-atom-jsx/Component/attachmentRegistry",
 );
 
+/**
+ * DQ-053: per-instance registry of provided-state bindings, carried across
+ * wrapper spreads like the attachment registry. Maps binding name to the
+ * COMPONENT-owned atom and its initial value (for shape compatibility).
+ */
+const providedStateRegistryKey = Symbol.for(
+  "effect-atom-jsx/Component/providedStateRegistry",
+);
+
+type ProvidedStateRegistry = Map<string, { readonly atom: unknown; readonly initial: unknown }>;
+
+/** Loud, named failure for an incompatible provided-state replacement. */
+export class ProvidedStateMismatchError extends Error {
+  readonly _tag = "ProvidedStateMismatchError";
+  constructor(binding: string, expected: string, actual: string) {
+    super(
+      `Behavior replacement provides binding "${binding}" with an incompatible state shape (existing initial is ${expected}, replacement's is ${actual}). The component owns provided state — a replacement must match it, never silently reset it (DQ-053).`,
+    );
+  }
+}
+
+function providedStateRegistryOf(bindings: object): ProvidedStateRegistry {
+  const existing = (bindings as {
+    [providedStateRegistryKey]?: ProvidedStateRegistry;
+  })[providedStateRegistryKey];
+  if (existing !== undefined) return existing;
+  const registry: ProvidedStateRegistry = new Map();
+  if (Object.isExtensible(bindings)) {
+    Object.defineProperty(bindings, providedStateRegistryKey, {
+      enumerable: false,
+      configurable: false,
+      writable: false,
+      value: registry,
+    });
+  }
+  return registry;
+}
+
+/**
+ * DQ-053: materialize declared provided-state in the COMPONENT's scope.
+ *
+ * For each `provides` witness carrying a `state` factory: a component that
+ * already owns a matching binding (authored, or materialized by an earlier
+ * attachment on this instance) REUSES that atom — replacing the behavior
+ * keeps the state. A replacement whose state shape does not match dies
+ * loudly with `ProvidedStateMismatchError`, never a silent reset. The
+ * materialized atom lands on the bindings record before the behavior runs,
+ * so the DQ-052 deps channel hands it in by name.
+ */
+function materializeProvidedState(
+  base: unknown,
+  behavior: Behavior.Behavior<any, any, any, any, any>,
+): Effect.Effect<void, never, never> {
+  return Effect.gen(function* () {
+    const provided = behavior.metadata?.provides;
+    if (
+      provided === undefined
+      || typeof base !== "object" || base === null
+    ) {
+      return;
+    }
+    const record = base as Record<string, unknown>;
+    for (const [key, witness] of Object.entries(provided)) {
+      const factory = (witness as { readonly state?: () => Effect.Effect<unknown, unknown, unknown> }).state;
+      if (factory === undefined) continue;
+      const registry = providedStateRegistryOf(base);
+      let entry = registry.get(key);
+      if (entry === undefined && isStateHandle(record[key])) {
+        // The component already authored this binding: adopt it as the
+        // owned state — the behavior's factory is the fallback, not an
+        // override.
+        const owned = record[key] as () => unknown;
+        entry = { atom: owned, initial: owned() };
+        registry.set(key, entry);
+      }
+      if (entry !== undefined) {
+        // Compatibility probe: materialize this attachment's initial and
+        // compare shapes before reusing the owned atom.
+        const probe = yield* factory().pipe(Effect.orDie) as Effect.Effect<unknown>;
+        const probeInitial = typeof probe === "function" ? (probe as () => unknown)() : probe;
+        if (typeof probeInitial !== typeof entry.initial) {
+          const maybeReporter = yield* Effect.serviceOption(DiagnosticsReporterTag);
+          const error = new ProvidedStateMismatchError(
+            key,
+            typeof entry.initial,
+            typeof probeInitial,
+          );
+          if (maybeReporter._tag === "Some") {
+            maybeReporter.value.reporter.reportAll([{
+              source: "behavior",
+              severity: "error",
+              code: "behavior:provides-state-mismatch",
+              message: error.message,
+            }]);
+          }
+          return yield* Effect.die(error);
+        }
+      } else {
+        const atom = yield* factory().pipe(Effect.orDie) as Effect.Effect<unknown>;
+        entry = {
+          atom,
+          initial: typeof atom === "function" ? (atom as () => unknown)() : undefined,
+        };
+        registry.set(key, entry);
+      }
+      Object.defineProperty(record, key, {
+        enumerable: true,
+        configurable: true,
+        writable: true,
+        value: entry.atom,
+      });
+    }
+  });
+}
+
 function carryAttachmentRegistry(from: object, to: object): void {
   if (from === to || typeof to !== "object" || to === null) return;
-  const registry = (from as {
-    [attachmentRegistryKey]?: Map<object, Set<string>>;
-  })[attachmentRegistryKey];
-  if (registry === undefined || !Object.isExtensible(to)) return;
-  Object.defineProperty(to, attachmentRegistryKey, {
-    enumerable: false,
-    configurable: false,
-    writable: false,
-    value: registry,
-  });
+  for (const key of [attachmentRegistryKey, providedStateRegistryKey] as const) {
+    const registry = (from as Record<symbol, unknown>)[key];
+    if (registry === undefined || !Object.isExtensible(to) || key in to) continue;
+    Object.defineProperty(to, key, {
+      enumerable: false,
+      configurable: false,
+      writable: false,
+      value: registry,
+    });
+  }
 }
 
 function recordBehaviorAttachment(
@@ -2789,6 +2904,10 @@ export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bin
       ...i,
       setup: (props) => Effect.gen(function* () {
         const base: Bindings = yield* (i.setup(props) as any);
+        // DQ-053: provided state materializes in the COMPONENT's scope
+        // before the behavior runs, so deps resolve it by name and a
+        // replacement reuses (never resets) the owned atom.
+        yield* materializeProvidedState(base, behavior);
         const elements = selectElements(base, props);
         // DQ-058: report (never de-duplicate) a second attach of the same
         // behavior to a slot it already occupies on this instance.

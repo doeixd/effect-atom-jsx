@@ -235,6 +235,8 @@ export type OutEventsOf<T> = T extends { readonly metadata?: { readonly emits?: 
 export interface BindingWitness<Name extends string = string, A = unknown> {
   readonly name: Name;
   readonly _A?: (_: A) => A;
+  /** DQ-053: component-scoped state factory for a provided binding. */
+  readonly state?: () => Effect.Effect<A, any, any>;
 }
 
 export type BindingContract = Record<string, BindingWitness<string, any>>;
@@ -247,8 +249,20 @@ export type BindingValueOf<T> = T extends BindingWitness<any, infer A> ? A : nev
  * @example
  * const selected = Behavior.binding<"selected", Atom.WritableAtom<string | null>>("selected")
  */
-export function binding<const Name extends string, A = unknown>(name: Name): BindingWitness<Name, A> {
-  return { name };
+export function binding<const Name extends string, A = unknown>(
+  name: Name,
+  options?: {
+    /**
+     * DQ-053: declare the state this binding PROVIDES. The attach machinery
+     * materializes it once in the COMPONENT's scope (not the behavior's) and
+     * hands it in through the deps channel — so replacing the behavior that
+     * authored it keeps the state, and a replacement whose state shape does
+     * not match is surfaced, never a silent reset.
+     */
+    readonly state?: () => Effect.Effect<A, any, any>;
+  },
+): BindingWitness<Name, A> {
+  return options?.state === undefined ? { name } : { name, state: options.state };
 }
 
 /** Typed witness for an event emitted by a behavior-owned event bus. */

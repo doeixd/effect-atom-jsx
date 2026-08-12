@@ -148,3 +148,97 @@ describe("behavior-to-behavior dependencies (DQ-052 half two)", () => {
     Effect.runSync(Scope.close(scope, Exit.void));
   });
 });
+
+describe("provided state lives in the component's scope (DQ-053)", () => {
+  const Anatomy = View.Slots.define({
+    root: { capability: Element.Capability.Container },
+  });
+  const counter = (step: number, tag: string) =>
+    Behavior.make(
+      (
+        elements: { readonly root: Element.Container },
+        deps: { readonly count: Component.StateAtom<number> },
+      ) =>
+        Effect.gen(function* () {
+          yield* elements.root.on("keydown", () => deps.count.set(deps.count() + step));
+          return { count: deps.count, algorithm: tag };
+        }),
+    ).pipe(
+      Behavior.provides({
+        count: Behavior.binding("count", { state: () => Component.state(0) }),
+      }),
+    );
+
+  const runWidget = (component: Component.Component<{}, any, any, any, any>) => {
+    const scope = Scope.makeUnsafe();
+    const bindings = Effect.runSync(
+      Effect.provideService(
+        Component.setupEffect(component, {}),
+        Scope.Scope,
+        scope,
+      ),
+    );
+    const view = Component.renderViewWithBindings(component, {}, bindings);
+    return {
+      bindings: bindings as Record<string, any>,
+      view,
+      close: () => Effect.runSync(Scope.close(scope, Exit.void)),
+    };
+  };
+
+  const base = () =>
+    Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>(),
+      () => View.fromSlots(Anatomy, null),
+    ).pipe(Component.withSlots(Anatomy));
+
+  it("replacing the behavior that authored the state keeps it — one shared atom", () => {
+    const swapped = base().pipe(
+      Behavior.attachTo(counter(1, "v1"), { root: "root" }),
+      Behavior.attachTo(counter(10, "v2"), { root: "root" }),
+    );
+    const widget = runWidget(swapped);
+    expect(widget.bindings.algorithm).toBe("v2");
+    widget.view!.slots.root.emit("keydown", { key: "ArrowDown" });
+    // 11: one keydown reaches both handlers incrementing ONE component-owned
+    // atom. A per-behavior atom would read 10 and strand v1's state.
+    expect(widget.bindings.count()).toBe(11);
+    widget.close();
+  });
+
+  it("an incompatible replacement is surfaced loudly, never a silent reset", () => {
+    const stringCounter = Behavior.make((_e: { readonly root: Element.Container }) =>
+      Effect.succeed({})
+    ).pipe(
+      Behavior.provides({
+        count: Behavior.binding("count", { state: () => Component.state("zero") }),
+      }),
+    );
+    const mismatched = base().pipe(
+      Behavior.attachTo(counter(1, "v1"), { root: "root" }),
+      Behavior.attachTo(stringCounter, { root: "root" }),
+    );
+    expect(() => runWidget(mismatched)).toThrow(/incompatible state shape/);
+  });
+
+  it("a component-authored binding of the same name is adopted, not overridden", () => {
+    const authored = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>().bind("count", () => Component.state(100)),
+      () => View.fromSlots(Anatomy, null),
+    ).pipe(
+      Component.withSlots(Anatomy),
+      Behavior.attachTo(counter(1, "v1"), { root: "root" }),
+    );
+    const widget = runWidget(authored);
+    // The behavior's factory (initial 0) did NOT override the component's
+    // authored state (initial 100) — the component owns the binding.
+    expect(widget.bindings.count()).toBe(100);
+    widget.view!.slots.root.emit("keydown", { key: "ArrowDown" });
+    expect(widget.bindings.count()).toBe(101);
+    widget.close();
+  });
+});
