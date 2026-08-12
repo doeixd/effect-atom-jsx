@@ -245,7 +245,11 @@ describe("reference plugins for framework values (M10.3)", () => {
       run: (captures: any) => Effect.succeed(captures.label),
     });
     const bound = Portable.bind(code, { label: "ref" });
-    const safe = SafeHtml.unsafeFromString?.("<b>ok</b>") ?? "<b>ok</b>";
+    // SPEC CORRECTION (2026-08-11): the branded constructor is
+    // `SafeHtml.make` (it has existed all along); the invented
+    // `unsafeFromString` fell back to a bare string, which no codec could
+    // legitimately re-brand — the assertion below was unsatisfiable.
+    const safe = SafeHtml.make("<b>ok</b>");
 
     const wire = await Effect.runPromise(
       Effect.flatMap(Serialization.Tag, (codec: any) =>

@@ -1345,7 +1345,45 @@ Acceptance:
 
 ### Milestone 10 — Ergonomic and power extensions (auto-capture, universal serialization, Qwik-parity layer)
 
-Status: proposed; sequenced after the Milestone 9 SPI freeze
+Status: **items 1-3 implemented** (2026-08-11); item 4 (permissive package)
+awaits the M9 SPI freeze, item 5 open, item 6 unblocked but unauthored.
+
+> **Items 2-3 — the universal codec — are done** (per ratified `DQ-012`).
+> `Serialization.serovalLayer` (in `src/serialization-seroval.ts`, re-exported
+> from `Serialization`): seroval's `toJSON`/`fromJSON` tree form as inert
+> HTML-safe JSON — cycles, `Date`/`Map`/`Set`/`RegExp`, typed arrays.
+> `seroval({ mode: "eval" })` THROWS; the opt-in is the separately named
+> `serovalUnsafeEval` with its CSP cost documented at the export site.
+> `SerializationService` gained `readonly id: string`
+> (default `af.schema-json.v1`); non-default codecs stamp
+> `manifest.serializer` beside `buildId` (the default layer stays
+> byte-identical), the wire carries an `$afSerializer` envelope, and
+> `Resume.decodeManifest` rejects a foreign-serializer payload with
+> `ResumeSerializerMismatchError` BEFORE any value decodes. Reference
+> plugins: state handles/atoms by minted hydration key (restored to the SAME
+> live handle in-process; cross-process restore is the item-4 adapter's
+> wiring), `Portable.BoundCode` as its resolvable descriptor, `SafeHtml`
+> re-branded on restore; live resources (`~effect/`-branded objects, DOM
+> nodes) are refused by an explicit guard plugin. seroval is a dependency
+> but loads LAZILY at layer construction — strict-mode projects that never
+> provide these layers ship none of it. The module-cycle lesson: `Portable`
+> consults the codec via the leaf `serialization-core.ts` (Tag + id +
+> escape), because importing `Serialization` itself from `Portable` closes
+> an evaluation cycle through `result-wire`/`effect-ts`/`dom`.
+>
+> **Item 1's last acceptance criterion is done with them**: `Schema.Unknown`
+> captures that fail the plain-JSON gate ride a codec-stamped
+> `$afCapturesCodec` envelope in the descriptor when a non-default
+> Serialization layer is present (`Portable.describe`/`resolve`), so an
+> inferred `Map`/cyclic capture round-trips — and a resolver with a
+> different (or absent) codec fails closed. `Component.isStateHandle` is the
+> public predicate (delegating to `resume-handle.isStateHandleValue`).
+> Promoted: `src/__tests__/auto-capture.test.ts` (file complete);
+> `src/__tests__/universal-serialization.test.ts` covers the six green
+> specs while `future/streaming/universal-serialization.spec.ts` stays for
+> the deliberately-unbuilt M10.6 (now unblocked by M11.2 — needs its real
+> promise/stream assertions authored). One spec premise corrected in place
+> (`SafeHtml.make` is the branded constructor, not `unsafeFromString`).
 
 The strict core made three deliberate trades: explicit captures over inferred
 ones, schema-per-capture over a universal serializer, and compile-time

@@ -26,6 +26,7 @@ import {
   type InspectableDerivedHandle,
   type InspectableQueryHandle,
   type InspectableRefHandle,
+  isStateHandleValue,
   type InspectableStateHandle,
 } from "./resume-handle.js";
 import {
@@ -1319,6 +1320,16 @@ export function effect<T>(
 
 /** Writable component-local state with read-only resumability inspection. */
 export type StateAtom<A> = Atom.WritableAtom<A> & InspectableStateHandle<A>;
+
+/**
+ * Is this value a live state handle — a framework-managed reactive primitive
+ * with hydration identity (an annotated `Component.state` handle or a
+ * writable atom)? Never true for the wire form a serialization reference
+ * replaced: a hydration-key string is data, not a handle.
+ */
+export function isStateHandle(value: unknown): value is Atom.WritableAtom<unknown> {
+  return isStateHandleValue(value);
+}
 
 /** Allocate a component-scoped writable atom during setup. */
 export function state<A>(

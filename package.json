@@ -249,7 +249,8 @@
   },
   "dependencies": {
     "@typeonce/effect-machine": "0.1.0",
-    "effect": "4.0.0-beta.102"
+    "effect": "4.0.0-beta.102",
+    "seroval": "^1.6.2"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",

@@ -227,6 +227,7 @@ export const ManifestV1Schema = Schema.Struct({
   version: Schema.Literal(1),
   buildId: Portable.BuildId,
   installationId: Schema.optional(Schema.String),
+  serializer: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
 });
 
@@ -234,6 +235,7 @@ export const ManifestV2Schema = Schema.Struct({
   version: Schema.Literal(2),
   buildId: Portable.BuildId,
   installationId: Schema.optional(Schema.String),
+  serializer: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
   components: Schema.Record(ComponentId, ComponentSnapshotSchema),
 });
@@ -373,6 +375,7 @@ export const ManifestV3Schema = Schema.Struct({
   version: Schema.Literal(3),
   buildId: Portable.BuildId,
   installationId: Schema.optional(Schema.String),
+  serializer: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
   components: Schema.Record(ComponentId, ComponentSnapshotSchema),
   expressions: Schema.Record(ExpressionId, ExpressionEntryV3Schema),
@@ -382,6 +385,7 @@ export const ManifestV4Schema = Schema.Struct({
   version: Schema.Literal(4),
   buildId: Portable.BuildId,
   installationId: Schema.optional(Schema.String),
+  serializer: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
   components: Schema.Record(ComponentId, ComponentSnapshotSchema),
   expressions: Schema.Record(ExpressionId, ExpressionEntryV4Schema),
@@ -405,6 +409,7 @@ export const ManifestV5Schema = Schema.Struct({
   version: Schema.Literal(5),
   buildId: Portable.BuildId,
   installationId: Schema.optional(Schema.String),
+  serializer: Schema.optional(Schema.String),
   events: Schema.Record(EventId, EventEntrySchema),
   components: Schema.Record(ComponentId, ComponentSnapshotSchema),
   expressions: Schema.Record(ExpressionId, ExpressionEntryV5Schema),
@@ -598,6 +603,20 @@ export interface CollectionResult {
 export class ResumeConfigurationError extends Schema.TaggedErrorClass<ResumeConfigurationError>(
   "@effect-atom-jsx/ResumeConfigurationError",
 )("ResumeConfigurationError", {
+  message: Schema.String,
+}) {}
+
+/**
+ * The manifest was produced by a different serializer than the client's
+ * configured codec (`DQ-012`) — rejected BEFORE any value decodes, because
+ * misdecoding is worse than not decoding. Distinct from a build mismatch,
+ * its nearest neighbour, since both gate in the same place.
+ */
+export class ResumeSerializerMismatchError extends Schema.TaggedErrorClass<ResumeSerializerMismatchError>(
+  "@effect-atom-jsx/ResumeSerializerMismatchError",
+)("ResumeSerializerMismatchError", {
+  expected: Schema.String,
+  actual: Schema.optional(Schema.String),
   message: Schema.String,
 }) {}
 
@@ -1141,6 +1160,7 @@ export type ManifestDecodeError =
   | ResumeConfigurationError
   | ResumeManifestDecodeError
   | ResumeClientBuildMismatchError
+  | ResumeSerializerMismatchError
   | ResumePayloadTooLargeError;
 
 export type ClientInstallError =
@@ -2145,8 +2165,14 @@ function collectInternal<E, R>(
             components,
           };
     const serialization = yield* Serialization.Tag;
+    // DQ-012: stamp the serializer identity beside the build id. The default
+    // codec stays unstamped so legacy payloads are byte-identical.
+    const stampedManifest: Manifest =
+      serialization.id === Serialization.defaultSerializerId
+        ? manifest
+        : { ...manifest, serializer: serialization.id };
     const serializedManifest = yield* serialization
-      .serialize(ManifestSchema, manifest)
+      .serialize(ManifestSchema, stampedManifest)
       .pipe(
         Effect.catchTag("SchemaError", (error) =>
           Effect.fail(
@@ -2179,7 +2205,7 @@ function collectInternal<E, R>(
 
     return {
       html,
-      manifest,
+      manifest: stampedManifest,
       serializedManifest,
       script: `<script type="application/json" data-af-resume>${serializedManifest}</script>`,
       diagnostics: Object.freeze([...session.diagnostics]),
@@ -2192,6 +2218,22 @@ function collectInternal<E, R>(
  * build. The expected build ID comes from the client deployment, never from
  * the payload itself.
  */
+function readSerializerEnvelopeStamp(wire: string): string | undefined {
+  try {
+    const parsed = JSON.parse(wire) as
+      | { readonly [Serialization.serializerEnvelopeKey]?: unknown }
+      | null;
+    const stamp =
+      typeof parsed === "object" && parsed !== null
+        ? parsed[Serialization.serializerEnvelopeKey]
+        : undefined;
+    return typeof stamp === "string" ? stamp : undefined;
+  } catch {
+    // Not JSON at the outer layer: let the codec's own decode classify it.
+    return undefined;
+  }
+}
+
 export function decodeManifest(
   serialized: string,
   expectedBuildId: string,
@@ -2218,6 +2260,18 @@ export function decodeManifest(
       });
     }
     const serialization = yield* Serialization.Tag;
+    // DQ-012: the serializer gate fires BEFORE any value decodes. Every codec
+    // emits JSON at the outermost layer, so the envelope stamp is readable
+    // without engaging the value codec; a payload stamped by a different
+    // serializer is rejected here, never misdecoded.
+    const envelopeStamp = readSerializerEnvelopeStamp(serialized);
+    if (envelopeStamp !== undefined && envelopeStamp !== serialization.id) {
+      return yield* new ResumeSerializerMismatchError({
+        expected: serialization.id,
+        actual: envelopeStamp,
+        message: `The resume manifest was serialized by "${envelopeStamp}", but this client's Serialization layer is "${serialization.id}".`,
+      });
+    }
     const manifest = rememberValidatedManifest(
       yield* serialization
         .deserialize(ManifestSchema, serialized)
@@ -2236,6 +2290,16 @@ export function decodeManifest(
         expected,
         actual: manifest.buildId,
         message: "The resume manifest belongs to a different client build.",
+      });
+    }
+    if (
+      manifest.serializer !== undefined
+      && manifest.serializer !== serialization.id
+    ) {
+      return yield* new ResumeSerializerMismatchError({
+        expected: serialization.id,
+        actual: manifest.serializer,
+        message: `The resume manifest is stamped by serializer "${manifest.serializer}", but this client's Serialization layer is "${serialization.id}".`,
       });
     }
     return manifest;

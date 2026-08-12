@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import type * as Atom from "./Atom.js";
+import * as Atom from "./Atom.js";
 import type * as Portable from "./Portable.js";
 import type { Result } from "./effect-ts.js";
 
@@ -199,6 +199,21 @@ export interface InspectableActionHandle<A = unknown, E = unknown>
   extends InspectableHandle<A, E>
 {
   readonly [HandleKindTypeId]: "action";
+}
+
+/**
+ * Is this value a live state handle — an annotated `Component.state` handle
+ * or a writable atom (the framework's reactive primitives with hydration
+ * identity)? Never true for the wire form a serialization reference
+ * replaced: a hydration-key string is data, not a handle.
+ */
+export function isStateHandleValue(value: unknown): boolean {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) {
+    return false;
+  }
+  const kind = (value as { readonly [HandleKindTypeId]?: unknown })[HandleKindTypeId];
+  if (kind === "state") return true;
+  return Atom.isAtom(value) && Atom.isWritable(value as Atom.Atom<unknown>);
 }
 
 export function annotateHandle<Target extends object, A>(

@@ -25,7 +25,7 @@
  * projection functions so existing import paths keep working.
  */
 
-import { Effect, Layer, Schema, SchemaIssue, Context, Option } from "effect";
+import { Effect, Layer, Schema, SchemaIssue, Option } from "effect";
 import { type Result as CoreResultType } from "./effect-ts.js";
 import { ResultWire, ResultWireRecord, toWire, fromWire, type ResultWireValue } from "./result-wire.js";
 
@@ -36,22 +36,18 @@ import { ResultWire, ResultWireRecord, toWire, fromWire, type ResultWireValue } 
  * `<script>` or be invalid JS. Each maps to a valid JSON unicode escape, so the
  * output is script-safe AND still parses via `JSON.parse`.
  */
-export function escapeJsonForHtml(json: string): string {
-  const HTML_UNSAFE = new RegExp(
-    "[<>&" + String.fromCharCode(0x2028) + String.fromCharCode(0x2029) + "]",
-    "g",
-  );
-  return json.replace(HTML_UNSAFE, (c) => {
-    switch (c.charCodeAt(0)) {
-      case 0x3c: return "\\u003c";
-      case 0x3e: return "\\u003e";
-      case 0x26: return "\\u0026";
-      case 0x2028: return "\\u2028";
-      case 0x2029: return "\\u2029";
-      default: return c;
-    }
-  });
-}
+export {
+  escapeJsonForHtml,
+  Tag,
+  defaultSerializerId,
+  type SerializationService,
+} from "./serialization-core.js";
+import {
+  Tag,
+  defaultSerializerId,
+  escapeJsonForHtml,
+  type SerializationService,
+} from "./serialization-core.js";
 
 // ─── Loader-result wire projection (re-exported) ────────────────────────────
 //
@@ -143,22 +139,8 @@ export function decodeResultRecord(wire: string): Record<string, CoreResultType<
 
 // ─── Injectable service ─────────────────────────────────────────────────────
 
-export interface SerializationService {
-  /** Encode a value to an HTML-safe wire string via its schema. */
-  readonly serialize: <T, E>(
-    schema: Schema.Codec<T, E>,
-    value: T,
-  ) => Effect.Effect<string, Schema.SchemaError>;
-  /** Decode a wire string back to a value, validating it against the schema. */
-  readonly deserialize: <T, E>(
-    schema: Schema.Codec<T, E>,
-    wire: string,
-  ) => Effect.Effect<T, Schema.SchemaError>;
-}
-
-export const Tag = Context.Service<SerializationService>("Serialization");
-
 const schemaCodec: SerializationService = {
+  id: defaultSerializerId,
   serialize: (schema, value) =>
     Schema.encodeEffect(schema)(value).pipe(
       Effect.map((encoded) => escapeJsonForHtml(JSON.stringify(encoded))),
@@ -199,3 +181,18 @@ export const layer: Layer.Layer<SerializationService> = Layer.succeed(Tag, schem
 
 /** Alias for {@link layer}, matching the `live`/`test` naming used elsewhere. */
 export const live = layer;
+
+// ─── seroval-backed universal codec (M10 items 2-3) ─────────────────────────
+//
+// Lives in `./serialization-seroval.js`; seroval itself loads lazily at layer
+// construction, so strict-mode projects that never provide these layers ship
+// no seroval.
+export {
+  seroval,
+  serovalLayer,
+  serovalUnsafeEval,
+  serovalSerializerId,
+  serovalUnsafeEvalSerializerId,
+  serializerEnvelopeKey,
+  type SerovalOptions,
+} from "./serialization-seroval.js";

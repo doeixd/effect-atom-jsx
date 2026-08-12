@@ -8,6 +8,7 @@ import {
   Schema,
 } from "effect";
 import { jsonValueIssue } from "./wire-json.js";
+import * as Serialization from "./serialization-core.js";
 import { makeResourceCacheIdentity } from "./cache-identity.js";
 
 export const CodeTypeId: unique symbol = Symbol.for(
@@ -366,6 +367,28 @@ export function cacheKey(
   }).key;
 }
 
+/**
+ * Marker wrapping rich captures encoded by a universal codec (M10 items 1-2):
+ * when a capture is not plain JSON (a `Map`, a cycle — what `extract.auto`
+ * infers) and a non-default `Serialization` layer is present, the captures
+ * ride the descriptor as this codec-stamped envelope instead of failing the
+ * plain-JSON gate. The stamp is the layer id, so a resolver configured with
+ * a different codec fails closed instead of misdecoding (`DQ-012`).
+ */
+interface EncodedCapturesEnvelope {
+  readonly $afCapturesCodec: string;
+  readonly wire: string;
+}
+
+function isEncodedCapturesEnvelope(value: unknown): value is EncodedCapturesEnvelope {
+  return (
+    typeof value === "object"
+    && value !== null
+    && typeof (value as Partial<EncodedCapturesEnvelope>).$afCapturesCodec === "string"
+    && typeof (value as Partial<EncodedCapturesEnvelope>).wire === "string"
+  );
+}
+
 export function describe<
   Captures,
   EncodedCaptures,
@@ -381,20 +404,60 @@ export function describe<
   ).pipe(
     Effect.flatMap((captures) => {
       const issue = jsonValueIssue(captures, "Portable capture");
-      return issue === undefined
-        ? Effect.succeed({
-            version: 1 as const,
-            kind: "portable.code" as const,
-            id: executable.code.id,
-            buildId: executable.code.buildId,
-            captures,
-          })
-        : Effect.fail(
-            new PortableCaptureEncodeError({
+      if (issue === undefined) {
+        return Effect.succeed({
+          version: 1 as const,
+          kind: "portable.code" as const,
+          id: executable.code.id,
+          buildId: executable.code.buildId,
+          captures,
+        });
+      }
+      // Not plain JSON: fall back to the universal codec when one is
+      // configured. The default schema codec cannot carry these values any
+      // better than the gate above, so it does not qualify — the typed-wire
+      // guarantee degrades to runtime-validated ONLY under an explicitly
+      // provided universal layer.
+      return Effect.serviceOption(Serialization.Tag).pipe(
+        Effect.flatMap((service) => {
+          if (
+            service._tag !== "Some"
+            || service.value.id === Serialization.defaultSerializerId
+          ) {
+            return Effect.fail(
+              new PortableCaptureEncodeError({
+                id: executable.code.id,
+                reason: issue,
+              }),
+            );
+          }
+          const codec = service.value;
+          return codec.serialize(Schema.Unknown, captures).pipe(
+            Effect.map((wire) => ({
+              version: 1 as const,
+              kind: "portable.code" as const,
               id: executable.code.id,
-              reason: issue,
-            }),
+              buildId: executable.code.buildId,
+              // The envelope stands in for the schema-encoded form on the
+              // wire; `resolve` unwraps it back to that form before the
+              // schema decode, so the type-level `EncodedCaptures` claim
+              // holds at every point captures are actually consumed.
+              captures: ({
+                $afCapturesCodec: codec.id,
+                wire,
+              } satisfies EncodedCapturesEnvelope) as unknown as EncodedCaptures,
+            })),
+            Effect.catchTag("SchemaError", (error) =>
+              Effect.fail(
+                new PortableCaptureEncodeError({
+                  id: executable.code.id,
+                  reason: `Universal codec "${codec.id}" could not encode the captures: ${String(error)}`,
+                }),
+              ),
+            ),
           );
+        }),
+      );
     }),
     Effect.catchTag("SchemaError", (error) =>
       Effect.fail(
@@ -622,8 +685,35 @@ export function resolve<Args extends ReadonlyArray<unknown>, A, E, R>(
         reason: `Portable code "${descriptor.id}" belongs to a different build.`,
       });
     }
+    let rawCaptures: unknown = descriptor.captures;
+    if (isEncodedCapturesEnvelope(rawCaptures)) {
+      const service = yield* Effect.serviceOption(Serialization.Tag);
+      if (
+        service._tag !== "Some"
+        || service.value.id !== rawCaptures.$afCapturesCodec
+      ) {
+        return yield* new PortableCaptureDecodeError({
+          id: descriptor.id,
+          reason: `Captures were encoded by serializer "${rawCaptures.$afCapturesCodec}", but this resolver's Serialization layer is ${
+            service._tag === "Some" ? `"${service.value.id}"` : "absent"
+          }; refusing to misdecode.`,
+        });
+      }
+      rawCaptures = yield* service.value
+        .deserialize(Schema.Unknown, rawCaptures.wire)
+        .pipe(
+          Effect.catchTag("SchemaError", (error) =>
+            Effect.fail(
+              new PortableCaptureDecodeError({
+                id: descriptor.id,
+                reason: `Universal codec restore failed: ${String(error)}`,
+              }),
+            ),
+          ),
+        );
+    }
     const captures = yield* Schema.decodeUnknownEffect(definition.captures)(
-      descriptor.captures,
+      rawCaptures,
     ).pipe(
       Effect.catchTag("SchemaError", (error) =>
         Effect.fail(
