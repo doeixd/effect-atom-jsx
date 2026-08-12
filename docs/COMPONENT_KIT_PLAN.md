@@ -2,8 +2,15 @@
 
 Date: 2026-07-29 (revised 2026-07-30)
 Status: active — K0 adapter landed (machine *resume binding* shape still
-owed); K0b in progress — the two Known defects (Schema defaults + typed
-decode; pipeable `Behavior`) are FIXED 2026-08-12 and the first six
+owed); **K0b complete and K0c (Mixin) landed 2026-08-12**: the load-bearing
+five plus `presence` (+`ReducedMotion` service, DQ-071) and `liveAnnounce`
+(+`LiveAnnouncer` service, DQ-072); `compose` has last-wins truth types +
+`behavior:provides-override` diagnostic (DQ-057); `Mixin.create`/fragments/
+`toBehavior` ship at `effect-atom-jsx/Mixin` with golden press parity
+(DQ-065). Promoted to `src/__tests__`: behavior-catalog, bindable,
+presence. Remaining kit phases: K1 recipes/styling, then widgets.
+Historical: K0b was in progress — the two Known defects (Schema defaults +
+typed decode; pipeable `Behavior`) were FIXED 2026-08-12 and the first six
 `behavior-catalog.spec.ts` specs are green; the deps channel landed
 2026-08-12 (`DQ-052` both halves: `Behavior<…, Deps>` axis with
 `make((elements, deps) => …)`, `attachScoped(behavior, elements, { deps })`,
