@@ -6,9 +6,23 @@
  * SPI test M9 requires, and the enforcement test in `src/__tests__/` fails on
  * any deep import.
  *
- * S2 establishes the workspace and the SPI-consumer contract; the
- * `permissive()` preset itself is S3.
+ * S2 established the workspace and the SPI-consumer contract; `permissive()`
+ * itself lives in `./preset.js` (S3).
  */
+
+export {
+  permissive,
+  type PermissiveOptions,
+  type PermissivePreset,
+} from "./preset.js";
+// The reference codec pieces, re-exported so an app can wire them directly
+// or compare serializer identities in diagnostics.
+export {
+  serovalLayer,
+  serovalAsyncLayer,
+  serovalSerializerId,
+  serovalAsyncSerializerId,
+} from "effect-atom-jsx/Serialization";
 
 import { spiVersion } from "effect-atom-jsx/adapter-spi";
 

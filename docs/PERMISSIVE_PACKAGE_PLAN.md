@@ -11,7 +11,13 @@ the core resolves via `"effect-atom-jsx": "file:../.."` because a bare `*`
 made npm fetch the published registry copy instead of linking the repo
 root; `spi-consumer.test.ts` enforces public-subpath-only imports against
 the core's live `exports` map and pins the fail-closed
-`SpiVersionMismatchError`). Next: S3 (the `permissive()` preset).
+`SpiVersionMismatchError`). S3 done (`permissive({buildId, vite?})` →
+`{vitePlugins, serverLayer, clientLayer, spiVersion}`; both layers are
+deliberately the SAME `serovalAsyncLayer` — the DQ-012 serializer stamp
+makes split codecs a fail-closed footgun, and async is the default because
+Promise captures are the point of permissive mode; `assertSpiCompatible()`
+runs at construction; reference codec ids/layers re-exported).
+Next: S4 (pluggable hydration-key resolver).
 
 Ratified basis: TRIAGE-2026-08-12.md item 6 (build it as the next major
 milestone), `DQ-011` (the M9 adapter SPI is **blocked on** this package —
