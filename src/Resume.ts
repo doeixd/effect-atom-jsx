@@ -996,6 +996,7 @@ export class ResumePayloadTooLargeError extends Schema.TaggedErrorClass<ResumePa
   ),
   largestEntryId: Schema.optional(Schema.String),
   largestEntryBytes: Schema.optional(Schema.Finite),
+  largestBindingName: Schema.optional(Schema.String),
   message: Schema.String,
 }) {}
 
@@ -1610,29 +1611,46 @@ function largestManifestEntry(manifest: Manifest): {
   readonly kind: "event" | "component" | "expression";
   readonly id: string;
   readonly bytes: number;
+  readonly bindingName?: string;
 } | undefined {
   const candidates: Array<{
     readonly kind: "event" | "component" | "expression";
     readonly id: string;
     readonly bytes: number;
+    readonly bindingName?: string;
   }> = [];
+  const jsonBytes = (id: string, entry: unknown): number =>
+    new TextEncoder().encode(JSON.stringify({ [id]: entry })).byteLength;
   const measure = (
     kind: "event" | "component" | "expression",
     entries: Readonly<Record<string, unknown>>,
   ): void => {
     for (const [id, entry] of Object.entries(entries)) {
-      candidates.push({
-        kind,
-        id,
-        bytes: new TextEncoder().encode(
-          JSON.stringify({ [id]: entry }),
-        ).byteLength,
-      });
+      candidates.push({ kind, id, bytes: jsonBytes(id, entry) });
     }
   };
   measure("event", manifest.events);
   if (manifest.version !== 1) {
-    measure("component", manifest.components);
+    // Attribution must reach the *binding*: a component entry names the
+    // container, but the first real payload collision is only debuggable if
+    // the error points at which binding inside it dominates.
+    for (const [id, entry] of Object.entries(manifest.components)) {
+      let bindingName: string | undefined;
+      let bindingBytes = -1;
+      for (const [name, snapshot] of Object.entries(entry.bindings)) {
+        const bytes = jsonBytes(name, snapshot);
+        if (bytes > bindingBytes) {
+          bindingName = name;
+          bindingBytes = bytes;
+        }
+      }
+      candidates.push({
+        kind: "component",
+        id,
+        bytes: jsonBytes(id, entry),
+        ...(bindingName === undefined ? {} : { bindingName }),
+      });
+    }
   }
   measure("expression", expressionEntriesOf(manifest));
   return candidates.reduce<
@@ -1640,6 +1658,7 @@ function largestManifestEntry(manifest: Manifest): {
         readonly kind: "event" | "component" | "expression";
         readonly id: string;
         readonly bytes: number;
+        readonly bindingName?: string;
       }
     | undefined
   >(
@@ -2195,11 +2214,18 @@ function collectInternal<E, R>(
               largestEntryKind: largest.kind,
               largestEntryId: largest.id,
               largestEntryBytes: largest.bytes,
+              ...(largest.bindingName === undefined
+                ? {}
+                : { largestBindingName: largest.bindingName }),
             }),
         message: `Resume manifest is ${actualBytes} bytes, exceeding the ${maximumBytes}-byte limit.${
           largest === undefined
             ? ""
-            : ` The largest ${largest.kind} entry is "${largest.id}" at approximately ${largest.bytes} bytes.`
+            : ` The largest ${largest.kind} entry is "${largest.id}" at approximately ${largest.bytes} bytes${
+                largest.bindingName === undefined
+                  ? ""
+                  : ` (largest binding: "${largest.bindingName}")`
+              }.`
         }`,
       });
     }
