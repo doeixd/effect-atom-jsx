@@ -1324,6 +1324,11 @@ Work:
 1. Document the ordinary, partial, and fully addressable authoring paths.
 2. Publish the adapter SPI only after the proof adapter and at least one
    external-style consumer exercise it.
+   (landed 2026-08-12, `PERMISSIVE_PACKAGE_PLAN.md` S1: `Resume.spiVersion`
+   is the runtime-readable fail-closed gate (`DQ-011`), and the
+   `effect-atom-jsx/adapter-spi` subpath publishes the frozen member list
+   pinned by `src/__tests__/adapter-spi.test.ts` — frozen around exactly
+   what the external-style consumer spec exercised.)
 3. Add diagnostics for capture size, unsupported policy, missing codec,
    unknown code identity, build mismatch, stale DOM marker, and duplicate ID.
 4. Add compatibility/version tests for manifest decoding.

@@ -147,6 +147,10 @@
       "import": "./dist/Resume.js",
       "types": "./dist/Resume.d.ts"
     },
+    "./adapter-spi": {
+      "import": "./dist/adapter-spi.js",
+      "types": "./dist/adapter-spi.d.ts"
+    },
     "./Diagnostics": {
       "import": "./dist/Diagnostics.js",
       "types": "./dist/Diagnostics.d.ts"

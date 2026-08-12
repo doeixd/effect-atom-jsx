@@ -92,5 +92,6 @@ nobody knows they have:
 - **No timing or heap assertions.** Structural invariants only. Numbers live in
   `benchmarks/`.
 - `support.ts` deliberately duplicates a small fake DOM rather than importing
-  `../resumability/fake-dom.js`: a security spec that goes red because another
-  lane refactored a fixture is noise.
+  a shared fixture (the resumability lane's `fake-dom.ts`, since promoted to
+  `src/__tests__/resume-fake-dom.ts`): a security spec that goes red because
+  another lane refactored a fixture is noise.

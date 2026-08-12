@@ -419,6 +419,14 @@ export const ManifestV5Schema = Schema.Struct({
   ),
 });
 
+/**
+ * Runtime-readable adapter-SPI version (`DQ-011`, ratified 2026-07-30): an
+ * adapter fails closed on mismatch with a plain string comparison, exactly
+ * like the build-ID gate, before it calls a single SPI member. Bump when the
+ * published surface in `adapter-spi.ts` changes incompatibly.
+ */
+export const spiVersion = "af.resume-spi.v1";
+
 export const ManifestSchema = Schema.Union([
   ManifestV1Schema,
   ManifestV2Schema,

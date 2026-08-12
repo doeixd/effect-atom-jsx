@@ -62,10 +62,6 @@ there means a spec has a genuine mistake in it.
 | Path | Subject | Owning plan |
 | --- | --- | --- |
 | `harness.ts` | `loadSrc`/`fromSrc`/`pick`/`unbuilt` | — |
-| `resumability/` | expressions, activation, manifests, SPI | `RESUMABILITY_IMPLEMENTATION_PLAN.md`, `RESUMABILITY_M8C_PLAN.md` |
-| `streaming/` | streaming SSR, parallel loaders, server fragments | plan M11 / M11b |
-| `router/` | authoring tiers, navigation, wire hygiene | `ROUTER_CONSOLIDATION_PLAN.md` R3–R6 |
-| `result/` | one Result model, one wire projection | `RESULT_UNIFICATION_PLAN.md` slices 4–6 |
 | `components/` | slots, views, styles, behaviors, kit | `COMPONENT_KIT_PLAN.md`, AF-UI contract |
 | `agent/` | action catalog, MCP/HTTP surfaces, generative UI | `AGENT_NATIVE_NOTES.md`, `af-ui-json-render/` |
 

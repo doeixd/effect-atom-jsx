@@ -3,10 +3,10 @@
  *
  * Deliberately imports nothing from `src/`: this file is loaded at module scope
  * by every spec in the folder, and the `future/` contract forbids module-scope
- * source imports. It also deliberately does **not** import
- * `../resumability/fake-dom.js`: that helper belongs to another lane that is
- * being edited concurrently, and a security spec that goes red because someone
- * else refactored a fixture is noise.
+ * source imports. It also deliberately does **not** share a fake-DOM fixture
+ * with another lane (the resumability lane's, since promoted to
+ * `src/__tests__/resume-fake-dom.ts`): a security spec that goes red because
+ * someone else refactored a fixture is noise.
  */
 
 import { Cause, Effect, Exit, Option } from "effect";

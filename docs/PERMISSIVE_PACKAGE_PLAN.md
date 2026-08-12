@@ -1,6 +1,11 @@
 # The permissive package (`@affe/permissive`) — milestone plan
 
-Status: planned 2026-08-12 (planning pass); implementation not started.
+Status: planned 2026-08-12. S0 done (binding-level oversized-payload
+attribution: `largestBindingName`). S1 done (`Resume.spiVersion`, the
+`effect-atom-jsx/adapter-spi` subpath with a pinned member list;
+`adapter-spi.spec.ts` went 6/6 and was promoted to
+`src/__tests__/adapter-spi.test.ts`, emptying `future/resumability/`).
+Next: S2 (workspace scaffold).
 
 Ratified basis: TRIAGE-2026-08-12.md item 6 (build it as the next major
 milestone), `DQ-011` (the M9 adapter SPI is **blocked on** this package —

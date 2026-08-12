@@ -27,6 +27,7 @@ describe("package release surface", () => {
       "./Serialization",
       "./Portable",
       "./Resume",
+      "./adapter-spi",
       "./Diagnostics",
       "./A11y",
       "./Form",
