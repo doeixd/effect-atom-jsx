@@ -6,8 +6,10 @@
  * SPI test M9 requires, and the enforcement test in `src/__tests__/` fails on
  * any deep import.
  *
- * S2 established the workspace and the SPI-consumer contract; `permissive()`
- * itself lives in `./preset.js` (S3).
+ * This is the BUILD/SERVER entry: `permissive()` constructs the compiler
+ * plugin, so importing it belongs in vite configs and server code. Client
+ * bundles import `@affe/permissive/client` instead, which carries only the
+ * codec layer and the hydration registry.
  */
 
 export {
@@ -19,6 +21,17 @@ export {
   createHandleRegistry,
   type HandleRegistry,
 } from "./registry.js";
+export {
+  permissiveClient,
+  type PermissiveClient,
+  type PermissiveClientOptions,
+} from "./client.js";
+export {
+  SpiVersionMismatchError,
+  assertSpiCompatible,
+  spiVersion,
+  supportedSpiVersion,
+} from "./spi.js";
 // The reference codec pieces, re-exported so an app can wire them directly
 // or compare serializer identities in diagnostics.
 export {
@@ -27,37 +40,3 @@ export {
   serovalSerializerId,
   serovalAsyncSerializerId,
 } from "effect-atom-jsx/Serialization";
-
-import { spiVersion } from "effect-atom-jsx/adapter-spi";
-
-export { spiVersion };
-
-/**
- * The SPI version this package was built against. `assertSpiCompatible`
- * compares the *installed* core's `spiVersion` against this constant, so a
- * mismatched core fails closed at startup instead of misbehaving at the first
- * SPI call (`DQ-011` — the same discipline as the build-ID gate).
- */
-export const supportedSpiVersion = "af.resume-spi.v1";
-
-export class SpiVersionMismatchError extends Error {
-  readonly _tag = "SpiVersionMismatchError";
-  constructor(
-    readonly installed: string,
-    readonly supported: string,
-  ) {
-    super(
-      `@affe/permissive was built against adapter SPI "${supported}" but the installed effect-atom-jsx exposes "${installed}". Upgrade whichever side is behind; running mismatched would fail at the first SPI call instead of here.`,
-    );
-  }
-}
-
-/**
- * Fail closed on an incompatible core. Called by everything this package
- * constructs (the S3 preset calls it before returning any layer).
- */
-export function assertSpiCompatible(): void {
-  if (spiVersion !== supportedSpiVersion) {
-    throw new SpiVersionMismatchError(spiVersion, supportedSpiVersion);
-  }
-}

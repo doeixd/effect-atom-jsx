@@ -23,7 +23,14 @@ unknown keys still fail closed; `@affe/permissive` ships
 `createHandleRegistry()` and `permissive({stateHandles})`; keys are
 deliberately opaque to the codec because handles carry no intrinsic
 cross-process identity — the app registering the same stable keys on both
-sides IS the mechanism). Next: S5 (Chromium Qwik-parity demo).
+sides IS the mechanism). S5 done (`examples/permissive-demo` + `browser-tests/permissive-demo.spec.ts`,
+Chromium 11th test: zero setup/view/loader on load, first click lazy-loads
+the handler and the inferred Map capture arrives live, serializer stamp is
+`af.seroval-async-json.v1`, dispose clean. The build surfaced the package's
+missing client boundary — importing `permissive()` from client code pulled
+babel into a 1.3 MB chunk — fixed by the new `@affe/permissive/client`
+entry (`permissiveClient()`), with chunk-size pins in the spec).
+Next: S6 (acceptance sweep).
 
 Ratified basis: TRIAGE-2026-08-12.md item 6 (build it as the next major
 milestone), `DQ-011` (the M9 adapter SPI is **blocked on** this package —

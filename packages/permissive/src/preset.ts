@@ -21,7 +21,7 @@ import {
   type ResumeExtractViteOptions,
 } from "effect-atom-jsx/compiler/resume-extract-vite";
 import * as Serialization from "effect-atom-jsx/Serialization";
-import { assertSpiCompatible, spiVersion } from "./index.js";
+import { assertSpiCompatible, spiVersion } from "./spi.js";
 
 export interface PermissiveOptions {
   /** Deployment/build identity stamped on generated code and the manifest. */

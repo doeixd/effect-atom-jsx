@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Permissive preset proof</title>
+  </head>
+  <body>
+    <main>
+      <h1>Permissive preset proof</h1>
+      <p>
+        The button is server-rendered through the @affe/permissive preset. Its
+        handler is a one-liner extract.auto arrow whose captures — including a
+        Map — were inferred by the compiler and ride the universal codec.
+      </p>
+      <div id="root"><!--__SSR_HTML__--></div>
+    </main>
+    <script>
+      window.__PERMISSIVE_TEST__ = {
+        setupRuns: 0,
+        viewRuns: 0,
+        loaderCalls: 0,
+        clicks: [],
+        diagnostics: [],
+        serializerId: "",
+        ready: false,
+        disposed: false
+      };
+    </script>
+    <!--__RESUME_MANIFEST__-->
+    <script type="module" src="/client/bootstrap.ts"></script>
+  </body>
+</html>

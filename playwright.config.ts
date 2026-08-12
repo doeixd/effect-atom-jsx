@@ -28,5 +28,11 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 30_000,
     },
+    {
+      command: "npm run preview:permissive-example",
+      url: "http://127.0.0.1:4179",
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
   ],
 });
