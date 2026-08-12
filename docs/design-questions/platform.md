@@ -182,6 +182,12 @@ same reason.
 
 **Related.** `DQ-091`, `DQ-093`.
 
+**RATIFIED 2026-08-12** (user-approved via TRIAGE-2026-08-12.md): option 1 — `Idle` means "not
+started, and not going to start unless asked" (a manual/deferred query before
+its first trigger); the decode of `Initial{waiting:false}` becomes `Idle`, as
+the wire-versioned change Decision 7 explicitly sanctions. §2.5's
+"slot reserved for Idle" note lands with the implementation.
+
 ---
 
 ## DQ-093 — Is `ResultErrorOf`'s `Exclude<E, { defect: string }>` dead once the fetch model is deleted?
@@ -225,6 +231,11 @@ the plan explicitly defers it.
 **What I did in the meantime.** Nothing.
 
 **Related.** `DQ-091`, `DQ-092`.
+
+**RATIFIED 2026-08-12** (user-approved via TRIAGE-2026-08-12.md): option 1 — executed 2026-08-12 in
+RESULT_UNIFICATION Slice 4: the `Exclude` was removed and the resulting
+inference (including a defect-carrying core error type) is pinned in
+`type-tests/atom-type-axes.ts`. CLOSED.
 
 ---
 
@@ -396,6 +407,12 @@ module contradicts the plan. Defer `ViewSpec.ts` naming until `DQ-090` and
 recorded as provisional, not adopted.
 
 **Related.** `DQ-085`, `DQ-089`, `DQ-090`, `DQ-094`.
+
+**RATIFIED 2026-08-12** (user-approved via TRIAGE-2026-08-12.md): as recommended — `src/Agent.ts`
+and `src/reactivity-push.ts` adopted as-is with their listed exports;
+`agent-mcp` folds into the `@affe/agent` adapter package (no `src/` module);
+`ViewSpec.ts`/`view-spec-json-render.ts` naming stays deferred behind
+`DQ-090`/`DQ-094`.
 
 ---
 

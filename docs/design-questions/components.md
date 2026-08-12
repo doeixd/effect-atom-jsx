@@ -235,6 +235,12 @@ option 1 — the diagnostic reports, it does not de-duplicate.
 **Related.** DQ-051 (same validation channel), findings §2.12,
 `COMPONENT_KIT_PLAN.md` OQ-10.
 
+**RATIFIED 2026-08-12** (user-approved via TRIAGE-2026-08-12.md): option 1 — a runtime
+`component:duplicate-attachment` diagnostic through the existing attachment
+validation channel, keyed on behavior identity + slot name. De-duplication is
+explicitly out of scope (the diagnostic reports, it does not fix); option 3's
+`stackable` metadata waits for a genuine stacking case.
+
 ---
 
 ## DQ-059 — What is the shipped component setup/render surface, and does the library owe a scoped test helper?

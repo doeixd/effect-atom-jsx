@@ -1345,6 +1345,14 @@ Acceptance:
 
 ### Milestone 10 — Ergonomic and power extensions (auto-capture, universal serialization, Qwik-parity layer)
 
+> **Item 4 committed (2026-08-12, TRIAGE-2026-08-12.md item 6):** building
+> `@affe/permissive` is the next major milestone after the ratified DQ
+> backlog clears — all three ingredients (auto-capture, universal codec,
+> reference plugins) exist in core, and ratified `DQ-011` makes the package
+> the prerequisite for the M9 SPI freeze. It is also the home for the MCP
+> adapter per ratified `DQ-096`. v1 scope: what exists today; the
+> store-proxy layer stays deferred.
+
 Status: **items 1-3 implemented** (2026-08-11); item 4 (permissive package)
 awaits the M9 SPI freeze, item 5 open, item 6 unblocked but unauthored.
 

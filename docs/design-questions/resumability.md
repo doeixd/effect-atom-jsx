@@ -171,6 +171,12 @@ documented as such in the interim, since the server half already composes.
 
 **Related.** DQ-011, DQ-013.
 
+**RATIFIED 2026-08-12** (user-approved via TRIAGE-2026-08-12.md): option 1 — the deferral awaited
+DQ-011, which has since been ratified (as M9 sequencing), so the wait reason
+is gone. `ServerRoute.fragment(...)` defines the server half (schema'd args
+in, `{html, manifest}` + single-flight loaders out); a small client caller
+pairs it with `Resume.mountFragment`.
+
 ---
 
 ## DQ-015 — How are manifest ids namespaced across installs?
