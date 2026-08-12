@@ -84,6 +84,45 @@ async function styleHarness() {
   return { Style, resolve };
 }
 
+/** Like styleHarness, but with a root+footer anatomy for widening specs. */
+async function styleHarness2() {
+  const Component = await loadSrc("Component");
+  const { make, props, require, setup, renderViewEffect, withSlots } = pick(
+    Component,
+    "Component",
+    "make",
+    "props",
+    "require",
+    "setup",
+    "renderViewEffect",
+    "withSlots",
+  );
+  const Style = await loadSrc("Style");
+  const View = await loadSrc("View");
+  const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
+  const { Capability } = await fromSrc("Element", "Capability");
+  const resolve = (slotStyles: Record<string, unknown>) => {
+    const { attachToSlots, make: styleMake } = pick(Style, "Style", "attachToSlots", "make");
+    const Anatomy = Slots.define({
+      root: { capability: Capability.Container },
+      footer: { capability: Capability.Container },
+    });
+    const Widget = make(
+      props(),
+      require(),
+      setup(),
+      () => fromSlots(Anatomy, null),
+    ).pipe(withSlots(Anatomy), attachToSlots(styleMake(Anatomy, slotStyles), Anatomy));
+    const scope = Scope.makeUnsafe();
+    openScopes.push(scope);
+    const view: any = Effect.runSync(
+      Effect.provideService(renderViewEffect(Widget, {}), Scope.Scope, scope),
+    );
+    return (slot: string, property: string) => view.slots[slot].getStyle(property);
+  };
+  return { Style, resolve };
+}
+
 describe("recipe merge contract", () => {
   it("[K1] resolution order is base -> variants -> compound, with compound winning", async () => {
     const { Style, resolve } = await styleHarness();
@@ -96,8 +135,11 @@ describe("recipe merge contract", () => {
         intent: { danger: { root: slot({ padding: "sm" }) } },
         size: { lg: { root: slot({ padding: "lg" }) } },
       },
+      // PREMISE CORRECTED (2026-08-12): the plan ratified `{ when, style }`
+      // — the flat-axis-keys form this spec used was explicitly rejected
+      // (indistinguishable from reserved keys, untypeable against axes).
       compound: [
-        { intent: "danger", size: "lg", style: { root: slot({ padding: "2xl" }) } },
+        { when: { intent: "danger", size: "lg" }, style: { root: slot({ padding: "2xl" }) } },
       ],
       defaults: { intent: "danger", size: "lg" },
     };
@@ -109,7 +151,8 @@ describe("recipe merge contract", () => {
     // base still applies where no variant/compound touches the slot.
     expect(resolve(button())("label", "fontSize")).toBe(14);
     // a non-matching selection falls back to the variant, not the compound.
-    expect(resolve(button({ size: "lg", intent: undefined as never }))("root", "padding")).toBe(24);
+    // PREMISE CORRECTED: `null` is the ratified explicit-unset selection.
+    expect(resolve(button({ size: "lg", intent: null }))("root", "padding")).toBe(24);
   });
 
   it("[K1] mergeRecipes is a pure data merge: adds variants, overrides defaults, leaves the base recipe untouched", async () => {
@@ -180,15 +223,42 @@ describe("recipe merge contract", () => {
   });
 
   it("[K1] widening a recipe with a new slot is an explicit, name-carrying operation", async () => {
-    unbuilt(
-      "recipe slot widening (`allowNewSlots` boolean cannot re-type the result; a name-carrying form such as Style.extendRecipeSlots(base, [\"footer\"] as const) -> RecipeDef<\"root\" | \"footer\"> is needed instead)",
-      "DQ-062",
+    // DQ-062 ratified and built: the boolean-flag form was rejected (it
+    // cannot re-type the result); widening is Style.extendRecipeSlots.
+    const { Style, resolve } = await styleHarness2();
+    const { slot, recipe, mergeRecipes, extendRecipeSlots } = pick(
+      Style,
+      "Style",
+      "slot",
+      "recipe",
+      "mergeRecipes",
+      "extendRecipeSlots",
     );
+
+    const base = {
+      slots: ["root"] as const,
+      base: { root: slot({ padding: "sm" }) },
+    };
+    const widened = extendRecipeSlots(base, ["footer"] as const);
+    expect([...widened.slots]).toEqual(["root", "footer"]);
+
+    // The widened def accepts footer patches that the base rejected…
+    const themed = mergeRecipes(widened, {
+      base: { footer: slot({ padding: "lg" }) },
+    });
+    expect((themed as any).diagnostics ?? []).toEqual([]);
+    const read = resolve(recipe(themed)());
+    expect(read("root", "padding")).toBe(8);
+    expect(read("footer", "padding")).toBe(24);
+    // …and the base recipe is untouched (purity, as everywhere in K1).
+    expect([...base.slots]).toEqual(["root"]);
   });
 
   it("[K1] the public @layer order is declared, and consumer layers come after ours", async () => {
     const Style = await loadSrc("Style");
-    const { publicLayerOrder } = pick(Style, "Style", "publicLayerOrder");
+    // PREMISE CORRECTED: the ratified name is `cssLayerOrder` (branded,
+    // closed tuple; `publicLayerOrder` was the spec's invention).
+    const { cssLayerOrder: publicLayerOrder } = pick(Style, "Style", "cssLayerOrder");
 
     // Precedence is enforced by the platform cascade, not by specificity or
     // atomic class ordering. Consumer override policy is one sentence:

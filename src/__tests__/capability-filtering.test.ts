@@ -242,7 +242,7 @@ describe("Capability filtering helpers", () => {
         root: View.Slot.bind(Root, root),
         input: View.Slot.bind(Input, input),
       });
-      const fieldStyle = Style.forSlots({ root: Root, input: Input })({
+      const fieldStyle = Style.make({ root: Root, input: Input }, {
         input: Style.slot({ color: "green" }),
       });
 

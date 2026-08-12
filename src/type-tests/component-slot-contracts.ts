@@ -67,15 +67,19 @@ type _ContractProjectedSlots = Expect<Equal<ContractProjectedSlots, SlotHandles>
 type ContractProjectedSlotContract = Component.SlotContractOf<typeof ContractProjectedField>;
 type _ContractProjectedSlotContract = Expect<Equal<ContractProjectedSlotContract, typeof FieldSlots>>;
 
-const fieldStyle = Style.forSlots(FieldSlots)({
+const fieldStyle = Style.make(FieldSlots, {
   input: Style.slot({ color: "red" }),
 });
 
-Style.forSlots(FieldSlots)({
+Style.make(FieldSlots, {
   // @ts-expect-error style slots must be authored slot contract names
   missing: Style.slot({ color: "red" }),
 });
 
+// DQ-054 regression pin: the contract-aware make must NOT degrade binding
+// inference — a style with no whenBinding requires no bindings.
+type _probeBindings = Style.BindingNamesOf<typeof fieldStyle>;
+type _probeCheck = Expect<Equal<_probeBindings, never>>;
 const focusBehavior = Behavior.forSlots(FieldSlots)((elements) =>
   Effect.succeed({
     focusedKind: elements.input.kind,

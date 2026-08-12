@@ -125,7 +125,7 @@ describe("testing.ts harness", () => {
       Component.withSlots(Slots),
       Behavior.attachToSlots(pressCounter, Slots),
       Style.attachToSlots(
-        Style.forSlots(Slots)({
+        Style.make(Slots, {
           root: Style.slot({ opacity: 1 }),
         }),
         Slots,

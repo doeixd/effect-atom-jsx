@@ -117,15 +117,20 @@ export function platform<const Metadata extends StylePlatformMetadata>(
 }
 
 /** Diagnostic codes produced by style/platform validation. */
-export type StyleDiagnosticCode = "style:unsupported-property";
+export type StyleDiagnosticCode =
+  | "style:unsupported-property"
+  // DQ-062/ratified mergeRecipes: dynamic patch targeting an undeclared slot.
+  | "style:unknown-recipe-slot"
+  // DQ-054 opt-in exhaustive coverage: a contract slot left unstyled.
+  | "style:missing-slot-style";
 
 /** Structured diagnostic emitted when style uses unsupported platform features. */
 export interface StyleDiagnostic {
   readonly code: StyleDiagnosticCode;
   readonly message: string;
-  readonly platform: string;
+  readonly platform?: string;
   readonly slot: string;
-  readonly property: string;
+  readonly property?: string;
 }
 
 /** Concrete style object for one slot. */
@@ -283,7 +288,11 @@ export type StyleValue =
   | ReadonlyArray<StyleValue>;
 
 export type BindingNamesOfValue<T> =
-  T extends { readonly _bindings?: infer Bindings } ? Bindings & string
+  // `Extract` (not `& string`): a piece WITHOUT `_bindings` infers it as
+  // `unknown`, and `unknown & string` is `string` — which made every style
+  // "require" an unnameable binding the moment the contract-aware `make`
+  // stopped erasing bindings to `never` (DQ-054).
+  T extends { readonly _bindings?: infer Bindings } ? Extract<Bindings, string>
     : never;
 
 export type BindingNamesOfStyleMap<T> = BindingNamesOfValue<NonNullable<T[keyof T]>>;
@@ -309,6 +318,8 @@ export type SlotStyles<S extends string = string> = Record<S, StyleValue>;
 export interface ComposedStyle<S extends string = string, Bindings extends string = never> {
   readonly slots: SlotStyles<S>;
   readonly _bindings?: Bindings;
+  /** DQ-054 opt-in exhaustive coverage gaps; absent when clean. */
+  readonly diagnostics?: ReadonlyArray<StyleDiagnostic>;
 }
 
 /**
@@ -398,33 +409,67 @@ export function transition(value: Record<string, unknown>): AnimationPiece {
  * Prefer `Style.forSlots(Slots)(...)` for authored component APIs because it
  * restricts the keys to the published `View.Slots` contract.
  */
+export function make<
+  const W extends SlotContractInput,
+  const Styles extends { readonly [K in SlotContractNames<W>]?: StyleValue },
+>(
+  contract: W,
+  styles: Styles,
+  options?: { readonly exhaustive?: boolean },
+): ComposedStyle<SlotContractNames<W>, BindingNamesOfStyleMap<Styles>>;
 export function make<const Styles extends Record<string, StyleValue>>(
   slots: Styles,
-): ComposedStyle<keyof Styles & string, BindingNamesOfStyleMap<Styles>> {
-  return { slots } as ComposedStyle<keyof Styles & string, BindingNamesOfStyleMap<Styles>>;
+): ComposedStyle<keyof Styles & string, BindingNamesOfStyleMap<Styles>>;
+/**
+ * `DQ-054` (ratified): ONE contract-aware builder. Pass an authored slot
+ * contract first to constrain keys to the contract's slot names while
+ * keeping binding-name inference; the map-only form remains for dynamic
+ * maps. `Style.forSlots` is deleted — it erased `Bindings` to `never`,
+ * making the binding-compatibility check vacuous on the golden path.
+ * Full slot coverage is opt-in exhaustive (`Style.makeExhaustive`), not
+ * default-required.
+ */
+export function make(
+  contractOrSlots: SlotContractInput | Record<string, StyleValue>,
+  maybeStyles?: Record<string, StyleValue | undefined>,
+  options?: { readonly exhaustive?: boolean },
+): ComposedStyle<string, never> {
+  const hasContract = maybeStyles !== undefined;
+  const styles = hasContract
+    ? maybeStyles
+    : contractOrSlots as Record<string, StyleValue>;
+  const out: Record<string, StyleValue> = {};
+  for (const [slotName, styleValue] of Object.entries(styles)) {
+    if (styleValue !== undefined) out[slotName] = styleValue;
+  }
+  const result = { slots: out } as ComposedStyle<string, never> & {
+    diagnostics?: ReadonlyArray<StyleDiagnostic>;
+  };
+  // Opt-in exhaustive coverage (DQ-054): partial recipes are LEGITIMATE by
+  // default; only under `exhaustive: true` is a contract slot without a
+  // style a diagnostic.
+  if (hasContract && options?.exhaustive === true) {
+    const names = slotContractNamesOf(contractOrSlots as SlotContractInput);
+    const missing = names.filter((name) => !(name in out));
+    if (missing.length > 0) {
+      Object.defineProperty(result, "diagnostics", {
+        enumerable: false,
+        value: missing.map((slotName): StyleDiagnostic => ({
+          code: "style:missing-slot-style",
+          message: `Style.make({ exhaustive: true }) covers ${Object.keys(out).length} slot(s) but the contract declares "${slotName}" unstyled.`,
+          slot: slotName,
+        })),
+      });
+    }
+  }
+  return result;
 }
 
-/**
- * Create a style builder keyed by an authored slot contract.
- *
- * @example
- * const FieldStyle = Style.forSlots(FieldSlots)({
- *   root: Style.slot({ display: "grid" }),
- *   input: Style.slot({ padding: "sm" }),
- * })
- */
-export function forSlots<const W extends SlotContractInput>(
-  _slots: W,
-): (
-  styles: { readonly [K in SlotContractNames<W>]?: StyleValue },
-) => ComposedStyle<SlotContractNames<W>> {
-  return (styles) => {
-    const out: Record<string, StyleValue> = {};
-    for (const [slotName, styleValue] of Object.entries(styles) as Array<[string, StyleValue | undefined]>) {
-      if (styleValue !== undefined) out[slotName] = styleValue;
-    }
-    return { slots: out } as ComposedStyle<SlotContractNames<W>>;
-  };
+function slotContractNamesOf(input: SlotContractInput): ReadonlyArray<string> {
+  if (typeof input === "object" && input !== null && "bound" in input) {
+    return Object.keys((input as { readonly bound: Record<string, unknown> }).bound);
+  }
+  return Object.keys(input);
 }
 
 export type PseudoClass =
@@ -539,7 +584,23 @@ export function layers(names: ReadonlyArray<string>): readonly string[] {
   return names;
 }
 
-export function inLayer(name: string, piece: StyleValue): LayerPiece {
+/**
+ * The public cascade order (ratified): kit layers first, and the consumer's
+ * `"app"` layer ALWAYS last — "your layers come after ours" is one sentence
+ * enforced by the platform cascade. A closed, branded tuple so a typo like
+ * `"compnents"` is a compile error, never a silently-wrong layer.
+ */
+export const cssLayerOrder = Object.freeze([
+  "defaults",
+  "components",
+  "variants",
+  "utilities",
+  "app",
+] as const);
+
+export type CssLayer = (typeof cssLayerOrder)[number];
+
+export function inLayer(name: CssLayer, piece: StyleValue): LayerPiece {
   return { _tag: "LayerPiece", layer: name, piece };
 }
 
@@ -1034,7 +1095,8 @@ export function reportPlatformDiagnostics<S extends string>(
 type VariantDef = {
   readonly base?: StyleValue;
   readonly variants: Record<string, Record<string, StyleValue>>;
-  readonly compounds?: ReadonlyArray<{ readonly when: Record<string, string | boolean>; readonly style: StyleValue }>;
+  /** Ratified singular spelling, matching `RecipeDef.compound`. */
+  readonly compound?: ReadonlyArray<{ readonly when: Record<string, string | boolean>; readonly style: StyleValue }>;
   readonly defaults?: Record<string, string | boolean>;
 };
 
@@ -1065,7 +1127,7 @@ export function variants<D extends VariantDef>(def: D) {
         if (piece) pieces.push(piece);
       }
     }
-    for (const compound of def.compounds ?? []) {
+    for (const compound of def.compound ?? []) {
       const ok = Object.entries(compound.when).every(([k, v]) => picks[k] === v);
       if (ok) pieces.push(compound.style);
     }
@@ -1080,15 +1142,28 @@ export type VariantProps<T> = T extends { __variantDef: infer D }
     : never
   : never;
 
-type RecipeDef<Slots extends string> = {
+export type RecipeDef<Slots extends string> = {
   readonly slots: ReadonlyArray<Slots>;
   readonly base: Record<Slots, StyleValue>;
   readonly variants?: Record<string, Record<string, Partial<Record<Slots, StyleValue>>>>;
+  /**
+   * Ratified spelling: `compound` (singular), with `when` TYPED against the
+   * declared axes — `{ intnet: "danger" }` is a compile error. Compound
+   * matches apply AFTER variants, so a full match wins over both.
+   */
+  readonly compound?: ReadonlyArray<{
+    readonly when: Record<string, string | boolean>;
+    readonly style: Partial<Record<Slots, StyleValue>>;
+  }>;
   readonly defaults?: Record<string, string | boolean>;
 };
 
-type RecipeSelection<D extends RecipeDef<any>> = D["variants"] extends Record<string, any>
-  ? { readonly [K in keyof D["variants"]]?: keyof D["variants"][K] & string }
+/**
+ * A selection may be explicitly UNSET (ratified): `null` removes an axis
+ * that has a default; `recipe.without("axis")` is the readable sugar.
+ */
+export type RecipeSelection<D extends RecipeDef<any>> = D["variants"] extends Record<string, any>
+  ? { readonly [K in keyof D["variants"]]?: (keyof D["variants"][K] & string) | null }
   : {};
 
 /**
@@ -1100,7 +1175,12 @@ type RecipeSelection<D extends RecipeDef<any>> = D["variants"] extends Record<st
 export function recipe<Slots extends string, D extends RecipeDef<Slots>>(def: D) {
   const fn = (selection?: RecipeSelection<D>): Record<Slots, StyleValue> => {
     const out = { ...def.base } as Record<Slots, StyleValue>;
-    const picks = { ...(def.defaults ?? {}), ...(selection ?? {}) } as Record<string, string | boolean>;
+    const picks = { ...(def.defaults ?? {}) } as Record<string, string | boolean>;
+    for (const [axis, pick] of Object.entries(selection ?? {})) {
+      // `null` explicitly unsets an axis that has a default (ratified).
+      if (pick === null || pick === undefined) delete picks[axis];
+      else picks[axis] = pick as string | boolean;
+    }
       if (def.variants) {
       for (const [axis, axisVariants] of Object.entries(def.variants)) {
         const pick = picks[axis];
@@ -1117,9 +1197,131 @@ export function recipe<Slots extends string, D extends RecipeDef<Slots>>(def: D)
         }
       }
     }
+    // Resolution order (ratified): base -> variants -> compound. A compound
+    // whose `when` fully matches the picks wins over both.
+    for (const compound of def.compound ?? []) {
+      const matches = Object.entries(compound.when).every(
+        ([axis, value]) => picks[axis] === value,
+      );
+      if (!matches) continue;
+      for (const [slotName, piece] of Object.entries(
+        compound.style as Record<string, StyleValue | undefined>,
+      )) {
+        if (piece === undefined) continue;
+        out[slotName as Slots] = compose(out[slotName as Slots], piece);
+      }
+    }
     return out;
   };
-  return Object.assign(fn, { __recipeDef: def });
+  return Object.assign(fn, {
+    __recipeDef: def,
+    /** Resolve with the named axes explicitly unset (null-selection sugar). */
+    without: (...axes: ReadonlyArray<string>) =>
+      fn(
+        Object.fromEntries(axes.map((axis) => [axis, null])) as RecipeSelection<D>,
+      ),
+  });
+}
+
+/**
+ * Pure data merge of a recipe with a patch (ratified two-arg signature):
+ * variants deep-merge (patch axis keys win last), defaults override,
+ * `base`/`compound` patches compose in. The base recipe is left untouched.
+ *
+ * Patch slot keys are constrained to the BASE's slot names at the type
+ * level; a dynamic patch smuggling an unknown slot is skipped and reported
+ * on the result's `diagnostics` (never a silent merge, never a throw —
+ * recipes are data and the failure model is a type error or a diagnostic).
+ * Widening slots is the explicit, name-carrying `extendRecipeSlots`.
+ */
+export function mergeRecipes<
+  Slots extends string,
+  D extends RecipeDef<Slots>,
+>(
+  base: D,
+  patch: {
+    readonly base?: Partial<Record<Slots, StyleValue>>;
+    readonly variants?: Record<string, Record<string, Partial<Record<Slots, StyleValue>>>>;
+    readonly compound?: RecipeDef<Slots>["compound"];
+    readonly defaults?: Record<string, string | boolean>;
+  },
+): D & { readonly diagnostics?: ReadonlyArray<StyleDiagnostic> } {
+  const known = new Set<string>(base.slots as ReadonlyArray<string>);
+  const diagnostics: Array<StyleDiagnostic> = [];
+  const filterSlots = <V>(
+    record: Partial<Record<string, V>> | undefined,
+    where: string,
+  ): Partial<Record<string, V>> | undefined => {
+    if (record === undefined) return undefined;
+    const out: Partial<Record<string, V>> = {};
+    for (const [slotName, value] of Object.entries(record)) {
+      if (known.has(slotName)) out[slotName] = value as V;
+      else {
+        diagnostics.push({
+          code: "style:unknown-recipe-slot",
+          message: `Recipe patch ${where} targets slot "${slotName}", which the base recipe does not declare. Widen deliberately with Style.extendRecipeSlots.`,
+          slot: slotName,
+        });
+      }
+    }
+    return out;
+  };
+
+  const mergedVariants: Record<string, Record<string, Partial<Record<string, StyleValue>>>> = {};
+  for (const [axis, axisVariants] of Object.entries(base.variants ?? {})) {
+    mergedVariants[axis] = { ...axisVariants };
+  }
+  for (const [axis, axisVariants] of Object.entries(patch.variants ?? {})) {
+    const target = { ...(mergedVariants[axis] ?? {}) };
+    for (const [key, slotPatch] of Object.entries(axisVariants)) {
+      target[key] = filterSlots(slotPatch, `variants.${axis}.${key}`) ?? {};
+    }
+    mergedVariants[axis] = target;
+  }
+
+  const merged = {
+    ...base,
+    base: {
+      ...base.base,
+      ...(filterSlots(patch.base, "base") ?? {}),
+    },
+    variants: mergedVariants,
+    compound: [
+      ...(base.compound ?? []),
+      ...(patch.compound ?? []).map((entry) => ({
+        ...entry,
+        style: filterSlots(entry.style, "compound") ?? {},
+      })),
+    ],
+    defaults: { ...(base.defaults ?? {}), ...(patch.defaults ?? {}) },
+  };
+  if (diagnostics.length > 0) {
+    Object.defineProperty(merged, "diagnostics", {
+      enumerable: false,
+      configurable: false,
+      writable: false,
+      value: diagnostics,
+    });
+  }
+  return merged as D & { readonly diagnostics?: ReadonlyArray<StyleDiagnostic> };
+}
+
+/**
+ * Widen a recipe's slot set — the explicit, name-carrying operation the
+ * ratified `mergeRecipes` signature requires (a boolean flag cannot re-type
+ * the result). New slots start unstyled; style them via `mergeRecipes`.
+ */
+export function extendRecipeSlots<
+  Slots extends string,
+  const Added extends ReadonlyArray<string>,
+>(
+  base: RecipeDef<Slots>,
+  added: Added,
+): RecipeDef<Slots | Added[number]> {
+  return {
+    ...base,
+    slots: [...base.slots, ...added] as ReadonlyArray<Slots | Added[number]>,
+  } as RecipeDef<Slots | Added[number]>;
 }
 
 export type RecipeProps<T> = T extends { __recipeDef: infer D }
@@ -1140,7 +1342,6 @@ export const Style = {
   keyframes,
   transition,
   make,
-  forSlots,
   nest,
   child,
   descendant,
@@ -1163,6 +1364,9 @@ export const Style = {
   grid,
   layers,
   inLayer,
+  cssLayerOrder,
+  mergeRecipes,
+  extendRecipeSlots,
   global,
   resolveGlobal,
   globalLayer,

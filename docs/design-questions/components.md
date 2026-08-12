@@ -16,7 +16,6 @@ here except where a real choice sits behind them (see the last section).
 | DQ-059 | What is the shipped component setup/render surface, and does the library owe a scoped test helper? | deferrable | DIN-20 |
 | DQ-060 | `setup()` builder or positional `make(props(), require(), …)` — which ships? | deferrable | DIN-20 |
 | DQ-061 | How does Theme express a two-level palette across layers? | deferrable | DIN-18 / K1 |
-| DQ-062 | What is the slot-widening form for recipes? | deferrable | `COMPONENT_KIT_PLAN.md` K1 |
 | DQ-063 | CSS-Tags: absorb as `@affe/css` or depend externally? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-8 |
 | DQ-064 | How does static CSS extraction survive a cross-module `Style.compose` chain? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-9 |
 | DQ-066 | Where does interruptible behaviour timing come from? | deferrable | `COMPONENT_KIT_PLAN.md` K0b |
@@ -47,6 +46,7 @@ still resolves. The decision and its rejected alternatives live in the plan.
 | DQ-065 | Option 1 confirmed and DISCHARGED: the five factories were fixed first and now prove the boilerplate; `Mixin` (K0c) proceeds, extracted from the working shape — it must collapse the three observed repetitions (factory name, doubled witness names, options pick-list) and desugar to the same Schema+Behavior patterns, never a second runtime. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0c |
 | DQ-071 | `presence` packages as option 1: a `ReducedMotion` Context service (boolean reader, static default `false`, `Layer`-swappable per subtree) + `PresenceOptions` Schema for per-instance knobs; bindings are `isPresent` + `phase` (machine handle stays internal); the `animationend` listener attaches to the single `root` element. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b item 6 |
 | DQ-072 | `LiveAnnouncer` is option 1: one `announce(message, politeness?)` method; clear-after-timeout is the LAYER's policy (`makeLiveAnnouncer({ clearAfterMs })`); a mock Layer captures `[message, politeness]` tuples. Queue handles deferred until a consumer needs backpressure. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b item 5 |
+| DQ-062 | Widening is the explicit, name-carrying `Style.extendRecipeSlots(base, names)` returning the widened `RecipeDef` union; `mergeRecipes` stays two-arg with patch slots type-constrained to the base and dynamic unknown slots reported as `style:unknown-recipe-slot` diagnostics (never silent, never a throw). | ratified+built 2026-08-12, `COMPONENT_KIT_PLAN.md` K1 ratifications |
 
 
 
@@ -424,6 +424,9 @@ defect, already recorded in DIN-18, and worth doing regardless of this decision.
 ---
 
 ## DQ-062 — What is the slot-widening form for recipes?
+
+> **RATIFIED AND BUILT 2026-08-12** — `Style.extendRecipeSlots` per the plan's
+> 2026-07-30 ratification; row moved to the Decided table.
 
 - **Severity:** deferrable
 - **Owning plan:** `docs/COMPONENT_KIT_PLAN.md` K1 (the `mergeRecipes` *signature* was ratified 2026-07-30; widening was not)

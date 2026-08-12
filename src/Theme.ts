@@ -90,6 +90,17 @@ export function lookupToken(tokens: ThemeTokenSchema, token: string): unknown {
       return current;
     }
   }
+  // Literal-key fallback: several categories use dotted LITERAL keys
+  // ("body.sm" under fontSize), which the path walk above cannot reach —
+  // without this, no fontSize token ever resolved.
+  for (const category of Object.values(tokens)) {
+    if (
+      typeof category === "object" && category !== null
+      && token in (category as Record<string, unknown>)
+    ) {
+      return (category as Record<string, unknown>)[token];
+    }
+  }
   return token;
 }
 

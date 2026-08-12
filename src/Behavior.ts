@@ -848,27 +848,49 @@ export function attachTo<
   E,
   Slots extends SlotMapLike,
   Bindings extends { readonly slots: Slots } & Deps,
+  const As extends string | undefined = undefined,
   SlotContract = Slots,
 >(
   behavior: Behavior<Elements, AddedBindings, BR, BE, Deps>,
-  elementMap: { readonly [K in keyof Elements]: CompatibleSlotKey<Slots, Elements[K]> },
+  // The remap is OPTIONAL: when the behavior's element keys already ARE the
+  // component's slot names, identity `{ root: "root" }` is pure ceremony and
+  // the slots record itself is the element map (DQ-051). `as` namespaces
+  // everything this attachment provides under `bindings[as]` — the ratified
+  // replacement for the untyped `merge` callback when re-piping a behavior
+  // whose binding names would otherwise collide.
+  elementMap?:
+    & { readonly [K in keyof Elements]?: CompatibleSlotKey<Slots, Elements[K]> }
+    & { readonly as?: As },
   merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
 ): (
   component: Component.Component<Props, Req, E, Bindings, SlotContract>,
-) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract> {
+) => Component.Component<
+  Props,
+  Req | BR,
+  E | BE,
+  Bindings & (As extends string ? { readonly [K in As]: AddedBindings } : AddedBindings),
+  SlotContract
+> {
+  const { as, ...map } = (elementMap ?? {}) as { readonly as?: string } & Record<string, unknown>;
+  const mergeUnderNamespace = as === undefined
+    ? merge
+    : (bindings: Bindings, added: AddedBindings) =>
+      ({ ...bindings, [as]: added }) as Bindings & AddedBindings;
   return Component.withBehavior(
     behavior,
     (bindings: Bindings) => {
+      if (Object.keys(map).length === 0) {
+        // Identity attachment: the component's slots ARE the elements.
+        return bindings.slots as unknown as Elements;
+      }
       const out: Record<string, unknown> = {};
-      for (const [behaviorKey, slotKey] of Object.entries(elementMap)) {
+      for (const [behaviorKey, slotKey] of Object.entries(map)) {
         out[behaviorKey] = (bindings.slots as Record<string, unknown>)[String(slotKey)];
       }
       return out as Elements;
     },
-    merge,
-  ) as (
-    component: Component.Component<Props, Req, E, Bindings, SlotContract>,
-  ) => Component.Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract>;
+    mergeUnderNamespace,
+  ) as never;
 }
 
 /** Attach a behavior to every slot whose capability satisfies `capability`. */

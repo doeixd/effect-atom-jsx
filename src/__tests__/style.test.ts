@@ -103,7 +103,7 @@ describe("Style", () => {
           lg: Style.slot({ fontSize: "body.lg" }),
         },
       },
-      compounds: [
+      compound: [
         { when: { intent: "ghost", size: "lg" }, style: Style.slot({ opacity: 0.5 }) },
       ],
       defaults: { intent: "primary", size: "sm" },
@@ -338,7 +338,7 @@ describe("Style", () => {
       Component.withSlots(Slots),
       Behavior.attachToSlots(disclosure, Slots),
       Style.attachToSlots(
-        Style.forSlots(Slots)({
+        Style.make(Slots, {
           root: Style.compose(
             Style.slot({ opacity: 0.25 }),
             Style.whenBinding(IsOpen, true, Style.slot({ opacity: 1 })),

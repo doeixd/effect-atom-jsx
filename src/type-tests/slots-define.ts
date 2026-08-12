@@ -102,7 +102,7 @@ const badSugarContractName: View.Slots.NamesOf<SugarContract> = "missing";
 void badSugarContractName;
 // styles/behaviors attach to the sugar-published contract without generics
 const SugarStyled = SugarField.pipe(
-  Style.attachToSlots(Style.forSlots(FieldSlots)({ root: Style.slot({ display: "grid" }) }), FieldSlots),
+  Style.attachToSlots(Style.make(FieldSlots, { root: Style.slot({ display: "grid" }) }), FieldSlots),
 );
 void SugarStyled;
 
@@ -113,7 +113,7 @@ const contractName: FieldContractNames = "input";
 void contractName;
 
 // styles and behaviors attach without generics and reject unknown slots
-const fieldStyle = Style.forSlots(FieldSlots)({
+const fieldStyle = Style.make(FieldSlots, {
   root: Style.slot({ display: "grid" }),
   input: Style.slot({ padding: "sm" }),
 });
@@ -156,7 +156,7 @@ const Styled = Field.pipe(
 );
 void Styled;
 
-Style.forSlots(FieldSlots)({
+Style.make(FieldSlots, {
   root: Style.whenBinding(IsOpen, true, Style.slot({ opacity: 1 })),
 });
 
@@ -190,7 +190,7 @@ const SetupCardWithoutBinding = Component.make<{}, never, never, {
 // @ts-expect-error binding-aware styles require the referenced binding on the component
 SetupCardWithoutBinding.pipe(Style.attach(bindingAwareStyle));
 
-Style.forSlots(FieldSlots)({
+Style.make(FieldSlots, {
   // @ts-expect-error unknown slot in a contract-keyed style
   missing: Style.slot({ color: "red" }),
 });
