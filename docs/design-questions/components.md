@@ -14,7 +14,6 @@ here except where a real choice sits behind them (see the last section).
 | --- | --- | --- | --- |
 | DQ-056 | What subscribes to a binding-conditional style, and at what granularity? | deferrable | `COMPONENT_KIT_PLAN.md` (seq. step 5) |
 | DQ-057 | `compose`: last-wins or intersection, conflicting `provides`, arity, pipeability? | deferrable | `COMPONENT_KIT_PLAN.md` K0b |
-| DQ-058 | Double-attach: type error, runtime diagnostic, or legal? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-10 |
 | DQ-059 | What is the shipped component setup/render surface, and does the library owe a scoped test helper? | deferrable | DIN-20 |
 | DQ-060 | `setup()` builder or positional `make(props(), require(), …)` — which ships? | deferrable | DIN-20 |
 | DQ-061 | How does Theme express a two-level palette across layers? | deferrable | DIN-18 / K1 |
@@ -28,6 +27,7 @@ here except where a real choice sits behind them (see the last section).
 | DQ-069 | Batch: three closed-union / exhaustiveness tightenings. | cosmetic | `COMPONENT_KIT_PLAN.md` §4 items |
 | DQ-070 | Does a slot become an addressable named region (slot-as-projection)? | deferrable | DIN-11 |
 | DQ-071 | `presence` catalog packaging: reduced-motion entry point + element/bindings contract | deferrable | `COMPONENT_KIT_PLAN.md` K0b items 6/9 |
+| DQ-072 | `LiveAnnouncer` service interface: message call vs queue handles; clear-after-timeout policy | deferrable | `COMPONENT_KIT_PLAN.md` K0b item 5 |
 
 ---
 
@@ -46,6 +46,7 @@ still resolves. The decision and its rejected alternatives live in the plan.
 | DQ-053 | Behaviours declare state in `provides`; the attach machinery materialises it in the **component's** scope. Matching shape reuses the atom; a mismatch is a **diagnostic**, never a silent reset. Depends on `DQ-057`. | `COMPONENT_KIT_PLAN.md` |
 | DQ-054 | Delete `Style.forSlots`; fold contract-awareness into one `make` that keeps binding inference. Full slot coverage is **opt-in** exhaustive, not default-required. | `COMPONENT_KIT_PLAN.md` |
 | DQ-055 | `Resume.snapshotVia({schema, read, restore})` is the primitive (it generalises to every handle-shaped binding, incl. `DQ-053` state); `Machine.resumable(def)` is sugar on it. Interim: bind `machine.state`. | `COMPONENT_KIT_PLAN.md` |
+| DQ-058 | Double-attach is LEGAL but reported: attach records behaviour identity + elements, a repeat emits `component:duplicate-attachment` through the opt-in diagnostics reporter, and nothing is ever silently de-duplicated. | implemented in `src/Component.ts` (`recordBehaviorAttachment`), tested in `src/__tests__/lifecycle-disposal.test.ts` |
 
 
 
@@ -183,11 +184,32 @@ the catalog convention.
 must merge too), DQ-065 (`Mixin` has the same precedence problem, and the plan
 already demands property tests for it), findings §2.10/§4.
 
+**Status update (2026-08-12) — two of the four sub-questions are settled by
+landed work; a firm recommendation for the rest.**
+
+- **Pipeability: DONE.** `Behavior` has `pipe` (non-enumerable, re-attached at
+  every construction site); the catalog authors with
+  `make(...).pipe(provides(...))`.
+- **Deps: settled by `DQ-052`, and intersection is CORRECT there.** `compose`
+  types member deps as `D1 & D2` and forwards ONE deps object to every
+  member — unlike bindings, deps are inputs, so intersection tells the truth.
+- **Remaining: bindings/provides precedence and arity.** Recommend **option 1**
+  (last-wins types matching the runtime), with the evidence that option 2 is
+  now unaffordable: the five landed factories all publish fixed `provides`
+  contracts, so REPLACE-by-compose (the plan's sanctioned customization move)
+  necessarily collides on binding names — making collisions a type error would
+  outlaw the blessed path. Concretely: a `MergeAll` tuple type over a variadic
+  `compose`, and a `behavior:provides-override` diagnostic through the SAME
+  opt-in reporter channel `DQ-058` established (report, never block) when a
+  later member overrides an earlier `provides` key. The `DQ-058` precedent is
+  the tiebreaker the original entry lacked: "legal but reported" is now the
+  house pattern for suspicious-but-sanctioned composition.
+
 ---
 
 ## DQ-058 — Is double-attach a type error, a runtime diagnostic, or legal?
 
-- **Severity:** deferrable
+- **Severity:** deferrable — **RESOLVED (verified 2026-08-12): option 1 is implemented and tested.** `Component.withBehavior` records behaviour identity + selected elements per instance (`recordBehaviorAttachment`, `src/Component.ts`) and a repeat attach of the same behaviour to the same elements emits `component:duplicate-attachment` through the opt-in diagnostics reporter — reported, never de-duplicated. Pinned by `src/__tests__/lifecycle-disposal.test.ts` (fires on repeat, silent when clean). The row moved to the Decided table.
 - **Owning plan:** `docs/COMPONENT_KIT_PLAN.md` "Open questions" 10
 - **Raised:** 2026-07-30, from findings §2.12
 - **Blocks specs:** `future/components/lifecycle-disposal.spec.ts:243`
@@ -633,6 +655,19 @@ also asks for injected-Clock determinism. Undecided: what the mechanism is.
 non-deterministic under load, and not interruptible — so the suppression window
 survives disposal. It is also the pattern the next four behaviours will copy.
 
+**Status update (2026-08-12) — recommendation grounded in landed precedent.**
+The catalog now has an established answer for environment the runtime cannot
+own: the INJECTED SEAM (`anchorPosition`'s `measure`/`autoUpdate`; behaviour
+listener callbacks are synchronous, so an Effect `Clock` cannot be read
+inside them anyway). Recommend: (a) `press` gains a function-prop seam
+`now?: () => number` (default `Date.now`) plus a Schema knob
+`clickSuppressionMs` (default 50) — deterministic tests inject a fake `now`,
+matching rule-of-thumb 2 ("overridable algorithm step → function prop");
+(b) the full Effect `Clock`/`Locale` SERVICE question stays owned by K3's
+DatePicker gate, exactly as `services-and-determinism.spec.ts` already
+declares — a service earns its place when a consumer holds state across
+async boundaries, which a 50 ms suppression window does not.
+
 **Options.**
 
 1. **Effect `Clock` from context, read via `Effect`.** Suppression becomes a
@@ -682,6 +717,17 @@ intended trade-off, and if not, what the finer granularity is.
 selection; over-invalidation there is O(items) recompute per keystroke in a long
 list. It also has **zero executable coverage** today (findings §3 item 1), so
 there is no measurement either way.
+
+**Status update (2026-08-12) — recommendation.** Keep the single version
+counter for K0b and make finer granularity a MEASUREMENT-GATED change: the
+repo's own precedent (`DQ-100`, the M8d row-marker lane) is that structural
+cost questions get priced by a benchmark before they get designed. Concretely:
+(a) coverage exists now (`collection-behavior.test.ts` plus the catalog
+specs) but no perf characterization; (b) if a real widget shows O(items)
+recompute pain (long listbox + typeahead is the likely reproducer), add a
+`vitest bench` lane and only then split the counter (per-item disabled epoch
+vs order epoch is the natural split). Deciding granularity now would be
+designing ahead of the measurement the repo's culture requires.
 
 **Options.**
 
@@ -953,3 +999,49 @@ Not built pending ratification.
 
 **Related.** DQ-066 (behavior timing source), the a11y matrix row, the
 services-not-globals house rule.
+
+**Evidence update (2026-08-12).** The green presence-machine specs already
+treat reduced motion as an INJECTED INPUT read at transition time
+(`presenceMachine({ reducedMotion })`, `presence.spec.ts:26-29`) — the
+machine semantics were deliberately written so either packaging satisfies
+them. The service pick therefore costs nothing at the machine layer; the
+whole decision is the catalog-surface contract. `DismissLayerStack` (landed)
+is the service template: tag + `layer` constructing fresh state per
+provision. Ratifying option 1 means: `ReducedMotion` service with a
+`Layer.succeed`-able boolean-reader interface and a static default of
+`false`, `PresenceOptions` Schema for the remaining knobs.
+
+---
+
+## DQ-072 — What is the `LiveAnnouncer` service interface, and who owns clear-after-timeout?
+
+- **Severity:** deferrable
+- **Owning plan:** `docs/COMPONENT_KIT_PLAN.md` K0b mandated coverage item 5
+- **Raised:** 2026-08-12, researching the `unbuilt` in `services-and-determinism.spec.ts`
+- **Blocks specs:** `future/components/services-and-determinism.spec.ts`
+  (`unbuilt("behaviors/live-announce: the LiveAnnouncer service…", "K0b")`)
+
+**What is undecided.** The research doc (`live-announce.md`) decides the
+architecture — `LiveAnnouncer` Context service + Layer, one region per
+document, polite/assertive queues, clear message after timeout — but not the
+interface: `announce(message, politeness)` as one call, or queue handles with
+separate `polite`/`assertive` writers? And whether clear-after-timeout is the
+service's policy (a duration knob on the Layer) or the caller's.
+
+**Why it matters.** This is the concrete proof of the services-not-globals
+house rule (kit services swap wholesale in tests with no DOM), and the second
+service after `DismissLayerStack` — together they set the template.
+
+**Options.** (1) One `announce(message, politeness?)` method, timeout policy
+owned by the Layer (`makeLiveAnnouncer({ clearAfterMs })`), mock Layer
+captures `[message, politeness]` tuples. (2) Two queue handles
+(`polite.write`, `assertive.write`). (3) One method now, handles later if a
+consumer needs backpressure.
+
+**Provisional pick.** Option 1 — mirrors `DismissLayerStack` (behavioural
+methods on one service object; construction-time policy on the maker), and
+the research doc's own test sketch ("Layer mock captures announcements") is
+the option-1 shape. Not built pending ratification.
+
+**Related.** DQ-071 (same service-template decision), the services-not-globals
+house rule, `live-announce.md`.
