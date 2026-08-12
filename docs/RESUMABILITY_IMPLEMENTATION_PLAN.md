@@ -1336,6 +1336,34 @@ Work:
    what the external-style consumer spec exercised.)
 3. Add diagnostics for capture size, unsupported policy, missing codec,
    unknown code identity, build mismatch, stale DOM marker, and duplicate ID.
+   (audited and closed 2026-08-12 — the matrix:
+   - **Capture size**: compile-time `oversized-bind` warning; runtime
+     `ResumePayloadTooLargeError` with entry AND binding attribution
+     (`largestEntryKind/Id/Bytes`, `largestBindingName`). Per-capture
+     attribution is deliberately M10 item 5's scope, not this item's.
+   - **Unsupported policy**: the `opaque-*` / `unsupported-*` /
+     `event-data-unsupported` collect family.
+   - **Missing codec**: fail-closed at dispatch as
+     `dispatch-resolution-failure` with the NEW machine-readable
+     `errorTag: "PortableCaptureDecodeError"` field (this audit's code
+     change); serializer identity mismatches fail earlier at decode via the
+     `DQ-012` envelope gate (`ResumeSerializerMismatchError`).
+   - **Unknown code identity**: `dispatch-resolution-failure` +
+     `errorTag: "PortableCodeNotFoundError"`; `PortableCodeLoadError` and
+     `PortableCodeIdentityMismatchError` distinguish chunk failure and
+     wrong-export.
+   - **Build mismatch**: typed errors at every layer (collect, decode,
+     activation, expression, fragment: `fragment-build-mismatch`).
+   - **Stale DOM marker**: `unknown-event-marker` diagnostic plus the typed
+     install boundary family (Unknown/Missing/Duplicate/Nesting/Invalid ×
+     component/expression).
+   - **Duplicate ID**: `marker-collision`, `duplicate-snapshot-binding`,
+     the vite plugin's duplicate-entry build error, and `DQ-058`'s
+     `component:duplicate-attachment`.
+   The audit also found and fixed real drift: `stream-truncated`,
+   `fragment-build-mismatch`, and sixteen collect codes were undocumented,
+   and the guide-completeness tests now DERIVE the code lists from the
+   source unions instead of hand-maintained copies.)
 4. Add compatibility/version tests for manifest decoding.
    (fixture tests landed: manifest-compat.test.ts)
 5. Add CSP tests and an audit checklist for secret leakage and untrusted action

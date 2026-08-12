@@ -358,20 +358,22 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     // 8c.8 exit criterion: the guide carries the diagnostics table. Every code
     // the runtime can hand an application must be findable in it, or an
     // operator meeting it in production has nothing to read.
-    const codes = [
-      "unknown-event-marker",
-      "event-type-mismatch",
-      "dispatch-resolution-failure",
-      "dispatch-execution-failure",
-      "event-handoff-failure",
-      "component-resumption-fallback",
-      "component-transition-mode-conflict",
-      "component-query-refresh-failure",
-      "expression-resolution-failure",
-      "expression-execution-failure",
-      "expression-patch-failure",
-      "client-runtime-failure",
-    ];
+    //
+    // M9 item 3: the list is DERIVED from the `ClientDiagnosticCode` union in
+    // the source, not hand-maintained — the hand-kept version silently missed
+    // `stream-truncated` and `fragment-build-mismatch` when M11/M11b added
+    // them, which is exactly the drift this audit exists to end.
+    const source = await import("node:fs/promises").then((fs) =>
+      fs.readFile(new URL("../Resume.ts", import.meta.url), "utf8")
+    );
+    const unionBlock = source.match(
+      /export type ClientDiagnosticCode =([\s\S]*?);/,
+    )?.[1];
+    expect(unionBlock).toBeDefined();
+    const codes = [...unionBlock!.matchAll(/"([a-z-]+)"/g)].map(
+      (match) => match[1]!,
+    );
+    expect(codes.length).toBeGreaterThanOrEqual(12);
     const undocumented = codes.filter((code) => !guide.includes(code));
     expect(undocumented).toEqual([]);
     // Control on the check itself: a code that does not exist must *not* be
@@ -391,17 +393,19 @@ export const save = extract((captures) => Effect.succeed(captures.payload), {
     // server during `Resume.collect`, so nothing checked it. Collect diagnostics
     // are the contract that nothing opaque is silently serialized, which makes
     // them at least as operator-facing as the client ones.
-    const codes = [
-      "opaque-event-handler",
-      "opaque-query-executor",
-      "unsupported-event-semantics",
-      "unsupported-query-semantics",
-      "unsupported-expression-output",
-      "unsupported-expression-target",
-      "missing-component-boundary",
-      "missing-expression-boundary",
-      "missing-snapshot-binding",
-    ];
+    // M9 item 3: derived from the `ResumeDiagnosticCode` union, same rationale
+    // as the client-codes audit above.
+    const source = await import("node:fs/promises").then((fs) =>
+      fs.readFile(new URL("../resume-session.ts", import.meta.url), "utf8")
+    );
+    const unionBlock = source.match(
+      /export type ResumeDiagnosticCode =([\s\S]*?);/,
+    )?.[1];
+    expect(unionBlock).toBeDefined();
+    const codes = [...unionBlock!.matchAll(/"([a-z-]+)"/g)].map(
+      (match) => match[1]!,
+    );
+    expect(codes.length).toBeGreaterThanOrEqual(9);
     const undocumented = codes.filter((code) => !guide.includes(code));
     expect(undocumented).toEqual([]);
     // Same control as above: the check must be capable of failing.

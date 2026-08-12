@@ -463,6 +463,22 @@ There are **two families**, and the distinction matters when you are debugging:
 | `missing-component-boundary` | An expression's owning component was dropped from the manifest. | The owner itself failed to serialize, so the expression is removed with it. |
 | `missing-expression-boundary` | An expression's SSR region could not be paired. | A text expression whose comment-pair region was not emitted. |
 | `missing-snapshot-binding` | A declared state binding produced no snapshot. | The binding's codec rejected the value, so the component stays dormant-incapable. |
+| `opaque-component-setup` | A component's setup could not be described for resumption. | Setup state without resume policies; the component activates instead of resuming. |
+| `event-data-unsupported` | An event carries data the portable contract cannot express. | A handler expecting a payload outside the supported projections. |
+| `invalid-event-type` | An event type failed validation. | An empty or malformed DOM event type string. |
+| `marker-collision` | Two SSR events (or regions) produced the same marker id. | Duplicate ids across nested renders; the later entry is dropped rather than aliased. |
+| `event-contract-missing` | An event was recorded without its declared contract metadata. | Framework-integration code bypassing `Resume.event(...)`. |
+| `snapshot-handle-mismatch` | A binding's resume policy disagrees with the handle it was given. | A state policy on a query handle, or vice versa. |
+| `snapshot-inspection-failure` | Reading a handle's inspection metadata threw. | A custom handle whose inspection accessor fails. |
+| `snapshot-read-failure` | Reading a binding's current value for the snapshot threw. | A getter that throws during SSR teardown. |
+| `duplicate-snapshot-binding` | Two bindings in one component claim the same snapshot name. | Name reuse across `bind(...)` calls; the later one is dropped. |
+| `event-inspection-failure` | Inspecting a handler for portability threw. | An exotic handler object whose properties throw on access. |
+| `undeclared-expression-dependency` | An expression read a reactive source it did not declare. | A `deps` list narrower than what the render actually reads. |
+| `reserved-expression-dependency` | An expression declared a dependency in the reserved `af:` namespace it does not own. | Hand-written keys colliding with framework identity (`DIN-2`). |
+| `expression-dependency-ownership` | An expression depends on a binding owned by a different component. | Cross-component dependency without an addressable owner. |
+| `unresolved-expression-dependency` | A declared dependency could not be mapped to a manifest identity. | A dependency on a handle that is not itself snapshot-addressable. |
+| `unsettled-query-snapshot` | A query was still in flight when its snapshot was taken. | Collect ran before the query settled; the query re-executes client-side. |
+| `async-setup-timeout` | An async component setup exceeded the collect deadline. | A slow or hung Effect in setup; the component is left activation-only (M11.2). |
 
 ### Client diagnostics (browser, during/after `Resume.installClient`)
 
@@ -480,3 +496,19 @@ There are **two families**, and the distinction matters when you are debugging:
 | `expression-execution-failure` | An expression ran and failed, or produced an undecodable value. | An application error, or an encoded value the codec rejects. The last good DOM is kept and the next valid write recovers. |
 | `expression-patch-failure` | The value was computed but could not be written to the DOM. | The target element was removed, or ownership was lost between computation and write. |
 | `client-runtime-failure` | An unclassified failure inside the resume runtime. | Should be rare; treat an occurrence as a bug report rather than an expected condition. |
+| `stream-truncated` | A streaming install's record stream ended before its terminal record. | The connection dropped mid-stream; regions already installed keep working, missing ones fall back. |
+| `fragment-build-mismatch` | An out-of-band fragment was built by a different deployment than the page. | A deploy landed between page load and fragment fetch. The fragment is refused, the page untouched. |
+
+Failure diagnostics also carry an optional **`errorTag`** field: the `_tag` of
+the typed error behind the failure, when one is recoverable from the cause.
+`reason` stays the human-readable rendering; `errorTag` is the
+machine-readable classification an adapter can switch on. The ones worth
+alerting on:
+
+| `errorTag` | Meaning |
+| --- | --- |
+| `PortableCodeNotFoundError` | Unknown code identity — no resolver entry for the manifest's code id. |
+| `PortableCodeLoadError` | The resolver entry exists but its chunk failed to load. |
+| `PortableCodeIdentityMismatchError` | The loaded module exported code with a different identity. |
+| `PortableBuildMismatchError` | The loaded code was built by a different deployment. |
+| `PortableCaptureDecodeError` | Captures could not be decoded — typically the client runtime is missing the serialization codec layer the server used (permissive mode requires the codec on both sides). |

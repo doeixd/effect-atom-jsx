@@ -1266,6 +1266,25 @@ export interface ClientDiagnostic {
   readonly componentId?: string;
   readonly expressionId?: string;
   readonly reason: string;
+  /**
+   * The `_tag` of the typed error behind a failure diagnostic, when one is
+   * recoverable from the cause (M9 item 3): `"PortableCaptureDecodeError"`
+   * is a missing/mismatched codec, `"PortableCodeNotFoundError"` an unknown
+   * code identity, `"PortableCodeLoadError"` a chunk-load failure, and so
+   * on. `reason` stays the human-readable rendering; this field is the
+   * machine-readable classification an adapter can switch on.
+   */
+  readonly errorTag?: string;
+}
+
+/** Recover the typed error tag from a failure cause, when there is one. */
+function causeErrorTag(cause: Cause.Cause<unknown>): { readonly errorTag?: string } {
+  const failure = Cause.findErrorOption(cause);
+  if (failure._tag === "Some") {
+    const tag = (failure.value as { readonly _tag?: unknown })._tag;
+    if (typeof tag === "string") return { errorTag: tag };
+  }
+  return {};
 }
 
 export interface ClientInstallOptions<R, ER> {
@@ -4958,6 +4977,7 @@ function installClientClaimed<R, ER>(
                   ? {}
                   : { componentId: controller.entry.component }),
                 reason: Cause.pretty(exit.cause),
+                      ...causeErrorTag(exit.cause),
               });
             } else if (!controller.dirty) {
               const value = exit.value;
@@ -5533,6 +5553,7 @@ function installClientClaimed<R, ER>(
                       eventType,
                       eventId,
                       reason: Cause.pretty(exit.cause),
+                      ...causeErrorTag(exit.cause),
                     }),
                   )
                 : Effect.void,
@@ -5563,6 +5584,7 @@ function installClientClaimed<R, ER>(
                 eventType,
                 eventId,
                 reason: Cause.pretty(exit.cause),
+                      ...causeErrorTag(exit.cause),
               });
             }
           });
@@ -5624,6 +5646,7 @@ function installClientClaimed<R, ER>(
                       eventId,
                       componentId,
                       reason: Cause.pretty(exit.cause),
+                      ...causeErrorTag(exit.cause),
                     }),
                   )
                 : Effect.void,
@@ -6221,6 +6244,7 @@ export function installClientStreaming<R, ER>(
                   eventType,
                   eventId: marker,
                   reason: Cause.pretty(exit.cause),
+                      ...causeErrorTag(exit.cause),
                 }),
               )
             : Effect.void,
@@ -6251,6 +6275,7 @@ export function installClientStreaming<R, ER>(
             eventType,
             eventId: marker,
             reason: Cause.pretty(exit.cause),
+                      ...causeErrorTag(exit.cause),
           });
         }
       });

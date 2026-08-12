@@ -236,6 +236,13 @@ describe("rich captures through a REAL manifest round trip (M10.1+M10.2 integrat
     expect(
       bareDiagnostics.map((diagnostic) => diagnostic.code),
     ).toContain("dispatch-resolution-failure");
+    // M9 item 3: "missing codec" is machine-classified, not buried in prose —
+    // the diagnostic names the typed refusal an adapter can switch on.
+    expect(
+      bareDiagnostics.find(
+        (diagnostic) => diagnostic.code === "dispatch-resolution-failure",
+      )?.errorTag,
+    ).toBe("PortableCaptureDecodeError");
     await Effect.runPromise(bareInstallation.dispose);
     await bareRuntime.dispose();
 

@@ -1344,6 +1344,9 @@ describe("Resume client adapter", () => {
           eventType: "click",
           // Diagnostics carry the DOM marker as-is — scope-qualified (DQ-009).
           eventId: "page0:e0",
+          // M9 item 3: the typed cause is machine-readable, not only prose —
+          // an empty resolver means the code identity is unknown.
+          errorTag: "PortableCodeNotFoundError",
         },
       ]);
     });
