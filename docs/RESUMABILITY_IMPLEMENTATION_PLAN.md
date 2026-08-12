@@ -42,7 +42,8 @@ per-instance child `Scope`s, `data-af-key` fenced at compile time, and one
 **Current (2026-08-12):** M10 items 1-4 and 6 done (universal codec, async
 captures, the `@affe/permissive` package with its Chromium Qwik-parity
 proof); M9 item 2 done (`Resume.spiVersion` + the `adapter-spi` subpath);
-M11/M11b done. Remaining: the rest of M9 (blocked by `DQ-099`), M10 item 5.
+M11/M11b done. Remaining: the rest of M9 (unblocked — `DQ-099` is resolved),
+M10 item 5.
 
 **Browser tests and the benchmark have both been re-run** (7/7 Chromium; both
 heap gates pass), and the recorded baseline is **re-pinned from the post-widening
@@ -53,9 +54,11 @@ from both arms.
 **Remaining known defects** (the two listener leaks and the `installClient`
 tamper gap are now fixed):
 
-1. `DQ-099` — the validated-manifest memo is a process-global `WeakSet` keyed on
-   caller object identity, safe only because the decoder happens to return a
-   copy. Blocking M9.
+1. `DQ-099` — **RESOLVED** (ratified in `design-questions/platform.md`,
+   implemented in `Resume.ts`, pinned by `resume.test.ts` "only ever memoizes
+   a manifest it has already frozen"): memo membership is granted only after
+   the graph is deeply frozen, so "validated" implies "immutable" and the
+   decoder-copy dependence is gone. M9 is NOT blocked by this anymore.
 2. `setAttr`/`setStyle` create bare `createEffect(...)` reactions tied to neither
    an owner nor a `Scope`, so a `Style` attached through a scoped path keeps
    recomputing after disposal (`DESIGN_IMPROVEMENT_NOTES.md` item 22b). Needs a
