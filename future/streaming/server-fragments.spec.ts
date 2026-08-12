@@ -29,6 +29,7 @@ import {
   resumeButton,
   resumeKit,
   runtimeFor,
+  srcModule,
 } from "./support.js";
 import {
   asDocument,
@@ -388,21 +389,110 @@ describe("server UI fragments (M11b)", () => {
   });
 
   it("[M11b] pairs replacement UI with revalidated loader data in one round trip", async () => {
-    // Unconditionally unbuilt. `expect(Resume.fragmentAction).toBeTypeOf(
-    // "function")` used to sit at the end of this spec: the moment the export
-    // landed, the spec would have gone green while asserting nothing about the
-    // round trip it is named for — a symbol-existence check, which
-    // `future/README.md` calls out as the worthless shape.
-    //
-    // Once the wrapper exists, the property to assert is that one call returns
-    // both the fragment and the revalidated loader snapshots, and that
-    // hydrating those snapshots does not trigger a second loader run — i.e.
-    // the fragment rides the existing `SingleFlightPayload`, not a new one.
-    // That needs the argument/result shape M11b item 4 still owes.
-    unbuilt(
-      "Resume.fragmentAction — the typed server/client fragment pairing "
-        + "(schema'd args in, {html, manifest} + single-flight loaders out)",
-      "DQ-014",
+    // RATIFIED DQ-014 (2026-08-12, TRIAGE-2026-08-12.md item 5):
+    // `ServerRoute.fragment(...)` is the server half (schema'd args in,
+    // {html, manifest} + single-flight loaders out, riding the EXISTING
+    // SingleFlightPayload), and `ServerRoute.invokeFragment` is the client
+    // caller pairing it with `Resume.mountFragment`. The property: ONE call
+    // returns both the fragment and the revalidated loader snapshots, and
+    // hydrating those snapshots is a cache fill — never a second loader run.
+    const { Portable, Resume, Serialization, dom } = await resumeKit();
+    const ServerRoute = await srcModule("ServerRoute");
+    const RouteMod = await srcModule("Route");
+    const Component = await srcModule("Component");
+    const routerRuntime = await srcModule("router-runtime");
+    const { Schema } = await import("effect");
+    if (ServerRoute.fragment === undefined || ServerRoute.invokeFragment === undefined) {
+      unbuilt("ServerRoute.fragment / ServerRoute.invokeFragment", "DQ-014");
+    }
+
+    const sink = await makeSink();
+    const fragmentCode = await recordingCode(Portable, sink, "future.fragment.sf.body");
+    const runtime = runtimeFor(sink.layer);
+
+    // A route whose loader counts its runs: the revalidation must run it
+    // exactly once, server-side, and hydration must not run it again.
+    let loads = 0;
+    const App = RouteMod.loader((_: {}) =>
+      Effect.sync(() => {
+        loads += 1;
+        return { fresh: loads };
+      })
+    )(RouteMod.id("sf.page")(RouteMod.path("/")(Component.from(() => null))));
+
+    // The server half, invoked in-process through the fetch stub.
+    const handler = ServerRoute.fragment({
+      args: Schema.Tuple([Schema.String]),
+      buildId: StreamBuildId,
+      render: (label: string) => resumeButton(dom, Resume, Effect.runSync(
+        Component.action(Portable.bind(fragmentCode, { label })).pipe(
+          Effect.provideService(sink.service, {
+            record: () => Effect.die("server must not run a resumable action"),
+          }),
+        ),
+      ), label),
+      app: App,
+    });
+
+    // The live page the fragment mounts into.
+    const doc = fakeDocument([
+      { kind: "region", id: "slot", edge: "start" },
+      { kind: "region", id: "slot", edge: "end" },
+    ]);
+    const installation = await Effect.runPromise(
+      Resume.installClient({
+        root: asDocument(doc),
+        manifest: { version: 1, buildId: StreamBuildId, installationId: "page0", events: {} },
+        expectedBuildId: StreamBuildId,
+        resolverEntries: { [fragmentCode.id]: fragmentCode },
+        runtime,
+      }).pipe(Effect.provide(Serialization.layer)) as Effect.Effect<any, never, never>,
     );
+
+    const result = await Effect.runPromise(
+      ServerRoute.invokeFragment(
+        "/__fragment",
+        { args: ["replaced"], url: "http://test.local/" },
+        {
+          installation,
+          region: "slot",
+          app: App,
+          fetch: async (_input: string, init?: { readonly body?: string }) => {
+            const request = JSON.parse(init?.body ?? "{}");
+            const response = await Effect.runPromise(
+              handler(request).pipe(
+                Effect.provide(Serialization.layer),
+              ) as Effect.Effect<unknown, never, never>,
+            );
+            return { json: async () => response };
+          },
+        },
+      ).pipe(Effect.provide(Serialization.layer)) as Effect.Effect<any, never, never>,
+    );
+
+    // One payload carried BOTH halves: the loaders array holds the
+    // revalidated snapshot for the matched route…
+    expect(result.loaders.map((entry: any) => entry.routeId)).toContain("sf.page");
+    const snapshot = result.loaders.find((entry: any) => entry.routeId === "sf.page");
+    expect(snapshot.result).toMatchObject({ _tag: "Success", value: { fresh: 1 } });
+    // …and the loader ran exactly once, server-side. Hydration was a cache
+    // fill, not a refetch.
+    expect(loads).toBe(1);
+    expect(
+      routerRuntime.getLoaderCacheEntry("sf.page", {}),
+    ).toBeDefined();
+    expect(loads).toBe(1);
+
+    // The mounted fragment is live: its button resumes on first touch.
+    const mounted = doc.querySelectorAll("[data-af-event-click]");
+    expect(mounted).toHaveLength(1);
+    doc.dispatch("click", mounted[0]!);
+    await vi.waitFor(() => {
+      expect(sink.calls).toEqual(["replaced"]);
+    });
+
+    await Effect.runPromise(result.fragment.dispose as Effect.Effect<void, never, never>);
+    await Effect.runPromise(installation.dispose);
+    await runtime.dispose();
   });
 });

@@ -2514,6 +2514,81 @@ export function guard<Req, E>(
   };
 }
 
+/**
+ * Attachment registry for `DQ-058` (ratified 2026-08-12): behavior identity +
+ * slot name recorded at attach; a repeat emits a
+ * `component:duplicate-attachment` diagnostic through the opt-in diagnostics
+ * reporter. The diagnostic REPORTS — it does not de-duplicate — because
+ * attaching the same behavior twice currently installs duplicate listeners,
+ * and a silently doubled `press` handler is indistinguishable from a bug in
+ * the behavior itself.
+ */
+const attachmentRegistryKey = Symbol.for(
+  "effect-atom-jsx/Component/attachmentRegistry",
+);
+
+function carryAttachmentRegistry(from: object, to: object): void {
+  if (from === to || typeof to !== "object" || to === null) return;
+  const registry = (from as {
+    [attachmentRegistryKey]?: Map<object, Set<string>>;
+  })[attachmentRegistryKey];
+  if (registry === undefined || !Object.isExtensible(to)) return;
+  Object.defineProperty(to, attachmentRegistryKey, {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: registry,
+  });
+}
+
+function recordBehaviorAttachment(
+  bindings: object,
+  behavior: object,
+  elements: unknown,
+  reporter: DiagnosticsReporterService | undefined,
+): void {
+  const carrier = bindings as {
+    [attachmentRegistryKey]?: Map<object, Set<string>>;
+  };
+  let registry = carrier[attachmentRegistryKey];
+  if (registry === undefined) {
+    // A frozen bindings object (e.g. a restored resume snapshot) cannot
+    // carry the registry; skip tracking rather than dying — the double-attach
+    // hazard is an authoring-time composition mistake, not a restore one.
+    if (!Object.isExtensible(bindings)) return;
+    registry = new Map();
+    Object.defineProperty(bindings, attachmentRegistryKey, {
+      enumerable: false,
+      configurable: false,
+      writable: false,
+      value: registry,
+    });
+  }
+  const slotNames =
+    typeof elements === "object" && elements !== null
+      ? Object.keys(elements)
+      : [];
+  let attached = registry.get(behavior);
+  if (attached === undefined) {
+    attached = new Set();
+    registry.set(behavior, attached);
+  }
+  for (const slot of slotNames) {
+    if (attached.has(slot)) {
+      reporter?.reporter.reportAll([{
+        source: "behavior",
+        severity: "warning",
+        code: "component:duplicate-attachment",
+        message:
+          `The same behavior is attached to slot "${slot}" more than once; every attachment installs its own listeners, so handlers will fire once per attachment.`,
+        slot,
+      }]);
+    } else {
+      attached.add(slot);
+    }
+  }
+}
+
 export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings>, SlotContract = {}>(
   behavior: Behavior.Behavior<Elements, AddedBindings, BR, BE>,
   selectElements: (bindings: Bindings, props: Props) => Elements,
@@ -2551,11 +2626,25 @@ export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bin
       setup: (props) => Effect.gen(function* () {
         const base: Bindings = yield* (i.setup(props) as any);
         const elements = selectElements(base, props);
-        const added: AddedBindings = yield* (behavior.run(elements) as any);
-        if (merge) {
-          return merge(base, added);
+        // DQ-058: report (never de-duplicate) a second attach of the same
+        // behavior to a slot it already occupies on this instance.
+        const maybeReporter = yield* Effect.serviceOption(DiagnosticsReporterTag);
+        if (typeof base === "object" && base !== null) {
+          recordBehaviorAttachment(
+            base,
+            behavior as object,
+            elements,
+            maybeReporter._tag === "Some" ? maybeReporter.value : undefined,
+          );
         }
-        return { ...(base as any), ...(added as any) };
+        const added: AddedBindings = yield* (behavior.run(elements) as any);
+        const result = merge
+          ? merge(base, added)
+          : { ...(base as any), ...(added as any) };
+        // The registry rides a non-enumerable symbol, which spreads drop --
+        // carry it so the NEXT layer sees this layer's attachments.
+        carryAttachmentRegistry(base as object, result as object);
+        return result;
       }) as any,
     }, {
       setup: descriptor,

@@ -5615,7 +5615,10 @@ function installClientClaimed<R, ER>(
           });
         };
 
-        for (const eventType of eventTypes) {
+        // Extracted so a fragment mount (`DQ-014`/M11b) can install a root
+        // listener for an event type the page itself never used.
+        const installListener = (eventType: EventType): void => {
+          if (listeners.has(eventType)) return;
           const listener: EventListener = (event) => {
             if (disposed) return;
             const path = eventPathWithinRoot(event, options.root);
@@ -5765,6 +5768,9 @@ function installClientClaimed<R, ER>(
             listeners.clear();
             throw error;
           }
+        };
+        for (const eventType of eventTypes) {
+          installListener(eventType);
         }
         interface WritableBindingTarget {
           readonly componentId: ComponentId;
@@ -6028,7 +6034,7 @@ function installClientClaimed<R, ER>(
           fragmentScopes,
           regionFragments,
           mintFragmentScope: () => `f${++fragmentScopeCounter}`,
-          hasRootListener: (eventType) => listeners.has(eventType),
+          installListener: (eventType) => installListener(eventType as EventType),
         });
         return installation;
       },
@@ -6516,7 +6522,7 @@ interface ClientFragmentInternals {
   >;
   readonly regionFragments: Map<string, { dispose: () => void }>;
   readonly mintFragmentScope: () => string;
-  readonly hasRootListener: (eventType: string) => boolean;
+  readonly installListener: (eventType: string) => void;
 }
 
 /** Fragment machinery per live install, kept off the public handle type. */
@@ -6679,10 +6685,10 @@ function findRegionMarkerPair(
  *   Remounting a region disposes the previous fragment exactly once;
  *   fragment disposal never touches the parent installation.
  *
- * v1 limitations (per M11b non-goals): fragment manifests install events
- *   only — components/expressions inside a fragment stay dormant-inert — and
- *   a fragment event type with no page-level root listener reports a
- *   diagnostic instead of installing a listener.
+ * v1 limitation (per M11b non-goals): fragment manifests install events
+ *   only — components/expressions inside a fragment stay dormant-inert. A
+ *   fragment event type the page never used gets its root listener installed
+ *   at mount (DQ-014).
  */
 export function mountFragment(
   installation: StreamingClientInstallation,
@@ -6818,14 +6824,11 @@ function mountClientFragment(
       rewrite(node);
     }
 
+    // A fragment may carry an event type the page itself never used: the
+    // page installation installs the missing root listener, so fragment
+    // events always dispatch through the page's single dispatch machinery.
     for (const entry of Object.values(events)) {
-      if (!internals.hasRootListener(entry.type)) {
-        internals.report({
-          code: "event-handoff-failure",
-          eventType: entry.type,
-          reason: `Fragment event type "${entry.type}" has no root listener on the page installation; the fragment's "${entry.type}" events will not dispatch (M11b v1 limitation).`,
-        });
-      }
+      internals.installListener(entry.type);
     }
 
     const registration = { events, disposed: false };

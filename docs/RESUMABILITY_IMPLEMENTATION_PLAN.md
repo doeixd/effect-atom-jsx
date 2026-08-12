@@ -1725,8 +1725,22 @@ streaming transport, and Milestone 11b below.
 
 ### Milestone 11b — Server UI fragments (`Resume.mountFragment`)
 
-Status: **items 1-3 and 5 implemented** (2026-08-11); item 4 deferred behind
-`DQ-014`/`DQ-011`.
+Status: **all items (1-5) implemented** (items 1-3+5 on 2026-08-11, item 4 on
+2026-08-12 under ratified `DQ-014`) — Milestone 11b is closed.
+
+> **Item 4 — the typed fragment pairing — is done** (ratified `DQ-014`,
+> TRIAGE-2026-08-12 item 5). `ServerRoute.fragment({args, buildId, render,
+> app, revalidate?})` is the server half: schema'd args in, one
+> `SingleFlightPayload` out whose mutation slot carries the collected
+> `{html, manifest}` and whose loaders array carries the revalidated
+> snapshots (`revalidate` defaults to `"matched"` — a fragment's contract is
+> "the page's data is fresh when it lands"). `ServerRoute.invokeFragment`
+> is the client caller: one call hydrates the snapshots into the loader
+> cache (a fill, never a second run) and mounts through
+> `Resume.mountFragment`. Landing it also removed the v1 listener
+> limitation: a fragment event type the page never used now gets its root
+> listener installed at mount, through the page's single dispatch
+> machinery. `future/streaming/server-fragments.spec.ts` went 5/5.
 
 > **Item 5 — the Chromium proof — is done**: `streaming.html` in the
 > resumable-action example serves a real out-of-order streamed area (records

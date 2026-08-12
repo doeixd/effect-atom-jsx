@@ -1,5 +1,8 @@
 import { Cause, Effect, Option, Schema } from "effect";
 import * as Route from "./Route.js";
+import * as Resume from "./Resume.js";
+import * as Serialization from "./Serialization.js";
+import { renderToString } from "./dom.js";
 import { extractPatternParams, matchPatternSegments } from "./route-pattern.js";
 import type { AnyRoute, AppRouteNode } from "./Route.js";
 
@@ -228,6 +231,151 @@ async function formDataToObject(formData: FormData): Promise<Record<string, unkn
 }
 
 /** Return a redirect control-flow signal from a server handler. */
+// ─── Server UI fragments (M11b item 4, ratified `DQ-014`) ───────────────────
+
+export interface FragmentActionOptions<Args extends ReadonlyArray<unknown>> {
+  /** Schema for the positional argument tuple — the typed "args in" half. */
+  readonly args: Schema.Codec<Args, unknown>;
+  /** Build identity stamped on the fragment's manifest. */
+  readonly buildId: string;
+  /** Optional explicit installation scope id for the collection (`DQ-009`). */
+  readonly installationId?: string;
+  /** Render the fragment for one call — evaluated inside `renderToString`. */
+  readonly render: (...args: Args) => unknown;
+  /**
+   * Loader revalidation source: the app route tree whose matched loaders are
+   * re-run for the request URL and returned IN THE SAME payload, riding the
+   * existing `SingleFlightPayload` — never a second wire format.
+   */
+  readonly app?: Route.RouteSource;
+  /**
+   * Which loaders ride back with the fragment. Defaults to `"matched"` —
+   * a fragment replaces UI, so its natural contract is "the page's data is
+   * fresh when it lands", not the mutation default of reactivity-selected
+   * revalidation.
+   */
+  readonly revalidate?: "reactivity" | "matched" | "none" | ReadonlyArray<string>;
+  /** Reactivity keys invalidated after the fragment renders. */
+  readonly reactivityKeys?: import("./reactivity-runtime.js").ReactivityKeysInput;
+}
+
+/** The mutation slot a fragment action carries: a settled collection result. */
+export interface FragmentActionResult {
+  readonly html: string;
+  readonly manifest: Resume.Manifest;
+}
+
+/**
+ * Define a server UI fragment action (ratified `DQ-014`): a typed server
+ * function returning live, dormant UI. One call produces the fragment
+ * (`{html, manifest}` from a real `Resume.collect`) AND the revalidated
+ * loader snapshots for the request URL, in one `SingleFlightPayload` — so
+ * the client's cache fill and the replacement UI are one round trip.
+ *
+ * The server half is genuinely a `ServerRoute`-style handler; the client
+ * half is {@link invokeFragment}, which pairs the payload with
+ * `Resume.mountFragment`.
+ */
+export function fragment<Args extends ReadonlyArray<unknown>>(
+  options: FragmentActionOptions<Args>,
+): (
+  request: Route.SingleFlightRequest<Args>,
+) => Effect.Effect<
+  Route.SingleFlightWireResponse,
+  never,
+  Serialization.SerializationService
+> {
+  const run = (...args: Args): Effect.Effect<
+    FragmentActionResult,
+    Resume.CollectionError | Schema.SchemaError,
+    Serialization.SerializationService
+  > =>
+    Effect.gen(function* () {
+      const decoded = yield* Schema.decodeUnknownEffect(options.args)(args);
+      const collected = yield* Resume.collect(
+        () => renderToString(() => options.render(...decoded)),
+        {
+          buildId: options.buildId,
+          ...(options.installationId === undefined
+            ? {}
+            : { installationId: options.installationId }),
+        },
+      );
+      return { html: collected.html, manifest: collected.manifest };
+    });
+  return (request) =>
+    Effect.gen(function* () {
+      const single = yield* Route.actionSingleFlight(run, {
+        revalidate: options.revalidate ?? "matched",
+        ...(options.app === undefined ? {} : { app: options.app }),
+        ...(options.reactivityKeys === undefined
+          ? {}
+          : { reactivityKeys: options.reactivityKeys }),
+      });
+      const handler = Route.createSingleFlightHandler(single);
+      return yield* handler(request);
+    }) as Effect.Effect<
+      Route.SingleFlightWireResponse,
+      never,
+      Serialization.SerializationService
+    >;
+}
+
+export interface InvokeFragmentOptions {
+  /** The live client installation the fragment mounts into. */
+  readonly installation: Resume.ClientInstallation;
+  /** The region between whose markers the fragment HTML lands. */
+  readonly region: string;
+  readonly fetch?: (
+    input: string,
+    init?: {
+      readonly method?: string;
+      readonly headers?: Record<string, string>;
+      readonly body?: string;
+    },
+  ) => Promise<{ readonly json: () => Promise<unknown> }>;
+  /** Route tree for hydrating the returned loader snapshots into the cache. */
+  readonly app?: Route.RouteSource;
+}
+
+/**
+ * The client half of a fragment action (`DQ-014`): one call fetches the
+ * fragment and the revalidated loader snapshots, hydrates the snapshots into
+ * the loader cache (a cache FILL — no second loader run), and mounts the
+ * fragment through `Resume.mountFragment`.
+ */
+export function invokeFragment<Args extends ReadonlyArray<unknown>>(
+  endpoint: string,
+  request: Route.SingleFlightRequest<Args>,
+  options: InvokeFragmentOptions,
+): Effect.Effect<
+  {
+    readonly fragment: Resume.FragmentHandle;
+    readonly loaders: Route.SingleFlightPayload<FragmentActionResult>["loaders"];
+  },
+  | Route.SingleFlightInvokeError
+  | Route.SingleFlightDecodeError
+  | Resume.MountClientFragmentError
+> {
+  return Effect.gen(function* () {
+    const payload = yield* Route.invokeSingleFlight<Args, FragmentActionResult>(
+      endpoint,
+      request,
+      {
+        hydrate: true,
+        ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+        ...(options.app === undefined ? {} : { app: options.app }),
+      },
+    );
+    const handle = yield* Resume.mountFragment(
+      options.installation,
+      options.region,
+      { html: payload.mutation.html, manifest: payload.mutation.manifest },
+    );
+    return { fragment: handle, loaders: payload.loaders };
+  });
+}
+
 export function redirect(location: string, status = 302): Effect.Effect<never, RedirectSignal, any> {
   return Effect.gen(function* () {
     const response = yield* Route.ServerResponseTag;
