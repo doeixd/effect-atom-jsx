@@ -15,7 +15,6 @@ here except where a real choice sits behind them (see the last section).
 | DQ-056 | What subscribes to a binding-conditional style, and at what granularity? | deferrable | `COMPONENT_KIT_PLAN.md` (seq. step 5) |
 | DQ-059 | What is the shipped component setup/render surface, and does the library owe a scoped test helper? | deferrable | DIN-20 |
 | DQ-060 | `setup()` builder or positional `make(props(), require(), …)` — which ships? | deferrable | DIN-20 |
-| DQ-061 | How does Theme express a two-level palette across layers? | deferrable | DIN-18 / K1 |
 | DQ-063 | CSS-Tags: absorb as `@affe/css` or depend externally? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-8 |
 | DQ-064 | How does static CSS extraction survive a cross-module `Style.compose` chain? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-9 |
 | DQ-066 | Where does interruptible behaviour timing come from? | deferrable | `COMPONENT_KIT_PLAN.md` K0b |
@@ -47,6 +46,7 @@ still resolves. The decision and its rejected alternatives live in the plan.
 | DQ-071 | `presence` packages as option 1: a `ReducedMotion` Context service (boolean reader, static default `false`, `Layer`-swappable per subtree) + `PresenceOptions` Schema for per-instance knobs; bindings are `isPresent` + `phase` (machine handle stays internal); the `animationend` listener attaches to the single `root` element. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b item 6 |
 | DQ-072 | `LiveAnnouncer` is option 1: one `announce(message, politeness?)` method; clear-after-timeout is the LAYER's policy (`makeLiveAnnouncer({ clearAfterMs })`); a mock Layer captures `[message, politeness]` tuples. Queue handles deferred until a consumer needs backpressure. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b item 5 |
 | DQ-062 | Widening is the explicit, name-carrying `Style.extendRecipeSlots(base, names)` returning the widened `RecipeDef` union; `mergeRecipes` stays two-arg with patch slots type-constrained to the base and dynamic unknown slots reported as `style:unknown-recipe-slot` diagnostics (never silent, never a throw). | ratified+built 2026-08-12, `COMPONENT_KIT_PLAN.md` K1 ratifications |
+| DQ-061 | Option 1: theme composition is a DEFINITION-time operation — `Theme.compose(...definitions)` merges token categories (later wins per token) into one complete Layer; semantic tokens resolve through the palette via bounded, cycle-guarded indirection (`resolveToken`). Rejected: merge-aware `Layer.merge` for one Context service (against Effect's grain). | ratified+built 2026-08-12 |
 
 
 
@@ -368,6 +368,11 @@ well-known global is not defensible in either option; `Component.needs` or
 ---
 
 ## DQ-061 — How does Theme express a two-level palette when layers compose?
+
+> **RATIFIED AND BUILT 2026-08-12** — option 1 per the recommendation below
+> (`Theme.compose` + semantic indirection in `resolveToken`); row moved to
+> the Decided table. The spec's `Layer.merge` premise was corrected to the
+> ratified definition-time form.
 
 - **Severity:** deferrable
 - **Owning plan:** DIN-18; kit phase K1

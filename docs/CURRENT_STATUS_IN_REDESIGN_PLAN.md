@@ -1,8 +1,9 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-08-12 (permissive package milestone complete; resumability
-plan complete — every buildable item built; `deps.auto` parked on DQ-021 and
-promise/stream captures explicitly deferred)
+Last updated: 2026-08-12 (permissive package + resumability plans complete;
+components kit K0b/K0c/K1-core complete — the components future-lane has no
+buildable reds; remaining work sits behind parked design questions or later
+kit phases)
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`

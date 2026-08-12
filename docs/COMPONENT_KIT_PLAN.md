@@ -12,7 +12,15 @@ five plus `presence` (+`ReducedMotion` service, DQ-071) and `liveAnnounce`
 `behavior:provides-override` diagnostic (DQ-057); `Mixin.create`/fragments/
 `toBehavior` ship at `effect-atom-jsx/Mixin` with golden press parity
 (DQ-065). Promoted to `src/__tests__`: behavior-catalog, bindable,
-presence. Remaining kit phases: K1 recipes/styling, then widgets.
+presence. **K1 recipe/styling core landed 2026-08-12**: `mergeRecipes`,
+typed `compound.when`, `extendRecipeSlots` (DQ-062), `cssLayerOrder`,
+the DQ-054 fold (`forSlots` deleted into contract-aware `make`),
+`attachTo` identity + `as` namespacing, DQ-053 provided-state in the
+component's scope, and `Theme.compose` + semantic token indirection
+(DQ-061). The components future-lane has NO buildable reds left:
+remaining items sit behind parked DQs (DQ-056 restyle granularity,
+DQ-063/064 CSS extraction, DQ-070 slot projection) or later phases
+(K2+ widgets, K3 Clock, K4 packaging).
 Historical: K0b was in progress — the two Known defects (Schema defaults +
 typed decode; pipeable `Behavior`) were FIXED 2026-08-12 and the first six
 `behavior-catalog.spec.ts` specs are green; the deps channel landed

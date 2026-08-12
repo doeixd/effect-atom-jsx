@@ -395,10 +395,12 @@ describe("theme tokens", () => {
       color: { brand: "color.blue500", bgSubtle: "color.zinc100" },
     });
 
-    // NOTE for the implementer: the gap here is Theme *layer composition*, not
-    // `lookupToken` - two layers providing the same `Theme` tag yield one
-    // winner, so a merged token schema is what is missing.
-    const layered = Layer.merge(palette.layer(), semantic.layer());
+    // PREMISE CORRECTED (2026-08-12, DQ-061 ratified option 1): composition
+    // is a DEFINITION-time operation (`Theme.compose`) producing one complete
+    // Layer — `Layer.merge` of two Theme layers is last-wins by Effect's own
+    // contract, and making one service merge-aware was the rejected option.
+    const { compose: themeCompose } = pick(Theme, "Theme", "compose");
+    const layered = themeCompose(palette, semantic).layer();
     const resolved: any = Effect.runSync(
       Effect.gen(function* () {
         const theme: any = yield* Effect.service(ThemeTag);
@@ -428,7 +430,8 @@ describe("theme tokens", () => {
       Effect.gen(function* () {
         const theme: any = yield* Effect.service(ThemeTag);
         return { accent: theme.resolve("accent"), md: theme.resolve("md") };
-      }).pipe(Effect.provide(Layer.merge(color.layer(), spacing.layer()))) as any,
+        // PREMISE CORRECTED: definition-time composition (DQ-061).
+      }).pipe(Effect.provide(pick(Theme, "Theme", "compose").compose(color, spacing).layer())) as any,
     );
 
     expect(resolved.accent).toBe("#111827");
