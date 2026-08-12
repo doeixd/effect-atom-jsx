@@ -213,10 +213,15 @@ describe("dynamic attachment validation", () => {
 
     // NEGATIVE CONTROL: a widget whose render covers its declared contract is
     // clean. Without this, an always-report implementation passes.
+    // PREMISE CORRECTED (2026-08-12): the faithful shape is DQ-050's —
+    // setup declares no slot record and the render instance is the single
+    // source of truth. The previous control used the legacy manual
+    // `Slots.handles` record, which under per-instance handles is exactly
+    // the drift the backstop spec below REQUIRES to be reported.
     const Faithful = make(
       props(),
       require(),
-      setup().value("slots", () => Slots.handles(declared)),
+      setup(),
       () => fromSlots(declared, null),
     ).pipe(withSlots(declared));
     expect(

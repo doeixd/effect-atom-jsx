@@ -937,9 +937,14 @@ describe("Component", () => {
 
     expect(Component.getSlotContract(Field)).toBe(FieldSlots);
 
-    // withSlots injects slot handles into the committed bindings snapshot
-    const bindings = Effect.runSync(Component.setupEffect(Field, {})) as { readonly slots: Record<string, unknown> };
-    expect(bindings.slots.root).toBe(View.Slots.handles(FieldSlots).root);
+    // DQ-050: withSlots materializes handles PER INSTANCE — the committed
+    // bindings carry a fresh handle set, never the define-time defaults, and
+    // two setups never share handles.
+    const bindings = Effect.runSync(Component.setupEffect(Field, {})) as { readonly slots: Record<string, { readonly kind?: string }> };
+    expect(bindings.slots.root?.kind).toBe("Container");
+    expect(bindings.slots.root).not.toBe(View.Slots.handles(FieldSlots).root);
+    const second = Effect.runSync(Component.setupEffect(Field, {})) as { readonly slots: Record<string, unknown> };
+    expect(second.slots.root).not.toBe(bindings.slots.root);
   });
 
   it("reports declared slots missing from the rendered View", () => {
@@ -1012,7 +1017,13 @@ describe("Component", () => {
 
     const diagnostics = Effect.runSync(Component.validateRenderedSlotContract(Field, {}));
 
-    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["component:slot-capability-mismatch"]);
+    // The capability mismatch is reported — and because the view renders a
+    // hand-built handle record that is not the setup-published one, the
+    // DQ-050 drift backstop fires beside it (two real defects, two codes).
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "component:slot-capability-mismatch",
+      "component:slot-target-drift",
+    ]);
     expect(diagnostics[0]?.slot).toBe("input");
     expect(diagnostics[0]?.declaredCapability).toBe("TextInput");
     expect(diagnostics[0]?.renderedCapability).toBe("Container");

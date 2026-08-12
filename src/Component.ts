@@ -838,7 +838,10 @@ export type ComponentDiagnosticCode =
   | "component:undeclared-view-slot"
   | "component:slot-capability-mismatch"
   | "component:missing-bindings-slot"
-  | "component:undeclared-bindings-slot";
+  | "component:undeclared-bindings-slot"
+  // DQ-050/051 backstop: bindings.slots and the rendered view disagree on a
+  // slot's handle IDENTITY while names and capabilities line up.
+  | "component:slot-target-drift";
 
 export interface ComponentDiagnostic {
   readonly code: ComponentDiagnosticCode;
@@ -888,6 +891,7 @@ export function validateSlotContract<Props, Req, E, Bindings, Slots>(
   if (contract === undefined) return [];
 
   const diagnostics: ComponentDiagnostic[] = [];
+  const driftedSlots: string[] = [];
   const componentName = view.name;
   const declaredMetadata = slotContractMetadata(contract);
   const renderedSlots = slotsRecord(view.slots);
@@ -920,6 +924,21 @@ export function validateSlotContract<Props, Req, E, Bindings, Slots>(
         declaredCapability: capabilityName(declared.capability),
         renderedCapability: capabilityName(renderedCapability),
       });
+    }
+
+    // DQ-050/051 backstop: names and capabilities can both line up while the
+    // IDENTITY diverges — setup publishing one handle set and the view
+    // rendering another means styles land on one and listeners on the other,
+    // silently. Drifted slots are collected and reported as ONE diagnostic
+    // per component after the loop.
+    if (
+      bindingSlots !== undefined
+      && slot in bindingSlots
+      && renderedSlots[slot] !== undefined
+      && bindingSlots[slot] !== undefined
+      && bindingSlots[slot] !== renderedSlots[slot]
+    ) {
+      driftedSlots.push(slot);
     }
 
     if (bindingSlots !== undefined && !(slot in bindingSlots)) {
@@ -959,6 +978,14 @@ export function validateSlotContract<Props, Req, E, Bindings, Slots>(
     }
   }
 
+  if (driftedSlots.length > 0) {
+    diagnostics.push({
+      code: "component:slot-target-drift",
+      message: `Component ${componentName ?? "<anonymous>"} publishes slots [${driftedSlots.join(", ")}] on bindings.slots with a different handle identity than its rendered view — styles and listeners would target different elements.`,
+      component: componentName,
+      slot: driftedSlots[0]!,
+    });
+  }
   return diagnostics;
 }
 
@@ -970,11 +997,7 @@ export function validateRenderedSlotContract<Props, Req, E, Bindings, Slots>(
   const parsed = i.props.parse(propsValue);
   return runComponentSetup(component, i, parsed).pipe(
     Effect.map((bindings) => {
-      const result = i.view === undefined
-        ? typeof (parsed as RenderPropChildren<Bindings>).children === "function"
-          ? (parsed as RenderPropChildren<Bindings>).children?.(bindings)
-          : undefined
-        : i.view(parsed, bindings);
+      const result = invokeCommittedView(i, parsed, bindings);
       if (!View.isView(result)) return [];
       registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
       return validateSlotContract(component, result as View.View<Slots>, bindings);
@@ -1065,18 +1088,65 @@ function renderViewResult(
   return observeRenderedComponentBoundary(View.node(result), bindings);
 }
 
+const SlotInstanceContractTypeId: unique symbol = Symbol.for(
+  "effect-atom-jsx/Component/SlotInstanceContract",
+);
+
+/**
+ * Mark a bindings-published slot record with its contract and the
+ * AUTHORITATIVE render instance for that contract (DQ-050). When setup
+ * supplied its own record, the render instance may be a different handle
+ * set — which is exactly the `component:slot-target-drift` condition.
+ */
+function tagSlotInstance(
+  record: Record<string, unknown>,
+  contract: object,
+  renderHandles: Record<string, unknown>,
+): void {
+  if (SlotInstanceContractTypeId in record) return;
+  Object.defineProperty(record, SlotInstanceContractTypeId, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: { contract, handles: renderHandles },
+  });
+}
+
+function slotInstanceOf(value: unknown): {
+  readonly contract: object;
+  readonly handles: Record<string, unknown>;
+} | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  return (value as {
+    readonly [SlotInstanceContractTypeId]?: {
+      readonly contract: object;
+      readonly handles: Record<string, unknown>;
+    };
+  })[SlotInstanceContractTypeId];
+}
+
 function invokeCommittedView<Props, Req, E, Bindings>(
   internal: InternalComponent<Props, Req, E, Bindings>,
   propsValue: Props,
   bindings: Bindings,
 ): unknown {
-  return withRenderedComponentOwner(bindings, () => {
-    if (internal.view === undefined) {
-      const renderProp = (propsValue as RenderPropChildren<Bindings>).children;
-      return typeof renderProp === "function" ? renderProp(bindings) : null;
-    }
-    return internal.view(propsValue, bindings);
-  });
+  // DQ-050: while this instance renders, its contract resolves to the
+  // instance handles setup materialized (when bindings.slots IS that tagged
+  // instance), so the view and bindings.slots stay one handle set.
+  const slotsRecord = (bindings as { readonly slots?: unknown } | null)?.slots;
+  const instance = slotInstanceOf(slotsRecord);
+  return View.runWithSlotInstance(
+    instance?.contract,
+    instance?.handles,
+    () =>
+      withRenderedComponentOwner(bindings, () => {
+        if (internal.view === undefined) {
+          const renderProp = (propsValue as RenderPropChildren<Bindings>).children;
+          return typeof renderProp === "function" ? renderProp(bindings) : null;
+        }
+        return internal.view(propsValue, bindings);
+      }),
+  );
 }
 
 function runComponentSetup<Props, Req, E, Bindings>(
@@ -1910,18 +1980,33 @@ export function withSlots<const SlotContract extends AnySlotContract>(
     }
 
     const i = internals(component);
-    const handles = View.Slots.handles(slots);
     const wrapped = toComponentLike(component, {
       ...i,
       setup: (props) => i.setup(props).pipe(Effect.map((bindings) => {
+        // DQ-050: handles materialize PER INSTANCE at setup, and the render
+        // instance is tagged onto the record so `fromSlots` binds the view
+        // to these exact handles. Setup-supplied slots are kept as
+        // `bindings.slots` for compatibility, but the render instance is
+        // authoritative — a divergence is `component:slot-target-drift`.
+        const instance = View.Slots.instantiate(slots) as Record<string, unknown>;
+        tagSlotInstance(instance, slots, instance);
         if (typeof bindings === "object" && bindings !== null) {
           const existingSlots = (bindings as { readonly slots?: unknown }).slots;
+          if (
+            existingSlots !== undefined
+            && typeof existingSlots === "object" && existingSlots !== null
+          ) {
+            // Setup supplied its own record: it stays published, but the
+            // render instance is authoritative — the drift diagnostic
+            // reports any identity divergence.
+            tagSlotInstance(existingSlots as Record<string, unknown>, slots, instance);
+          }
           return {
             ...(bindings as Record<string, unknown>),
-            slots: existingSlots === undefined ? handles : existingSlots,
+            slots: existingSlots === undefined ? instance : existingSlots,
           };
         }
-        return { value: bindings, slots: handles };
+        return { value: bindings, slots: instance };
       })) as any,
     }, {
       setup: {

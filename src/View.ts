@@ -133,7 +133,9 @@ export type ViewDiagnosticCode =
   | "view:unsupported-slot-capability"
   | "view:unsupported-slot-event"
   | "view:unsupported-slot-attribute"
-  | "view:missing-platform-requirement";
+  | "view:missing-platform-requirement"
+  // DQ-051: dynamic attachment onto a slot whose capability is too weak.
+  | "component:slot-capability-mismatch";
 
 /** Structured view diagnostic used directly and normalized by `Diagnostics`. */
 export interface ViewDiagnostic {
@@ -606,7 +608,15 @@ export namespace Slots {
     const bound: Record<string, Slot.BoundAny> = {};
     for (const [name, options] of Object.entries(definitions)) {
       const slot = Slot.make(name, options as never);
-      bound[name] = { slot, handle: Element.handleFor(slot.metadata.capability) };
+      // `defaulted` marks this handle as a define-time DEFAULT (DQ-050):
+      // `instantiate` mints a fresh per-instance handle for it. An explicit
+      // `Slot.bind(slot, handle)` is an author decision and is never
+      // re-minted.
+      bound[name] = {
+        slot,
+        handle: Element.handleFor(slot.metadata.capability),
+        defaulted: true,
+      } as Slot.BoundAny;
     }
     return make(bound as never) as unknown as Defined<T>;
   }
@@ -615,6 +625,23 @@ export namespace Slots {
     const out: Record<string, SlotHandle> = {};
     for (const [name, bound] of Object.entries(slots.bound)) {
       out[name] = bound.handle;
+    }
+    return out as HandlesOf<T>;
+  }
+
+  /**
+   * Materialize a FRESH handle set for one component instance (`DQ-050`:
+   * `define` is a declaration; handles materialize per instance). Unlike
+   * `handles`, which returns the contract's shared define-time handles,
+   * every `instantiate` call mints new element handles.
+   */
+  export function instantiate<T extends Any>(slots: T): HandlesOf<T> {
+    const out: Record<string, SlotHandle> = {};
+    for (const [name, bound] of Object.entries(slots.bound)) {
+      out[name] =
+        (bound as { readonly defaulted?: boolean }).defaulted === true
+          ? Element.handleFor(bound.slot.metadata.capability)
+          : bound.handle;
     }
     return out as HandlesOf<T>;
   }
@@ -1082,6 +1109,33 @@ export function tree<Slots>(
  * When `options.tree` is omitted, a minimal fragment tree is attached so
  * authored views always carry `tree` metadata (Finding 6 staging).
  */
+// ── Per-render slot-instance channel (DQ-050) ────────────────────────────────
+// While a component instance renders, its contract resolves to the INSTANCE
+// handles its setup materialized, so `bindings.slots` and the rendered view
+// are two names for one handle set. Outside a render (or for a contract with
+// no active instance) `fromSlots` falls back to the shared define-time
+// handles, which keeps non-component and legacy usage working.
+let activeSlotInstance:
+  | { readonly contract: object; readonly handles: Record<string, unknown> }
+  | undefined;
+
+/** Run `fn` with `contract` resolving to `handles` inside `fromSlots`. */
+export function runWithSlotInstance<A>(
+  contract: object | undefined,
+  handles: Record<string, unknown> | undefined,
+  fn: () => A,
+): A {
+  const previous = activeSlotInstance;
+  activeSlotInstance = contract === undefined || handles === undefined
+    ? undefined
+    : { contract, handles };
+  try {
+    return fn();
+  } finally {
+    activeSlotInstance = previous;
+  }
+}
+
 export function fromSlots<S extends Slots.Any>(
   slots: S,
   node: unknown,
@@ -1093,7 +1147,11 @@ export function fromSlots<S extends Slots.Any>(
     readonly slotRemaps?: readonly SlotRemap<Slots.HandlesOf<S>>[];
   },
 ): View<Slots.HandlesOf<S>> {
-  const handles = Slots.handles(slots);
+  const handles = (
+    activeSlotInstance !== undefined && activeSlotInstance.contract === (slots as object)
+      ? activeSlotInstance.handles
+      : Slots.handles(slots)
+  ) as Slots.HandlesOf<S>;
   const treeNode = options?.tree ?? fragment([]);
   return make(handles, node, {
     ...options,

@@ -212,6 +212,12 @@ export interface BehaviorMetadata<Elements = Record<string, unknown>> {
   readonly events?: BehaviorEventMap<Elements>;
   readonly provides?: BindingContract;
   readonly emits?: OutEventContract;
+  /**
+   * Required slot capabilities per behavior element key (`DQ-051`: retained
+   * by `forSlots` so dynamic attachment validation can check requirement
+   * against reality).
+   */
+  readonly requires?: Record<string, View.SlotCapability>;
 }
 
 export type MetadataOf<T> = T extends Behavior<infer Elements, any, any, any> ? BehaviorMetadata<Elements> : never;
@@ -466,7 +472,20 @@ export function forSlots<const S extends SlotContractInput>(
   run: (elements: ElementsForSlotContract<S>) => Effect.Effect<Bindings, E, Req>,
   metadata?: BehaviorMetadata<ElementsForSlotContract<S>>,
 ) => Behavior<ElementsForSlotContract<S>, Bindings, Req, E> {
-  return (run, metadata) => make(run, metadata);
+  // DQ-051: the builder RETAINS its slot contract as required capabilities,
+  // so dynamic attachment validation can check what the behavior needs
+  // against what a slot actually is.
+  const witnesses = slotContractRecordFrom(slots);
+  const requires: Record<string, View.SlotCapability> = {};
+  for (const [name, slot] of Object.entries(witnesses)) {
+    const capability = slot.metadata.capability;
+    if (capability !== undefined) requires[name] = capability;
+  }
+  return (run, metadata) =>
+    make(run, {
+      ...metadata,
+      ...(Object.keys(requires).length === 0 ? {} : { requires }),
+    });
 }
 
 /** Merge behavior metadata without changing its runtime attachment logic. */
@@ -900,6 +919,32 @@ export function validateAttachmentBySlots<
   const diagnostics = [
     ...View.validateSlotTargets(view, Object.values(elementMap) as string[], options),
   ];
+  // DQ-051: the behavior's retained slot contract names what each element
+  // key REQUIRES; the rendered slot's capability is what it IS. The check is
+  // an `extendsCapability` lattice walk (a strictly stronger slot is legal),
+  // and a too-weak slot fails CLOSED with a named diagnostic instead of
+  // silently accepting the attachment.
+  const required = behavior.metadata?.requires;
+  if (required !== undefined) {
+    const slotMetadataMap = view.slotMetadata as
+      | Record<string, View.SlotMetadata | undefined>
+      | undefined;
+    const renderedSlots = view.slots as Record<string, unknown>;
+    for (const [behaviorKey, capability] of Object.entries(required)) {
+      const slotName = elementMap[behaviorKey as keyof Elements];
+      if (slotName === undefined) continue;
+      const actual = slotMetadataMap?.[String(slotName)]?.capability
+        ?? View.capabilityOf(renderedSlots[String(slotName)]);
+      if (actual === undefined) continue;
+      if (!View.extendsCapability(actual, capability)) {
+        diagnostics.push({
+          code: "component:slot-capability-mismatch",
+          message: `Slot ${String(slotName)} is ${View.nameOfCapability(actual)}, which does not satisfy the behavior's required capability ${View.nameOfCapability(capability)}.`,
+          slot: String(slotName),
+        });
+      }
+    }
+  }
   const eventRequirements = behavior.metadata?.events;
   if (eventRequirements === undefined) return diagnostics;
 
