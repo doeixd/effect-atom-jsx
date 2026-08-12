@@ -41,7 +41,6 @@ export * as StyledComposables from "./styled-composables.js";
 export * as Route from "./Route.js";
 export * as ServerRoute from "./ServerRoute.js";
 export * as RouterRuntime from "./RouterRuntime.js";
-export * as FetchResult from "./Result.js";
 export * as Serialization from "./Serialization.js";
 export * as Portable from "./Portable.js";
 export * as Resume from "./Resume.js";

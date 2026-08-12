@@ -1,7 +1,6 @@
 import { Effect, Layer, Context } from "effect";
 import * as Atom from "../Atom.js";
-import * as FetchResult from "../Result.js";
-import type { BridgeError } from "../effect-ts.js";
+import { Result, type Result as CoreResult, type BridgeError } from "../effect-ts.js";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends
@@ -53,11 +52,22 @@ const authFromWriteContext = writeContext.result(auth);
 type _ReadContextResultError = Expect<Equal<EffectError<typeof authFromReadContext>, AuthError | BridgeError>>;
 type _WriteContextResultError = Expect<Equal<EffectError<typeof authFromWriteContext>, AuthError | BridgeError>>;
 
-const fetchResultAtom = Atom.readable((): FetchResult.Result<string, HttpError> =>
-  FetchResult.failure<string, HttpError>({ _tag: "HttpError" }));
-const fetchResultEffect = Atom.result(fetchResultAtom);
-type _FetchResultSuccess = Expect<Equal<EffectSuccess<typeof fetchResultEffect>, string>>;
-type _FetchResultError = Expect<Equal<EffectError<typeof fetchResultEffect>, HttpError | BridgeError>>;
+// Slice 4/5 (RESULT_UNIFICATION_PLAN.md): the fetch model is gone; a core
+// `Result` atom with a typed Failure error must infer the same way the old
+// fetch-model atom did — and with Risk 5's `Exclude` removed, an error type
+// that legitimately carries a `defect` member survives intact.
+const coreResultAtom = Atom.readable((): CoreResult<string, HttpError> =>
+  Result.failure<HttpError>({ _tag: "HttpError" }));
+const coreResultEffect = Atom.result(coreResultAtom);
+type _CoreResultSuccess = Expect<Equal<EffectSuccess<typeof coreResultEffect>, string>>;
+type _CoreResultError = Expect<Equal<EffectError<typeof coreResultEffect>, HttpError | BridgeError>>;
+type DefectCarryingError = { readonly _tag: "Boom"; readonly defect: string };
+const defectErrorAtom = Atom.readable((): CoreResult<number, DefectCarryingError> =>
+  Result.failure<DefectCarryingError>({ _tag: "Boom", defect: "d" }));
+const defectErrorEffect = Atom.result(defectErrorAtom);
+type _DefectErrorPreserved = Expect<
+  Equal<EffectError<typeof defectErrorEffect>, DefectCarryingError | BridgeError>
+>;
 
 const metadataResultAtom = Atom.readable<import("../effect-ts.js").Result<string, unknown>, HttpError>(
   () => ({ _tag: "Success", value: "ok" } as import("../effect-ts.js").Result<string, unknown>),

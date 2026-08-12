@@ -292,6 +292,10 @@ Direction:
 
 ### Finding 5 — Result/FetchResult divergence is unfinished business
 
+> **RESOLVED 2026-08-12**: `FetchResult` is deleted (RESULT_UNIFICATION_PLAN
+> Slices 4–5). One core `Result` model, one wire projection
+> (`src/result-wire.ts`), acceptance pinned in `result-unification.test.ts`.
+
 Two async state machines still ship: unified `Result`
 (Loading/Refreshing/Success/Failure/Defect) and `FetchResult`
 (Initial/Success/Failure + `waiting`, with the awkward

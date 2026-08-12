@@ -24,7 +24,6 @@ import {
   type MutationSupersededError,
   type OptimisticRef,
 } from "./effect-ts.js";
-import * as FetchResult from "./Result.js";
 import {
   flushReactivityRuntime,
   invalidateReactivityRuntime,
@@ -138,12 +137,17 @@ export type AsyncAtom<A, E, R = never> = ResultAtom<A, E, R>;
 export type ValueOf<T> = T extends ReadonlyAtom<infer A, any, any> ? A : never;
 export type ErrorOf<T> = T extends ReadonlyAtom<any, infer E, any> ? E : never;
 export type RequirementsOf<T> = T extends ReadonlyAtom<any, any, infer R> ? R : never;
-type ResultLikeValue = Result<any, any> | FetchResult.Result<any, any>;
+type ResultLikeValue = Result<any, any>;
 type ResultSuccessOf<T> =
   Extract<T, { readonly _tag: "Success" }> extends { readonly value: infer A } ? A : never;
+// Risk 5 (RESULT_UNIFICATION_PLAN.md): the old `Exclude<E, { defect: string }>`
+// existed only to strip the deleted fetch model's untagged defect arm from
+// `Failure.error`. With one model it was actively wrong for a core error type
+// that legitimately carries a `defect` member, so it is gone — the type tests
+// in `type-tests/atom-type-axes.ts` pin the resulting inference.
 type ResultErrorOf<T> =
   Extract<T, { readonly _tag: "Failure" }> extends { readonly error: infer E }
-    ? Exclude<E, { readonly defect: string }>
+    ? E
     : never;
 type ResultAtomSuccessOf<T extends ReadonlyAtom<ResultLikeValue, any, any>> = ResultSuccessOf<ValueOf<T>>;
 type ResultAtomErrorOf<T extends ReadonlyAtom<ResultLikeValue, any, any>> =
@@ -188,31 +192,21 @@ export interface WriteContext<A> {
 }
 
 function toEffectResult<A, E>(
-  value: Result<A, E> | FetchResult.Result<A, E>,
+  value: Result<A, E>,
 ): Effect.Effect<A, E | BridgeError> {
-  const tagged = value as { readonly _tag?: string };
-  switch (tagged._tag) {
+  switch (value._tag) {
     case "Loading":
       return Effect.fail({ _tag: "ResultLoadingError", message: "Atom is Loading" } as const);
-    case "Refreshing": {
-      const previous = (value as Refreshing<A, E>).previous;
-      return toEffectResult(previous as Result<A, E> | FetchResult.Result<A, E>);
-    }
+    case "Refreshing":
+      return toEffectResult((value as Refreshing<A, E>).previous);
     case "Success":
       return Effect.succeed((value as Success<A>).value);
     case "Stale":
       return Effect.fail((value as import("./effect-ts.js").Stale<A, E>).error);
-    case "Failure": {
-      const failure = value as Failure<E>;
-      if ("error" in failure) {
-        return Effect.fail(failure.error);
-      }
-      return Effect.fail((value as FetchResult.Failure<A, E>).error as E | BridgeError);
-    }
+    case "Failure":
+      return Effect.fail((value as Failure<E>).error);
     case "Defect":
       return Effect.fail({ _tag: "ResultDefectError", defect: (value as Defect).cause } as const);
-    case "Initial":
-      return Effect.fail({ _tag: "ResultLoadingError", message: "Result is Initial" } as const);
     default:
       return Effect.fail({ _tag: "ResultDefectError", defect: "Unsupported atom result value" } as const);
   }
@@ -2231,7 +2225,7 @@ export function result<T extends ReadonlyAtom<ResultLikeValue, any, any>>(
 /**
  * Read a result-like atom as an `Effect` value.
  *
- * Supports both core `Result` and compatibility `FetchResult` atoms.
+ * Unwraps core `Result` atoms into typed Effects.
  */
 export function result<T extends ReadonlyAtom<ResultLikeValue, any, any>>(
   self?: T,

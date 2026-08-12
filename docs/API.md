@@ -1460,7 +1460,7 @@ Writable atoms are callable and expose sync instance methods for component ergon
 Effect helpers (all support data-first `Atom.set(atom, value)` and data-last `Atom.set(value)` forms):
 
 - **`Atom.get(atom)`** → `Effect<A>` — read atom value
-- **`Atom.result(atom)`** → `Effect<A, E | BridgeError>` — unwrap `Result`/`FetchResult` atoms into typed Effects. Fails with `ResultLoadingError` if still loading, `ResultDefectError` if defected.
+- **`Atom.result(atom)`** → `Effect<A, E | BridgeError>` — unwrap core `Result` atoms into typed Effects. Fails with `ResultLoadingError` if still loading, `ResultDefectError` if defected.
 - **`Atom.set(atom, value)`** → `Effect<void>` — write atom value
 - **`Atom.update(atom, fn)`** → `Effect<void>` — update from previous value
 - **`Atom.modify(atom, fn)`** → `Effect<A>` — read-modify-write, returning a computed value
@@ -1617,55 +1617,19 @@ A centralized read/write/subscribe context for atoms. Useful when you need to ma
 
 <br />
 
-## FetchResult (`src/Result.ts`)
+## Result wire projection (`src/result-wire.ts`)
 
-A three-state result type (`Initial`, `Success`, `Failure`) for advanced compatibility and explicit waiting semantics.
+The fetch model (`FetchResult`) has been **deleted** (RESULT_UNIFICATION_PLAN
+Slices 4-5, 2026-08-12): core `Result` is the only async model, and the flat
+wire DTO the fetch model used to double as lives in `src/result-wire.ts` —
+the single module allowed to construct or interpret it.
 
-> **Deprecated — scheduled for deletion.** Core async APIs use `Result` from
-> `effect-ts`, which is now a capability superset: `Result.builder` and
-> `Result.all` have been ported to it (with `onInitial` renamed to `onLoading`),
-> and the flat wire DTO this model used to double as now lives in
-> `src/result-wire.ts`. Do not use `FetchResult` in new code — see
-> `docs/RESULT_UNIFICATION_PLAN.md`.
-
-### Constructors
-
-- **`FetchResult.initial(waiting?)`** — create an initial result; `waiting: true` means a fetch is in progress
-- **`FetchResult.success(value, options?)`** — create a success result; options: `{ waiting?, timestamp? }`
-- **`FetchResult.failure(error, options?)`** — create a failure result; options: `{ previousSuccess? }`
-
-### Guards
-
-`FetchResult.isInitial`, `isSuccess`, `isFailure`, `isWaiting`, `isNotInitial`, `isResult`
-
-### Transformations
-
-- **`FetchResult.map(result, fn)`** — map over success value
-- **`FetchResult.flatMap(result, fn)`** — chain results
-- **`FetchResult.match(result, { initial, success, failure })`** — pattern match all states
-- **`FetchResult.all(results)`** — combine multiple results (all must succeed)
-- **`FetchResult.builder(result)`** — fluent builder with `.onInitial(...)`, `.onFailure(...)`, `.onSuccess(...)`, `.render()`
-
-### Accessors
-
-- **`FetchResult.value(result)`** — extract success value or `undefined`
-- **`FetchResult.getOrElse(result, fallback)`** — success value or fallback
-- **`FetchResult.getOrThrow(result)`** — success value or throw
-
-### Conversions
-
-- **`FetchResult.fromResult(result)`** — convert core `Result` to `FetchResult`
-- **`FetchResult.toResult(result)`** — convert `FetchResult` to core `Result`
-- **`FetchResult.fromExit(exit)`** — convert Effect `Exit` to `FetchResult`
-- **`FetchResult.fromExitWithPrevious(exit, previous)`** — convert Exit, preserving previous success on failure
-- **`FetchResult.waiting(result)`** — set `waiting: true` on an existing result
-- **`FetchResult.waitingFrom(result)`** — create a waiting version, preserving success value
-
-### Types
-
-- `FetchResult.Result<A, E>` — `Initial | Success<A> | Failure<E>`
-
-<br />
+- **`toWire(result)` / `fromWire(wire)`** — project a core `Result` to the
+  flat, JSON-safe DTO and back (`Stale` crosses as a failure carrying
+  `previousSuccess`; the round trip reconstructs `Stale`).
+- Consumers import the schema and helpers through `Serialization`
+  (`Serialization.ResultWire`, `resultToWire`, `resultFromWire`,
+  `encodeResult`/`decodeResult`, `encodeResultRecord`/`decodeResultRecord`).
 
 ## AtomRef (`src/AtomRef.ts`)
 

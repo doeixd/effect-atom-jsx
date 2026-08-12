@@ -135,10 +135,6 @@
       "import": "./dist/RouterRuntime.js",
       "types": "./dist/RouterRuntime.d.ts"
     },
-    "./Result": {
-      "import": "./dist/Result.js",
-      "types": "./dist/Result.d.ts"
-    },
     "./Serialization": {
       "import": "./dist/Serialization.js",
       "types": "./dist/Serialization.d.ts"

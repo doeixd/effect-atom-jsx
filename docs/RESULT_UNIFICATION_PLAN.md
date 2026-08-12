@@ -1,7 +1,7 @@
 # Result Unification Plan (Milestone 9, first slice)
 
 Date: 2026-07-29 (progress updated 2026-07-30)
-Status: in progress — Slices 1–3 implemented 2026-07-30; Slices 4–5 pending
+Status: **Slices 1–5 implemented** (1–3 on 2026-07-30; 4–5 on 2026-08-12 — `FetchResult` and `src/Result.ts` are deleted, acceptance pinned by `src/__tests__/result-unification.test.ts` and `result-bugs.test.ts`). Slice 6 (reclaim the filename) remains optional.
 (blocked only on concurrent router/resume work settling); Slice 6 optional.
 
 Progress log (2026-07-30):

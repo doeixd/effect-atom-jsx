@@ -7,7 +7,7 @@ import { Schedule } from "effect";
 import * as Atom from "../Atom.js";
 import * as AtomRef from "../AtomRef.js";
 import * as Hydration from "../Hydration.js";
-import * as Result from "../Result.js";
+import { fromWire, toWire } from "../result-wire.js";
 import * as Registry from "../Registry.js";
 import { Result as AsyncResult, type Result as AsyncResultType } from "../effect-ts.js";
 import { createRoot, flush } from "../api.js";
@@ -520,84 +520,40 @@ describe("effect-atom style API", () => {
     ).rejects.toMatchObject({ _tag: "HydrationUnknownKeys" });
   });
 
-  it("converts Result <-> FetchResult", () => {
-    const fromLoading = Result.fromResult(AsyncResult.loading);
-    expect(Result.isInitial(fromLoading)).toBe(true);
-    expect(Result.isWaiting(fromLoading)).toBe(true);
+  it("round-trips core Results through the canonical wire projection", () => {
+    // Slice 5 (RESULT_UNIFICATION_PLAN.md): the fetch model is deleted; the
+    // conversion these cases used to exercise is now the `toWire`/`fromWire`
+    // projection — the only mapping between the core model and the flat DTO.
+    const success = fromWire(toWire(AsyncResult.success(42)));
+    expect(success._tag).toBe("Success");
+    if (success._tag === "Success") expect(success.value).toBe(42);
 
-    const fromSuccess = Result.fromResult(AsyncResult.success(42));
-    expect(Result.isSuccess(fromSuccess)).toBe(true);
+    const failure = fromWire(toWire(AsyncResult.failure("nope")));
+    expect(failure._tag).toBe("Failure");
+    if (failure._tag === "Failure") expect(failure.error).toBe("nope");
 
-    const asyncAgain = Result.toResult(fromSuccess);
-    expect(asyncAgain).toEqual(AsyncResult.success(42));
-
-    expect(Result.isWaiting(Result.waiting(fromSuccess))).toBe(true);
-
-    const failure = Result.failure<number, string>("nope");
-    expect(Result.isFailure(failure)).toBe(true);
-    expect(Result.isNotInitial(failure)).toBe(true);
+    const loading = fromWire(toWire(AsyncResult.loading));
+    expect(loading._tag).toBe("Loading");
   });
 
-  it("round-trips core Stale through FetchResult without losing last-good data", () => {
-    // Core Stale{ error, data } is the failed-refresh keep-stale state.
-    const stale = AsyncResult.stale("nope", 10);
-    const fetch = Result.fromResult(stale);
-    // FetchResult has no Stale variant: it projects to a failure carrying the
-    // previous success (the flat, wire-friendly shape).
-    expect(Result.isFailure(fetch)).toBe(true);
-    if (Result.isFailure(fetch)) {
-      expect(fetch.error).toBe("nope");
-      expect(fetch.previousSuccess?.value).toBe(10);
-      expect(fetch.waiting).toBe(false);
+  it("round-trips core Stale on the wire without losing last-good data", () => {
+    // Core Stale{ error, data } is the failed-refresh keep-stale state. The
+    // wire has no Stale variant: it projects to a failure carrying the
+    // previous success (the flat, wire-friendly shape) and reconstructs core
+    // Stale — not a bare Failure — on the way back.
+    const wire = toWire(AsyncResult.stale("nope", 10));
+    expect(wire._tag).toBe("Failure");
+    if (wire._tag === "Failure") {
+      expect(wire.previousSuccess?.value).toBe(10);
+      expect(wire.waiting).toBe(false);
     }
-    // Converting back reconstructs core Stale (not a bare Failure), preserving
-    // both the refresh error and the last-known-good data.
-    const back = Result.toResult(fetch) as AsyncResultType<number, string>;
+
+    const back = fromWire(wire) as AsyncResultType<number, string>;
     expect(back._tag).toBe("Stale");
     if (back._tag === "Stale") {
       expect(back.error).toBe("nope");
       expect(back.data).toBe(10);
     }
-  });
-
-  it("supports Result fromExit/map/match/all helpers", () => {
-    const ok = Result.fromExit(Exit.succeed(3));
-    expect(Result.isSuccess(ok)).toBe(true);
-
-    const mapped = Result.map(ok, (n) => n * 2);
-    expect(Result.isSuccess(mapped) && mapped.value === 6).toBe(true);
-
-    const text = Result.match(mapped, {
-      onInitial: () => "i",
-      onSuccess: (v) => `s:${v}`,
-      onFailure: () => "f",
-    });
-    expect(text).toBe("s:6");
-
-    const collected = Result.all([Result.success(1), Result.success(2)] as const);
-    expect(Result.isSuccess(collected) && collected.value[1] === 2).toBe(true);
-
-    const waiting = Result.waitingFrom(Option.some(Result.success("x")));
-    expect(Result.isWaiting(waiting)).toBe(true);
-  });
-
-  it("supports Result.builder fluent rendering", () => {
-    const initialView = Result.builder(Result.initial<number, string>(true))
-      .onInitial(() => "loading")
-      .onSuccess((n) => `ok:${n}`)
-      .onFailure((e) => `err:${String(e)}`)
-      .render();
-    expect(initialView).toBe("loading");
-
-    const successView = Result.builder(Result.success(42, { waiting: true }))
-      .onSuccess((n, meta) => `${n}/${meta.waiting}`)
-      .render();
-    expect(successView).toBe("42/true");
-
-    const failureView = Result.builder(Result.failure<number, string>("boom"))
-      .onFailure((e) => `err:${e}`)
-      .render();
-    expect(failureView).toBe("err:boom");
   });
 
   it("supports Atom.runtime(...).atom for Layer-backed services", async () => {

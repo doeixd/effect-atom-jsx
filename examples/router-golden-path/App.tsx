@@ -1,4 +1,4 @@
-import { Atom, Component, Reactivity, Route, WithLayer, Async, Show, For, Loading, Errored, FetchResult } from "effect-atom-jsx";
+import { Atom, Component, Reactivity, Route, WithLayer, Async, Show, For, Loading, Errored } from "effect-atom-jsx";
 import { Effect, Layer, Schema, Context } from "effect";
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────

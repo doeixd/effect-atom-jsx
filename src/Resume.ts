@@ -398,7 +398,7 @@ export const ManifestV4Schema = Schema.Struct({
  * parameterised route legitimately has many concurrently-live entries, and
  * collapsing them onto the route id would serve one user's data for
  * another's URL. The result crosses the wire through the canonical
- * `ResultWire` projection, the same encoding the router uses everywhere.
+ * `Serialization.ResultWire` projection, the same encoding the router uses everywhere.
  */
 export const ManifestLoaderEntrySchema = Schema.Struct({
   params: Schema.Unknown,

@@ -382,7 +382,7 @@ export type SingleFlightResponse<A, E = unknown> =
 // ─── Single-flight wire contract (R5.1) ─────────────────────────────────────
 //
 // The response envelope is schema-validated at the trust boundary, and loader
-// results cross the wire through the canonical `ResultWire` projection — the
+// results cross the wire through the canonical `Serialization.ResultWire` projection — the
 // same encoding the SSR loader handoff uses — instead of `JSON.stringify` on a
 // core `Result`. Values travel through the sparse rich-value tree, so a `Date`
 // a loader produced on the server is a `Date` again in the client cache.
