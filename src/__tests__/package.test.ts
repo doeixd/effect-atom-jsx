@@ -21,6 +21,7 @@ describe("package release surface", () => {
       "./Behavior",
       "./Machine",
       "./Mixin",
+      "./Agent",
       "./Style",
       "./Route",
       "./ServerRoute",

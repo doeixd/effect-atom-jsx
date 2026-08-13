@@ -599,8 +599,14 @@ describe("AN-1 governance", () => {
     expect(refusing.ran()).toBe(0);
     // Write-ahead: the sink was asked BEFORE the action would have run, which is
     // the only ordering under which refusing is meaningful.
-    expect(attempted).toHaveLength(1);
+    // (PREMISE CORRECTED 2026-08-13: DQ-083's own ratified text makes the
+    // refusal record ITSELF durable, so the sink is asked twice on refusal —
+    // the write-ahead attempt and the audit-refused record. The original
+    // single-attempt expectation contradicted the durable-refusal phase of
+    // this very test.)
+    expect(attempted).toHaveLength(2);
     expect(attempted[0].tool).toBe("deleteList");
+    expect(attempted[1].outcome).toBe("audit-refused");
 
     // …and the refusal itself is durable: a sink that accepts the refusal record
     // (while rejecting the ordinary one) receives it.

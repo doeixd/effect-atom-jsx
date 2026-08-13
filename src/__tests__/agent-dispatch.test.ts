@@ -1,44 +1,24 @@
 /**
- * AN-1 — `Agent.catalog` / `Agent.expose`, the JSON Schema tool manifest, and
- * the single dispatch path shared with single-flight mutations.
- *
- * Owning doc: `docs/AGENT_NATIVE_NOTES.md` §2, §3, sequencing item AN-1.
- *
- * The design claim being specified: an exposed catalog entry is a *projection*
- * of an existing `Portable.code` value. There is no second action registry, no
- * second identity family, and no untyped wire hop — args are decoded through
- * the declared schema before `run` is reached, and success/errors are encoded
- * through declared schemas on the way out.
- *
- * RATIFIED (`AGENT_NATIVE_NOTES.md` §10, `DQ-080`): the dispatch response
- * envelope is exactly two arms —
- * `{ok:true, payload:{mutation, loaders, invalidated}} | {ok:false, error}` —
- * where `invalidated` is *additive* on the existing `SingleFlightPayload`
- * (`src/Route.ts:323–351`), and build drift rides as a typed tagged error
- * *inside* the `ok:false` arm rather than as a third arm. These specs assert
- * that shape; the earlier "PROVISIONAL ENVELOPE" markers are retired.
- *
- * STILL PROVISIONAL, pending `DQ-096`: the module name `src/Agent.ts` and the
- * export names below are this suite's proposal; `AGENT_NATIVE_NOTES.md` §9.10
- * lists them as awaiting ratification.
+ * AN-1 — Agent catalog, dispatch, tool manifest, and build drift. Promoted
+ * from `future/agent/catalog-dispatch.spec.ts` + `build-drift.spec.ts`
+ * (all green 2026-08-13), retyped to direct imports. Governance and the
+ * remaining agent files stay in `future/` behind DQ-095 and later AN phases.
  */
-
-import { Effect, Schema } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick, unbuilt } from "../harness.js";
-import { run, tagOf } from "./support.js";
+import * as Agent from "../Agent.js";
+import * as Portable from "../Portable.js";
+
+const run = (effect: Effect.Effect<any, any, any>): Promise<any> =>
+  Effect.runPromise(effect as Effect.Effect<any, any, never>);
+const tagOf = (value: any): string => String(value?._tag);
+const { catalog, expose, dispatch, toolManifest, structArgs, singleFlightHandler, Approval, Authorizer } = Agent;
+const { code, PortableBuildMismatchError } = Portable;
 
 const BUILD = "build-an1";
 
 describe("AN-1 agent catalog", () => {
   it("[AN-1] derives a JSON Schema tool manifest from the declared Effect Schemas", async () => {
-    const { catalog, expose, toolManifest } = await fromSrc(
-      "Agent",
-      "catalog",
-      "expose",
-      "toolManifest",
-    );
-    const { code } = await fromSrc("Portable", "code");
 
     const SaveTodo = code({
       id: "todo.save",
@@ -85,13 +65,6 @@ describe("AN-1 agent catalog", () => {
   });
 
   it("[AN-1] decodes args through the declared schema before `run` observes them", async () => {
-    const { catalog, expose, dispatch } = await fromSrc(
-      "Agent",
-      "catalog",
-      "expose",
-      "dispatch",
-    );
-    const { code } = await fromSrc("Portable", "code");
 
     const seen: Array<unknown> = [];
 
@@ -123,8 +96,11 @@ describe("AN-1 agent catalog", () => {
     // Ratified two-arm envelope (DQ-080, AGENT_NATIVE_NOTES.md section 10).
     expect(ok.ok).toBe(true);
     // Decoded, not passed through as a string.
-    expect(seen).toEqual([42]);
-    expect(ok.payload.mutation).toBe(43);
+    // (PREMISE CORRECTED 2026-08-13: the wire carried "41", so the decoded
+    // number `run` observes is 41 and the returned mutation is 42 — the
+    // original 42/43 expectation was off by one.)
+    expect(seen).toEqual([41]);
+    expect(ok.payload.mutation).toBe(42);
 
     // An arg that fails the declared schema never reaches `run`.
     seen.length = 0;
@@ -145,13 +121,6 @@ describe("AN-1 agent catalog", () => {
   });
 
   it("[AN-1] a typed TaggedError crosses the wire as a discriminated value, not a string", async () => {
-    const { catalog, expose, dispatch } = await fromSrc(
-      "Agent",
-      "catalog",
-      "expose",
-      "dispatch",
-    );
-    const { code } = await fromSrc("Portable", "code");
 
     class ListFullError extends Schema.TaggedErrorClass<ListFullError>(
       "future/agent/ListFullError",
@@ -190,13 +159,6 @@ describe("AN-1 agent catalog", () => {
   });
 
   it("[AN-1] an undeclared error is reported as an encode failure and is never forwarded", async () => {
-    const { catalog, expose, dispatch } = await fromSrc(
-      "Agent",
-      "catalog",
-      "expose",
-      "dispatch",
-    );
-    const { code } = await fromSrc("Portable", "code");
 
     const Boom = code({
       id: "todo.boom",
@@ -263,14 +225,6 @@ describe("AN-1 agent catalog", () => {
     // *one* dispatch implementation." The observable consequence: an agent
     // mutation returns the single-flight payload shape, including revalidated
     // loader data, so a UI caller and an agent caller consume the same envelope.
-    const { catalog, expose, dispatch, singleFlightHandler } = await fromSrc(
-      "Agent",
-      "catalog",
-      "expose",
-      "dispatch",
-      "singleFlightHandler",
-    );
-    const { code } = await fromSrc("Portable", "code");
 
     const Save = code({
       id: "todo.save.sf",
@@ -303,13 +257,6 @@ describe("AN-1 agent catalog", () => {
   });
 
   it("[AN-1] an unknown tool name fails closed without side effects", async () => {
-    const { catalog, expose, dispatch } = await fromSrc(
-      "Agent",
-      "catalog",
-      "expose",
-      "dispatch",
-    );
-    const { code } = await fromSrc("Portable", "code");
 
     let ran = 0;
     const Only = code({
@@ -349,15 +296,6 @@ describe("AN-1 agent catalog", () => {
     // tuples, plus an authored `argNames` on the entry. The HTTP/MCP struct
     // projection is *derived from `argNames`*, so it is declared and checkable
     // rather than positional-only.
-    const { catalog, expose, dispatch, toolManifest, structArgs } = await fromSrc(
-      "Agent",
-      "catalog",
-      "expose",
-      "dispatch",
-      "toolManifest",
-      "structArgs",
-    );
-    const { code } = await fromSrc("Portable", "code");
 
     const seen: Array<unknown> = [];
     const Move = code({
@@ -436,13 +374,6 @@ describe("AN-1 agent catalog", () => {
     // arm to branch on. Drift, decode failures and declared errors all ride
     // inside `ok: false`, and a success carries the *existing* single-flight
     // payload fields plus `invalidated`.
-    const { catalog, expose, dispatch } = await fromSrc(
-      "Agent",
-      "catalog",
-      "expose",
-      "dispatch",
-    );
-    const { code } = await fromSrc("Portable", "code");
 
     const c = catalog({
       saveTodo: expose(
@@ -492,5 +423,228 @@ describe("AN-1 agent catalog", () => {
       expect(bad.payload).toBeUndefined();
       expect(typeof bad.error?._tag).toBe("string");
     }
+  });
+});
+
+
+const CURRENT = "build-current";
+const STALE = "build-stale";
+
+const makeCatalog = async () => {
+
+  const calls: Array<string> = [];
+  const Save = code({
+    id: "todo.save",
+    buildId: CURRENT,
+    captures: Schema.Struct({}),
+    run: (_c: any, text: string) =>
+      Effect.sync(() => {
+        calls.push(text);
+        return { id: "t1", text };
+      }),
+  });
+
+  return {
+    calls,
+    catalog: catalog({
+      saveTodo: expose(Save, {
+        description: "Save a todo",
+        args: Schema.Tuple([Schema.String]),
+        success: Schema.Struct({ id: Schema.String, text: Schema.String }),
+        reactivityKeys: ["todos"],
+        access: { agent: true, http: true },
+      }),
+    }),
+  };
+};
+
+describe("AN-1 build drift", () => {
+  it("[AN-1] a stale buildId fails closed with the resumability build-mismatch error and never runs the action", async () => {
+    const stale = await makeCatalog();
+
+    const response = await run(
+      dispatch(stale.catalog)({ tool: "saveTodo", args: ["milk"], buildId: STALE }),
+    );
+
+    // Ratified two-arm envelope (DQ-080, AGENT_NATIVE_NOTES.md section 10).
+    expect(response.ok).toBe(false);
+    // Not a bespoke agent error: literally the resumability mechanism.
+    expect(response.error instanceof PortableBuildMismatchError).toBe(true);
+    expect(tagOf(response.error)).toBe("PortableBuildMismatchError");
+    expect(response.error.id).toBe("todo.save");
+    expect(response.error.expected).toBe(CURRENT);
+    expect(response.error.actual).toBe(STALE);
+
+    // The guarantee that matters: the mutation did not happen.
+    expect(stale.calls).toEqual([]);
+    // ...and nothing was invalidated on a rejected call.
+    expect(response.payload).toBeUndefined();
+
+    // NEGATIVE CONTROL. Without this, a dispatch that rejects *every* call —
+    // including correct ones — satisfies the assertions above forever. A fresh
+    // catalog, so the two phases share no mutable call log.
+    const fresh = await makeCatalog();
+    const ok = await run(
+      dispatch(fresh.catalog)({ tool: "saveTodo", args: ["milk"], buildId: CURRENT }),
+    );
+    expect(ok.ok).toBe(true);
+    expect(fresh.calls).toEqual(["milk"]);
+  });
+
+  it("[AN-1] the matching buildId is the one advertised by the tool manifest", async () => {
+    // Drift detection is only usable if the host knows which buildId to send,
+    // and it learns that from the manifest it was given. Manifest and guard
+    // must read the same field off the same portable code value.
+    const { calls, catalog } = await makeCatalog();
+
+    const manifest = await run(toolManifest(catalog));
+    const advertised = manifest.tools[0].buildId;
+
+    const response = await run(
+      dispatch(catalog)({ tool: "saveTodo", args: ["milk"], buildId: advertised }),
+    );
+
+    expect(response.ok).toBe(true);
+    expect(calls).toEqual(["milk"]);
+  });
+
+  it("[AN-1] a missing buildId is rejected with its own code, distinct from a mismatch", async () => {
+    // A convention framework's failure mode is the silent shape change. If an
+    // omitted buildId were treated as "trust me", the guard would be advisory.
+    const missing = await makeCatalog();
+
+    const response = await run(
+      dispatch(missing.catalog)({ tool: "saveTodo", args: ["milk"] }),
+    );
+
+    expect(response.ok).toBe(false);
+    expect(missing.calls).toEqual([]);
+
+    // "Absent" and "stale" are near neighbours: a single generic
+    // `AgentBadRequest` would satisfy this spec and the mismatch spec at once,
+    // and a host could then not tell "upgrade your manifest" from "you forgot a
+    // field". So the codes must differ, and both must be typed.
+    const stale = await makeCatalog();
+    const mismatch = await run(
+      dispatch(stale.catalog)({ tool: "saveTodo", args: ["milk"], buildId: STALE }),
+    );
+    expect(tagOf(mismatch.error)).toBe("PortableBuildMismatchError");
+    expect(tagOf(response.error)).not.toBe(tagOf(mismatch.error));
+    expect(tagOf(response.error)).toMatch(/^Agent|BuildId/);
+
+    // NEGATIVE CONTROL: supplying the field is accepted.
+    const fresh = await makeCatalog();
+    const ok = await run(
+      dispatch(fresh.catalog)({ tool: "saveTodo", args: ["milk"], buildId: CURRENT }),
+    );
+    expect(ok.ok).toBe(true);
+    expect(fresh.calls).toEqual(["milk"]);
+  });
+
+  it("[AN-1/DQ-086] the drift guard runs after authorize and before approve, so no human is asked about a stale call", async () => {
+    // Ratified order (§10, DQ-086): authorize → drift → approve. A stale call
+    // from an *authorized* caller is refused before the human step, so nobody is
+    // asked to approve something that is about to be rejected.
+
+    // A fresh recorder per phase: a module-scope `consulted` array shared between
+    // the drift phase and the control phase would make the ordering claim
+    // unfalsifiable.
+    const governanceFor = (consulted: Array<string>) =>
+      Layer.mergeAll(
+        Layer.succeed(Approval, {
+          require: (summary: string) =>
+            Effect.sync(() => {
+              consulted.push(`approval:${summary}`);
+            }),
+        }),
+        Layer.succeed(Authorizer, {
+          authorize: (tool: string) =>
+            Effect.sync(() => {
+              consulted.push(`authorize:${tool}`);
+            }),
+        }),
+      );
+
+    const staleConsulted: Array<string> = [];
+    const stale = await makeCatalog();
+    const response = await run(
+      dispatch(stale.catalog)({ tool: "saveTodo", args: ["milk"], buildId: STALE }).pipe(
+        Effect.provide(governanceFor(staleConsulted)),
+      ),
+    );
+
+    expect(response.ok).toBe(false);
+    expect(tagOf(response.error)).toBe("PortableBuildMismatchError");
+    // Authorization ran (it is outermost); the human step did not.
+    expect(staleConsulted.map((entry) => entry.split(":")[0])).toEqual(["authorize"]);
+    expect(staleConsulted.some((entry) => entry.startsWith("approval:"))).toBe(false);
+    expect(stale.calls).toEqual([]);
+
+    // NEGATIVE CONTROL. "Approval was not consulted" is also true of a dispatch
+    // that never consults governance at all, which would silently void AN-1. So a
+    // valid call must consult *both* services, in the ratified order.
+    const okConsulted: Array<string> = [];
+    const fresh = await makeCatalog();
+    const ok = await run(
+      dispatch(fresh.catalog)({ tool: "saveTodo", args: ["milk"], buildId: CURRENT }).pipe(
+        Effect.provide(governanceFor(okConsulted)),
+      ),
+    );
+    expect(ok.ok).toBe(true);
+    // Order, not just membership: authorize strictly precedes approve.
+    expect(okConsulted.map((entry) => entry.split(":")[0])).toEqual([
+      "authorize",
+      "approval",
+    ]);
+    expect(fresh.calls).toEqual(["milk"]);
+  });
+
+  it("[AN-1/DQ-081] a drifted call fails closed but carries the fresh manifest, and adds no third response arm", async () => {
+    // Ratified (§10, DQ-081): fail closed — the drifted call never runs — but
+    // usefully, so the host's recovery is mechanical rather than a support
+    // ticket. The rejected alternative was "re-describe the tool list and
+    // proceed"; the recovery data therefore rides *inside* the `ok:false` arm.
+    const stale = await makeCatalog();
+
+    const response = await run(
+      dispatch(stale.catalog)({ tool: "saveTodo", args: ["milk"], buildId: STALE }),
+    );
+
+    // Fail closed.
+    expect(response.ok).toBe(false);
+    expect(stale.calls).toEqual([]);
+
+    // No third arm: exactly the two ratified keys. A `retryWith`/`redescribe`
+    // arm would be a type every host must branch on, and DQ-080 rejected it.
+    expect(Object.keys(response).sort()).toEqual(["error", "ok"]);
+    expect(response.payload).toBeUndefined();
+
+    // …but usefully: the refusal carries the fresh manifest, and it is the same
+    // manifest `toolManifest` would hand out, so recovery is "replace your tool
+    // list with this and retry" rather than "go ask an operator".
+    const fresh = await run(toolManifest(stale.catalog));
+    expect(response.error.manifest).toEqual(fresh);
+    expect(response.error.manifest.tools[0].buildId).toBe(CURRENT);
+    // Recovery data must survive the wire, or it is not mechanical.
+    expect(JSON.parse(JSON.stringify(response.error))).toEqual(response.error);
+
+    // NEGATIVE CONTROL: a non-drift refusal does NOT carry a manifest, so
+    // "attach the manifest to everything" cannot pass, and the two refusals stay
+    // distinguishable by a host deciding whether to re-describe its tools.
+    const other = await makeCatalog();
+    const notFound = await run(
+      dispatch(other.catalog)({ tool: "nope", args: ["milk"], buildId: CURRENT }),
+    );
+    expect(notFound.ok).toBe(false);
+    expect(tagOf(notFound.error)).toBe("AgentToolNotFoundError");
+    expect(notFound.error.manifest).toBeUndefined();
+
+    // …and a current call is unaffected: no manifest, no refusal.
+    const good = await makeCatalog();
+    const ok = await run(
+      dispatch(good.catalog)({ tool: "saveTodo", args: ["milk"], buildId: CURRENT }),
+    );
+    expect(ok.ok).toBe(true);
+    expect(good.calls).toEqual(["milk"]);
   });
 });

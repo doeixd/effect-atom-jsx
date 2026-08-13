@@ -95,6 +95,10 @@
       "import": "./dist/Mixin.js",
       "types": "./dist/Mixin.d.ts"
     },
+    "./Agent": {
+      "import": "./dist/Agent.js",
+      "types": "./dist/Agent.d.ts"
+    },
     "./Element": {
       "import": "./dist/Element.js",
       "types": "./dist/Element.d.ts"
