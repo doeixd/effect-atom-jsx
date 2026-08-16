@@ -34,6 +34,8 @@
  */
 import { Cause, Context, Effect, Layer, Option, Schema } from "effect";
 import * as Portable from "./Portable.js";
+import { ReactivityBroadcast } from "./reactivity-push.js";
+import { normalizeReactivityKeys, type ReactivityKeysInput } from "./reactivity-runtime.js";
 import * as Resume from "./Resume.js";
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -199,15 +201,23 @@ export interface ExposeOptions {
   readonly argNames?: ReadonlyArray<string>;
   readonly success: Schema.Top;
   readonly error?: Schema.Top;
-  readonly reactivityKeys?: ReadonlyArray<string>;
+  /**
+   * The ONE reactivity key vocabulary (identity unification, §6): plain
+   * strings or `Reactivity.Key` witnesses — the same values queries use.
+   * Normalized at construction, so payload, audit, and push all carry the
+   * identical strings.
+   */
+  readonly reactivityKeys?: ReactivityKeysInput;
   readonly access?: AccessDeclaration;
   readonly render?: unknown;
 }
 
-export interface CatalogEntry extends ExposeOptions {
+export interface CatalogEntry extends Omit<ExposeOptions, "reactivityKeys"> {
   readonly code: Portable.Code<any, any, any, any, any, any>;
   /** DQ-084: declared by the constructor, never inferred. */
   readonly mutation: boolean;
+  /** Normalized form of the authored `reactivityKeys`. */
+  readonly reactivityKeys?: ReadonlyArray<string>;
 }
 
 const CatalogTypeId: unique symbol = Symbol.for("effect-atom-jsx/Agent/Catalog");
@@ -218,12 +228,27 @@ export interface Catalog {
   readonly audit?: { readonly onFailure: "refuse" | "proceed" };
 }
 
+function entryOf(
+  code: Portable.Code<any, any, any, any, any, any>,
+  options: ExposeOptions,
+  mutation: boolean,
+): CatalogEntry {
+  return {
+    ...options,
+    ...(options.reactivityKeys === undefined
+      ? { reactivityKeys: undefined }
+      : { reactivityKeys: normalizeReactivityKeys(options.reactivityKeys) }),
+    code,
+    mutation,
+  };
+}
+
 /** Expose a portable code value as a READ-ONLY tool (`DQ-084`). */
 export function expose(
   code: Portable.Code<any, any, any, any, any, any>,
   options: ExposeOptions,
 ): CatalogEntry {
-  return { ...options, code, mutation: false };
+  return entryOf(code, options, false);
 }
 
 /** Expose a portable code value as a MUTATING tool (`DQ-084`). */
@@ -231,7 +256,7 @@ export function exposeMutation(
   code: Portable.Code<any, any, any, any, any, any>,
   options: ExposeOptions,
 ): CatalogEntry {
-  return { ...options, code, mutation: true };
+  return entryOf(code, options, true);
 }
 
 /**
@@ -613,12 +638,22 @@ export function dispatch(base: Catalog) {
         );
       }
 
+      // AN-2: live sync. Only a SUCCESSFUL dispatch broadcasts, and it
+      // broadcasts exactly the declared keys — every refusal above returned
+      // before this point, so a failed mutation publishes nothing by
+      // construction. Absent service = no live sync installed = no-op.
+      const invalidated = [...(entry.reactivityKeys ?? [])];
+      const broadcast = yield* Effect.serviceOption(ReactivityBroadcast);
+      if (broadcast._tag === "Some" && invalidated.length > 0) {
+        yield* broadcast.value.publish(invalidated);
+      }
+
       return {
         ok: true,
         payload: {
           mutation: encodedSuccess.value,
           loaders: [],
-          invalidated: [...(entry.reactivityKeys ?? [])],
+          invalidated,
           // §10 correction 4: `SingleFlightPayload.url` is required; agent
           // dispatch has no navigation URL, so it synthesizes the action
           // endpoint identity.
