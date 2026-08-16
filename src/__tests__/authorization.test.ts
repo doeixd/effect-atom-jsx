@@ -8,7 +8,7 @@
  * `DQ-086` ordering (authorize → drift → approve, authorization outermost)
  * and the `DQ-083` audit write-ahead policy.
  */
-import { Cause, Effect, Exit, Layer, Option, Schema } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Schema, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 import * as Agent from "../Agent.js";
 import * as Component from "../Component.js";
@@ -164,6 +164,235 @@ describe("[SEC/R3] route guards gate the server doors", () => {
       Route.runStreamingNavigation(allowed, new URL("https://example.test/admin")),
     );
     expect(allowedResult.deferredScripts.join("")).toContain("111-11-1111");
+  });
+});
+
+describe("[SEC/R3] the guard contract holds on every tier and door", () => {
+  // The defect family this describe block exists to catch: an authorization
+  // API that is honoured on one authoring tier or one door and silently inert
+  // on another ("true on one path only"). Every test pairs a denial with a
+  // passing negative control, so "refuses everything" cannot pass either.
+  function fixture() {
+    const loaderRuns: Array<string> = [];
+    return {
+      loaderRuns,
+      denied: Effect.fail({ _tag: "Unauthorized" as const }),
+      loader: (label: string) =>
+        Effect.sync(() => {
+          loaderRuns.push(label);
+          return { secret: `${label}-data` };
+        }),
+    };
+  }
+
+  const Page = () =>
+    Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      Component.setup<{}>(),
+      () => template("<span>")(),
+    );
+
+  it("a guard stamped on the COMPONENT (legacy tier) gates the server render", async () => {
+    // `Route.guard(check)(component)` writes `__routeGuards` on the component
+    // itself — the third authoring tier beside unified routes and node pipes.
+    const denied = fixture();
+    const DeniedComponent = Route.guard(denied.denied)(Page());
+    const deniedApp = Route.define(
+      Route.page("/admin", DeniedComponent).pipe(
+        Route.id("admin"),
+        Route.loader(() => denied.loader("admin")),
+      ),
+    );
+    const deniedResponse = await run(
+      Route.renderRequest(deniedApp, {
+        request: new Request("https://example.test/admin"),
+      }),
+    );
+    expect(denied.loaderRuns).toEqual([]);
+    expect(deniedResponse.status).toBe(403);
+
+    const allowed = fixture();
+    const AllowedComponent = Route.guard(Effect.succeed("session"))(Page());
+    const allowedApp = Route.define(
+      Route.page("/admin", AllowedComponent).pipe(
+        Route.id("admin"),
+        Route.loader(() => allowed.loader("admin")),
+      ),
+    );
+    const allowedResponse = await run(
+      Route.renderRequest(allowedApp, {
+        request: new Request("https://example.test/admin"),
+      }),
+    );
+    expect(allowed.loaderRuns).toEqual(["admin"]);
+    expect(allowedResponse.status).toBe(200);
+  });
+
+  it("guard position in the pipe does not matter", async () => {
+    // Guard-before-loader and guard-after-loader must behave identically —
+    // an implementation that reads decorations positionally would pass one
+    // ordering and silently drop the other.
+    for (const guardFirst of [true, false]) {
+      const denied = fixture();
+      const decorations = guardFirst
+        ? [Route.guard(denied.denied), Route.loader(() => denied.loader("admin"))]
+        : [Route.loader(() => denied.loader("admin")), Route.guard(denied.denied)];
+      const app = Route.define(
+        (Route.page("/admin", Page()) as Route.AppRouteNode<any, any, any, any, any, any>)
+          .pipe(...(decorations as [never, never])),
+      );
+      const response = await run(
+        Route.renderRequest(app, {
+          request: new Request("https://example.test/admin"),
+        }),
+      );
+      expect(denied.loaderRuns, `guardFirst=${String(guardFirst)}`).toEqual([]);
+      expect(response.status, `guardFirst=${String(guardFirst)}`).toBe(403);
+    }
+  });
+
+  it("a parent layout's guard gates the CHILD route's loader (parents-first)", async () => {
+    // A guard belongs to its route AND its subtree: protecting the layout
+    // must protect every child page, or "wrap the admin section in a guard"
+    // silently protects only the layout's own (usually loader-less) route.
+    const denied = fixture();
+    const deniedApp = Route.define(
+      Route.mount(
+        Route.layout(Page()).pipe(Route.guard(denied.denied)),
+        [
+          Route.page("/admin", Page()).pipe(
+            Route.id("admin"),
+            Route.loader(() => denied.loader("admin")),
+          ),
+        ],
+      ),
+    );
+    const deniedResponse = await run(
+      Route.renderRequest(deniedApp, {
+        request: new Request("https://example.test/admin"),
+      }),
+    );
+    expect(denied.loaderRuns).toEqual([]);
+    expect(deniedResponse.status).toBe(403);
+
+    const allowed = fixture();
+    const allowedApp = Route.define(
+      Route.mount(
+        Route.layout(Page()).pipe(Route.guard(Effect.succeed("session"))),
+        [
+          Route.page("/admin", Page()).pipe(
+            Route.id("admin"),
+            Route.loader(() => allowed.loader("admin")),
+          ),
+        ],
+      ),
+    );
+    await run(
+      Route.renderRequest(allowedApp, {
+        request: new Request("https://example.test/admin"),
+      }),
+    );
+    expect(allowed.loaderRuns).toEqual(["admin"]);
+  });
+
+  it("the streaming render door is gated too, and ships no denied handoff data", async () => {
+    // `renderRequestStream` flushes the shell before loaders settle — the
+    // exact shape where a late authorization failure still has a channel to
+    // the client (the loader-handoff chunk).
+    const denied = fixture();
+    const deniedApp = Route.define(
+      Route.page("/admin", Page()).pipe(
+        Route.id("admin"),
+        Route.loader(() => denied.loader("admin")),
+        Route.guard(denied.denied),
+      ),
+    );
+    const deniedChunks = await run(
+      Stream.runCollect(
+        Route.renderRequestStream(deniedApp, {
+          request: new Request("https://example.test/admin"),
+        }),
+      ),
+    );
+    const deniedHtml = [...deniedChunks].join("");
+    expect(denied.loaderRuns).toEqual([]);
+    expect(deniedHtml).not.toContain("admin-data");
+
+    // NEGATIVE CONTROL: the allowed stream runs the loader and hands it off.
+    const allowed = fixture();
+    const allowedApp = Route.define(
+      Route.page("/admin", Page()).pipe(
+        Route.id("admin"),
+        Route.loader(() => allowed.loader("admin")),
+        Route.guard(Effect.succeed("session")),
+      ),
+    );
+    const allowedChunks = await run(
+      Stream.runCollect(
+        Route.renderRequestStream(allowedApp, {
+          request: new Request("https://example.test/admin"),
+        }),
+      ),
+    );
+    expect(allowed.loaderRuns).toEqual(["admin"]);
+    expect([...allowedChunks].join("")).toContain("admin-data");
+  });
+
+  it("a single-flight mutation payload carries no revalidated loader data past a failing guard", async () => {
+    // The mutation response is a server door like any other: `revalidate:
+    // "matched"` re-runs the target URL's loaders and ships them back in the
+    // payload — which must not become a side channel around route guards.
+    const routerStub = (url: string) => Route.Server({ url });
+
+    const denied = fixture();
+    const deniedApp = Route.define(
+      Route.page("/admin", Page()).pipe(
+        Route.id("admin"),
+        Route.loader(() => denied.loader("admin")),
+        Route.guard(denied.denied),
+      ),
+    );
+    const deniedAction = await run(
+      Route.actionSingleFlight(() => Effect.succeed({ saved: true }), {
+        revalidate: "matched",
+        app: deniedApp,
+      }),
+    );
+    const deniedPayload = await run(
+      deniedAction().pipe(
+        Effect.provide(routerStub("https://example.test/admin")),
+        Effect.orDie,
+      ),
+    );
+    expect(deniedPayload.mutation).toEqual({ saved: true });
+    expect(deniedPayload.loaders).toEqual([]);
+    expect(denied.loaderRuns).toEqual([]);
+
+    // NEGATIVE CONTROL: with a passing guard the same mutation revalidates
+    // and ships the matched loader snapshot.
+    const allowed = fixture();
+    const allowedApp = Route.define(
+      Route.page("/admin", Page()).pipe(
+        Route.id("admin"),
+        Route.loader(() => allowed.loader("admin")),
+        Route.guard(Effect.succeed("session")),
+      ),
+    );
+    const allowedAction = await run(
+      Route.actionSingleFlight(() => Effect.succeed({ saved: true }), {
+        revalidate: "matched",
+        app: allowedApp,
+      }),
+    );
+    const allowedPayload = await run(
+      allowedAction().pipe(
+        Effect.provide(routerStub("https://example.test/admin")),
+        Effect.orDie,
+      ),
+    );
+    expect(allowed.loaderRuns).toEqual(["admin"]);
+    expect(allowedPayload.loaders.map((entry) => entry.routeId)).toEqual(["admin"]);
   });
 });
 

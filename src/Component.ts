@@ -2713,7 +2713,13 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
       },
     }) as unknown as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
 
-    copyComponentMetadata(component, wrapped);
+    // Decorations, not just metadata: a component reaching this wrapper may
+    // already carry stamped `__route*` fields (`Route.guard(check)(component)`
+    // and friends), and `materializeNode` routes EVERY node component through
+    // here. Copying only component metadata silently dropped them all —
+    // including guards, which turned "the component is protected" into an
+    // auth bypass on the materialized tree.
+    copyRouteDecorations(component, wrapped);
     const meta: Route.RouteMeta<P, Q, H> = {
       pattern,
       fullPattern: Route.resolvePattern("", pattern),

@@ -1660,7 +1660,18 @@ function routeIdOfTarget(target: AnyAppRouteNode | AnyRoute, fullPattern: string
 function routeGuardsOfTarget(
   target: AnyAppRouteNode | AnyRoute,
 ): ReadonlyArray<Effect.Effect<unknown, any, any>> {
-  if (isUnifiedRoute(target)) return target[UnifiedRouteSymbol].guards;
+  if (isUnifiedRoute(target)) {
+    // A self-stamped unified route (`Component.route` sugar) can carry BOTH
+    // kinds: guards added through the unified pipe live on the symbol, and
+    // guards stamped on the component before the sugar live in
+    // `__routeGuards` (preserved by the wrapper's decoration copy). Reading
+    // only the symbol would make the stamped half silently inert.
+    const stamped = (target as {
+      readonly __routeGuards?: ReadonlyArray<Effect.Effect<unknown, any, any>>;
+    }).__routeGuards ?? [];
+    const unified = target[UnifiedRouteSymbol].guards;
+    return stamped.length === 0 ? unified : [...unified, ...stamped];
+  }
   // Guards live in two places on the legacy tier: piped onto the route NODE
   // (`Route.page(...).pipe(Route.guard(...))`) or stamped on the component
   // itself. Both must gate — reading only the component is how node-piped
@@ -3079,10 +3090,22 @@ export function actionSingleFlight<Args extends ReadonlyArray<unknown>, A, E, R>
         : yield* resolveRouteSource(options?.app).pipe(
           Effect.flatMap((source) => source === undefined
             ? Effect.succeed([] as ReadonlyArray<SingleFlightLoaderEntry>)
-            : runMatchedLoaders(source, targetUrl, {
-              includeDeferred: options?.includeDeferred ?? true,
-              reactivityKeys: revalidate === "reactivity" ? capturedInvalidations : undefined,
-            })),
+            // The single-flight response is a server door like any other
+            // (R3's server half): revalidated loader payloads ride back to
+            // the caller, so matched guards gate them exactly as they gate
+            // `renderRequest`. A denial drops the revalidation set — the
+            // author's explicit `setLoaders` seed is mutation output the
+            // action itself authorized and stays.
+            : matchedGuardDenial(routeEntriesOf(source), targetUrl).pipe(
+              Effect.flatMap((denial) =>
+                denial !== undefined
+                  ? Effect.succeed([] as ReadonlyArray<SingleFlightLoaderEntry>)
+                  : runMatchedLoaders(source, targetUrl, {
+                    includeDeferred: options?.includeDeferred ?? true,
+                    reactivityKeys: revalidate === "reactivity" ? capturedInvalidations : undefined,
+                  })
+              ),
+            )),
         );
       const filteredLoaders = Array.isArray(revalidate)
         ? allLoaders.filter((item) => revalidate.includes(item.routeId))
