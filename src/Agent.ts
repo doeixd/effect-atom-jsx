@@ -32,11 +32,14 @@
  * - `DQ-088` — args are a `Schema.Tuple` in core; the HTTP/MCP struct
  *   projection is derived from the authored `argNames` via `structArgs`.
  */
-import { Cause, Context, Effect, Layer, Option, Schema } from "effect";
+import { Cause, Context, Effect, Exit, Layer, Option, Schema, Scope } from "effect";
+import * as Component from "./Component.js";
+import { renderToString } from "./dom.js";
 import * as Portable from "./Portable.js";
 import { ReactivityBroadcast } from "./reactivity-push.js";
 import { normalizeReactivityKeys, type ReactivityKeysInput } from "./reactivity-runtime.js";
 import * as Resume from "./Resume.js";
+import * as Serialization from "./Serialization.js";
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
@@ -776,6 +779,190 @@ export function makeDispatcher(
         dispatcher(request).pipe(Effect.provide(layer));
     }),
   );
+}
+
+// ─── Result rendering (AN-4) ─────────────────────────────────────────────────
+
+export class AgentRenderTargetMissingError extends Schema.TaggedErrorClass<AgentRenderTargetMissingError>(
+  "@effect-atom-jsx/AgentRenderTargetMissingError",
+)("AgentRenderTargetMissingError", {
+  tool: Schema.String,
+  message: Schema.String,
+}) {}
+
+export class AgentRenderPropsError extends Schema.TaggedErrorClass<AgentRenderPropsError>(
+  "@effect-atom-jsx/AgentRenderPropsError",
+)("AgentRenderPropsError", {
+  tool: Schema.String,
+  message: Schema.String,
+}) {}
+
+export class AgentRenderError extends Schema.TaggedErrorClass<AgentRenderError>(
+  "@effect-atom-jsx/AgentRenderError",
+)("AgentRenderError", {
+  tool: Schema.String,
+  message: Schema.String,
+}) {}
+
+export interface RenderedResult {
+  readonly html: string;
+  /** The addressable activation id — the render target IS this identity. */
+  readonly activationId: string;
+  readonly buildId: string;
+}
+
+export interface RenderedResultFragment {
+  readonly html: string;
+  readonly manifest: Resume.Manifest;
+}
+
+export type RenderResultError =
+  | AgentToolNotFoundError
+  | AgentRenderTargetMissingError
+  | AgentRenderPropsError
+  | AgentRenderError;
+
+interface ValidatedRenderTarget {
+  readonly entry: CatalogEntry;
+  readonly activation: {
+    readonly id: string;
+    readonly buildId: string;
+    readonly captures: Schema.Top;
+  };
+  readonly props: unknown;
+}
+
+/**
+ * Shared front half of both render paths: look the tool up, insist on a
+ * render target, and validate the success value against the ACTIVATION
+ * props descriptor — the same codec the resume client validates with —
+ * before anything mounts. A chat host handing over an unvalidated blob is
+ * the realistic threat, so refusal happens here, not in the component.
+ */
+function validatedRenderTarget(
+  base: Catalog,
+  tool: string,
+  value: unknown,
+): Effect.Effect<ValidatedRenderTarget, RenderResultError> {
+  return Effect.gen(function* () {
+    const entry = base.entries[tool];
+    if (entry === undefined) {
+      return yield* new AgentToolNotFoundError({
+        tool,
+        message: `Unknown tool "${tool}".`,
+      });
+    }
+    if (entry.render === undefined) {
+      return yield* new AgentRenderTargetMissingError({
+        tool,
+        message: `Tool "${tool}" declares no render target.`,
+      });
+    }
+    // `catalog` refused non-addressable targets at construction (DQ-087), so
+    // the activation is present by construction here.
+    const activation = Resume.activationOf(entry.render as never);
+    const decoded = yield* Effect.exit(
+      Schema.decodeUnknownEffect(
+        activation.captures as Schema.Codec<unknown, unknown>,
+      )(value),
+    );
+    if (decoded._tag === "Failure") {
+      return yield* new AgentRenderPropsError({
+        tool,
+        message:
+          `Result for "${tool}" failed the render target's activation props descriptor ("${activation.id}"); nothing was mounted.`,
+      });
+    }
+    return { entry, activation, props: decoded.value };
+  });
+}
+
+/** Server-render one component instance in its own scope, one shot. */
+function renderTargetHtml(
+  tool: string,
+  target: ValidatedRenderTarget,
+): Effect.Effect<string, AgentRenderError> {
+  return Effect.suspend(() => {
+    const scope = Scope.makeUnsafe();
+    return Effect.try({
+      try: () =>
+        renderToString(() =>
+          Effect.runSync(
+            Component.renderEffect(
+              target.entry.render as Component.Component<any, any, any, any, any>,
+              target.props as never,
+            ).pipe(Scope.provide(scope)) as Effect.Effect<unknown>,
+          ),
+        ),
+      catch: (error) =>
+        new AgentRenderError({
+          tool,
+          message: `Rendering the result of "${tool}" failed: ${String(error)}`,
+        }),
+    }).pipe(
+      Effect.onExit(() => Scope.close(scope, Exit.void)),
+    );
+  });
+}
+
+/**
+ * Render a tool's (decoded) success value through the entry's addressable
+ * render target (AN-4). The value is validated by the activation props
+ * descriptor first; a value that fails it never mounts.
+ */
+export function renderResult(
+  base: Catalog,
+  tool: string,
+  value: unknown,
+): Effect.Effect<RenderedResult, RenderResultError> {
+  return Effect.gen(function* () {
+    const target = yield* validatedRenderTarget(base, tool, value);
+    const html = yield* renderTargetHtml(tool, target);
+    return {
+      html,
+      activationId: target.activation.id,
+      buildId: target.activation.buildId,
+    };
+  });
+}
+
+/**
+ * The dormant path (AN-4 over M11b): render the result through a real
+ * `Resume.collect`, yielding `{html, manifest}` — server markup plus the
+ * activation manifest, and nothing else. Installing it loads no component
+ * code; activation is lazy (`Resume.installFragment`).
+ */
+export function renderResultFragment(
+  base: Catalog,
+  tool: string,
+  value: unknown,
+): Effect.Effect<RenderedResultFragment, RenderResultError> {
+  return Effect.gen(function* () {
+    const target = yield* validatedRenderTarget(base, tool, value);
+    const scope = Scope.makeUnsafe();
+    const collected = yield* Resume.collect(
+      () =>
+        renderToString(() =>
+          Effect.runSync(
+            Component.renderEffect(
+              target.entry.render as Component.Component<any, any, any, any, any>,
+              target.props as never,
+            ).pipe(Scope.provide(scope)) as Effect.Effect<unknown>,
+          ),
+        ),
+      { buildId: target.activation.buildId },
+    ).pipe(
+      Effect.provide(Serialization.layer),
+      Effect.mapError((error) =>
+        new AgentRenderError({
+          tool,
+          message: `Rendering the result fragment of "${tool}" failed: ${String(error)}`,
+        }),
+      ),
+      Effect.onExit(() => Scope.close(scope, Exit.void)),
+    );
+    return { html: collected.html, manifest: collected.manifest };
+  });
 }
 
 // ─── Cache identity (identity unification) ───────────────────────────────────

@@ -721,6 +721,25 @@ export function use<Props = any, Added = any, E = never, R = never>(
   return (source) => source.use(fragment as any) as any;
 }
 
+export function make<Props, SetupReq, E, Bindings>(
+  setup: SetupSource<Props, Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => unknown,
+): Component<Props, SetupReq, E, Bindings>;
+export function make<Props, SetupReq, E, Bindings, Slots>(
+  setup: SetupSource<Props, Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => View.View<Slots>,
+): Component<Props, SetupReq, E, Bindings, Slots>;
+// A bare `setup()` is `Setup<{}, …>`, which is deliberately usable with any
+// richer view-props type: its bind callbacks were written against `{}`, so
+// they cannot observe fields the caller adds. Props then infer from the view.
+export function make<Props, SetupReq, E, Bindings>(
+  setup: SetupSource<{}, Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => unknown,
+): Component<Props, SetupReq, E, Bindings>;
+export function make<Props, SetupReq, E, Bindings, Slots>(
+  setup: SetupSource<{}, Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => View.View<Slots>,
+): Component<Props, SetupReq, E, Bindings, Slots>;
 export function make<Props, Req, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
@@ -762,11 +781,30 @@ export function make<Props, Req, SetupReq, E, Bindings, Slots>(
   view: (props: Props, bindings: Bindings) => View.View<Slots>,
 ): Component<Props, Req | SetupReq, E, Bindings, Slots>;
 export function make<Props, Req, SetupReq, E, Bindings>(
-  propSpec: PropsSpec<Props>,
-  req: RequirementSpec<Req>,
-  setup: SetupSource<Props, Bindings, E, SetupReq>,
-  view: (props: Props, bindings: Bindings) => unknown,
+  propSpecOrSetup: PropsSpec<Props> | SetupSource<Props, Bindings, E, SetupReq>,
+  reqOrView:
+    | RequirementSpec<Req>
+    | ((props: Props, bindings: Bindings) => unknown),
+  maybeSetup?: SetupSource<Props, Bindings, E, SetupReq>,
+  maybeView?: (props: Props, bindings: Bindings) => unknown,
 ): Component<Props, Req | SetupReq, E, Bindings> {
+  // Two-argument shorthand: `make(setup, view)` — pass-through props, no
+  // declared service requirements. The full four-argument form remains the
+  // authoritative constructor when props validation or requirement tags
+  // matter.
+  const shorthand = maybeSetup === undefined && maybeView === undefined;
+  const propSpec = shorthand
+    ? props<Props>()
+    : (propSpecOrSetup as PropsSpec<Props>);
+  const req = shorthand
+    ? require<Req | SetupReq>()
+    : (reqOrView as RequirementSpec<Req>);
+  const setup = shorthand
+    ? (propSpecOrSetup as SetupSource<Props, Bindings, E, SetupReq>)
+    : maybeSetup!;
+  const view = shorthand
+    ? (reqOrView as (props: Props, bindings: Bindings) => unknown)
+    : maybeView!;
   return toComponent({
     [ComponentImplTypeId]: true,
     props: propSpec,

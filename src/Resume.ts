@@ -1546,6 +1546,31 @@ interface ActivationSpec {
 
 const activationSpecs = new WeakMap<object, ActivationSpec>();
 
+// Process-local activation registry (AN-4): `installFragment` falls back to
+// it when no `Portable.Resolver` is provided. It mirrors the process's own
+// `addressable(...)` declarations — no ambient authority beyond what
+// declaring the component already granted — and unknown ids fail closed.
+// Same-id re-declaration is last-wins (the resolver's buildId check still
+// gates execution).
+const activationCodesById = new Map<string, Portable.AnyCode>();
+
+function activationRegistryResolver(): Portable.ResolverService {
+  return {
+    load: (id) => {
+      const code = activationCodesById.get(id);
+      return code !== undefined
+        ? Effect.succeed(code)
+        : Effect.fail(
+          new Portable.PortableCodeNotFoundError({
+            id,
+            reason:
+              `No addressable component with activation id "${id}" was declared in this process, and no Portable.Resolver was provided.`,
+          }),
+        );
+    },
+  };
+}
+
 function stampComponentActivation(
   component: object,
   spec: ActivationSpec,
@@ -1557,6 +1582,7 @@ function stampComponentActivation(
     component: component as Component.Component<any, any, any, any, any>,
   });
   activationSpecs.set(component, spec);
+  activationCodesById.set(spec.id, activation);
   registerComponentActivation(component, activation);
   Object.defineProperty(component, ComponentActivationTypeId, {
     configurable: true,
@@ -6985,6 +7011,159 @@ function mountClientFragment(
       }),
     } satisfies FragmentHandle;
   });
+}
+
+// ─── Standalone fragment installation (AN-4) ─────────────────────────────────
+
+export type InstalledFragmentActivateError =
+  | ResumeComponentActivationResolutionError
+  | ResumeComponentActivationExecutionError
+  | ResumeComponentActivationDisposedError;
+
+/**
+ * Handle over one installed result fragment. Activation is lazy and
+ * exact-once; disposal is exact-once and terminal.
+ */
+export interface InstalledFragmentHandle {
+  /**
+   * Activate every dormant component boundary the fragment's manifest
+   * declares. Loads exactly the portable entries it needs, on first call
+   * only — a second call is a no-op, not a re-mount.
+   */
+  readonly activate: () => Effect.Effect<void, InstalledFragmentActivateError>;
+  /** Dispose the activated widget. Idempotent; counted at most once. */
+  readonly dispose: () => Effect.Effect<void>;
+  readonly disposeCount: () => Effect.Effect<number>;
+  readonly isActive: () => Effect.Effect<boolean>;
+}
+
+/**
+ * Install a server-rendered `{html, manifest}` result fragment (AN-4) as a
+ * DORMANT widget: installation itself loads no component code and mounts
+ * nothing — the served markup is already the UI. Component code loads only
+ * when `activate()` first runs.
+ *
+ * Resolution captures the ambient `Portable.Resolver` at INSTALL time (so a
+ * lazily provided service cannot swap identities between install and
+ * activation); when none is provided, the process-local registry of
+ * `addressable(...)` declarations answers, failing closed on unknown ids.
+ *
+ * This is the standalone door for host-embedded result widgets (a chat
+ * host's message stream). Mounting a fragment INTO a live page installation
+ * remains `mountFragment`.
+ */
+export function installFragment(
+  html: string,
+  manifest: unknown,
+): Effect.Effect<
+  InstalledFragmentHandle,
+  ResumeManifestDecodeError | ResumeConfigurationError
+> {
+  return Effect.gen(function* () {
+    const validated = yield* validateManifestValue(
+      manifest,
+      "fragment installation",
+    );
+    void html;
+    const external = yield* Effect.serviceOption(Portable.Resolver);
+    const resolver = external._tag === "Some"
+      ? external.value
+      : activationRegistryResolver();
+    const componentEntries: Readonly<
+      Record<string, typeof ComponentSnapshotSchema.Type>
+    > = validated.version === 1 ? {} : validated.components;
+
+    let state: "installed" | "active" | "disposed" = "installed";
+    let disposeCount = 0;
+    const mounted: Array<Effect.Effect<void>> = [];
+
+    const disposeMounts = Effect.suspend(() => {
+      const pending = mounted.splice(0, mounted.length);
+      return Effect.forEach(pending, (dispose) => dispose, {
+        discard: true,
+      });
+    });
+
+    const activate = (): Effect.Effect<void, InstalledFragmentActivateError> =>
+      Effect.gen(function* () {
+        if (state === "disposed") {
+          return yield* new ResumeComponentActivationDisposedError({
+            componentId: "fragment" as typeof ComponentId.Type,
+            message: "This fragment installation is disposed.",
+          });
+        }
+        if (state === "active") return;
+        for (const [rawComponentId, entry] of Object.entries(componentEntries)) {
+          const componentId = rawComponentId as typeof ComponentId.Type;
+          if (entry.activation === undefined) continue;
+          const resolved = yield* Portable.resolve(
+            entry.activation as Portable.Descriptor<
+              readonly [context: ComponentActivationContext],
+              ComponentActivationMount,
+              unknown,
+              unknown
+            >,
+          ).pipe(
+            Effect.provideService(Portable.Resolver, resolver),
+            Effect.mapError((error) =>
+              new ResumeComponentActivationResolutionError({
+                componentId,
+                message:
+                  `Fragment component "${componentId}" failed to resolve its activation: ${String(error)}`,
+              })
+            ),
+          );
+          const context: ComponentActivationContext = {
+            componentId,
+            mount: (component, props) =>
+              Effect.suspend(() => {
+                const scope = Scope.makeUnsafe();
+                return Component.renderEffect(component, props).pipe(
+                  Scope.provide(scope),
+                  Effect.map(() => ({
+                    dispose: Scope.close(scope, Exit.void),
+                  })),
+                  Effect.onError(() => Scope.close(scope, Exit.void)),
+                ) as Effect.Effect<
+                  ComponentActivationMount,
+                  never,
+                  never
+                >;
+              }),
+          };
+          const mount = yield* Effect.exit(
+            resolved.run(context) as Effect.Effect<ComponentActivationMount>,
+          );
+          if (mount._tag === "Failure") {
+            // Roll the partially activated fragment back before failing, so
+            // a later successful activate cannot double-mount.
+            yield* disposeMounts;
+            return yield* new ResumeComponentActivationExecutionError({
+              componentId,
+              message:
+                `Fragment component "${componentId}" failed to activate: ${String(mount.cause)}`,
+            });
+          }
+          mounted.push(mount.value.dispose);
+        }
+        state = "active";
+      });
+
+    const dispose = (): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (state === "disposed") return;
+        state = "disposed";
+        disposeCount += 1;
+        yield* disposeMounts;
+      });
+
+    return {
+      activate,
+      dispose,
+      disposeCount: () => Effect.sync(() => disposeCount),
+      isActive: () => Effect.sync(() => state === "active"),
+    } satisfies InstalledFragmentHandle;
+  }).pipe(Effect.withSpan("Resume.installFragment"));
 }
 
 export function installClientScoped<R, ER>(
