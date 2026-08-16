@@ -455,12 +455,16 @@ Component.setup<{}>().pipe(
   }),
 );
 
-Component.setup<{}>().bind("label", () => Effect.succeed("not-state"), {
-  // @ts-expect-error snapshotState policies only apply to Component.state handles
-  resume: Resume.snapshotState(Schema.Number),
-});
+Component.setup<{}>().bind(
+  "label",
+  // @ts-expect-error snapshotState policies only apply to writable state bindings
+  () => Effect.succeed("not-state"),
+  { resume: Resume.snapshotState(Schema.Number) },
+);
 
-Component.setup<{}>().bind("count", () => Component.state(0), {
+Component.setup<{}>().bind(
+  "count",
   // @ts-expect-error the state snapshot codec must encode the state value type
-  resume: Resume.snapshotState(Schema.String),
-});
+  () => Component.state(0),
+  { resume: Resume.snapshotState(Schema.String) },
+);

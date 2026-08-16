@@ -99,7 +99,7 @@ describe("Behavior", () => {
       Behaviors.focusTrap({ initialIndex: 0 }).run({
         container,
         focusables: Element.collection([first, second]),
-      }),
+      }, {}),
     );
     let prevented = 0;
 
@@ -150,7 +150,7 @@ describe("Behavior", () => {
         Behaviors.focusTrap({ initialIndex: 0 }).run({
           container,
           focusables: Element.collection([first]),
-        }),
+        }, {}),
         Scope.Scope,
         scope,
       ),

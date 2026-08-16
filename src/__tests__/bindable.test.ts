@@ -17,6 +17,8 @@ import * as Resume from "../Resume.js";
 import * as Serialization from "../Serialization.js";
 
 const BuildId = "bindable-test-build";
+const c0 = Schema.decodeUnknownSync(Resume.ComponentId)("c0");
+const valueBinding = Schema.decodeUnknownSync(Resume.BindingName)("value");
 
 function makeWidget(name: string) {
   return Component.make(
@@ -83,7 +85,7 @@ describe("Component.bindable", () => {
     const collected = collectWidget(makeWidget("BindableUncontrolled"), {});
     expect(collected.manifest.version).not.toBe(1);
     if (collected.manifest.version === 1) return;
-    expect(collected.manifest.components.c0?.bindings.value).toMatchObject({
+    expect(collected.manifest.components[c0]?.bindings[valueBinding]).toMatchObject({
       kind: "state",
       value: "own-default",
     });
@@ -101,7 +103,7 @@ describe("Component.bindable", () => {
     // over the caller's own resume path (two owners, one slot).
     if (collected.manifest.version !== 1) {
       expect(
-        collected.manifest.components.c0?.bindings ?? {},
+        collected.manifest.components[c0]?.bindings ?? {},
       ).not.toHaveProperty("value");
     }
     // ...and adoption is configuration, not a failure: no mismatch/fallback

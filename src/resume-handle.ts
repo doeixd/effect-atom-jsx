@@ -75,6 +75,21 @@ export type BindingResumePolicy<Binding> =
       ? QuerySnapshotPolicy<A, any>
     : never);
 
+/**
+ * The inverse of {@link BindingResumePolicy}: the binding shape a given
+ * policy can legally snapshot. `Setup.bind` constrains the bound value
+ * against this — a constraint (checked after inference) rather than an
+ * options type, because typing the options as `BindOptions<A>` fixes `A`
+ * to `unknown` before a context-sensitive callback is processed.
+ */
+export type PolicyBindingOf<P extends AnyBindingSnapshotPolicy> = P extends {
+  readonly strategy: "via";
+} ? (P extends ViaSnapshotPolicy<infer Handle, any, any> ? Handle : never)
+  : P extends StateSnapshotPolicy<infer A, any> ? Atom.WritableAtom<A>
+  : P extends QuerySnapshotPolicy<infer A, any>
+    ? Atom.ReadonlyAtom<Result<A, any>, any>
+  : never;
+
 /** Create an immutable, schema-backed state snapshot policy. */
 export function snapshotState<A, Encoded>(
   schema: Schema.Codec<A, Encoded>,

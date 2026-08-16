@@ -167,6 +167,16 @@ export type RequirementsOf<T> = T extends Behavior<any, any, infer R, any, any> 
 export type ErrorsOf<T> = T extends Behavior<any, any, any, infer E, any> ? E : never;
 /** Extract the per-instance dependency channel of a behavior. */
 export type DepsOf<T> = T extends Behavior<any, any, any, any, infer D> ? D : never;
+/**
+ * The binding contract a behavior's TYPE declares it provides (`DQ-053`).
+ * Present only on `Behavior.provides(...)` results, whose type carries a
+ * REQUIRED `metadata.provides`; a plain behavior (optional metadata) yields
+ * `{}` — its deps must all come from the component.
+ */
+export type ProvidedContractOf<T> = T extends {
+  readonly metadata: { readonly provides: infer P };
+} ? (P extends BindingContract ? P : {})
+  : {};
 
 type SlotMapLike = Record<string, unknown>;
 type SlotContractRecord = Record<string, View.Slot.Any>;
@@ -503,10 +513,10 @@ export function forSlots<const S extends SlotContractInput>(
 }
 
 /** Merge behavior metadata without changing its runtime attachment logic. */
-export function withMetadata<Elements, Bindings, Req, E>(
-  behavior: Behavior<Elements, Bindings, Req, E>,
+export function withMetadata<Elements, Bindings, Req, E, Deps = {}>(
+  behavior: Behavior<Elements, Bindings, Req, E, Deps>,
   metadata: BehaviorMetadata<Elements>,
-): Behavior<Elements, Bindings, Req, E> {
+): Behavior<Elements, Bindings, Req, E, Deps> {
   return attachPipe({
     ...behavior,
     metadata: {
@@ -525,20 +535,20 @@ export function withMetadata<Elements, Bindings, Req, E>(
         ...metadata.emits,
       },
     },
-  }) as Behavior<Elements, Bindings, Req, E>;
+  }) as Behavior<Elements, Bindings, Req, E, Deps>;
 }
 
 /** Declare the bindings a behavior contributes. */
 export function provides<const Contract extends BindingContract>(
   contract: Contract,
 ): (
-  <Elements, Bindings extends { readonly [K in keyof Contract & string]: BindingValueOf<Contract[K]> }, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => Behavior<Elements, Bindings, Req, E> & { readonly metadata: BehaviorMetadata<Elements> & { readonly provides: Contract } }
+  <Elements, Bindings extends { readonly [K in keyof Contract & string]: BindingValueOf<Contract[K]> }, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => Behavior<Elements, Bindings, Req, E, Deps> & { readonly metadata: BehaviorMetadata<Elements> & { readonly provides: Contract } }
 ) {
-  return <Elements, Bindings extends { readonly [K in keyof Contract & string]: BindingValueOf<Contract[K]> }, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => withMetadata(behavior, { provides: contract }) as Behavior<Elements, Bindings, Req, E> & {
+  return <Elements, Bindings extends { readonly [K in keyof Contract & string]: BindingValueOf<Contract[K]> }, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => withMetadata(behavior, { provides: contract }) as Behavior<Elements, Bindings, Req, E, Deps> & {
     readonly metadata: BehaviorMetadata<Elements> & { readonly provides: Contract };
   };
 }
@@ -549,13 +559,13 @@ export function events<
 >(
   eventMap: EventMap,
 ): (
-  <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => Behavior<Elements, Bindings, Req, E> & { readonly metadata: BehaviorMetadata<Elements> & { readonly events: EventMap } }
+  <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => Behavior<Elements, Bindings, Req, E, Deps> & { readonly metadata: BehaviorMetadata<Elements> & { readonly events: EventMap } }
 ) {
-  return <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => withMetadata(behavior, { events: eventMap }) as Behavior<Elements, Bindings, Req, E> & {
+  return <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => withMetadata(behavior, { events: eventMap }) as Behavior<Elements, Bindings, Req, E, Deps> & {
     readonly metadata: BehaviorMetadata<Elements> & { readonly events: EventMap };
   };
 }
@@ -564,13 +574,13 @@ export function events<
 export function emits<const Contract extends OutEventContract>(
   contract: Contract,
 ): (
-  <Elements, Bindings, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => Behavior<Elements, Bindings, Req, E> & { readonly metadata: BehaviorMetadata<Elements> & { readonly emits: Contract } }
+  <Elements, Bindings, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => Behavior<Elements, Bindings, Req, E, Deps> & { readonly metadata: BehaviorMetadata<Elements> & { readonly emits: Contract } }
 ) {
-  return <Elements, Bindings, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => withMetadata(behavior, { emits: contract }) as Behavior<Elements, Bindings, Req, E> & {
+  return <Elements, Bindings, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => withMetadata(behavior, { emits: contract }) as Behavior<Elements, Bindings, Req, E, Deps> & {
     readonly metadata: BehaviorMetadata<Elements> & { readonly emits: Contract };
   };
 }
@@ -838,20 +848,22 @@ export function attachToSlots<
  * )
  */
 export function attachTo<
-  Elements extends SlotMapLike,
-  AddedBindings,
-  BR,
-  BE,
-  Deps,
+  B extends Behavior.Any,
   Props,
   Req,
   E,
   Slots extends SlotMapLike,
-  Bindings extends { readonly slots: Slots } & Deps,
+  Bindings extends
+    & { readonly slots: Slots }
+    // DQ-053: dependencies the behavior PROVIDES (via `Behavior.provides`
+    // with state factories) are materialized in the component's scope by the
+    // attach machinery — only the remainder must already exist on the
+    // component's own bindings.
+    & Omit<DepsOf<B>, keyof ProvidedContractOf<B>>,
   const As extends string | undefined = undefined,
   SlotContract = Slots,
 >(
-  behavior: Behavior<Elements, AddedBindings, BR, BE, Deps>,
+  behavior: B,
   // The remap is OPTIONAL: when the behavior's element keys already ARE the
   // component's slot names, identity `{ root: "root" }` is pure ceremony and
   // the slots record itself is the element map (DQ-051). `as` namespaces
@@ -859,35 +871,38 @@ export function attachTo<
   // replacement for the untyped `merge` callback when re-piping a behavior
   // whose binding names would otherwise collide.
   elementMap?:
-    & { readonly [K in keyof Elements]?: CompatibleSlotKey<Slots, Elements[K]> }
+    & { readonly [K in keyof ElementsOf<B>]?: CompatibleSlotKey<Slots, ElementsOf<B>[K]> }
     & { readonly as?: As },
-  merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
+  merge?: (
+    bindings: Bindings,
+    added: BindingsOf<B>,
+  ) => Bindings & BindingsOf<B>,
 ): (
   component: Component.Component<Props, Req, E, Bindings, SlotContract>,
 ) => Component.Component<
   Props,
-  Req | BR,
-  E | BE,
-  Bindings & (As extends string ? { readonly [K in As]: AddedBindings } : AddedBindings),
+  Req | RequirementsOf<B>,
+  E | ErrorsOf<B>,
+  Bindings & (As extends string ? { readonly [K in As]: BindingsOf<B> } : BindingsOf<B>),
   SlotContract
 > {
   const { as, ...map } = (elementMap ?? {}) as { readonly as?: string } & Record<string, unknown>;
   const mergeUnderNamespace = as === undefined
     ? merge
-    : (bindings: Bindings, added: AddedBindings) =>
-      ({ ...bindings, [as]: added }) as Bindings & AddedBindings;
+    : (bindings: Bindings, added: BindingsOf<B>) =>
+      ({ ...bindings, [as]: added }) as Bindings & BindingsOf<B>;
   return Component.withBehavior(
     behavior,
     (bindings: Bindings) => {
       if (Object.keys(map).length === 0) {
         // Identity attachment: the component's slots ARE the elements.
-        return bindings.slots as unknown as Elements;
+        return bindings.slots as unknown as ElementsOf<B>;
       }
       const out: Record<string, unknown> = {};
       for (const [behaviorKey, slotKey] of Object.entries(map)) {
         out[behaviorKey] = (bindings.slots as Record<string, unknown>)[String(slotKey)];
       }
-      return out as Elements;
+      return out as ElementsOf<B>;
     },
     mergeUnderNamespace,
   ) as never;

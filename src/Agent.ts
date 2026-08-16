@@ -198,11 +198,28 @@ export interface AccessDeclaration {
   readonly approval?: string;
 }
 
-export interface ExposeOptions {
+/**
+ * A render target for a tool whose success value is `A`: an ADDRESSABLE
+ * component whose props are exactly that value. Naming a component that is
+ * not addressable — or whose props disagree with the success schema — is a
+ * type error at the `expose` call (`DQ-087`, tightened to compile time; the
+ * runtime `catalog` check remains for dynamically assembled entries).
+ */
+export type RenderTarget<A> = Resume.AddressableComponent<
+  Component.Component<A, any, any, any, any>,
+  any
+>;
+
+export interface ExposeOptions<
+  Args extends ReadonlyArray<unknown> = ReadonlyArray<unknown>,
+  A = unknown,
+> {
   readonly description: string;
-  readonly args: Schema.Top;
+  /** Decodes the wire argument tuple `run` observes (`DQ-088`). */
+  readonly args: Schema.Codec<Readonly<Args>, any, any, any>;
   readonly argNames?: ReadonlyArray<string>;
-  readonly success: Schema.Top;
+  /** Encodes the success value on the way out. */
+  readonly success: Schema.Codec<A, any, any, any>;
   readonly error?: Schema.Top;
   /**
    * The ONE reactivity key vocabulary (identity unification, §6): plain
@@ -212,28 +229,42 @@ export interface ExposeOptions {
    */
   readonly reactivityKeys?: ReactivityKeysInput;
   readonly access?: AccessDeclaration;
-  readonly render?: unknown;
+  readonly render?: RenderTarget<NoInfer<A>>;
 }
 
-export interface CatalogEntry extends Omit<ExposeOptions, "reactivityKeys"> {
+export interface CatalogEntry {
   readonly code: Portable.Code<any, any, any, any, any, any>;
   /** DQ-084: declared by the constructor, never inferred. */
   readonly mutation: boolean;
+  readonly description: string;
+  readonly args: Schema.Top;
+  readonly argNames?: ReadonlyArray<string>;
+  readonly success: Schema.Top;
+  readonly error?: Schema.Top;
   /** Normalized form of the authored `reactivityKeys`. */
   readonly reactivityKeys?: ReadonlyArray<string>;
+  readonly access?: AccessDeclaration;
+  readonly render?: unknown;
 }
 
 const CatalogTypeId: unique symbol = Symbol.for("effect-atom-jsx/Agent/Catalog");
 
-export interface Catalog {
+export type CatalogEntries = Readonly<Record<string, CatalogEntry>>;
+
+export interface Catalog<Entries extends CatalogEntries = CatalogEntries> {
   readonly [CatalogTypeId]: true;
-  readonly entries: Readonly<Record<string, CatalogEntry>>;
+  readonly entries: Entries;
   readonly audit?: { readonly onFailure: "refuse" | "proceed" };
 }
 
+/** The tool names a catalog exposes, as a literal union. */
+export type ToolsOf<C extends Catalog<any>> = C extends Catalog<infer Entries>
+  ? keyof Entries & string
+  : never;
+
 function entryOf(
   code: Portable.Code<any, any, any, any, any, any>,
-  options: ExposeOptions,
+  options: ExposeOptions<any, any>,
   mutation: boolean,
 ): CatalogEntry {
   return {
@@ -246,18 +277,39 @@ function entryOf(
   };
 }
 
-/** Expose a portable code value as a READ-ONLY tool (`DQ-084`). */
-export function expose(
-  code: Portable.Code<any, any, any, any, any, any>,
-  options: ExposeOptions,
+/**
+ * Expose a portable code value as a READ-ONLY tool (`DQ-084`).
+ *
+ * The options are typed against the code's own axes: `args` must decode the
+ * tuple `run` accepts, `success` must encode what `run` returns, and
+ * `render` must be an addressable component whose props ARE the success
+ * value — mismatches fail at this call, not at dispatch.
+ */
+export function expose<
+  Captures,
+  EncodedCaptures,
+  Args extends ReadonlyArray<unknown>,
+  A,
+  E,
+  R,
+>(
+  code: Portable.Code<Captures, EncodedCaptures, Args, A, E, R>,
+  options: ExposeOptions<Args, A>,
 ): CatalogEntry {
   return entryOf(code, options, false);
 }
 
 /** Expose a portable code value as a MUTATING tool (`DQ-084`). */
-export function exposeMutation(
-  code: Portable.Code<any, any, any, any, any, any>,
-  options: ExposeOptions,
+export function exposeMutation<
+  Captures,
+  EncodedCaptures,
+  Args extends ReadonlyArray<unknown>,
+  A,
+  E,
+  R,
+>(
+  code: Portable.Code<Captures, EncodedCaptures, Args, A, E, R>,
+  options: ExposeOptions<Args, A>,
 ): CatalogEntry {
   return entryOf(code, options, true);
 }
@@ -267,7 +319,9 @@ export function exposeMutation(
  * names a non-addressable component throws HERE, at construction — not on
  * the first render.
  */
-export function catalog(entries: Readonly<Record<string, CatalogEntry>>): Catalog {
+export function catalog<const Entries extends CatalogEntries>(
+  entries: Entries,
+): Catalog<Entries> {
   for (const [name, entry] of Object.entries(entries)) {
     if (entry.render !== undefined) {
       const activation = Resume.activationOf(entry.render as never);
@@ -286,10 +340,10 @@ export function catalog(entries: Readonly<Record<string, CatalogEntry>>): Catalo
  * recorded write-ahead; sink failure defaults to `refuse` (the action never
  * runs and the refusal record is itself written).
  */
-export function audited(
-  base: Catalog,
+export function audited<Entries extends CatalogEntries>(
+  base: Catalog<Entries>,
   options?: { readonly onFailure?: "refuse" | "proceed" },
-): Catalog {
+): Catalog<Entries> {
   return { ...base, audit: { onFailure: options?.onFailure ?? "refuse" } };
 }
 
@@ -909,10 +963,14 @@ function renderTargetHtml(
  * Render a tool's (decoded) success value through the entry's addressable
  * render target (AN-4). The value is validated by the activation props
  * descriptor first; a value that fails it never mounts.
+ *
+ * The tool name is typed against the catalog's entries; the value stays
+ * `unknown` on purpose — a chat host hands over an unvalidated blob, and the
+ * activation props descriptor is the boundary that decides.
  */
-export function renderResult(
-  base: Catalog,
-  tool: string,
+export function renderResult<Entries extends CatalogEntries>(
+  base: Catalog<Entries>,
+  tool: keyof Entries & string,
   value: unknown,
 ): Effect.Effect<RenderedResult, RenderResultError> {
   return Effect.gen(function* () {
@@ -932,9 +990,9 @@ export function renderResult(
  * activation manifest, and nothing else. Installing it loads no component
  * code; activation is lazy (`Resume.installFragment`).
  */
-export function renderResultFragment(
-  base: Catalog,
-  tool: string,
+export function renderResultFragment<Entries extends CatalogEntries>(
+  base: Catalog<Entries>,
+  tool: keyof Entries & string,
   value: unknown,
 ): Effect.Effect<RenderedResultFragment, RenderResultError> {
   return Effect.gen(function* () {

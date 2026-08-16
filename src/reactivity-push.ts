@@ -22,7 +22,7 @@
  *   {@link ReactivityBroadcastBus.flush} is the transport's delivery tick;
  *   published keys batch (deduplicated, order-preserving) until it runs.
  */
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Scope } from "effect";
 import { ReactivityTag, type ReactivityService } from "./Reactivity.js";
 import {
   normalizeReactivityKeys,
@@ -59,6 +59,15 @@ export interface ReactivityBroadcastBus {
     listener: ReactivityPushListener,
   ) => Effect.Effect<() => Effect.Effect<void>>;
   /**
+   * Scope-owned connection: the subscription is released when the ambient
+   * `Scope` closes. Disposal authority in this repo is a Scope, never a
+   * callback an author must remember to run — prefer this in application
+   * code; `connect` remains the transport-adapter seam.
+   */
+  readonly connectScoped: (
+    listener: ReactivityPushListener,
+  ) => Effect.Effect<void, never, Scope.Scope>;
+  /**
    * Publish invalidation keys to every connected client. Authored seam: keys
    * normalize through the one choke point (witnesses expand to ancestors +
    * self; the reserved `af:` namespace is rejected, DQ-089).
@@ -88,15 +97,23 @@ export function makeReactivityBroadcast(): Effect.Effect<ReactivityBroadcastBus>
         }
       });
 
+    const connect = (
+      listener: ReactivityPushListener,
+    ): Effect.Effect<() => Effect.Effect<void>> =>
+      Effect.sync(() => {
+        listeners.add(listener);
+        return () =>
+          Effect.sync(() => {
+            listeners.delete(listener);
+          });
+      });
+
     const bus: ReactivityBroadcastBus = {
-      connect: (listener) =>
-        Effect.sync(() => {
-          listeners.add(listener);
-          return () =>
-            Effect.sync(() => {
-              listeners.delete(listener);
-            });
-        }),
+      connect,
+      connectScoped: (listener) =>
+        Effect.acquireRelease(connect(listener), (disconnect) => disconnect()).pipe(
+          Effect.asVoid,
+        ),
       publish,
       flush: () =>
         Effect.sync(() => {

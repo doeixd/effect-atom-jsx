@@ -22,6 +22,7 @@ import {
   annotateHandle,
   type AnyBindingSnapshotPolicy,
   type BindingResumePolicy,
+  type PolicyBindingOf,
   type InspectableActionHandle,
   type InspectableDerivedHandle,
   type InspectableQueryHandle,
@@ -171,10 +172,28 @@ export interface Setup<Props, Bindings, E = never, R = never> extends Pipeable<S
     name: NoDuplicateName<Bindings, Name>,
     source: BindingSource<A, E2, R2, SetupInput<Props, Bindings>>,
   ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E | E2, R | R2>;
+  // The three-argument form infers the resume policy into its own `A`-free
+  // parameter `P` and validates it through `A`'s CONSTRAINT (checked after
+  // inference). Typing the options as `BindOptions<A>` instead would fix
+  // `A` to `unknown` before a context-sensitive callback is processed —
+  // which is exactly the differential-pair call site
+  // `bind("value", ({ props }) => bindable(props.value ?? init), { resume })`.
+  // An incompatible policy still fails AT THIS CALL: the constraint is
+  // violated, no overload matches.
+  bind<
+    const Name extends string,
+    const P extends AnyBindingSnapshotPolicy,
+    A extends PolicyBindingOf<P>,
+    E2 = never,
+    R2 = never,
+  >(
+    name: NoDuplicateName<Bindings, Name>,
+    f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E2, R2>,
+    options: { readonly resume?: P },
+  ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E | E2, R | R2>;
   bind<const Name extends string, A, E2, R2>(
     name: NoDuplicateName<Bindings, Name>,
     f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E2, R2>,
-    options?: BindOptions<A>,
   ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E | E2, R | R2>;
   value<const Name extends string, A>(
     name: NoDuplicateName<Bindings, Name>,
@@ -1501,7 +1520,16 @@ export function isStateHandle(value: unknown): value is Atom.WritableAtom<unknow
  * VALUE is itself an atom cannot route it through `bindable`.
  */
 export function bindable<A>(value: Atom.WritableAtom<A>): Effect.Effect<Atom.WritableAtom<A>>;
-export function bindable<A>(value: A): Effect.Effect<StateAtom<A>>;
+export function bindable<A>(
+  value: Extract<A, Atom.Atom<unknown>> extends never ? A : never,
+): Effect.Effect<StateAtom<A>>;
+// The differential-pair call site itself: `bindable(props.value ?? initial)`
+// — a union of "caller's atom" and "own initial value". Both arms are
+// writable, so the binding types as a writable atom either way; the
+// state-handle refinement stays a runtime question (`isStateHandle`).
+export function bindable<A>(
+  value: Atom.WritableAtom<A> | A,
+): Effect.Effect<Atom.WritableAtom<A> | StateAtom<A>>;
 export function bindable<A>(
   value: Atom.WritableAtom<A> | A,
 ): Effect.Effect<Atom.WritableAtom<A>> {

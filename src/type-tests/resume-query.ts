@@ -102,26 +102,24 @@ type _QuerySetup = typeof QuerySetup;
 
 Component.setup<{}>().bind(
   "todos",
+  // @ts-expect-error a state snapshot policy is not valid for a query binding
   () => Component.query(Portable.bind(TodosCode, { filter: "all" })),
-  {
-    // @ts-expect-error a state snapshot policy is not valid for a query binding
-    resume: Resume.snapshotState(Schema.Array(Schema.String)),
-  },
+  { resume: Resume.snapshotState(Schema.Array(Schema.String)) },
 );
 
 // snapshotQuery is rejected on plain state bindings.
-Component.setup<{}>().bind("count", () => Component.state(0), {
+Component.setup<{}>().bind(
+  "count",
   // @ts-expect-error a query snapshot policy is not valid for a state binding
-  resume: Resume.snapshotQuery(Schema.Number),
-});
+  () => Component.state(0),
+  { resume: Resume.snapshotQuery(Schema.Number) },
+);
 
 Component.setup<{}>().bind(
   "todos",
+  // @ts-expect-error the query snapshot codec must encode the success type
   () => Component.query(Portable.bind(TodosCode, { filter: "all" })),
-  {
-    // @ts-expect-error the query snapshot codec must encode the success type
-    resume: Resume.snapshotQuery(Schema.Number),
-  },
+  { resume: Resume.snapshotQuery(Schema.Number) },
 );
 
 // QueryAtom remains a readable Result atom for views.

@@ -62,7 +62,9 @@ describe("catalog option contract", () => {
   });
 
   it("every catalog option struct is wire-serializable; no field ever accepts a function", () => {
-    for (const [schema, value] of [
+    const roundTrips: ReadonlyArray<
+      readonly [Schema.Codec<unknown, unknown>, unknown]
+    > = [
       [PressOptions, { trackPressed: true, preventFocusOnPress: false }],
       [RovingTabindexOptions, {
         orientation: "horizontal",
@@ -71,22 +73,23 @@ describe("catalog option contract", () => {
         initialIndex: 1,
       }],
       [CollectionOptions, { trackDisabled: true, setPosInSet: false }],
-    ] as const) {
+    ];
+    for (const [schema, value] of roundTrips) {
       const encoded = JSON.parse(
-        JSON.stringify(Schema.encodeUnknownSync(schema as Schema.Top)(value)),
+        JSON.stringify(Schema.encodeUnknownSync(schema)(value)),
       );
-      expect(Schema.decodeUnknownSync(schema as Schema.Top)(encoded)).toEqual(value);
+      expect(Schema.decodeUnknownSync(schema)(encoded)).toEqual(value);
     }
 
     // No catalog options struct DECLARES a field whose value could be a
     // function, so `props` can never leak onto the wire.
     for (const schema of [PressOptions, RovingTabindexOptions, CollectionOptions]) {
-      const fields: Record<string, unknown> = schema.fields;
+      const fields: Record<string, Schema.Codec<unknown, unknown>> = schema.fields;
       expect(Object.keys(fields).length).toBeGreaterThan(0);
       for (const [name, field] of Object.entries(fields)) {
         const encodedOk = (() => {
           try {
-            Schema.encodeUnknownSync(field as Schema.Top)(() => {});
+            Schema.encodeUnknownSync(field)(() => {});
             return true;
           } catch {
             return false;
@@ -138,6 +141,7 @@ describe("behavior-to-behavior dependencies (DQ-052 half two)", () => {
       ),
     );
     const view = Component.renderViewWithBindings(Widget, {}, bindings);
+    if (view === undefined) throw new Error("expected a slot-bearing view");
 
     expect(bindings.mirrored()).toBe("initial");
     view.slots.root.emit("click", {});
@@ -169,7 +173,7 @@ describe("provided state lives in the component's scope (DQ-053)", () => {
       }),
     );
 
-  const runWidget = (component: Component.Component<{}, any, any, any, any>) => {
+  const runWidget = (component: Component.Component<{}, never, any, any, any>) => {
     const scope = Scope.makeUnsafe();
     const bindings = Effect.runSync(
       Effect.provideService(
@@ -209,8 +213,14 @@ describe("provided state lives in the component's scope (DQ-053)", () => {
   });
 
   it("an incompatible replacement is surfaced loudly, never a silent reset", () => {
-    const stringCounter = Behavior.make((_e: { readonly root: Element.Container }) =>
-      Effect.succeed({})
+    // Well-typed in isolation — the incompatibility (string state replacing
+    // number state under the same name) exists only across the two
+    // attachments, which is exactly what the RUNTIME check must catch.
+    const stringCounter = Behavior.make(
+      (
+        _e: { readonly root: Element.Container },
+        deps: { readonly count: Component.StateAtom<string> },
+      ) => Effect.succeed({ count: deps.count }),
     ).pipe(
       Behavior.provides({
         count: Behavior.binding("count", { state: () => Component.state("zero") }),

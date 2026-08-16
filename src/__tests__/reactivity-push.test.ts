@@ -237,7 +237,7 @@ describe("AN-2 live sync", () => {
       }),
     });
 
-    const observe = async (surface: Layer.Layer<any>) => {
+    const observe = async <Provided>(surface: Layer.Layer<Provided>) => {
       const bus = await run(makeReactivityBroadcast());
       const received: Array<ReadonlyArray<string>> = [];
       await run(bus.connect((keys) => received.push(keys)));
@@ -315,6 +315,28 @@ describe("AN-2 live sync", () => {
   it("publish is an authored seam: the reserved af: namespace is rejected (DQ-089)", async () => {
     const bus = await run(makeReactivityBroadcast());
     await expect(run(bus.publish(["af:binding:sneaky"]))).rejects.toThrow(/reserved/);
+  });
+
+  it("connectScoped releases the subscription exactly when the scope closes", async () => {
+    const bus = await run(makeReactivityBroadcast());
+    const received: Array<ReadonlyArray<string>> = [];
+
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* bus.connectScoped((keys) => received.push(keys));
+          yield* bus.publish(["todos"]);
+          yield* bus.flush();
+        }),
+      ),
+    );
+    expect(received).toEqual([["todos"]]);
+    expect(await run(bus.connectionCount())).toBe(0);
+
+    // After the scope closed, nothing is delivered to the dead subscription.
+    await run(bus.publish(["todos"]));
+    await run(bus.flush());
+    expect(received).toHaveLength(1);
   });
 
   it("serverLayer provides the same publisher the bus delivers from", async () => {
