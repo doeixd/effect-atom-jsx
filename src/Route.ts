@@ -1,4 +1,4 @@
-import { Context, Effect, Fiber, Layer, Schema, Stream } from "effect";
+import { Cause, Context, Effect, Fiber, Layer, Option, Schema, Stream } from "effect";
 import * as Atom from "./Atom.js";
 import { createComponent } from "./dom.js";
 import { getRequestEvent, renderToString, setRequestEvent } from "./dom.js";
@@ -1661,8 +1661,21 @@ function routeGuardsOfTarget(
   target: AnyAppRouteNode | AnyRoute,
 ): ReadonlyArray<Effect.Effect<unknown, any, any>> {
   if (isUnifiedRoute(target)) return target[UnifiedRouteSymbol].guards;
+  // Guards live in two places on the legacy tier: piped onto the route NODE
+  // (`Route.page(...).pipe(Route.guard(...))`) or stamped on the component
+  // itself. Both must gate — reading only the component is how node-piped
+  // guards were silently inert.
+  const nodeGuards = isRouteNode(target)
+    ? (target as { readonly __routeGuards?: ReadonlyArray<Effect.Effect<unknown, any, any>> })
+      .__routeGuards ?? []
+    : [];
   const component = routeComponentOfTarget(target);
-  return component ? asRouteComponent(component).__routeGuards ?? [] : [];
+  const componentGuards = component
+    ? asRouteComponent(component).__routeGuards ?? []
+    : [];
+  return nodeGuards.length === 0
+    ? componentGuards
+    : [...nodeGuards, ...componentGuards];
 }
 
 function routeLoaderErrorCasesOfTarget(
@@ -1781,7 +1794,16 @@ function routeEntryOfTarget(root: AnyAppRouteNode | AnyRoute, target: AnyAppRout
       if (!component) return Effect.succeed(CoreResult.loading);
       const componentMeta = routeMetaOf(component);
       if (!componentMeta) return Effect.succeed(CoreResult.loading);
-      return runRouteLoader(component, componentMeta, url, parentData);
+      // Cache identity comes from the ENTRY, not from the raw component's
+      // meta: a node-piped `Route.id` lands on the component only at
+      // materialization, and a diverging id here would cache the same
+      // loader under two keys — running it once per key.
+      return runRouteLoader(
+        component,
+        { ...componentMeta, id: routeId, fullPattern },
+        url,
+        parentData,
+      );
     },
   };
 }
@@ -1948,14 +1970,67 @@ function runMatchedLoadersInternal(
   });
 }
 
+interface StreamingNavigationResult {
+  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
+  readonly deferredScripts: ReadonlyArray<string>;
+  /**
+   * Set when a matched route guard refused the request. The server render
+   * paths translate this into a non-200 status; loaders never ran, so
+   * neither `critical` nor `deferredScripts` can carry protected data.
+   */
+  readonly guardDenied?: { readonly error: unknown };
+}
+
+/**
+ * R3's server half: run every matched guard, parents-first, fail-fast,
+ * BEFORE any loader starts. Gating only the render would still let the
+ * query execute and — for a deferred loader — serialize the payload into
+ * the page before anyone checked whether the caller may see it. Returns the
+ * denial (never fails), so callers decide the response shape.
+ */
+function matchedGuardDenial(
+  entries: ReadonlyArray<RouteEntry>,
+  url: URL,
+): Effect.Effect<{ readonly error: unknown } | undefined, never> {
+  const guards = matchedRouteEntries(entries, url.pathname).flatMap((entry) => entry.guards);
+  if (guards.length === 0) return Effect.succeed(undefined);
+  return Effect.exit(
+    Effect.forEach(guards, (check) => check as Effect.Effect<unknown, unknown, never>, {
+      discard: true,
+    }),
+  ).pipe(
+    Effect.map((exit) =>
+      exit._tag === "Failure"
+        ? {
+          error: Cause.findErrorOption(exit.cause).pipe(
+            Option.getOrElse(() => exit.cause as unknown),
+          ),
+        }
+        : undefined
+    ),
+  );
+}
+
 function runStreamingNavigationInternal(
   entries: ReadonlyArray<RouteEntry>,
   url: URL,
-): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
-  readonly deferredScripts: ReadonlyArray<string>;
-}, never> {
+  options?: {
+    /**
+     * Set when the caller already ran (and passed) the matched-guard check,
+     * so guards execute exactly once per door.
+     */
+    readonly guardsPrechecked?: boolean;
+  },
+): Effect.Effect<StreamingNavigationResult, never> {
   return Effect.gen(function* () {
+    // The client navigation path runs its own guard pass in `RouterRuntime`
+    // and calls `runMatchedLoaders` directly, so guards run once per door.
+    if (options?.guardsPrechecked !== true) {
+      const denial = yield* matchedGuardDenial(entries, url);
+      if (denial !== undefined) {
+        return { critical: [], deferredScripts: [], guardDenied: denial };
+      }
+    }
     // DQ-017 (fixed in place, 2026-08-11): ONE pass over all matched loaders.
     // Critical and deferred loaders fork together — waves only where
     // `dependsOnParent` orders them — so every loader starts before any
@@ -2206,11 +2281,19 @@ export function renderRequest(
     // own, so concurrent renders cannot see each other and neither can clobber
     // the client stores.
     const headStore = makeRouteHeadStore({ applyToDocument: false });
-    const loaderCache = makeLoaderCacheStore();
+    const loaderCache = makeLoaderCacheStore(); loaderCache.requestScoped = true;
     const routeEntries = routeEntriesOf(app);
     const streaming = yield* runStreamingNavigationInternal(routeEntries, requestUrl).pipe(
       Effect.provideService(LoaderCacheTag, loaderCache),
     );
+    // A guard refusal is visible to the host as a status, not only as an
+    // absence of loader data ("learns nothing" needs both halves). Marking
+    // the request's cache store is what stops the RENDER from re-running the
+    // protected loader on a cache miss.
+    if (streaming.guardDenied !== undefined) {
+      responseService.setStatus(403);
+      loaderCache.guardDenied = true;
+    }
     const appComponent = isUnifiedRoute(app) ? app.component : componentOf(app);
     let effect = ComponentRuntime.renderEffect(appComponent, {}).pipe(
       Effect.provide(Server({ url: requestUrl.toString() })),
@@ -2339,17 +2422,31 @@ export function renderRequestStream(
         snapshot: () => ({ status, headers: headerMap as ReadonlyMap<string, ReadonlyArray<string>> }),
       };
       const headStore = makeRouteHeadStore({ applyToDocument: false });
-      const loaderCache = makeLoaderCacheStore();
+      const loaderCache = makeLoaderCacheStore(); loaderCache.requestScoped = true;
       const routeEntries = routeEntriesOf(app);
+
+      // R3's server half: the guard verdict must exist BEFORE the shell
+      // renders (the shell flushes immediately, and the render path consults
+      // the denial mark), so guards run here rather than inside the forked
+      // loader pass.
+      const guardDenial = yield* matchedGuardDenial(routeEntries, requestUrl);
+      if (guardDenial !== undefined) {
+        status = 403;
+        loaderCache.guardDenied = true;
+      }
 
       // Every matched loader is in flight BEFORE any component renders.
       // Detached, as renderToStream's region fibers are: the unwrap effect's
       // own fiber ends once the stream is built, and a child fiber would be
       // interrupted with it before the handoff chunk joins.
       const loadersFiber = yield* Effect.forkDetach(
-        runStreamingNavigationInternal(routeEntries, requestUrl).pipe(
-          Effect.provideService(LoaderCacheTag, loaderCache),
-        ),
+        guardDenial !== undefined
+          ? Effect.succeed<StreamingNavigationResult>({ critical: [], deferredScripts: [] })
+          : runStreamingNavigationInternal(routeEntries, requestUrl, {
+            guardsPrechecked: true,
+          }).pipe(
+            Effect.provideService(LoaderCacheTag, loaderCache),
+          ),
       );
 
       const appComponent = isUnifiedRoute(app) ? app.component : componentOf(app);
@@ -3265,6 +3362,19 @@ export function guard<Req, E>(
       return copyUnifiedRoute(component, {
         guards: [...component[UnifiedRouteSymbol].guards, check],
       });
+    }
+    if (isRouteNode(component)) {
+      // A guard piped onto a route NODE is stored on the node itself and
+      // read back by `routeGuardsOfTarget`. Before this branch existed the
+      // call fell through to the component arm, which stamped
+      // `__routeGuards` onto the node object — where nothing ever read it,
+      // so `Route.guard(...)(Route.page(...))` type-checked, composed, and
+      // gated nothing (the auth-bypass shape R3 exists to forbid).
+      const node = component as AnyAppRouteNode & {
+        __routeGuards?: ReadonlyArray<Effect.Effect<unknown, any, any>>;
+      };
+      node.__routeGuards = [...(node.__routeGuards ?? []), check];
+      return node;
     }
     const routed = asRouteComponent(component);
     const previous = routed.__routeGuards;

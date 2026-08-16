@@ -49,6 +49,7 @@ import {
 } from "./effect-ts.js";
 import { currentComponentScope } from "./component-scope.js";
 import { normalizeReactivityKeys } from "./reactivity-runtime.js";
+import { currentLoaderCacheStore } from "./router-runtime.js";
 
 export const ComponentTypeId: unique symbol = Symbol.for("effect-atom-jsx/Component");
 
@@ -2561,14 +2562,23 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
           routeId: undefined,
         };
 
+        // R3's server half: a request whose matched guards already refused
+        // (marked on the request's loader-cache store by `renderRequest` /
+        // `renderRequestStream`) renders the route as BLOCKED — guards are
+        // not re-run and, crucially, the loader below never executes. Without
+        // this, a render-time cache miss would run the protected query the
+        // guard refusal just prevented.
+        const requestGuardDenied =
+          (yield* currentLoaderCacheStore).guardDenied === true;
+
         const guards = asRoutedComponent<P, Q, H, unknown, unknown>(wrapped).__routeGuards ?? [];
-        if (routeMatched()) {
+        if (routeMatched() && !requestGuardDenied) {
           for (const guardEffect of guards) {
             yield* guardEffect;
           }
         }
 
-        if (!routeMatched()) {
+        if (!routeMatched() || requestGuardDenied) {
           Route.removeRouteHead(headStore, headId);
           return { __routeMatched: routeMatched, __routeInner: null, __routeCtx: ctx, __routeHeadId: headId, __routeHeadStore: headStore, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
         }

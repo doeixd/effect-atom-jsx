@@ -54,6 +54,21 @@ export interface LoaderCacheStore {
   /** Set once {@link LoaderCacheStore.dispose} has run; refuses late writes. */
   disposed: boolean;
   /**
+   * Set when a matched route guard refused this request (R3's server half).
+   * The route setup path consults it to render the denied route as blocked —
+   * without it, a render-time cache miss would run the protected loader that
+   * the guard refusal just prevented.
+   */
+  guardDenied?: boolean;
+  /**
+   * Set on per-request server stores (`renderRequest` / `renderRequestStream`):
+   * an entry this request already fetched IS the request's snapshot, so reads
+   * treat it as fresh instead of applying the client's strict `staleTime 0 =
+   * stale now` SWR rule — which would re-run every loader once per render
+   * read. Client/document stores never set this.
+   */
+  requestScoped?: boolean;
+  /**
    * Close the store (`DQ-032`, the cache-store-scope half): interrupts every
    * in-flight refresh and refuses any later write. On the server this is the
    * response being sent — a refresh that outlives it would write into a store
@@ -355,7 +370,7 @@ export function runCachedLoader<A, E>(
 ): Effect.Effect<CoreResultType<A, E | RouteLoaderTimeoutError>, never> {
   return currentLoaderCacheStore.pipe(Effect.flatMap((store) => {
     const existing = getLoaderCacheEntry(routeId, params, store);
-    if (existing && isFresh(existing)) {
+    if (existing && (isFresh(existing) || store.requestScoped === true)) {
       return Effect.succeed(existing.result as CoreResultType<A, E>);
     }
 
