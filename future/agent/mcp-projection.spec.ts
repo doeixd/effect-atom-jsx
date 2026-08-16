@@ -13,14 +13,15 @@
  *   the MCP struct projection is *derived from `argNames`*, so this adapter
  *   declares nothing of its own.
  *
- * STILL PROVISIONAL, pending `DQ-096`: the module names `src/agent-mcp.ts` and
- * `src/Agent.ts`. The MCP-side `{isError, structuredContent}` shape is MCP's
- * own, not ours.
+ * RATIFIED (`DQ-096`, 2026-08-12): `src/Agent.ts` is core; the MCP adapter is
+ * the `@affe/agent` workspace package — there is NO `src/agent-mcp.ts`
+ * module, so these specs load the package. The MCP-side
+ * `{isError, structuredContent}` shape is MCP's own, not ours.
  */
 
 import { Effect, Layer, Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick, unbuilt } from "../harness.js";
+import { fromPackage, fromSrc, unbuilt } from "../harness.js";
 import { run, tagOf } from "./support.js";
 
 const BUILD = "build-an3";
@@ -67,7 +68,7 @@ const makeMixedCatalog = async () => {
 
 describe("AN-3 MCP projection", () => {
   it("[AN-3] projects one MCP tool per agent-exposed entry, with derived descriptions and input schemas", async () => {
-    const { mcpTools } = await fromSrc("agent-mcp", "mcpTools");
+    const { mcpTools } = await fromPackage("@affe/agent", "mcpTools");
     const { catalog } = await makeMixedCatalog();
 
     const tools = await run(mcpTools(catalog));
@@ -85,7 +86,7 @@ describe("AN-3 MCP projection", () => {
   });
 
   it("[AN-3] calling a projected tool runs the same code path as HTTP dispatch", async () => {
-    const { mcpServer } = await fromSrc("agent-mcp", "mcpServer");
+    const { mcpServer } = await fromPackage("@affe/agent", "mcpServer");
     const { dispatch } = await fromSrc("Agent", "dispatch");
     const { calls, catalog } = await makeMixedCatalog();
 
@@ -111,7 +112,7 @@ describe("AN-3 MCP projection", () => {
 
   it("[AN-3] a UI-only action cannot be invoked through MCP even by exact name", async () => {
     // Absence from the listing is not enough: hiding must be enforcement.
-    const { mcpServer } = await fromSrc("agent-mcp", "mcpServer");
+    const { mcpServer } = await fromPackage("@affe/agent", "mcpServer");
     const { calls, catalog } = await makeMixedCatalog();
 
     const server = await run(mcpServer(catalog));
@@ -141,7 +142,7 @@ describe("AN-3 MCP projection", () => {
   });
 
   it("[AN-3] auth is pluggable: an unauthenticated MCP call is refused before the action runs", async () => {
-    const { mcpServer, McpAuth } = await fromSrc("agent-mcp", "mcpServer", "McpAuth");
+    const { mcpServer, McpAuth } = await fromPackage("@affe/agent", "mcpServer", "McpAuth");
     const { CallerContext } = await fromSrc("Agent", "CallerContext");
     const { calls, catalog } = await makeMixedCatalog();
 
@@ -185,7 +186,7 @@ describe("AN-3 MCP projection", () => {
   });
 
   it("[AN-3] an MCP tool error is a typed discriminated value, not a stringified message", async () => {
-    const { mcpServer } = await fromSrc("agent-mcp", "mcpServer");
+    const { mcpServer } = await fromPackage("@affe/agent", "mcpServer");
     const { catalog, expose } = await fromSrc("Agent", "catalog", "expose");
     const { code } = await fromSrc("Portable", "code");
 
@@ -221,7 +222,7 @@ describe("AN-3 MCP projection", () => {
 
   it("[AN-3] a stale buildId is still refused through the MCP surface", async () => {
     // The drift guard is a property of dispatch, so every surface inherits it.
-    const { mcpServer } = await fromSrc("agent-mcp", "mcpServer");
+    const { mcpServer } = await fromPackage("@affe/agent", "mcpServer");
 
     const stale = await makeMixedCatalog();
     const staleServer = await run(mcpServer(stale.catalog, { buildId: "build-stale" }));
@@ -247,8 +248,7 @@ describe("AN-3 MCP projection", () => {
 
   it("[AN-3] A2A / ask-agent bridge scope", async () => {
     // Open design question DQ-098: library, adapter, or userland.
-    const mod = await loadSrc("agent-mcp");
-    pick(mod, "agent-mcp", "mcpTools");
+    await fromPackage("@affe/agent", "mcpTools");
     unbuilt(
       "A2A / ask-agent bridge surface (in @affe/agent or out of scope)",
       "DQ-098",

@@ -1,4 +1,7 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+
+const here = (relative: string) => fileURLToPath(new URL(relative, import.meta.url));
 
 /**
  * The `future/` specification suite. Separate from `vitest.config.ts` on
@@ -8,6 +11,15 @@ import { defineConfig } from "vitest/config";
  * Run with `npm run test:future`.
  */
 export default defineConfig({
+  resolve: {
+    // Same aliasing rule as vitest.config.ts: adapter packages under test
+    // resolve the public core subpaths to `src/` and `@affe/agent` to its
+    // source, so specs and adapters share one module identity.
+    alias: {
+      "effect-atom-jsx/Agent": here("./src/Agent.ts"),
+      "@affe/agent": here("./packages/agent/src/index.ts"),
+    },
+  },
   test: {
     environment: "node",
     include: ["future/**/*.spec.ts"],

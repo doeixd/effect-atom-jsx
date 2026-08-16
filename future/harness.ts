@@ -74,6 +74,29 @@ export async function fromSrc<K extends string>(
 }
 
 /**
+ * Load a WORKSPACE PACKAGE by its bare specifier (e.g. `"@affe/agent"`) —
+ * the ratified home for adapter surfaces (`DQ-096`: adapters are packages,
+ * never `src/` modules). Resolution goes through the vitest alias so specs
+ * and adapters share one module identity. An absent package fails the
+ * calling spec with `NOT IMPLEMENTED`, same as `loadSrc`.
+ */
+export async function fromPackage<K extends string>(
+  specifier: string,
+  ...names: readonly K[]
+): Promise<Record<K, any>> {
+  let mod: Record<string, unknown>;
+  try {
+    mod = (await import(/* @vite-ignore */ specifier)) as Record<string, unknown>;
+  } catch (cause) {
+    throw new NotImplemented(
+      `package ${specifier}`,
+      cause instanceof Error ? cause.message : String(cause),
+    );
+  }
+  return pick(mod, specifier, ...names);
+}
+
+/**
  * Declare that a spec's subject is deliberately unbuilt. Use this when even
  * *describing* the API in code would be guesswork — prefer a real executable
  * spec whenever the shape is decided.
