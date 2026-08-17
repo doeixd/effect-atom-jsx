@@ -15,7 +15,14 @@
  */
 import { Effect, Exit, Layer, Scope } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import { fromPackage, fromSrc, loadSrc, pick, unbuilt } from "../harness.js";
+import * as BehaviorModule from "../Behavior.js";
+import * as ComponentModule from "../Component.js";
+import * as ElementModule from "../Element.js";
+import * as StyleModule from "../Style.js";
+import * as ThemeModule from "../Theme.js";
+import * as ViewModule from "../View.js";
+import * as domModule from "../dom.js";
+import * as affeCss from "@affe/css";
 
 /**
  * Scopes opened by `styleHarness().resolve(...)`. Closed only AFTER a spec's
@@ -30,21 +37,12 @@ afterEach(() => {
 });
 
 async function styleHarness() {
-  const Component = await loadSrc("Component");
-  const { make, props, require, setup, renderViewEffect, withSlots } = pick(
-    Component,
-    "Component",
-    "make",
-    "props",
-    "require",
-    "setup",
-    "renderViewEffect",
-    "withSlots",
-  );
-  const Style = await loadSrc("Style");
-  const View = await loadSrc("View");
-  const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-  const { Capability } = await fromSrc("Element", "Capability");
+  const Component = ComponentModule as Record<string, any>;
+  const { make, props, require, setup, renderViewEffect, withSlots } = ((Component) as any);
+  const Style = StyleModule as Record<string, any>;
+  const View = ViewModule as Record<string, any>;
+  const { Slots, fromSlots } = ((View) as any);
+  const { Capability } = ElementModule as Record<string, any>;
 
   /**
    * Resolve a slot style map through the authored path - a widget that renders
@@ -53,12 +51,7 @@ async function styleHarness() {
    * A fresh anatomy per call keeps specs isolated.
    */
   const resolve = (slotStyles: Record<string, unknown>) => {
-    const { attachToSlots, make: styleMake } = pick(
-      Style,
-      "Style",
-      "attachToSlots",
-      "make",
-    );
+    const { attachToSlots, make: styleMake } = ((Style) as any);
     const Anatomy = Slots.define({
       root: { capability: Capability.Container },
       label: { capability: Capability.Container },
@@ -86,23 +79,14 @@ async function styleHarness() {
 
 /** Like styleHarness, but with a root+footer anatomy for widening specs. */
 async function styleHarness2() {
-  const Component = await loadSrc("Component");
-  const { make, props, require, setup, renderViewEffect, withSlots } = pick(
-    Component,
-    "Component",
-    "make",
-    "props",
-    "require",
-    "setup",
-    "renderViewEffect",
-    "withSlots",
-  );
-  const Style = await loadSrc("Style");
-  const View = await loadSrc("View");
-  const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-  const { Capability } = await fromSrc("Element", "Capability");
+  const Component = ComponentModule as Record<string, any>;
+  const { make, props, require, setup, renderViewEffect, withSlots } = ((Component) as any);
+  const Style = StyleModule as Record<string, any>;
+  const View = ViewModule as Record<string, any>;
+  const { Slots, fromSlots } = ((View) as any);
+  const { Capability } = ElementModule as Record<string, any>;
   const resolve = (slotStyles: Record<string, unknown>) => {
-    const { attachToSlots, make: styleMake } = pick(Style, "Style", "attachToSlots", "make");
+    const { attachToSlots, make: styleMake } = ((Style) as any);
     const Anatomy = Slots.define({
       root: { capability: Capability.Container },
       footer: { capability: Capability.Container },
@@ -126,7 +110,7 @@ async function styleHarness2() {
 describe("recipe merge contract", () => {
   it("[K1] resolution order is base -> variants -> compound, with compound winning", async () => {
     const { Style, resolve } = await styleHarness();
-    const { slot, recipe } = pick(Style, "Style", "slot", "recipe");
+    const { slot, recipe } = ((Style) as any);
 
     const def = {
       slots: ["root", "label"] as const,
@@ -157,8 +141,8 @@ describe("recipe merge contract", () => {
 
   it("[K1] mergeRecipes is a pure data merge: adds variants, overrides defaults, leaves the base recipe untouched", async () => {
     const { Style, resolve } = await styleHarness();
-    const { slot, recipe } = pick(Style, "Style", "slot", "recipe");
-    const { mergeRecipes } = pick(Style, "Style", "mergeRecipes");
+    const { slot, recipe } = ((Style) as any);
+    const { mergeRecipes } = ((Style) as any);
 
     const base = {
       slots: ["root", "label"] as const,
@@ -193,8 +177,8 @@ describe("recipe merge contract", () => {
 
   it("[K1] merging a slot the anatomy does not declare never silently succeeds", async () => {
     const { Style } = await styleHarness();
-    const { slot } = pick(Style, "Style", "slot");
-    const { mergeRecipes } = pick(Style, "Style", "mergeRecipes");
+    const { slot } = ((Style) as any);
+    const { mergeRecipes } = ((Style) as any);
 
     const base = {
       slots: ["root"] as const,
@@ -226,14 +210,7 @@ describe("recipe merge contract", () => {
     // DQ-062 ratified and built: the boolean-flag form was rejected (it
     // cannot re-type the result); widening is Style.extendRecipeSlots.
     const { Style, resolve } = await styleHarness2();
-    const { slot, recipe, mergeRecipes, extendRecipeSlots } = pick(
-      Style,
-      "Style",
-      "slot",
-      "recipe",
-      "mergeRecipes",
-      "extendRecipeSlots",
-    );
+    const { slot, recipe, mergeRecipes, extendRecipeSlots } = ((Style) as any);
 
     const base = {
       slots: ["root"] as const,
@@ -255,10 +232,10 @@ describe("recipe merge contract", () => {
   });
 
   it("[K1] the public @layer order is declared, and consumer layers come after ours", async () => {
-    const Style = await loadSrc("Style");
+    const Style = StyleModule as Record<string, any>;
     // PREMISE CORRECTED: the ratified name is `cssLayerOrder` (branded,
     // closed tuple; `publicLayerOrder` was the spec's invention).
-    const { cssLayerOrder: publicLayerOrder } = pick(Style, "Style", "cssLayerOrder");
+    const { cssLayerOrder: publicLayerOrder } = ((Style) as any);
 
     // Precedence is enforced by the platform cascade, not by specificity or
     // atomic class ordering. Consumer override policy is one sentence:
@@ -281,7 +258,7 @@ describe("recipe merge contract", () => {
 
   it("[K1] cross-module Style.compose is a stability guarantee: composing pieces from two modules keeps both", async () => {
     const { Style, resolve } = await styleHarness();
-    const { slot, compose } = pick(Style, "Style", "slot", "compose");
+    const { slot, compose } = ((Style) as any);
 
     const kitPiece = slot({ padding: "sm", backgroundColor: "surface" });
     const appPiece = slot({ padding: "lg" });
@@ -296,23 +273,14 @@ describe("recipe merge contract", () => {
 
 describe("one contract-aware style builder (DQ-054)", () => {
   it("[K1] Style.forSlots is gone and Style.make takes the slot contract directly", async () => {
-    const Style = await loadSrc("Style");
-    const { make: styleMake, slot } = pick(Style, "Style", "make", "slot");
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, renderViewEffect, withSlots } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "renderViewEffect",
-      "withSlots",
-    );
-    const { attachToSlots } = pick(Style, "Style", "attachToSlots");
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const Style = StyleModule as Record<string, any>;
+    const { make: styleMake, slot } = ((Style) as any);
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, renderViewEffect, withSlots } = ((Component) as any);
+    const { attachToSlots } = ((Style) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     // Two builders where the *recommended* one is strictly weaker is not a
     // shape worth preserving: `forSlots` erases `Bindings` to `never`, which
@@ -348,11 +316,11 @@ describe("one contract-aware style builder (DQ-054)", () => {
   });
 
   it("[K1] full slot coverage is opt-in exhaustive, not default-required", async () => {
-    const Style = await loadSrc("Style");
-    const { make: styleMake, slot } = pick(Style, "Style", "make", "slot");
-    const View = await loadSrc("View");
-    const { Slots } = pick(View, "View", "Slots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const Style = StyleModule as Record<string, any>;
+    const { make: styleMake, slot } = ((Style) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     const Anatomy = Slots.define({
       root: { capability: Capability.Container },
@@ -385,8 +353,8 @@ describe("one contract-aware style builder (DQ-054)", () => {
 
 describe("theme tokens", () => {
   it("[K1] two-level tokens: a semantic token resolves through the raw palette layer", async () => {
-    const Theme = await loadSrc("Theme");
-    const { define, Theme: ThemeTag } = pick(Theme, "Theme", "define", "Theme");
+    const Theme = ThemeModule as Record<string, any>;
+    const { define, Theme: ThemeTag } = ((Theme) as any);
 
     // @stylextras-inspired rule copied exactly: a raw primitive palette with no
     // dependencies, plus semantic tokens *derived* from those primitives.
@@ -399,7 +367,7 @@ describe("theme tokens", () => {
     // is a DEFINITION-time operation (`Theme.compose`) producing one complete
     // Layer — `Layer.merge` of two Theme layers is last-wins by Effect's own
     // contract, and making one service merge-aware was the rejected option.
-    const { compose: themeCompose } = pick(Theme, "Theme", "compose");
+    const { compose: themeCompose } = ((Theme) as any);
     const layered = themeCompose(palette, semantic).layer();
     const resolved: any = Effect.runSync(
       Effect.gen(function* () {
@@ -418,8 +386,8 @@ describe("theme tokens", () => {
   });
 
   it("[K1] token axes are independently themeable and compose per subtree", async () => {
-    const Theme = await loadSrc("Theme");
-    const { define, Theme: ThemeTag } = pick(Theme, "Theme", "define", "Theme");
+    const Theme = ThemeModule as Record<string, any>;
+    const { define, Theme: ThemeTag } = ((Theme) as any);
 
     // Eight independent axes; `zinc color + compact spacing` must compose
     // rather than forcing a fork of a monolithic theme.
@@ -431,7 +399,7 @@ describe("theme tokens", () => {
         const theme: any = yield* Effect.service(ThemeTag);
         return { accent: theme.resolve("accent"), md: theme.resolve("md") };
         // PREMISE CORRECTED: definition-time composition (DQ-061).
-      }).pipe(Effect.provide(pick(Theme, "Theme", "compose").compose(color, spacing).layer())) as any,
+      }).pipe(Effect.provide(((Theme) as any).compose(color, spacing).layer())) as any,
     );
 
     expect(resolved.accent).toBe("#111827");
@@ -439,24 +407,58 @@ describe("theme tokens", () => {
   });
 
   it("[K1] static CSS extraction preserves cross-module compose and fails open to runtime CSS", async () => {
-    unbuilt(
-      "static style extraction pass (must not break cross-module Style.compose; fail-open to runtime CSS)",
-      "COMPONENT_KIT_PLAN.md K4 (design ratified 2026-08-17: slot-unit fail-open; binding-conditionals never extracted)",
-    );
+    const Style = StyleModule as Record<string, any>;
+    const { make, compose, slot, when, whenBinding, extractStatic } = ((Style) as any);
+
+    // "Another module"'s contribution, composed in as plain data — extraction
+    // must see through the compose, not choke on it.
+    const crossModulePiece = slot({ padding: "md" });
+
+    const style = make({
+      // Fully static, spanning a cross-module compose and a token path.
+      root: compose(slot({ display: "grid", gap: "sm" }), crossModulePiece),
+      // Binding-conditional: reactive per DQ-056, NEVER extracted.
+      label: whenBinding("isOpen", true, slot({ color: "red" })),
+      // A runtime condition poisons the WHOLE slot (slot-unit fail-open),
+      // even though its sibling piece is static.
+      badge: compose(slot({ color: "color.text.primary" }), when(() => true, slot({ opacity: 1 }))),
+    });
+    const before = JSON.stringify(Object.keys(style.slots));
+
+    const extraction = extractStatic(style);
+
+    // The slot is the unit: one static, two runtime.
+    expect(extraction.staticSlots).toEqual(["root"]);
+    expect(extraction.runtimeSlots).toEqual(["label", "badge"]);
+
+    // Extracted CSS lands in the ratified cascade layer, carries the merged
+    // cross-module declarations, and resolves token paths to the SAME
+    // `--af-*` variable namespace the @affe/css foundation emits — extracted
+    // CSS stays theme-swappable.
+    expect(extraction.css).toContain("@layer components");
+    expect(extraction.css).toContain(".af-root");
+    expect(extraction.css).toContain("display: grid;");
+    expect(extraction.css).toContain("gap: var(--af-spacing-sm);");
+    expect(extraction.css).toContain("padding: var(--af-spacing-md);");
+
+    // Fail-open means the runtime slots contribute NOTHING statically...
+    expect(extraction.css).not.toContain("opacity");
+    expect(extraction.css).not.toContain("red");
+
+    // ...and extraction is non-destructive: the style value is untouched, so
+    // runtime attachment / further cross-module composition keep working on
+    // the exact same object.
+    expect(JSON.stringify(Object.keys(style.slots))).toBe(before);
+    expect(extractStatic(style)).toEqual(extraction);
   });
 
   it("[K1] CSS-Tags rung zero: absorbed as @affe/css (ratified DQ-063)", async () => {
     // The foundation stylesheet is OURS: one token namespace, the ratified
     // @layer order stated first (which is what makes precedence hold
     // regardless of import order), zero JavaScript.
-    const { foundationStylesheet, tokenVariableName, cssLayerOrder } = await fromPackage(
-      "@affe/css",
-      "foundationStylesheet",
-      "tokenVariableName",
-      "cssLayerOrder",
-    );
-    const Style = await loadSrc("Style");
-    const { cssLayerOrder: coreOrder } = pick(Style, "Style", "cssLayerOrder");
+    const { foundationStylesheet, tokenVariableName, cssLayerOrder } = affeCss as Record<string, any>;
+    const Style = StyleModule as Record<string, any>;
+    const { cssLayerOrder: coreOrder } = ((Style) as any);
 
     const css = foundationStylesheet();
 

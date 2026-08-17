@@ -15,20 +15,22 @@
  */
 import { Effect, Exit, Scope } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick, unbuilt } from "../harness.js";
+import * as BehaviorModule from "../Behavior.js";
+import * as ComponentModule from "../Component.js";
+import * as ElementModule from "../Element.js";
+import * as StyleModule from "../Style.js";
+import * as ThemeModule from "../Theme.js";
+import * as ViewModule from "../View.js";
+import * as domModule from "../dom.js";
+import * as affeCss from "@affe/css";
 
 describe("dynamic attachment validation", () => {
   it("[AF-UI] a dynamic attachment onto an unknown or hidden slot is diagnosed", async () => {
-    const Behavior = await loadSrc("Behavior");
-    const { make, validateAttachmentBySlots } = pick(
-      Behavior,
-      "Behavior",
-      "make",
-      "validateAttachmentBySlots",
-    );
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const Behavior = BehaviorModule as Record<string, any>;
+    const { make, validateAttachmentBySlots } = ((Behavior) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     const anatomy = Slots.define({
       root: { capability: Capability.Container },
@@ -71,17 +73,11 @@ describe("dynamic attachment validation", () => {
   });
 
   it("[AF-UI] a dynamic attachment demanding an event the slot does not allow is diagnosed", async () => {
-    const Behavior = await loadSrc("Behavior");
-    const { make, events, validateAttachmentBySlots } = pick(
-      Behavior,
-      "Behavior",
-      "make",
-      "events",
-      "validateAttachmentBySlots",
-    );
-    const View = await loadSrc("View");
-    const { Slots, fromSlots, Event } = pick(View, "View", "Slots", "fromSlots", "Event");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const Behavior = BehaviorModule as Record<string, any>;
+    const { make, events, validateAttachmentBySlots } = ((Behavior) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots, Event } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     const anatomy = Slots.define({
       label: { capability: Capability.Container, allowedEvents: [Event.Press] },
@@ -97,16 +93,11 @@ describe("dynamic attachment validation", () => {
   });
 
   it("[AF-UI] a dynamic attachment onto a slot with too weak a capability is diagnosed", async () => {
-    const Behavior = await loadSrc("Behavior");
-    const { forSlots, validateAttachmentBySlots } = pick(
-      Behavior,
-      "Behavior",
-      "forSlots",
-      "validateAttachmentBySlots",
-    );
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const Behavior = BehaviorModule as Record<string, any>;
+    const { forSlots, validateAttachmentBySlots } = ((Behavior) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     // The behavior needs text input; the rendered slot is a plain container.
     // `forSlots` must RETAIN this contract (DQ-051): today it discards its
@@ -171,7 +162,7 @@ describe("dynamic attachment validation", () => {
   });
 
   it("[AF-UI] declared-vs-rendered slot drift on an assembled widget is reported, not silently tolerated", async () => {
-    const Component = await loadSrc("Component");
+    const Component = ComponentModule as Record<string, any>;
     const {
       make,
       props,
@@ -180,20 +171,10 @@ describe("dynamic attachment validation", () => {
       slotContainer,
       withSlots,
       validateRenderedSlotContract,
-    } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "slotContainer",
-      "withSlots",
-      "validateRenderedSlotContract",
-    );
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    } = ((Component) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     const declared = Slots.define({
       root: { capability: Capability.Container },
@@ -247,20 +228,11 @@ describe("slot target drift (DQ-051 backstop, lands FIRST)", () => {
     // `bindings.slots` is not a faithful projection of its view starts styling
     // one handle and listening on another — silently, with nothing thrown and
     // nothing logged. So the divergence must be a named diagnostic first.
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, withSlots, validateRenderedSlotContract } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "withSlots",
-      "validateRenderedSlotContract",
-    );
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, withSlots, validateRenderedSlotContract } = ((Component) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     const Anatomy = Slots.define({
       root: { capability: Capability.Container },
@@ -308,20 +280,11 @@ describe("slot target drift (DQ-051 backstop, lands FIRST)", () => {
 
 describe("slot identity", () => {
   it("[AF-UI] two instances of the same widget do not share slot element handles", async () => {
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, setupEffect, withSlots } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "setupEffect",
-      "withSlots",
-    );
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, setupEffect, withSlots } = ((Component) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     // `Slots.define` returns a contract/**factory**. It is a declaration, and
     // declarations do not own DOM handles; handles materialize once per
@@ -363,21 +326,11 @@ describe("slot identity", () => {
     // The DQ-050 decision in one assertion. `Style` already resolves through
     // the rendered view; `Behavior` resolves through `bindings.slots`. Those
     // are only allowed to be two names for one thing.
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, setupEffect, renderViewWithBindings, withSlots } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "setupEffect",
-      "renderViewWithBindings",
-      "withSlots",
-    );
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, setupEffect, renderViewWithBindings, withSlots } = ((Component) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     const Anatomy = Slots.define({
       root: { capability: Capability.Container },
@@ -418,28 +371,13 @@ describe("behavior attachment resolves through the rendered view", () => {
     // two agree ONLY because handles are shared module-wide. Once they are
     // per-instance, a behavior resolving from a setup-owned record installs
     // its listeners on a handle nothing ever mounts — a silent no-op.
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, setupEffect, renderViewWithBindings, withSlots } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "setupEffect",
-      "renderViewWithBindings",
-      "withSlots",
-    );
-    const Behavior = await loadSrc("Behavior");
-    const { make: behaviorMake, attachTo } = pick(
-      Behavior,
-      "Behavior",
-      "make",
-      "attachTo",
-    );
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, setupEffect, renderViewWithBindings, withSlots } = ((Component) as any);
+    const Behavior = BehaviorModule as Record<string, any>;
+    const { make: behaviorMake, attachTo } = ((Behavior) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     const Anatomy = Slots.define({
       root: { capability: Capability.Container },
@@ -489,9 +427,52 @@ describe("behavior attachment resolves through the rendered view", () => {
 
 describe("slot as projection", () => {
   it("[DIN-11] a slot is a named region: it emits its own resume boundary and can be a typed mount target", async () => {
-    unbuilt(
-      "slot-as-projection-element (`Slot.render name=...`): lazy child evaluation at placement, slot-owned comment-pair region, typed named mount targets for M11b fragments",
-      "kit milestone finale (DQ-070 ratified 2026-08-17, unblocked by DQ-050: slot emits its region as itself; typed mount targets for fragments)",
+    const View = ViewModule as Record<string, any>;
+    const { Slot } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
+    const { renderToString, template, insert } = domModule as Record<string, any>;
+
+    const heading = Slot.make("heading", { capability: Capability.Container });
+
+    // Lazy child evaluation AT PLACEMENT: constructing the projection must
+    // not run the thunk — only inserting it into a tree does.
+    let evaluated = 0;
+    const projection = Slot.render(heading, () => {
+      evaluated += 1;
+      return "lazy title";
+    });
+    expect(evaluated).toBe(0);
+
+    let mountedHtmlBefore = "";
+    const html = renderToString(() => {
+      const root = template("<section>")();
+      expect(evaluated).toBe(0);
+      insert(root, projection);
+      expect(evaluated).toBe(1);
+
+      // The emitted region IS the slot: a typed named mount target found by
+      // the slot witness, not by string spelunking.
+      const region = Slot.mountTarget(root, heading);
+      expect(region).toBeDefined();
+      expect(region!.name).toBe("heading");
+      expect(region!.nodes().length).toBe(1);
+
+      // NEGATIVE CONTROL: a slot that was never projected has no region.
+      const absent = Slot.make("absent", { capability: Capability.Container });
+      expect(Slot.mountTarget(root, absent)).toBeUndefined();
+
+      // Mounting a fragment replaces the region's contents in place —
+      // between the slot's own comment pair, touching nothing outside it.
+      mountedHtmlBefore = root.toHTML();
+      region!.mount("remounted");
+      return root;
+    });
+
+    expect(mountedHtmlBefore).toBe(
+      "<section><!--af:slot:heading:start-->lazy title<!--af:slot:heading:end--></section>",
+    );
+    expect(html).toBe(
+      "<section><!--af:slot:heading:start-->remounted<!--af:slot:heading:end--></section>",
     );
   });
 });

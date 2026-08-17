@@ -28,7 +28,7 @@ import {
 } from "./resume-session.js";
 import { ServerRenderStateTag, currentServerRenderState } from "./render-state.js";
 import * as SafeHtml from "./SafeHtml.js";
-import { isView } from "./View.js";
+import { isView, Slot as ViewSlot } from "./View.js";
 import { serializeAttribute } from "./attributes.js";
 import {
   ResumeStreamPayloadTooLargeError,
@@ -168,6 +168,28 @@ function insertExpression(
       current,
       marker,
     );
+  }
+  // A projected slot (`DQ-070`) emits its comment-pair region AS ITSELF:
+  // start/end markers owned by the slot name, children evaluated lazily at
+  // exactly this placement, and the region addressable afterwards via
+  // `View.Slot.mountTarget`.
+  if (ViewSlot.isProjection(value)) {
+    const markers = ViewSlot.regionMarkers(value.slot.name);
+    const start = document.createComment(markers.start);
+    const end = document.createComment(markers.end);
+    parent.insertBefore(start, marker);
+    parent.insertBefore(end, marker);
+    const child = value.children === undefined ? null : value.children();
+    const inner = insert(
+      parent,
+      isView(child) ? (child as { readonly node: unknown }).node : child,
+      end,
+    );
+    return [
+      start,
+      ...(Array.isArray(inner) ? inner : inner === null ? [] : [inner]),
+      end,
+    ];
   }
   if (Array.isArray(value)) {
     const newNodes: Node[] = value.flatMap(flattenChild).filter(Boolean) as Node[];
@@ -1398,6 +1420,13 @@ export function serverValueToHTML(value: unknown): string {
   // for attachment/validation, not markup of its own.
   if (isView(value)) {
     return serverValueToHTML((value as { readonly node: unknown }).node);
+  }
+  // A projected slot serializes as its own comment-pair region (`DQ-070`);
+  // children evaluate lazily at this serialization point.
+  if (ViewSlot.isProjection(value)) {
+    const markers = ViewSlot.regionMarkers(value.slot.name);
+    const child = value.children === undefined ? null : value.children();
+    return `<!--${markers.start}-->${serverValueToHTML(child)}<!--${markers.end}-->`;
   }
   return value == null ? "" : String(value);
 }

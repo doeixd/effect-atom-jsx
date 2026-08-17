@@ -83,7 +83,7 @@ const UsersList = Component.make(
   Route.title("Users"),
 );
 
-const UserPageBase = Component.make(
+const UserPage = Component.make(
   Component.props<{}>(),
   Component.require<Route.RouteContext<any, any, any>>(),
   () => Effect.gen(function* () {
@@ -116,9 +116,8 @@ const UserPageBase = Component.make(
     const users = yield* UsersService;
     return yield* users.byId(params.userId);
   })),
+  Route.title("User"),
 );
-
-const UserPage = UserPageBase.pipe(Route.title("User"));
 
 const saveUserHandler = Route.singleFlight(
   (input: SaveUserInput) => Effect.gen(function* () {
@@ -128,7 +127,7 @@ const saveUserHandler = Route.singleFlight(
   {
     baseUrl: "http://example.local",
     target: (result) => `/users/${result.id}`,
-    setLoaders: Route.seedLoader(UserPageBase as any),
+    setLoaders: Route.seedLoader(UserPage as any),
   },
 );
 

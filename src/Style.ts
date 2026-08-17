@@ -6,7 +6,8 @@ import * as Theme from "./Theme.js";
 import * as View from "./View.js";
 import { createContext, useContext } from "./api.js";
 import { mergeMany, resolveTokenValue } from "./style-runtime.js";
-import type { SlotStyle } from "./style-types.js";
+import type { SlotStyle, ThemeTokenSchema } from "./style-types.js";
+import { defaultThemeTokens } from "./style-types.js";
 import type { TokenPath } from "./style-types.js";
 
 type AnySlot = Record<string, unknown>;
@@ -768,6 +769,143 @@ export function propertiesOf<S extends string>(style: ComposedStyle<S, any>): re
   return usages;
 }
 
+// ── Static CSS extraction (`DQ-064`, ratified; K4) ───────────────────────────
+//
+// Per-module extraction with the SLOT as the fail-open unit: a slot whose
+// pieces are fully resolvable in this module extracts to static CSS; any slot
+// touched by a runtime condition, a binding conditional (reactive per
+// `DQ-056` — NEVER extracted), a dynamic function value, or a piece kind the
+// extractor cannot statically serialize runtime-composes WHOLE. Extraction is
+// non-destructive: the input style is untouched, so cross-module
+// `Style.compose` and runtime attachment keep working on the same value —
+// failing open costs only the static bytes, never correctness.
+
+/** The result of one module's static extraction pass. */
+export interface StaticExtraction<S extends string = string> {
+  readonly css: string;
+  /** Slots fully extracted to static CSS. */
+  readonly staticSlots: ReadonlyArray<S>;
+  /** Slots that fail open to runtime composition (and why they must). */
+  readonly runtimeSlots: ReadonlyArray<S>;
+}
+
+export interface ExtractStaticOptions {
+  /** Selector for one slot's rule; defaults to `.af-<slot>`. */
+  readonly selector?: (slot: string) => string;
+  /** Cascade layer the rules land in; defaults to `"components"`. */
+  readonly layer?: CssLayer;
+  /** Token schema used to recognise token paths; defaults to the theme default. */
+  readonly tokens?: ThemeTokenSchema;
+}
+
+/** Mirror of `Theme.lookupToken`'s candidate list, returning the PATH hit. */
+function tokenPathOf(tokens: ThemeTokenSchema, token: string): string | undefined {
+  const candidates = [
+    token,
+    `color.${token}`,
+    `spacing.${token}`,
+    `fontSize.${token}`,
+    `fontWeight.${token}`,
+    `radius.${token}`,
+    `shadow.${token}`,
+    `transition.${token}`,
+    `breakpoint.${token}`,
+  ];
+  for (const candidate of candidates) {
+    let current: unknown = tokens;
+    let ok = true;
+    for (const part of candidate.split(".")) {
+      if (typeof current !== "object" || current === null || !(part in current)) {
+        ok = false;
+        break;
+      }
+      current = (current as Record<string, unknown>)[part];
+    }
+    if (ok && (typeof current === "string" || typeof current === "number")) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** Only pieces whose every value is statically known extract; anything else fails open. */
+function pieceIsStaticallyExtractable(piece: StyleValue): boolean {
+  if (Array.isArray(piece)) return piece.every(pieceIsStaticallyExtractable);
+  const node = piece as Exclude<StyleValue, ReadonlyArray<StyleValue>>;
+  switch (node._tag) {
+    case "SlotPiece":
+      return Object.values(node.style).every(
+        (value) => typeof value === "string" || typeof value === "number",
+      );
+    case "VarsPiece":
+      return Object.values(node.vars).every(
+        (value) => typeof value === "string" || typeof value === "number",
+      );
+    case "LayerPiece":
+      return pieceIsStaticallyExtractable(node.piece);
+    default:
+      // Conditionals, binding conditionals (reactive, DQ-056), states,
+      // media/pseudo/etc.: the whole slot runtime-composes.
+      return false;
+  }
+}
+
+function cssPropertyName(property: string): string {
+  return property.startsWith("--")
+    ? property
+    : property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+}
+
+function staticDeclarationValue(value: unknown, tokens: ThemeTokenSchema): string {
+  if (typeof value === "string") {
+    const path = tokenPathOf(tokens, value);
+    // A token path becomes a CSS variable reference under the `--af-*`
+    // namespace — the SAME names `@affe/css`'s foundation stylesheet emits —
+    // so extracted CSS stays theme-swappable at runtime.
+    if (path !== undefined) return `var(--af-${path.replace(/\./g, "-")})`;
+    return value;
+  }
+  return String(value);
+}
+
+/**
+ * Extract every fully-static slot of `style` to CSS, failing open per SLOT.
+ *
+ * @example
+ * const { css, runtimeSlots } = Style.extractStatic(cardStyle)
+ * // css → `@layer components { .af-root { display: grid; gap: var(--af-spacing-sm); } }`
+ * // runtimeSlots → slots left for `Style.attach*` at runtime
+ */
+export function extractStatic<S extends string>(
+  style: ComposedStyle<S, any>,
+  options?: ExtractStaticOptions,
+): StaticExtraction<S> {
+  const tokens = options?.tokens ?? defaultThemeTokens;
+  const selectorOf = options?.selector ?? ((slot: string) => `.af-${slot}`);
+  const layer: CssLayer = options?.layer ?? "components";
+  const staticSlots: Array<S> = [];
+  const runtimeSlots: Array<S> = [];
+  const rules: Array<string> = [];
+  for (const [slotName, piece] of Object.entries(style.slots) as Array<[S, StyleValue]>) {
+    if (!pieceIsStaticallyExtractable(piece)) {
+      runtimeSlots.push(slotName);
+      continue;
+    }
+    const resolved = resolveSlot(piece);
+    const declarations = Object.entries(resolved)
+      .filter(([property]) => isStylePropertyKey(property) || property.startsWith("--"))
+      .map(([property, value]) =>
+        `${cssPropertyName(property)}: ${staticDeclarationValue(value, tokens)};`,
+      );
+    staticSlots.push(slotName);
+    if (declarations.length > 0) {
+      rules.push(`${selectorOf(slotName)} { ${declarations.join(" ")} }`);
+    }
+  }
+  const css = rules.length === 0 ? "" : `@layer ${layer} {\n${rules.join("\n")}\n}`;
+  return { css, staticSlots, runtimeSlots };
+}
+
 function applyResolvedStyleToHandle(handle: Element.Handle, styleDef: SlotStyle): Effect.Effect<void> {
   return Effect.forEach(Object.entries(styleDef), ([prop, value]) => {
     if (prop === "_states" || prop.startsWith("__")) return handle.setStyleOnce(prop, value);
@@ -1441,6 +1579,7 @@ export const Style = {
   layers,
   inLayer,
   cssLayerOrder,
+  extractStatic,
   mergeRecipes,
   extendRecipeSlots,
   global,

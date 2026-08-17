@@ -469,6 +469,149 @@ export namespace Slot {
       hidden: true,
     }) as any;
   }
+
+  // ── Slot-as-projection (`DQ-070`, ratified) ────────────────────────────────
+  //
+  // A slot is a NAMED REGION, not only attachment metadata: placing
+  // `Slot.render(slot, children)` in a tree emits a comment-pair region
+  // (`af:slot:<name>:start` / `af:slot:<name>:end`) OWNED by the slot — one
+  // identity for compile-time slots and runtime regions. Children are a
+  // thunk evaluated lazily at PLACEMENT (insertion/serialization), never at
+  // construction, and the emitted region is addressable afterwards as a
+  // typed named mount target for fragments (`Slot.mountTarget`).
+
+  export const ProjectionTypeId: unique symbol = Symbol.for(
+    "effect-atom-jsx/View/SlotProjection",
+  );
+
+  /** A slot placed into a tree as its own region. */
+  export interface Projection<S extends Any = Any> {
+    readonly [ProjectionTypeId]: typeof ProjectionTypeId;
+    readonly slot: S;
+    readonly children: (() => unknown) | undefined;
+  }
+
+  /**
+   * Project a slot into a tree as a named region. `children` is evaluated
+   * lazily when the projection is PLACED, not when it is constructed.
+   */
+  export function render<S extends Any>(
+    slot: S,
+    children?: () => unknown,
+  ): Projection<S> {
+    return { [ProjectionTypeId]: ProjectionTypeId, slot, children };
+  }
+
+  export function isProjection(value: unknown): value is Projection {
+    return typeof value === "object" && value !== null && ProjectionTypeId in value;
+  }
+
+  /** The comment texts bounding one slot's region. */
+  export function regionMarkers(name: string): {
+    readonly start: string;
+    readonly end: string;
+  } {
+    return { start: `af:slot:${name}:start`, end: `af:slot:${name}:end` };
+  }
+
+  /** Minimal node surface shared by browser DOM and the server document. */
+  interface RegionNode {
+    readonly parentNode?: RegionNode | null;
+    nextSibling?: RegionNode | null;
+    readonly childNodes?: ArrayLike<RegionNode>;
+    readonly nodeName?: string;
+    readonly data?: string;
+    readonly _commentText?: string;
+    insertBefore?(node: RegionNode, ref: RegionNode | null): unknown;
+    removeChild?(node: RegionNode): unknown;
+  }
+
+  /**
+   * A slot's emitted region, addressable as a typed mount target: `mount`
+   * replaces everything between the slot's comment pair with a fragment,
+   * node array, view, or text value.
+   */
+  export interface Region<S extends Any = Any> {
+    readonly slot: S;
+    readonly name: NameOf<S>;
+    readonly start: unknown;
+    readonly end: unknown;
+    readonly nodes: () => ReadonlyArray<unknown>;
+    readonly mount: (value: unknown) => void;
+  }
+
+  function commentText(node: RegionNode): string | undefined {
+    if (node.nodeName !== "#comment") return undefined;
+    return node._commentText ?? node.data;
+  }
+
+  function findComment(root: RegionNode, text: string): RegionNode | undefined {
+    if (commentText(root) === text) return root;
+    const children = root.childNodes;
+    if (children === undefined) return undefined;
+    for (let index = 0; index < children.length; index += 1) {
+      const found = findComment(children[index]!, text);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  function toRegionNodes(value: unknown): ReadonlyArray<RegionNode> {
+    if (value === null || value === undefined || value === false || value === true) return [];
+    if (Array.isArray(value)) return value.flatMap(toRegionNodes);
+    if (isView(value)) return toRegionNodes((value as { readonly node: unknown }).node);
+    if (typeof value === "object") return [value as RegionNode];
+    const doc = (globalThis as { document?: { createTextNode?: (text: string) => unknown } })
+      .document;
+    if (typeof doc?.createTextNode !== "function") {
+      throw new Error(
+        "[View.Slot.mountTarget] cannot mount a text value without a document.",
+      );
+    }
+    return [doc.createTextNode(String(value)) as RegionNode];
+  }
+
+  /**
+   * Find the region a projected slot emitted under `root` and return it as a
+   * typed mount target. Returns `undefined` when the slot was never placed.
+   */
+  export function mountTarget<S extends Any>(
+    root: unknown,
+    slot: S,
+  ): Region<S> | undefined {
+    const markers = regionMarkers(slot.name);
+    const start = findComment(root as RegionNode, markers.start);
+    const end = start === undefined
+      ? undefined
+      : findComment(root as RegionNode, markers.end);
+    if (start === undefined || end === undefined) return undefined;
+    const parent = start.parentNode;
+    if (parent == null || parent !== end.parentNode) return undefined;
+    const nodes = (): ReadonlyArray<unknown> => {
+      const out: Array<unknown> = [];
+      let cursor = start.nextSibling ?? null;
+      while (cursor !== null && cursor !== end) {
+        out.push(cursor);
+        cursor = cursor.nextSibling ?? null;
+      }
+      return out;
+    };
+    return {
+      slot,
+      name: slot.name as NameOf<S>,
+      start,
+      end,
+      nodes,
+      mount: (value) => {
+        while (start.nextSibling != null && start.nextSibling !== end) {
+          parent.removeChild?.(start.nextSibling);
+        }
+        for (const node of toRegionNodes(value)) {
+          parent.insertBefore?.(node, end);
+        }
+      },
+    };
+  }
 }
 
 type BoundSlotRecord = Record<string, Slot.BoundAny>;
