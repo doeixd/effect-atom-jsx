@@ -99,6 +99,14 @@
       "import": "./dist/Agent.js",
       "types": "./dist/Agent.d.ts"
     },
+    "./ViewSpec": {
+      "import": "./dist/ViewSpec.js",
+      "types": "./dist/ViewSpec.d.ts"
+    },
+    "./view-spec-json-render": {
+      "import": "./dist/view-spec-json-render.js",
+      "types": "./dist/view-spec-json-render.d.ts"
+    },
     "./Element": {
       "import": "./dist/Element.js",
       "types": "./dist/Element.d.ts"

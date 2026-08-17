@@ -1,59 +1,92 @@
 /**
- * AN-5 / json-render Phase 1 — the typed component catalog, the view-tree IR,
- * and the validator that makes agent-authored UI safe by construction.
+ * AN-5 — the typed component catalog, the view-tree IR, and the validator
+ * that make agent-authored UI safe by construction. Promoted from
+ * `future/agent/generative-view-spec.spec.ts` once every spec passed.
  *
- * Owning docs: `AGENT_NATIVE_NOTES.md` §4.2 and §7 item 5,
- * `docs/af-ui-json-render/gen-ui-implementation-plan.md` "Phase 1: Structured
- * Component And Element IR", `docs/archive/TYPED_VIEW_TREE_PLAN.md`.
+ * The load-bearing claim (`AGENT_NATIVE_NOTES.md` §4.2): "a validated spec
+ * **cannot express** the secret-leak failure mode." These tests are mostly
+ * negative: each names a thing an agent might try and asserts it is
+ * rejected, with no rendering side effect. `DQ-090` (ratified): the IR has
+ * no markup-bearing node kind at all — raw HTML is rejected at the schema
+ * boundary because it is unrepresentable, not because a validator caught
+ * it. The lowering targets json-render v0.20.0 semantics
+ * (`docs/af-ui-json-render/JSON_RENDER_V0.20_UPSTREAM.md`).
  *
- * Test-name prefix `[JR-P1]` is this suite's label for that phase (the docs use
- * a prose heading, not a code — see the report note).
- *
- * The load-bearing claim from §4.2: "their own docs warn about secrets in
- * generated HTML; a validated spec **cannot express that failure mode**." That
- * is a claim about the *expressive power of the IR*, so the specs below are
- * mostly negative: each names a thing an agent might try and asserts it is
- * rejected, with no rendering side effect.
- *
- * RATIFIED (`AGENT_NATIVE_NOTES.md` §10):
- * - `DQ-090` — the spec IR has **no markup-bearing node kind at all**; text
- *   nodes carry `value`, never `html`. That makes §4.2's security claim true
- *   **by construction**: raw HTML is rejected at the schema boundary because it
- *   is unrepresentable, not because a validator caught it.
- * - `DQ-080` — the two-arm dispatch envelope.
- *
- * STILL PROVISIONAL, pending `DQ-096`: the module names `src/ViewSpec.ts`,
- * `src/view-spec-json-render.ts` and `src/Agent.ts` are this suite's proposal,
- * since the json-render docs are written against gen2's `gen.ui.*` namespace,
- * which does not exist in this repo.
- *
- * Every rejection spec below carries a NEGATIVE CONTROL: a validator that
- * returned its diagnostic unconditionally would otherwise satisfy each of them
- * forever, and the near-neighbour codes (unknown component vs unknown slot vs
- * unknown node kind; read-only binding vs server-only field) are asserted to
- * differ so one generic "something is wrong" code cannot cover them all.
+ * Every rejection test carries a NEGATIVE CONTROL, and near-neighbour codes
+ * (unknown component vs unknown slot vs unknown node kind; read-only
+ * binding vs server-only field) are asserted to differ so one generic
+ * "something is wrong" code cannot cover them all.
  */
 
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick } from "../harness.js";
-import { allStrings, findFunctions, jsonRoundTrips, run, runFail } from "./support.js";
+import * as Agent from "../Agent.js";
+import * as Portable from "../Portable.js";
+import {
+  action,
+  bindState,
+  componentCatalog,
+  componentEntry,
+  decodeSpec,
+  element,
+  NodeKinds,
+  on,
+  slotSpec,
+  state as stateRefOf,
+  stateModel,
+  text,
+  validate,
+  viewTree,
+  type SpecNode,
+  type StateValueRef,
+} from "../ViewSpec.js";
+import { lower } from "../view-spec-json-render.js";
+
+const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
+const runFail = async <A, E>(effect: Effect.Effect<A, E>): Promise<E> => {
+  const flipped = await Effect.runPromiseExit(effect.pipe(Effect.flip));
+  if (flipped._tag !== "Success") {
+    throw new Error("expected a typed failure, but the effect succeeded");
+  }
+  return flipped.value;
+};
+
+/** A serializable IR must survive a JSON round trip intact. */
+const jsonRoundTrips = (value: unknown): boolean => {
+  try {
+    return JSON.stringify(JSON.parse(JSON.stringify(value))) === JSON.stringify(value);
+  } catch {
+    return false;
+  }
+};
+
+/** Recursively collect every function found in a value (must be empty for IR). */
+const findFunctions = (value: unknown, path = "$"): ReadonlyArray<string> => {
+  if (typeof value === "function") return [path];
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => findFunctions(item, `${path}[${index}]`));
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).flatMap(([key, item]) => findFunctions(item, `${path}.${key}`));
+  }
+  return [];
+};
+
+/** Collect every string in a value, for leak assertions. */
+const allStrings = (value: unknown): ReadonlyArray<string> => {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(allStrings);
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).flatMap(([key, item]) => [key, ...allStrings(item)]);
+  }
+  return [];
+};
 
 /**
  * A small typed catalog: one Card component with a `body` slot, one exposed
  * action, one state model with a writable and a read-only field.
  */
-const makeCatalog = async () => {
-  const ViewSpec = await loadSrc("ViewSpec");
-  const { componentCatalog, componentEntry, slotSpec, stateModel } = pick(
-    ViewSpec,
-    "ViewSpec",
-    "componentCatalog",
-    "componentEntry",
-    "slotSpec",
-    "stateModel",
-  );
-
+const makeCatalog = () => {
   const state = stateModel({
     name: "ProjectPage",
     fields: {
@@ -87,25 +120,15 @@ const makeCatalog = async () => {
   };
 };
 
-describe("AN-5 / json-render Phase 1", () => {
-  it("[JR-P1] a well-formed agent-emitted spec validates, and the tree is closure-free and serializable", async () => {
-    const ViewSpec = await loadSrc("ViewSpec");
-    const { element, text, viewTree, validate } = pick(
-      ViewSpec,
-      "ViewSpec",
-      "element",
-      "text",
-      "viewTree",
-      "validate",
-    );
-    const { catalog } = await makeCatalog();
+describe("AN-5 view-spec IR", () => {
+  it("a well-formed agent-emitted spec validates, and the tree is closure-free and serializable", async () => {
+    const { catalog } = makeCatalog();
 
-    const tree = viewTree(
-      element("Card", {
-        props: { title: "Sprint 3" },
-        slots: { body: [text("Two open items")] },
-      }),
-    );
+    const root = element("Card", {
+      props: { title: "Sprint 3" },
+      slots: { body: [text("Two open items")] },
+    });
+    const tree = viewTree(root);
 
     const diagnostics = await run(validate(tree, { catalog }));
     expect(diagnostics).toEqual([]);
@@ -115,27 +138,19 @@ describe("AN-5 / json-render Phase 1", () => {
     expect(jsonRoundTrips(tree)).toBe(true);
     // Node kinds are literal tags, so a host can dispatch on them.
     expect(tree.root.kind).toBe("ui.element");
-    expect(tree.root.slots.body[0].kind).toBe("ui.text");
+    expect(root.slots.body![0]!.kind).toBe("ui.text");
   });
 
-  it("[JR-P1] an unknown component is rejected, and a known one is not", async () => {
-    const ViewSpec = await loadSrc("ViewSpec");
-    const { element, viewTree, validate } = pick(
-      ViewSpec,
-      "ViewSpec",
-      "element",
-      "viewTree",
-      "validate",
-    );
-    const { catalog } = await makeCatalog();
+  it("an unknown component is rejected, and a known one is not", async () => {
+    const { catalog } = makeCatalog();
 
     const diagnostics = await run(
       validate(viewTree(element("ScriptRunner", { props: {}, slots: {} })), { catalog }),
     );
 
     // Exactly this code and nothing else, so an over-eager validator is caught.
-    expect(diagnostics.map((d: any) => d.code)).toEqual(["ui:unknown-catalog-component"]);
-    expect(diagnostics.every((d: any) => d.severity === "error")).toBe(true);
+    expect(diagnostics.map((d) => d.code)).toEqual(["ui:unknown-catalog-component"]);
+    expect(diagnostics.every((d) => d.severity === "error")).toBe(true);
     // Diagnostics point at the offending node so a host can explain the refusal.
     expect(JSON.stringify(diagnostics)).toContain("ScriptRunner");
 
@@ -151,17 +166,8 @@ describe("AN-5 / json-render Phase 1", () => {
     ).toEqual([]);
   });
 
-  it("[JR-P1] an unknown slot on a known component is rejected, with its own code", async () => {
-    const ViewSpec = await loadSrc("ViewSpec");
-    const { element, text, viewTree, validate } = pick(
-      ViewSpec,
-      "ViewSpec",
-      "element",
-      "text",
-      "viewTree",
-      "validate",
-    );
-    const { catalog } = await makeCatalog();
+  it("an unknown slot on a known component is rejected, with its own code", async () => {
+    const { catalog } = makeCatalog();
 
     const diagnostics = await run(
       validate(
@@ -175,10 +181,10 @@ describe("AN-5 / json-render Phase 1", () => {
       ),
     );
 
-    expect(diagnostics.map((d: any) => d.code)).toEqual(["ui:component-unknown-slot"]);
+    expect(diagnostics.map((d) => d.code)).toEqual(["ui:component-unknown-slot"]);
     // Unknown component and unknown slot are near neighbours; a single generic
-    // code would satisfy both this spec and the one above.
-    expect(diagnostics[0].code).not.toBe("ui:unknown-catalog-component");
+    // code would satisfy both this test and the one above.
+    expect(diagnostics[0]!.code).not.toBe("ui:unknown-catalog-component");
 
     // NEGATIVE CONTROL: the component's *declared* slot is accepted.
     expect(
@@ -196,17 +202,8 @@ describe("AN-5 / json-render Phase 1", () => {
     ).toEqual([]);
   });
 
-  it("[JR-P1] a two-way binding to a non-writable target is rejected", async () => {
-    const ViewSpec = await loadSrc("ViewSpec");
-    const { element, viewTree, validate, bindState } = pick(
-      ViewSpec,
-      "ViewSpec",
-      "element",
-      "viewTree",
-      "validate",
-      "bindState",
-    );
-    const { catalog, state } = await makeCatalog();
+  it("a two-way binding to a non-writable target is rejected", async () => {
+    const { catalog, state } = makeCatalog();
 
     // Writable field: fine.
     const ok = await run(
@@ -235,26 +232,16 @@ describe("AN-5 / json-render Phase 1", () => {
         { catalog, state },
       ),
     );
-    expect(bad.map((d: any) => d.code)).toEqual(["ui:two-way-binding-readonly"]);
-    expect(bad.every((d: any) => d.severity === "error")).toBe(true);
+    expect(bad.map((d) => d.code)).toEqual(["ui:two-way-binding-readonly"]);
+    expect(bad.every((d) => d.severity === "error")).toBe(true);
     // Read-only and server-only are near neighbours (both are "you may not
     // bind that field"), and a host needs to distinguish "this field is a
     // projection" from "this field must never leave the server".
-    expect(bad[0].code).not.toBe("ui:server-only-field-bound-to-client");
+    expect(bad[0]!.code).not.toBe("ui:server-only-field-bound-to-client");
   });
 
-  it("[JR-P1] an undeclared action is rejected", async () => {
-    const ViewSpec = await loadSrc("ViewSpec");
-    const { element, viewTree, validate, on, action } = pick(
-      ViewSpec,
-      "ViewSpec",
-      "element",
-      "viewTree",
-      "validate",
-      "on",
-      "action",
-    );
-    const { catalog, actions } = await makeCatalog();
+  it("an undeclared action is rejected", async () => {
+    const { catalog, actions } = makeCatalog();
 
     const withDeclared = viewTree(
       element("Card", {
@@ -273,13 +260,13 @@ describe("AN-5 / json-render Phase 1", () => {
       }),
     );
     const diagnostics = await run(validate(withUndeclared, { catalog, actions }));
-    expect(diagnostics.map((d: any) => d.code)).toEqual(["ui:action-not-registered"]);
+    expect(diagnostics.map((d) => d.code)).toEqual(["ui:action-not-registered"]);
     // Allowlisting is positive, not negative: an action absent from the
     // allowlist is refused even though it exists in the app.
     expect(JSON.stringify(diagnostics)).toContain("billing.refundEverything");
   });
 
-  it("[JR-P1/DQ-090] the IR has NO markup-bearing node kind, so raw HTML is unrepresentable rather than caught", async () => {
+  it("DQ-090: the IR has NO markup-bearing node kind, so raw HTML is unrepresentable rather than caught", async () => {
     // Ratified (`AGENT_NATIVE_NOTES.md` §10, DQ-090): *there is no `ui.html`
     // node kind; text nodes carry `value`, never `html`.* This is an
     // EXPRESSIVENESS property, not a diagnostic — the earlier reading of this
@@ -288,18 +275,7 @@ describe("AN-5 / json-render Phase 1", () => {
     // downgraded, or bypassed by a second entry point, whereas a kind that does
     // not exist cannot be constructed at all. Rejection therefore happens at the
     // *schema boundary* in `decodeSpec`, before any validator runs.
-    const ViewSpec = await loadSrc("ViewSpec");
-    const { element, text, viewTree, validate, decodeSpec, NodeKinds } = pick(
-      ViewSpec,
-      "ViewSpec",
-      "element",
-      "text",
-      "viewTree",
-      "validate",
-      "decodeSpec",
-      "NodeKinds",
-    );
-    const { catalog } = await makeCatalog();
+    const { catalog } = makeCatalog();
 
     // 1. The kind set itself is the specification. No markup-bearing kind is a
     //    member — and this is what a later contributor must contradict in order
@@ -335,11 +311,13 @@ describe("AN-5 / json-render Phase 1", () => {
     //    tree can only have come through `decodeSpec`. Asserting the validator's
     //    behaviour here would re-describe the property as a check, so the only
     //    thing asserted is that it does not silently ACCEPT it.
-    //    The `as any` is the deliberate dynamic escape hatch an agent's raw JSON
-    //    effectively takes.
-    const bypassed = await run(validate(viewTree(rawHtmlNode as any), { catalog }));
+    //    The forged cast is the deliberate dynamic escape hatch an agent's
+    //    raw JSON effectively takes.
+    const bypassed = await run(
+      validate(viewTree(rawHtmlNode as unknown as SpecNode), { catalog }),
+    );
     expect(bypassed).not.toEqual([]);
-    expect(bypassed.every((d: any) => d.severity === "error")).toBe(true);
+    expect(bypassed.every((d) => d.severity === "error")).toBe(true);
 
     // 4. NEGATIVE CONTROL: an equivalent tree built from the real constructors
     //    both decodes and validates clean, so "reject every tree" cannot pass.
@@ -348,7 +326,9 @@ describe("AN-5 / json-render Phase 1", () => {
     );
     const decoded = await run(decodeSpec(JSON.parse(JSON.stringify(safe))));
     expect(decoded.root.kind).toBe("ui.element");
-    expect(decoded.root.component).toBe("Card");
+    if (decoded.root.kind === "ui.element") {
+      expect(decoded.root.component).toBe("Card");
+    }
     expect(await run(validate(safe, { catalog }))).toEqual([]);
 
     // 5. Text carries `value`, never `html`: the second half of the ratified
@@ -362,7 +342,10 @@ describe("AN-5 / json-render Phase 1", () => {
     const decodedText = await run(
       decodeSpec(JSON.parse(JSON.stringify(viewTree(textNode)))),
     );
-    expect(decodedText.root.value).toBe("<script>alert(1)</script>");
+    expect(decodedText.root.kind).toBe("ui.text");
+    if (decodedText.root.kind === "ui.text") {
+      expect(decodedText.root.value).toBe("<script>alert(1)</script>");
+    }
     expect(Object.keys(decodedText.root)).not.toContain("html");
     // A text node that tries to smuggle markup in under an `html` field is
     // rejected at the same boundary rather than having the field ignored.
@@ -374,21 +357,13 @@ describe("AN-5 / json-render Phase 1", () => {
     );
   });
 
-  it("[AN-5] a validated spec cannot express the secret-leak failure mode", async () => {
+  it("a validated spec cannot express the secret-leak failure mode", async () => {
     // This is the security property §4.2 claims dominates sandboxed HTML. Three
     // things must hold at once: server-only state is unaddressable, there is no
     // escape hatch that carries an opaque string into the output, and nothing an
     // agent writes can reach a value the catalog did not expose.
-    const ViewSpec = await loadSrc("ViewSpec");
-    const { element, viewTree, validate, state: stateRef } = pick(
-      ViewSpec,
-      "ViewSpec",
-      "element",
-      "viewTree",
-      "validate",
-      "state",
-    );
-    const { catalog, state } = await makeCatalog();
+    const stateRef = stateRefOf;
+    const { catalog, state } = makeCatalog();
 
     const leak = viewTree(
       element("Card", {
@@ -401,25 +376,27 @@ describe("AN-5 / json-render Phase 1", () => {
     expect(diagnostics.map((d: any) => d.code)).toEqual([
       "ui:server-only-field-bound-to-client",
     ]);
-    expect(diagnostics.every((d: any) => d.severity === "error")).toBe(true);
+    expect(diagnostics.every((d) => d.severity === "error")).toBe(true);
 
     // A path the state model never declared is not even referenceable. The
-    // `as any` is the deliberate dynamic escape hatch: an agent emits JSON, so
-    // the runtime validator — not the constructors' types — is what must catch it.
+    // forged cast is the deliberate dynamic escape hatch: an agent emits
+    // JSON, so the runtime validator — not the constructors' types — is what
+    // must catch it.
+    const forgedRef = {
+      kind: "ui.stateValue",
+      path: { segments: ["secrets", "root"] },
+    } as unknown as StateValueRef;
     const undeclared = viewTree(
-      element("Card", {
-        props: { title: { kind: "ui.stateValue", path: { segments: ["secrets", "root"] } } as any },
-        slots: {},
-      }),
+      element("Card", { props: { title: forgedRef }, slots: {} }),
     );
     const undeclaredDiagnostics = await run(validate(undeclared, { catalog, state }));
-    expect(undeclaredDiagnostics.map((d: any) => d.code)).toEqual([
+    expect(undeclaredDiagnostics.map((d) => d.code)).toEqual([
       "ui:unknown-state-path",
     ]);
     // "Field exists but is server-only" and "field does not exist" are different
     // refusals: collapsing them would tell an agent a secret field is merely
     // misspelled, or vice versa.
-    expect(undeclaredDiagnostics[0].code).not.toBe(diagnostics[0].code);
+    expect(undeclaredDiagnostics[0]!.code).not.toBe(diagnostics[0]!.code);
 
     // NEGATIVE CONTROL: a client-visible declared field reads cleanly, so a
     // validator that rejects every state reference cannot pass.
@@ -438,24 +415,15 @@ describe("AN-5 / json-render Phase 1", () => {
     ).toEqual([]);
   });
 
-  it("[JR-P1] typed refs lower to JSON Pointer / $state only in the target plugin", async () => {
-    const ViewSpec = await loadSrc("ViewSpec");
-    const { element, viewTree, state: stateRef } = pick(
-      ViewSpec,
-      "ViewSpec",
-      "element",
-      "viewTree",
-      "state",
-    );
-    const { lower } = await fromSrc("view-spec-json-render", "lower");
-    const { state } = await makeCatalog();
+  it("typed refs lower to JSON Pointer / $state only in the target plugin", async () => {
+    const { state } = makeCatalog();
 
+    const ref = stateRefOf(state.fields.draftTitle);
     const tree = viewTree(
-      element("Card", { props: { title: stateRef(state.fields.draftTitle) }, slots: {} }),
+      element("Card", { props: { title: ref }, slots: {} }),
     );
 
     // Core keeps a target-neutral path record: typed segments, no pointer string.
-    const ref: any = tree.root.props.title;
     expect(ref.kind).toBe("ui.stateValue");
     expect(ref.path.segments).toEqual(["draftTitle"]);
     expect(ref.path.writable).toBe(true);
@@ -479,18 +447,6 @@ describe("AN-5 / json-render Phase 1", () => {
     // ~1/3 of the time otherwise), and #307 forwards full
     // `{ action, params }` bindings, so params need no side channel.
     // See docs/af-ui-json-render/JSON_RENDER_V0.20_UPSTREAM.md.
-    const ViewSpec = await loadSrc("ViewSpec");
-    const { element, text, viewTree, on, action } = pick(
-      ViewSpec,
-      "ViewSpec",
-      "element",
-      "text",
-      "viewTree",
-      "on",
-      "action",
-    );
-    const { lower } = await fromSrc("view-spec-json-render", "lower");
-
     const tree = viewTree(
       element("Card", {
         props: { title: "Sprint 3" },
@@ -537,29 +493,23 @@ describe("AN-5 / json-render Phase 1", () => {
     expect(jsonRoundTrips(lowered)).toBe(true);
   });
 
-  it("[AN-5] the agent emit-spec action refuses an invalid spec through normal dispatch", async () => {
+  it("the agent emit-spec action refuses an invalid spec through normal dispatch", async () => {
     // Generative UI is not a special surface: the agent emits a spec through a
     // catalog action like any other, and validation is the action's boundary.
-    const { catalog: agentCatalog, dispatch, toolManifest } = await fromSrc(
-      "Agent",
-      "catalog",
-      "dispatch",
-      "toolManifest",
-    );
-    const { emitViewSpec } = await fromSrc("Agent", "emitViewSpec");
-    const { catalog } = await makeCatalog();
+    const { catalog } = makeCatalog();
 
-    const c = agentCatalog({
-      renderView: emitViewSpec({ catalog, allowedActions: ["project.rename"] }),
+    const c = Agent.catalog({
+      renderView: Agent.emitViewSpec({ catalog, allowedActions: ["project.rename"] }),
     });
 
     // The emit action's buildId is library-owned; a host learns it from the
     // manifest, exactly as for any other tool.
-    const manifest = await run(toolManifest(c));
-    const buildId = manifest.tools[0].buildId;
+    const manifest = await run(Agent.toolManifest(c));
+    const buildId = manifest.tools[0]!.buildId;
+    expect(buildId).toBe(Agent.viewSpecBuildId);
 
     const good = await run(
-      dispatch(c)({
+      Agent.dispatch(c)({
         tool: "renderView",
         args: [
           {
@@ -574,7 +524,7 @@ describe("AN-5 / json-render Phase 1", () => {
           },
         ],
         buildId,
-      }),
+      }).pipe(Effect.orDie),
     );
     // Ratified two-arm envelope (DQ-080). This is the NEGATIVE CONTROL for the
     // refusal below: a `renderView` action that rejected every spec would
@@ -582,7 +532,7 @@ describe("AN-5 / json-render Phase 1", () => {
     expect(good.ok).toBe(true);
 
     const bad = await run(
-      dispatch(c)({
+      Agent.dispatch(c)({
         tool: "renderView",
         args: [
           {
@@ -591,11 +541,132 @@ describe("AN-5 / json-render Phase 1", () => {
           },
         ],
         buildId,
-      }),
+      }).pipe(Effect.orDie),
     );
     expect(bad.ok).toBe(false);
-    expect(String(bad.error?._tag)).toBe("ViewSpecInvalidError");
+    if (!bad.ok) {
+      const tag = typeof bad.error === "object" && bad.error !== null && "_tag" in bad.error
+        ? String(bad.error._tag)
+        : "none";
+      expect(tag).toBe("ViewSpecInvalidError");
+    }
     // The rejected payload is not echoed back into the response.
     expect(JSON.stringify(bad)).not.toContain("steal()");
+  });
+
+  // ─── Coverage beyond the promoted specs ────────────────────────────────────
+
+  it("decodeSpec recurses through nested slots and rejects an undeclared field at depth", async () => {
+    const nested = viewTree(
+      element("Card", {
+        props: { title: "outer" },
+        slots: {
+          body: [
+            element("Card", {
+              props: { title: "inner" },
+              slots: { body: [text("leaf")] },
+            }),
+          ],
+        },
+      }),
+    );
+    const decoded = await run(decodeSpec(JSON.parse(JSON.stringify(nested))));
+    expect(JSON.stringify(decoded)).toBe(JSON.stringify(nested));
+
+    // The excess-key refusal reaches nested nodes, and the path names WHERE.
+    const smuggled = JSON.parse(JSON.stringify(nested)) as {
+      root: { slots: { body: Array<{ slots: { body: Array<Record<string, unknown>> } }> };
+      };
+    };
+    smuggled.root.slots.body[0]!.slots.body[0]!.html = "<script>x</script>";
+    const error = await runFail(decodeSpec(smuggled));
+    expect(error._tag).toBe("ViewSpecDecodeError");
+    expect(error.path).toContain("$.root.slots.body[0].slots.body[0]");
+    expect(JSON.stringify(error)).not.toContain("script");
+  });
+
+  it("the viewTree wrapper itself rejects undeclared fields and foreign kinds", async () => {
+    const withExtra = await runFail(
+      decodeSpec({
+        kind: "ui.viewTree",
+        root: { kind: "ui.text", value: "hi" },
+        script: "<script>x</script>",
+      }),
+    );
+    expect(withExtra._tag).toBe("ViewSpecDecodeError");
+    expect(JSON.stringify(withExtra)).not.toContain("script>");
+
+    const wrongKind = await runFail(
+      decodeSpec({ kind: "ui.document", root: { kind: "ui.text", value: "hi" } }),
+    );
+    expect(JSON.stringify(wrongKind)).toContain("ui.document");
+  });
+
+  it("a forged writable claim on a ref does not beat the state model", async () => {
+    const { catalog, state } = makeCatalog();
+    // The ref lies (`writable: true`); the model says projectId is read-only.
+    // Verdicts come from the OPTIONS, never from claims the ref carries.
+    const lyingRef = {
+      kind: "ui.stateBinding",
+      path: { segments: ["projectId"], writable: true },
+    } as unknown as StateValueRef;
+    const diagnostics = await run(
+      validate(
+        viewTree(element("TextField", { props: { value: lyingRef }, slots: {} })),
+        { catalog, state },
+      ),
+    );
+    expect(diagnostics.map((d) => d.code)).toEqual(["ui:two-way-binding-readonly"]);
+  });
+
+  it("lowering escapes JSON Pointer special characters per RFC 6901", async () => {
+    const model = stateModel({
+      name: "Weird",
+      fields: { plain: { type: Schema.String, writable: true } },
+    });
+    // Forge segments containing the two characters RFC 6901 escapes; the
+    // model lookup is bypassed on purpose — this pins the POINTER encoding.
+    const ref = {
+      kind: "ui.stateValue",
+      path: { segments: ["a/b", "c~d"], writable: false },
+    } as unknown as StateValueRef;
+    void model;
+    const lowered = await run(
+      lower(viewTree(element("Card", { props: { title: ref }, slots: {} }))),
+    );
+    expect(JSON.stringify(lowered)).toContain("/a~1b/c~0d");
+  });
+
+  it("emitViewSpec refuses a decodable-but-invalid spec with diagnostic CODES, never spec content", async () => {
+    const { catalog } = makeCatalog();
+    const c = Agent.catalog({
+      renderView: Agent.emitViewSpec({ catalog, allowedActions: [] }),
+    });
+
+    const bad = await run(
+      Agent.dispatch(c)({
+        tool: "renderView",
+        args: [
+          {
+            kind: "ui.viewTree",
+            root: {
+              kind: "ui.element",
+              component: "SecretExfiltrator",
+              props: {},
+              slots: {},
+            },
+          },
+        ],
+        buildId: Agent.viewSpecBuildId,
+      }).pipe(Effect.orDie),
+    );
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) {
+      const error = bad.error as { readonly _tag: string; readonly codes: ReadonlyArray<string> };
+      expect(error._tag).toBe("ViewSpecInvalidError");
+      expect(error.codes).toEqual(["ui:unknown-catalog-component"]);
+    }
+    // Codes travel; the agent's identifiers do not.
+    expect(JSON.stringify(bad)).not.toContain("SecretExfiltrator");
   });
 });

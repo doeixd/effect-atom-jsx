@@ -21,11 +21,14 @@
  * (`SafeHtml`), `ROUTER_CONSOLIDATION_PLAN.md` R2 (loader scripts).
  */
 
+import { Exit } from "effect";
 import { describe, expect, it } from "vitest";
 import { fromSrc, unbuilt } from "../harness.js";
 import {
+  classifiedTag,
   containsLiveMarkup,
   quoteCount,
+  runPromiseExit,
   ScriptBreakoutPayload,
   XssPayload,
 } from "./support.js";
@@ -189,23 +192,45 @@ describe("[SEC/R2] Serialized payloads inside <script>", () => {
 
 describe("[SEC/DQ-090] The generated-UI spec IR has no markup node kind", () => {
   it("rejects a `ui.html`-shaped node because the kind does not exist", async () => {
-    // `DQ-090` is the strongest form of this guarantee available: not "raw HTML
-    // is validated away" but "raw HTML is unrepresentable". The spec that
-    // proves it therefore has a very specific shape, and it is worth writing
-    // down now so the implementer builds the right thing:
-    //
-    //   - decoding a node of kind `"ui.html"` (or `afui.html`, or any name a
-    //     contributor might reach for) fails with the IR's *unknown kind* error
-    //     — the same error an outright typo produces, not a bespoke
-    //     "html is forbidden" error, because a bespoke error would prove a
-    //     validator exists rather than that the kind does not;
-    //   - decoding a text node carrying `html:` instead of `value:` fails for
-    //     the same reason;
-    //   - NEGATIVE CONTROL: a text node carrying `value: "<img src=x>"` decodes
-    //     cleanly and renders escaped, because the payload is only ever text.
-    //
-    // No `src/ViewSpec.ts` exists yet and `DQ-096` has not ratified the module
-    // or export names, so the shape is not pinned here.
-    unbuilt("generated-UI spec IR node-kind schema", "DQ-096");
+    // `DQ-090` is the strongest form of this guarantee available: not "raw
+    // HTML is validated away" but "raw HTML is unrepresentable". Built as
+    // `src/ViewSpec.ts` (names ratified by `DQ-094`).
+    const { decodeSpec } = await fromSrc("ViewSpec", "decodeSpec");
+
+    // A markup kind — whatever name a contributor might reach for — fails
+    // with the IR's UNKNOWN-KIND refusal, the same one an outright typo
+    // produces. A bespoke "html is forbidden" error would prove a validator
+    // exists rather than that the kind does not.
+    const kinds = ["ui.html", "afui.html", "ui.txet"];
+    const errors: Array<string> = [];
+    for (const kind of kinds) {
+      const exit = await runPromiseExit(
+        decodeSpec({ kind: "ui.viewTree", root: { kind, html: XssPayload } }),
+      );
+      expect(classifiedTag(exit)).toBe("ViewSpecDecodeError");
+      if (Exit.isFailure(exit)) {
+        errors.push(JSON.stringify(exit));
+      }
+    }
+    // Same refusal shape for the markup kinds as for the typo…
+    expect(errors[0]!.replace("ui.html", "X")).toBe(errors[2]!.replace("ui.txet", "X"));
+    // …and the payload never travels back out through any of them.
+    for (const serialized of errors) {
+      expect(serialized).not.toContain("onerror");
+    }
+
+    // A text node carrying `html:` instead of `value:` fails the decode too
+    // — the field is rejected, never silently stripped.
+    const smuggled = await runPromiseExit(
+      decodeSpec({ kind: "ui.viewTree", root: { kind: "ui.text", html: XssPayload } }),
+    );
+    expect(classifiedTag(smuggled)).toBe("ViewSpecDecodeError");
+
+    // NEGATIVE CONTROL: a text node carrying markup as its VALUE decodes
+    // cleanly — the payload is only ever text, never interpreted.
+    const benign = await runPromiseExit(
+      decodeSpec({ kind: "ui.viewTree", root: { kind: "ui.text", value: XssPayload } }),
+    );
+    expect(classifiedTag(benign)).toBe("success");
   });
 });

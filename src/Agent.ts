@@ -40,6 +40,7 @@ import { ReactivityBroadcast } from "./reactivity-push.js";
 import { normalizeReactivityKeys, type ReactivityKeysInput } from "./reactivity-runtime.js";
 import * as Resume from "./Resume.js";
 import * as Serialization from "./Serialization.js";
+import * as ViewSpec from "./ViewSpec.js";
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
@@ -1257,6 +1258,74 @@ export function renderResultFragment<Entries extends CatalogEntries>(
       Effect.onExit(() => Scope.close(scope, Exit.void)),
     );
     return { html: collected.html, manifest: collected.manifest };
+  });
+}
+
+// ─── emitViewSpec (AN-5) ─────────────────────────────────────────────────────
+
+/**
+ * The library-owned build identity of the emit-spec tool. It versions the
+ * spec IR contract, not the app — a host learns it from the tool manifest
+ * exactly as for any other tool.
+ */
+export const viewSpecBuildId = "af.view-spec.v1";
+
+/**
+ * Expose "render this UI spec" as an ORDINARY catalog entry (AN-5):
+ * generative UI is not a special surface — the agent emits a spec through a
+ * catalog action like any other, and validation is the action's boundary.
+ * `ViewSpec.decodeSpec` (DQ-090: markup is unrepresentable) runs first, then
+ * `ViewSpec.validate` against the app's catalog and allowlist; a refusal is
+ * the typed `ViewSpecInvalidError` and never echoes the rejected payload.
+ */
+export function emitViewSpec(options: {
+  readonly catalog: ViewSpec.ComponentCatalog;
+  readonly state?: ViewSpec.StateModel;
+  readonly allowedActions?: ReadonlyArray<string>;
+}): CatalogEntry {
+  const EmitViewSpecCode = Portable.code({
+    id: "af.viewSpec.emit",
+    buildId: viewSpecBuildId,
+    captures: Schema.Struct({}),
+    run: (_captures, spec: unknown) =>
+      Effect.gen(function* () {
+        const decoded = yield* Effect.exit(ViewSpec.decodeSpec(spec));
+        if (decoded._tag === "Failure") {
+          const error = exitErrorOf(decoded);
+          const message = error instanceof ViewSpec.ViewSpecDecodeError
+            ? `${error.message} (at ${error.path})`
+            : "The spec failed to decode.";
+          return yield* new ViewSpec.ViewSpecInvalidError({
+            message,
+            codes: ["ui:decode"],
+          });
+        }
+        const diagnostics = yield* ViewSpec.validate(decoded.value, {
+          catalog: options.catalog,
+          ...(options.state === undefined ? {} : { state: options.state }),
+          ...(options.allowedActions === undefined
+            ? {}
+            : { actions: options.allowedActions }),
+        });
+        if (diagnostics.length > 0) {
+          // Codes only: diagnostic messages may quote spec identifiers, and
+          // a refusal must not become the echo channel for a rejected spec.
+          return yield* new ViewSpec.ViewSpecInvalidError({
+            message: `The spec failed validation with ${diagnostics.length} diagnostic(s).`,
+            codes: [...new Set(diagnostics.map((diagnostic) => diagnostic.code))],
+          });
+        }
+        return decoded.value;
+      }),
+  });
+
+  return expose(EmitViewSpecCode, {
+    description:
+      "Render a UI view spec, validated against the app's component catalog before anything is shown.",
+    args: Schema.Tuple([Schema.Unknown]),
+    success: Schema.Unknown,
+    error: ViewSpec.ViewSpecInvalidError,
+    access: { agent: true },
   });
 }
 
