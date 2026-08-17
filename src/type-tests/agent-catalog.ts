@@ -109,6 +109,30 @@ Agent.expose(Save, {
   render: NumberCard,
 });
 
+// ─── DQ-097: kit suggestions cannot carry the exposure decision ─────────────
+const suggestion = Agent.suggested(Save, {
+  description: "Save a todo",
+  args: Schema.Tuple([Schema.String]),
+  success: TodoProps,
+  reactivityKeys: ["todos"],
+});
+// The app's completion is exactly the exposure decision.
+const _completed: Agent.CatalogEntry = Agent.expose(suggestion, {
+  access: { agent: true },
+});
+Agent.suggested(Save, {
+  description: "Save a todo",
+  args: Schema.Tuple([Schema.String]),
+  success: TodoProps,
+  // @ts-expect-error — `access` is not representable on a suggestion
+  access: { agent: true },
+});
+// A raw suggestion is not a catalog entry.
+Agent.catalog({
+  // @ts-expect-error — a suggestion must be completed before it enters a catalog
+  saveTodo: suggestion,
+});
+
 // ─── Authored render helpers take catalog-typed tool names ──────────────────
 const _rendered: Effect.Effect<
   Agent.RenderedResult,

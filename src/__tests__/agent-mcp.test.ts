@@ -176,6 +176,49 @@ describe("@affe/agent MCP projection", () => {
     expect(current.calls).toEqual(["todo.add:milk"]);
   });
 
+  it("an MCP tool error is a typed discriminated value, not a stringified message", async () => {
+    class QuotaError extends Schema.TaggedErrorClass<QuotaError>(
+      "agent-mcp-test/QuotaError",
+    )("QuotaError", { limit: Schema.Number }) {}
+
+    const c = Agent.catalog({
+      addTodo: Agent.expose(
+        Portable.code({
+          id: "todo.add.quota",
+          buildId: BUILD,
+          captures: Schema.Struct({}),
+          run: () => Effect.fail(new QuotaError({ limit: 50 })),
+        }),
+        {
+          description: "Add a todo",
+          args: Schema.Tuple([]),
+          success: Schema.Struct({ id: Schema.String }),
+          error: QuotaError,
+          access: { agent: true },
+        },
+      ),
+    });
+
+    const server = await run(mcpServer(c));
+    const result = await run(server.callTool({ name: "addTodo", arguments: {} }));
+
+    expect(result.isError).toBe(true);
+    const content = result.structuredContent as { readonly _tag: string; readonly limit: number };
+    expect(content._tag).toBe("QuotaError");
+    expect(content.limit).toBe(50);
+  });
+
+  it("ships no A2A / ask-agent surface (DQ-098: userland; a bridge, if ever, lives in @affe/agent)", async () => {
+    // The boundary pin: neither the core Agent module nor the adapter exports
+    // an agent-delegation surface. §1's answer stands — `ask-agent` is an
+    // app-level action like any other.
+    const adapter = await import("@affe/agent");
+    for (const mod of [Agent as Record<string, unknown>, adapter as Record<string, unknown>]) {
+      const delegating = Object.keys(mod).filter((name) => /askagent|a2a/i.test(name));
+      expect(delegating).toEqual([]);
+    }
+  });
+
   it("imports only public effect-atom-jsx subpaths — never src/ or dist/ deep imports", () => {
     const corePkg = JSON.parse(
       fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),

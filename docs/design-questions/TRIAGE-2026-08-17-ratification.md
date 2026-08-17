@@ -10,11 +10,12 @@ Ratify item by item. Items 2–4 each discharge exactly one `unbuilt(...)`
 marker — the last red in its spec file — so each acceptance converts directly
 into a file promotion. Item 1 unblocks AN-5, the last large work item.
 
-Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when deciding).
+Status key: ☐ pending · ✅ ratified · ❌ rejected.
+**All four ratified as recommended, 2026-08-17 (user-delegated).**
 
 ---
 
-## ☐ 1. DQ-094 — AN-5's dependency, and the deferred `ViewSpec` module names
+## ✅ 1. DQ-094 — AN-5's dependency, and the deferred `ViewSpec` module names
 
 - **Blocks:** AN-5 (`future/agent/generative-view-spec.spec.ts`, 9 reds — the
   largest remaining item), plus the `ViewSpec.ts` /
@@ -56,7 +57,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
 - **Cost:** one §7 sentence now; the AN-5 milestone itself is unchanged in
   size (this item only makes its prerequisite statement true).
 
-## ☐ 2. DQ-095 — approval durability + the pending-approval queue
+## ✅ 2. DQ-095 — approval durability + the pending-approval queue
 
 - **Blocks:** `future/agent/governance.spec.ts` (1 red — the file's last;
   promotes once this is decided and built).
@@ -81,7 +82,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
 - **Cost:** moderate (one service + in-memory layer + queue query + the
   governance spec's two halves: failing-store denial and queue rendering).
 
-## ☐ 3. DQ-097 — kit-shipped *suggested* catalog entries
+## ✅ 3. DQ-097 — kit-shipped *suggested* catalog entries
 
 - **Blocks:** `future/agent/result-rendering.spec.ts` (1 red — the file's
   last; promotes once decided and built).
@@ -106,7 +107,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
 - **Cost:** small (one partial-entry type + constructor overloads + the
   spec's scenario: a kit suggestion is inert until the app completes it).
 
-## ☐ 4. DQ-098 — A2A / `ask-agent` scope
+## ✅ 4. DQ-098 — A2A / `ask-agent` scope
 
 - **Blocks:** `future/agent/mcp-projection.spec.ts` (1 red — the file's
   last; promotes on this decision alone, since the resolution is a boundary

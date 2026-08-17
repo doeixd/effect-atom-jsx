@@ -32,7 +32,7 @@
  * - `DQ-088` — args are a `Schema.Tuple` in core; the HTTP/MCP struct
  *   projection is derived from the authored `argNames` via `structArgs`.
  */
-import { Cause, Context, Effect, Exit, Layer, Option, Schema, Scope } from "effect";
+import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Schema, Scope } from "effect";
 import * as Component from "./Component.js";
 import { renderToString } from "./dom.js";
 import * as Portable from "./Portable.js";
@@ -113,6 +113,128 @@ export interface ApprovalService {
 export const Approval = Context.Service<ApprovalService>(
   "effect-atom-jsx/Agent/Approval",
 );
+
+// ─── ApprovalStore (DQ-095) ──────────────────────────────────────────────────
+
+export class ApprovalNotFoundError extends Schema.TaggedErrorClass<ApprovalNotFoundError>(
+  "@effect-atom-jsx/ApprovalNotFoundError",
+)("ApprovalNotFoundError", {
+  id: Schema.String,
+  message: Schema.String,
+}) {}
+
+/** One queued approval: plain wire data any component can render. */
+export interface PendingApproval {
+  readonly id: string;
+  readonly summary: string;
+}
+
+/**
+ * The pluggable approval store (`DQ-095`, ratified): the backing state for
+ * the `Approval` service, with two fixed contract points —
+ *
+ * 1. **restart denies, never drops**: a pending approval that does not
+ *    survive the store resolves as a typed `ApprovalDeniedError`
+ *    (fail-closed), never a hang. `close()` is the in-memory expression of
+ *    that rule (the store's lifetime ending IS the restart, observably).
+ * 2. **the pending queue is a standard query surface**: `pending()` yields
+ *    plain serializable data, so approval UIs are ordinary components over
+ *    an ordinary loader/query — never an adapter-private structure.
+ *
+ * Durable storage is a later implementation of this same interface (a layer
+ * swap), not a contract change.
+ */
+export interface ApprovalStore {
+  /** Provides `Approval` backed by this store's queue. */
+  readonly approvalLayer: Layer.Layer<ApprovalService>;
+  /** The queue, as renderable data — the standard-query read. */
+  readonly pending: () => Effect.Effect<ReadonlyArray<PendingApproval>>;
+  /** Resolve one queued approval; unknown ids fail typed, not silently. */
+  readonly resolve: (
+    id: string,
+    decision: "approved" | "denied",
+  ) => Effect.Effect<void, ApprovalNotFoundError>;
+  /**
+   * End the store's lifetime: every still-pending approval resolves as a
+   * typed denial. This is the restart contract made testable.
+   */
+  readonly close: () => Effect.Effect<void>;
+}
+
+/** Construct the in-memory `ApprovalStore` (`DQ-095`'s default). */
+export function makeApprovalStore(): Effect.Effect<ApprovalStore> {
+  return Effect.sync(() => {
+    interface QueueEntry {
+      readonly id: string;
+      readonly summary: string;
+      readonly deferred: Deferred.Deferred<void, ApprovalDeniedError>;
+    }
+    const queue = new Map<string, QueueEntry>();
+    let nextOrdinal = 0;
+    let closed = false;
+
+    const denyEntry = (entry: QueueEntry, reason: string): Effect.Effect<void> =>
+      Deferred.fail(
+        entry.deferred,
+        new ApprovalDeniedError({ summary: entry.summary, reason }),
+      ).pipe(Effect.asVoid);
+
+    const approvalLayer = Layer.succeed(Approval, {
+      require: (summary) =>
+        Effect.gen(function* () {
+          if (closed) {
+            // A dead store cannot queue: fail closed immediately.
+            return yield* new ApprovalDeniedError({
+              summary,
+              reason: "The approval store is closed.",
+            });
+          }
+          const id = `a${nextOrdinal}`;
+          nextOrdinal += 1;
+          const deferred = yield* Deferred.make<void, ApprovalDeniedError>();
+          queue.set(id, { id, summary, deferred });
+          // Await the human decision; whatever resolves the deferred also
+          // removes the entry, so the queue only ever shows live requests.
+          return yield* Deferred.await(deferred);
+        }),
+    });
+
+    return {
+      approvalLayer,
+      pending: () =>
+        Effect.sync(() =>
+          [...queue.values()].map(({ id, summary }) => ({ id, summary }))
+        ),
+      resolve: (id, decision) =>
+        Effect.gen(function* () {
+          const entry = queue.get(id);
+          if (entry === undefined) {
+            return yield* new ApprovalNotFoundError({
+              id,
+              message: `No pending approval "${id}".`,
+            });
+          }
+          queue.delete(id);
+          if (decision === "approved") {
+            yield* Deferred.succeed(entry.deferred, undefined).pipe(Effect.asVoid);
+            return;
+          }
+          yield* denyEntry(entry, "Denied by the approver.");
+        }),
+      close: () =>
+        Effect.gen(function* () {
+          closed = true;
+          const entries = [...queue.values()];
+          queue.clear();
+          // Restart semantics: every pending approval resolves as a typed
+          // denial — the agent gets an answer, never a hang.
+          for (const entry of entries) {
+            yield* denyEntry(entry, "The approval store closed before a decision was made.");
+          }
+        }),
+    } satisfies ApprovalStore;
+  });
+}
 
 /** Caller authorization. Runs OUTERMOST (`DQ-086`). */
 export interface AuthorizerService {
@@ -277,6 +399,81 @@ function entryOf(
   };
 }
 
+// ─── Kit-shipped suggestions (DQ-097) ────────────────────────────────────────
+
+const SuggestedEntryTypeId: unique symbol = Symbol.for(
+  "effect-atom-jsx/Agent/SuggestedEntry",
+);
+
+/**
+ * The options a kit may put on a suggestion: everything EXCEPT `access` —
+ * which is not representable here at all (`access?: never`), because
+ * exposure is always an app decision (`DQ-097`). Description, args, success,
+ * `error`, `render:` and `reactivityKeys` are genuinely kit knowledge; who
+ * may call the tool is not.
+ */
+export type SuggestedOptions<
+  Args extends ReadonlyArray<unknown> = ReadonlyArray<unknown>,
+  A = unknown,
+> = Omit<ExposeOptions<Args, A>, "access"> & { readonly access?: never };
+
+/**
+ * A kit-shipped PARTIAL catalog entry (`DQ-097`): schema fragment plus
+ * render/reactivity metadata, deliberately inert — it is not a
+ * `CatalogEntry`, `catalog(...)` does not accept it, and it carries no
+ * exposure. The app completes it with `expose(suggestion, { access })` /
+ * `exposeMutation(suggestion, { access })`, so no kit upgrade can widen the
+ * agent surface.
+ */
+export interface SuggestedEntry<
+  Args extends ReadonlyArray<unknown> = ReadonlyArray<unknown>,
+  A = unknown,
+> {
+  readonly [SuggestedEntryTypeId]: true;
+  readonly code: Portable.Code<any, any, Args, A, any, any>;
+  readonly options: Omit<ExposeOptions<Args, A>, "access">;
+}
+
+/** Package a portable code value plus its kit-known metadata as a suggestion. */
+export function suggested<
+  Captures,
+  EncodedCaptures,
+  Args extends ReadonlyArray<unknown>,
+  A,
+  E,
+  R,
+>(
+  code: Portable.Code<Captures, EncodedCaptures, Args, A, E, R>,
+  options: SuggestedOptions<Args, A>,
+): SuggestedEntry<Args, A> {
+  // The type already forbids `access`; enforce it against dynamic JS too —
+  // a suggestion that smuggles exposure is exactly the failure DQ-097 bans.
+  if ("access" in options && (options as { access?: unknown }).access !== undefined) {
+    throw new Error(
+      "[Agent.suggested] A suggestion may not declare `access`: exposure is an app decision (DQ-097). Complete the suggestion with Agent.expose(suggestion, { access }) instead.",
+    );
+  }
+  const { access: _access, ...rest } = options as SuggestedOptions<Args, A> & {
+    readonly access?: unknown;
+  };
+  return {
+    [SuggestedEntryTypeId]: true,
+    code,
+    options: rest as Omit<ExposeOptions<Args, A>, "access">,
+  };
+}
+
+export function isSuggested(value: unknown): value is SuggestedEntry {
+  return (
+    typeof value === "object" && value !== null && SuggestedEntryTypeId in value
+  );
+}
+
+/** The app's half of a suggestion: the exposure decision, and nothing else. */
+export interface SuggestionCompletion {
+  readonly access: AccessDeclaration;
+}
+
 /**
  * Expose a portable code value as a READ-ONLY tool (`DQ-084`).
  *
@@ -284,7 +481,14 @@ function entryOf(
  * tuple `run` accepts, `success` must encode what `run` returns, and
  * `render` must be an addressable component whose props ARE the success
  * value — mismatches fail at this call, not at dispatch.
+ *
+ * The second form completes a kit-shipped suggestion (`DQ-097`): the kit
+ * supplied everything except exposure; the app supplies exactly `access`.
  */
+export function expose<Args extends ReadonlyArray<unknown>, A>(
+  suggestion: SuggestedEntry<Args, A>,
+  completion: SuggestionCompletion,
+): CatalogEntry;
 export function expose<
   Captures,
   EncodedCaptures,
@@ -295,11 +499,26 @@ export function expose<
 >(
   code: Portable.Code<Captures, EncodedCaptures, Args, A, E, R>,
   options: ExposeOptions<Args, A>,
+): CatalogEntry;
+export function expose(
+  codeOrSuggestion: Portable.Code<any, any, any, any, any, any> | SuggestedEntry,
+  options: ExposeOptions<any, any> | SuggestionCompletion,
 ): CatalogEntry {
-  return entryOf(code, options, false);
+  if (isSuggested(codeOrSuggestion)) {
+    return entryOf(
+      codeOrSuggestion.code,
+      { ...codeOrSuggestion.options, access: (options as SuggestionCompletion).access },
+      false,
+    );
+  }
+  return entryOf(codeOrSuggestion, options as ExposeOptions<any, any>, false);
 }
 
 /** Expose a portable code value as a MUTATING tool (`DQ-084`). */
+export function exposeMutation<Args extends ReadonlyArray<unknown>, A>(
+  suggestion: SuggestedEntry<Args, A>,
+  completion: SuggestionCompletion,
+): CatalogEntry;
 export function exposeMutation<
   Captures,
   EncodedCaptures,
@@ -310,8 +529,19 @@ export function exposeMutation<
 >(
   code: Portable.Code<Captures, EncodedCaptures, Args, A, E, R>,
   options: ExposeOptions<Args, A>,
+): CatalogEntry;
+export function exposeMutation(
+  codeOrSuggestion: Portable.Code<any, any, any, any, any, any> | SuggestedEntry,
+  options: ExposeOptions<any, any> | SuggestionCompletion,
 ): CatalogEntry {
-  return entryOf(code, options, true);
+  if (isSuggested(codeOrSuggestion)) {
+    return entryOf(
+      codeOrSuggestion.code,
+      { ...codeOrSuggestion.options, access: (options as SuggestionCompletion).access },
+      true,
+    );
+  }
+  return entryOf(codeOrSuggestion, options as ExposeOptions<any, any>, true);
 }
 
 /**
@@ -323,6 +553,13 @@ export function catalog<const Entries extends CatalogEntries>(
   entries: Entries,
 ): Catalog<Entries> {
   for (const [name, entry] of Object.entries(entries)) {
+    // DQ-097: a kit suggestion is INERT — it carries no exposure decision,
+    // so the catalog refuses it raw rather than admitting a malformed entry.
+    if (isSuggested(entry)) {
+      throw new Error(
+        `[Agent.catalog] Entry "${name}" is a kit suggestion, not a catalog entry. Complete it with Agent.expose(suggestion, { access }) or Agent.exposeMutation(suggestion, { access }) — exposure is an app decision (DQ-097).`,
+      );
+    }
     if (entry.render !== undefined) {
       const activation = Resume.activationOf(entry.render as never);
       if (activation === undefined) {
@@ -807,9 +1044,9 @@ export function singleFlightHandler(base: Catalog) {
  * over a stack that cannot provide `Approval` fails with the typed
  * `GovernanceUnsatisfiedError` — never an unmet-service defect at call time.
  */
-export function makeDispatcher(
+export function makeDispatcher<Provided, LE>(
   base: Catalog,
-  layer: Layer.Layer<any, any, never>,
+  layer: Layer.Layer<Provided, LE, never>,
 ): Effect.Effect<
   (request: DispatchRequest) => Effect.Effect<DispatchResponse, unknown>,
   GovernanceUnsatisfiedError | unknown

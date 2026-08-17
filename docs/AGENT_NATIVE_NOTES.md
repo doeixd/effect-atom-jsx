@@ -183,9 +183,17 @@ grammar the kit uses for behaviors.
    (tools from schemas; auth pluggable). Pure adapter over AN-1.
 4. **AN-4 Result rendering** — `render:` on catalog entries; client mount path
    first (props descriptors exist), `mountFragment` path after M11b.
-5. **AN-5 Generative UI** — json-render Phase 1 (typed catalog + spec validator)
-   consumed by an agent emit-spec action. The largest piece; already has its own
-   plan in docs/af-ui-json-render/.
+5. **AN-5 Generative UI** — a repo-native typed catalog + view tree + validator
+   covering the state-model/binding/action rules (the content of json-render
+   Phases 1–5), specified by `future/agent/generative-view-spec.spec.ts` and
+   consumed by an agent emit-spec action. The largest piece.
+   (`DQ-094`, ratified 2026-08-17: the earlier "json-render Phase 1" dependency
+   was mis-scoped — that plan's Phase 1 defers every safety rule and targets
+   gen2's static generator IR. `docs/af-ui-json-render/` is reference input,
+   not the dependency. Module names ratified with the same decision:
+   `src/ViewSpec.ts` (core namespace module — the §4.2 security claim is a
+   library boundary) and `src/view-spec-json-render.ts` (core internal
+   target-format projection, per the `result-wire.ts` precedent).)
 6. Governance services (CallerContext/Approval/audit middleware) land inside
    AN-1 as its requirement set.
 
@@ -193,15 +201,26 @@ grammar the kit uses for behaviors.
 
 1. Args wire shape: single Schema.Struct payload (their style) vs Schema.Tuple
    matching `Portable` arg tuples. Leaning tuple-in-core, struct-in-HTTP-adapter.
-2. Does the catalog live per-app only, or do kit widgets ship *suggested*
-   catalog entries (e.g. a form widget exposing its submit action)?
-3. Approval UX contract: is the pending-approval queue itself a standard
-   loader/query (so any app can render it), and does an approval survive a
-   server restart (needs durable Deferred — pairs with M11 streaming sessions?).
+2. ~~Does the catalog live per-app only, or do kit widgets ship *suggested*
+   catalog entries?~~ **Decided (`DQ-097`, 2026-08-17):** kits ship
+   *suggestions* — entry options with **no `access` field representable**
+   (description, args, success, `error`, `render:`, `reactivityKeys`); the
+   app completes them through `expose`/`exposeMutation` with an explicit
+   `access`, so exposure and the `DQ-084` mutation declaration are always app
+   decisions and no kit upgrade can widen the agent surface.
+3. ~~Approval UX contract.~~ **Decided (`DQ-095`, 2026-08-17):** a pluggable
+   `ApprovalStore` layer (in-memory default) behind the existing `Approval`
+   service, with two fixed contract points: a pending approval that does not
+   survive the store resolves as a **typed denial** (fail-closed — restart
+   denies, never silently drops), and the pending queue is a **standard
+   query** so approval UIs are ordinary app components. Durable storage is a
+   later layer swap, not a contract change.
 4. Should `buildId` mismatch on an agent tool call hard-fail (resume policy) or
    degrade to a re-described tool list push to the host?
-5. A2A/`ask-agent`: explicitly out of library scope, or does `@affe/agent`
-   ship an optional bridge once someone needs it?
+5. ~~A2A/`ask-agent`: library scope or adapter?~~ **Decided (`DQ-098`,
+   2026-08-17):** §1's answer stands — out of library scope, an app-level
+   action like any other. If an A2A bridge is ever built, it lives in
+   `@affe/agent`, never in `src/`.
 
 ## 9. Specification feedback (2026-07-30)
 

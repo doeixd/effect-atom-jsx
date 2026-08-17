@@ -293,6 +293,13 @@ than as AN-5's literal dependency is the accurate framing.
 
 **Related.** `DQ-090`, `DQ-096`.
 
+**RATIFIED 2026-08-17** (user-delegated via TRIAGE-2026-08-17-ratification.md):
+option 1 executed (§7 item 5 restated; `docs/af-ui-json-render/` demoted to
+reference input) with option 3 as AN-5's build shape — the repo-native slice
+`future/agent/generative-view-spec.spec.ts` pins. The naming DQ-096 deferred
+is closed by the same decision: `src/ViewSpec.ts` (core namespace module) and
+`src/view-spec-json-render.ts` (core internal projection).
+
 ---
 
 ## DQ-095 — Do pending approvals survive a server restart, and is the pending-approval queue itself a standard loader/query?
@@ -341,6 +348,13 @@ answers (b) now and defers only the storage of (a).
 **What I did in the meantime.** `unbuilt(...)` retained; re-point at `DQ-095`.
 
 **Related.** `DQ-082`, `DQ-083`, `DQ-096`.
+
+**RATIFIED 2026-08-17** (user-delegated via TRIAGE-2026-08-17-ratification.md):
+option 3 — pluggable `ApprovalStore` layer, in-memory default, with the two
+contract points fixed: restart resolves pending approvals as a typed denial
+(fail-closed, never a silent drop), and the pending queue is a standard query
+so approval UIs are ordinary components. Durable storage is a later layer
+swap.
 
 ---
 
@@ -459,6 +473,12 @@ mutation are declarations, not defaults.
 
 **Related.** `DQ-084`, `DQ-087`.
 
+**RATIFIED 2026-08-17** (user-delegated via TRIAGE-2026-08-17-ratification.md):
+option 2 — kits ship suggestions with no `access` field representable; the
+app completes them via `expose`/`exposeMutation({ access })`. Exposure and
+the `DQ-084` mutation declaration remain app decisions; option 3's safe
+default was rejected as a hope, not a guarantee.
+
 ---
 
 ## DQ-098 — Is A2A / `ask-agent` library scope, adapter scope, or userland?
@@ -498,5 +518,11 @@ This is close to already-decided; it is here only because two sections disagree.
 **What I did in the meantime.** `unbuilt(...)` retained; re-point at `DQ-098`.
 
 **Related.** `DQ-096`.
+
+**RATIFIED 2026-08-17** (user-delegated via TRIAGE-2026-08-17-ratification.md):
+option 1 with option 2 as the named escape hatch — §8.5 resolved in favour of
+§1's answer (userland; an app-level action like any other), with the boundary
+sentence recorded: an A2A bridge, if ever built, lives in `@affe/agent`,
+never in `src/`.
 </content>
 </invoke>
