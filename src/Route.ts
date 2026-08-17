@@ -463,6 +463,20 @@ export function decodeSingleFlightResponse<A>(
   SingleFlightInvokeError | SingleFlightDecodeError
 > {
   return Effect.gen(function* () {
+    // DQ-080 decided EXACTLY two arms. An envelope carrying both (`ok: true`
+    // plus an `error`, or `ok: false` plus a `payload`) is internally
+    // inconsistent — tampering or a broken proxy — and must fail closed
+    // rather than having the surplus arm silently stripped by the schema
+    // and the remaining one believed.
+    if (typeof raw === "object" && raw !== null) {
+      const record = raw as { readonly error?: unknown; readonly payload?: unknown };
+      if (record.error !== undefined && record.payload !== undefined) {
+        return yield* new SingleFlightDecodeError({
+          message:
+            "Single-flight response carries both envelope arms; the two-arm contract admits exactly one.",
+        });
+      }
+    }
     const serialization = yield* Effect.serviceOption(Serialization.Tag);
     const decoded = yield* (serialization._tag === "Some"
       ? serialization.value.deserialize(
@@ -3748,10 +3762,10 @@ export function readLoaderHandoff(
   return Effect.gen(function* () {
     const serialization = yield* Serialization.Tag;
     const raw = input ?? (() => {
-      const envelope = loaderHandoffCarrier()?.[loaderHandoffGlobalKey];
-      const entries: Array<unknown> = envelope === undefined ? [] : [...envelope.entries];
+      const envelope = loaderHandoffCarrier()?.[loaderHandoffGlobalKey] as unknown;
       // Inert per-entry payload scripts on the manifest channel (DQ-034) are
       // part of the same handoff: one channel, one decoder, one cache write.
+      const scriptEntries: Array<unknown> = [];
       const documentValue = (globalThis as {
         readonly document?: {
           readonly querySelectorAll?: (selector: string) => ArrayLike<{ readonly textContent: string | null }>;
@@ -3763,7 +3777,7 @@ export function readLoaderHandoff(
           const text = scripts[index]?.textContent;
           if (text === null || text === undefined) continue;
           try {
-            entries.push(JSON.parse(text));
+            scriptEntries.push(JSON.parse(text));
           } catch {
             // Malformed entries fail below through the schema, not here —
             // but unparseable text cannot even reach the schema, so it is
@@ -3771,7 +3785,29 @@ export function readLoaderHandoff(
           }
         }
       }
-      return { version: loaderHandoffVersion, entries };
+      if (envelope === undefined) {
+        return { version: loaderHandoffVersion, entries: scriptEntries };
+      }
+      // The global is a `window` key any page script can assign: it is
+      // UNTRUSTED until the schema says otherwise. A malformed envelope is
+      // handed to the schema VERBATIM so it fails as a typed SchemaError —
+      // spreading `envelope.entries` here used to throw a TypeError defect
+      // on exactly the shapes an attacker would assign (a string, a missing
+      // or non-array `entries`).
+      if (
+        typeof envelope === "object"
+        && envelope !== null
+        && Array.isArray((envelope as { readonly entries?: unknown }).entries)
+      ) {
+        return {
+          ...(envelope as Record<string, unknown>),
+          entries: [
+            ...((envelope as { readonly entries: ReadonlyArray<unknown> }).entries),
+            ...scriptEntries,
+          ],
+        };
+      }
+      return envelope;
     })();
     return yield* serialization.deserialize(LoaderHandoff, JSON.stringify(raw)) as Effect.Effect<LoaderHandoff, Schema.SchemaError>;
   });

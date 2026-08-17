@@ -114,8 +114,12 @@ describe("[SEC/DQ-091] Single-flight response boundary", () => {
       const tag = classifiedTag(exit);
       // Fail closed: never a success, never a defect (asserted inside
       // `classifiedTag`), always a value the caller can branch on.
+      // (PREMISE CORRECTED 2026-08-17: R5 shipped this boundary with the
+      // more precise `SingleFlightDecodeError` — a decode refusal at the
+      // wire, distinct from transport failure — where this spec, written
+      // pre-R5, guessed a generic invoke error.)
       expect(tag, label).not.toBe("success");
-      expect(tag, label).toBe("SingleFlightInvokeError");
+      expect(tag, label).toBe("SingleFlightDecodeError");
       tags.push(tag);
     }
     expect(tags).toHaveLength(cases.length);
@@ -165,7 +169,7 @@ describe("[SEC/DQ-091] Single-flight response boundary", () => {
     );
     // The route source is absent, so nothing legitimate could have been
     // hydrated; the assertion is that nothing *illegitimate* was either.
-    expect(classifiedTag(exit)).toBe("SingleFlightInvokeError");
+    expect(classifiedTag(exit)).toBe("SingleFlightDecodeError");
     expect(cache.cache.size).toBe(0);
   });
 
@@ -346,12 +350,65 @@ describe("[SEC/R2] Loader handoff boundary", () => {
 
 describe("[SEC/AN-1] Agent dispatch boundary", () => {
   it("validates dispatch args against the declared tuple before any handler runs", async () => {
-    // `DQ-088` decided the arg shape (`Schema.Tuple` plus authored `argNames`),
-    // but the module and export names are still provisional under `DQ-096`, so
-    // pinning a call shape here would be an unratified design decision. The
-    // semantics owed: an arg list that does not decode never reaches the
-    // handler, fails with a typed error, and is audited as a denial — the same
-    // five shapes asserted above.
-    unbuilt("Agent dispatch arg validation", "DQ-096");
+    // Built by AN-1 (`DQ-088`): args decode through the declared
+    // `Schema.Tuple` BEFORE `run` observes them. An arg list that does not
+    // decode never reaches the handler and fails with the typed
+    // `AgentArgsDecodeError` inside the two-arm envelope.
+    const { catalog, expose, dispatch } = await fromSrc(
+      "Agent",
+      "catalog",
+      "expose",
+      "dispatch",
+    );
+    const { code } = await fromSrc("Portable", "code");
+    const { Schema } = await import("effect");
+
+    const runs: Array<unknown> = [];
+    const c = catalog({
+      save: expose(
+        code({
+          id: "sec.args.save",
+          buildId: BuildId,
+          captures: Schema.Struct({}),
+          run: (_c: unknown, input: { readonly id: number }) =>
+            Effect.sync(() => {
+              runs.push(input);
+              return { saved: input.id };
+            }),
+        }),
+        {
+          description: "Save",
+          args: Schema.Tuple([Schema.Struct({ id: Schema.Number })]),
+          success: Schema.Struct({ saved: Schema.Number }),
+          access: { agent: true },
+        },
+      ),
+    });
+    const send = async (args: unknown) =>
+      Effect.runPromise(
+        dispatch(c)({ tool: "save", args, buildId: BuildId }) as Effect.Effect<any>,
+      );
+
+    // The same five shapes as every other boundary in this file.
+    const cases: ReadonlyArray<readonly [string, unknown]> = [
+      ["malformed", "not-a-tuple"],
+      ["wrong types", [{ id: "not-a-number" }]],
+      ["tampered", [{ id: 1, __proto__: { admin: true } }, "extra-arg"]],
+      ["truncated", []],
+      ["wrong arity", [{ id: 1 }, { id: 2 }]],
+    ];
+    for (const [label, args] of cases) {
+      const response = await send(args);
+      expect(response.ok, label).toBe(false);
+      expect(String(response.error?._tag), label).toBe("AgentArgsDecodeError");
+    }
+    // None of them reached the handler.
+    expect(runs).toEqual([]);
+
+    // NEGATIVE CONTROL: the declared shape decodes, runs, and answers.
+    const ok = await send([{ id: 7 }]);
+    expect(ok.ok).toBe(true);
+    expect(ok.payload.mutation).toEqual({ saved: 7 });
+    expect(runs).toHaveLength(1);
   });
 });

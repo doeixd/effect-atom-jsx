@@ -130,6 +130,18 @@ the target the follow-up slice needs.
 
 **Related.** `DQ-080`, `DQ-092`, Router R5.
 
+**PARTIAL OUTCOME 2026-08-17.** The validation half shipped as recommended
+(option 2) via Router R5: `decodeSingleFlightResponse` decodes the envelope
+through `SingleFlightResponseSchema` / the `Serialization` seam (loaders via
+`ResultWire`, mutation via the rich-value tree), failing typed
+(`SingleFlightDecodeError`) — and, as of the 2026-08-17 sweep, refusing a
+both-arms envelope (`DQ-080`'s exactly-two-arms made structural). Still
+open, and what `future/security/trust-boundary.spec.ts` remains red on: the
+envelope carries **no version field** (the loader handoff carries
+`version: 1`; the single-flight envelope does not), so cross-build envelope
+evolution has no fail-closed signal. Deciding that is a wire change and
+stays deferrable.
+
 ---
 
 ## DQ-092 — What must `Idle` mean, so the free `Initial{waiting:false}` slot is not accidentally consumed?
