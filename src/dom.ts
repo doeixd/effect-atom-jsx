@@ -29,6 +29,7 @@ import {
 import { ServerRenderStateTag, currentServerRenderState } from "./render-state.js";
 import * as SafeHtml from "./SafeHtml.js";
 import { isView } from "./View.js";
+import { serializeAttribute } from "./attributes.js";
 import {
   ResumeStreamPayloadTooLargeError,
   buildStreamRegionRecord,
@@ -334,10 +335,14 @@ export function setAttribute(
   name: string,
   value?: unknown,
 ): void {
-  if (value == null) {
+  // DQ-068: one serialization contract shared with the test handle —
+  // `false` on a boolean attribute removes it, `true` sets `""`, numbers
+  // stringify, `null`/`undefined` remove.
+  const serialized = serializeAttribute(name, value);
+  if (serialized === null) {
     node.removeAttribute(name);
   } else {
-    node.setAttribute(name, String(value));
+    node.setAttribute(name, serialized);
   }
 }
 

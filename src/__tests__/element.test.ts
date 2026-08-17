@@ -221,7 +221,7 @@ describe("Element setAttr/setStyle reaction ownership", () => {
 
     flush();
     expect(recomputes).toBe(2);
-    expect(target.getAttr("data-count")).toBe(1);
+    expect(target.getAttr("data-count")).toBe("1");
 
     Effect.runSync(Scope.close(scope, Exit.void));
     setCount(2);
@@ -229,7 +229,7 @@ describe("Element setAttr/setStyle reaction ownership", () => {
     setCount(3);
     flush();
     expect(recomputes).toBe(2);
-    expect(target.getAttr("data-count")).toBe(1);
+    expect(target.getAttr("data-count")).toBe("1");
   });
 
   it("stops recomputing a reactive style after the owning scope closes", () => {
@@ -273,7 +273,7 @@ describe("Element setAttr/setStyle reaction ownership", () => {
     setCount(1);
     flush();
     expect(recomputes).toBe(2);
-    expect(target.getAttr("data-count")).toBe(1);
+    expect(target.getAttr("data-count")).toBe("1");
 
     dispose();
     setCount(2);
@@ -356,13 +356,13 @@ describe("Element setAttr/setStyle reaction ownership", () => {
       return count();
     }));
     expect(recomputes).toBe(1);
-    expect(target.getAttr("data-count")).toBe(0);
+    expect(target.getAttr("data-count")).toBe("0");
 
     setCount(1);
 
     flush();
     expect(recomputes).toBe(2);
-    expect(target.getAttr("data-count")).toBe(1);
+    expect(target.getAttr("data-count")).toBe("1");
   });
 
   it("sets a non-function attr value without creating a reaction", () => {

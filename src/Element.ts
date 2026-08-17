@@ -1,5 +1,6 @@
 import { Effect, Option, Scope } from "effect";
 import { createDisposableEffect, onCleanup } from "./api.js";
+import { parseAttribute, serializeAttribute } from "./attributes.js";
 import * as MetadataToken from "./MetadataToken.js";
 
 type EventHandler = (event: unknown) => void;
@@ -222,18 +223,31 @@ function makeHandle<T extends string>(tag: T): Handle & { readonly kind: T } {
         handler(eventData);
       }
     },
+    // DQ-068: writes serialize and reads parse through the ONE attribute
+    // contract (`src/attributes.ts`), so this test handle and the DOM/SSR
+    // renderer agree by construction — `false` removes, booleans read back
+    // as booleans, numbers as numbers, absent reads are `undefined`.
     setAttr(name, value) {
+      const write = (next: unknown): void => {
+        const serialized = serializeAttribute(name, next);
+        if (serialized === null) {
+          attrs.delete(name);
+        } else {
+          attrs.set(name, serialized);
+        }
+      };
       if (typeof value === "function") {
         return reaction(() => {
-          attrs.set(name, (value as () => unknown)());
+          write((value as () => unknown)());
         });
       }
       return Effect.sync(() => {
-        attrs.set(name, value);
+        write(value);
       });
     },
     getAttr(name) {
-      return attrs.get(name);
+      const raw = attrs.get(name);
+      return parseAttribute(name, raw === undefined ? null : String(raw));
     },
     setStyle(prop, value) {
       return reaction(() => {
