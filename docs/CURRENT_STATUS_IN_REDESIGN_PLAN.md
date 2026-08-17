@@ -1,9 +1,51 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-08-12 (permissive package + resumability plans complete;
-components kit K0b/K0c/K1-core complete — the components future-lane has no
-buildable reds; remaining work sits behind parked design questions or later
-kit phases)
+Last updated: 2026-08-17 (agent lane COMPLETE; security future-lane EMPTY;
+all fixable issues fixed — the 7 remaining future reds are exactly the
+unbuilt kit-widget milestone)
+
+## Status as of 2026-08-17
+
+- **The agent-native lane (AN-1–AN-5) is complete.** `src/Agent.ts`
+  (catalog/dispatch/governance/audit/ApprovalStore/suggestions),
+  `src/reactivity-push.ts` (server-push live sync), result rendering +
+  `Resume.installFragment` (dormant chat widgets), the `@affe/agent` MCP
+  adapter package, and `src/ViewSpec.ts` + `src/view-spec-json-render.ts`
+  (the typed generative-UI IR, validator, and json-render **v0.20**
+  lowering). Every agent-lane design question (`DQ-080`–`DQ-098`) is
+  ratified and executed; `future/agent/` is empty. Operator documentation:
+  **`docs/AGENT_SURFACE_GUIDE.md`**, with derived completeness tests
+  (`agent-guide-docs.test.ts`) auditing every diagnostic code and error tag
+  against the source unions.
+- **The security future-lane is empty** — every spec promoted. The sweeps
+  fixed real boundary defects along the way: route guards now gate every
+  server door on every authoring tier (three separate inert-authorization
+  bypasses found and fixed), `readLoaderHandoff` no longer defects on
+  malformed globals, the single-flight envelope refuses both-arms bodies
+  and is versioned (`singleFlightWireVersion`, `DQ-091` closed), and
+  dispatch args validate before any handler runs.
+- **SafeHtml is now a real markup channel**: `View.html` fails closed on
+  unbranded values and the insertion path renders the brand as markup while
+  unbranded strings keep escaping — the differential pair holds end to end.
+  **`Style.whenBinding` piece selection is reactive** (the long-recorded
+  attach-time-snapshot defect is fixed): machine state drives styling live.
+  New kit primitives: `behaviors/form-control.ts` (hidden native-input
+  projection — dormant widgets submit real forms pre-JS) and
+  `Theme.lightDark` (zero-JS light/dark tokens).
+- **Gates** (verified 2026-08-17): `npm run typecheck` (+ tests, browser,
+  permissive, agent legs), `npm test` (**1361 passing**, 102 files),
+  `npm run build`. The only `typecheck:all` red is the pre-existing ADR-006
+  examples pipe-facet gap.
+- **What remains in `future/`** (7 reds, all one milestone): the kit-widget
+  phase — `src/kit/` widgets + pattern-contract registry (K3), six-layer
+  kit exports (K4), the injected Clock/Locale seam (K3), and three parked
+  design questions (`DQ-063` CSS-Tags ownership, `DQ-064` static style
+  extraction, `DQ-070` slot-as-projection). Next step: a components-lane
+  ratification packet, then the kit build — the same playbook that closed
+  the agent lane.
+
+The sections below predate the agent lane and describe the 2026-07/08
+redesign era; they remain accurate for the surfaces they cover.
 Plan reference: `docs/DESIGN_OVERHAUL_V1_PLAN.md`, `docs/V1_API_CONTRACT_DRAFT.md`, `docs/EFFECT_NATIVE_ENHANCEMENT_PLAN.md`, `docs/new_ideas.md`
 
 V1 scope authority (**ratified 2026-07-06**): `docs/V1_SCOPE.md`
