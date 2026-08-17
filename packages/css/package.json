@@ -1,0 +1,27 @@
+{
+  "name": "@affe/css",
+  "version": "0.0.0",
+  "description": "Rung zero of the capability ladder: the pure-CSS foundation stylesheet — the absorbed CSS-Tags floor (DQ-063). One token namespace, the ratified @layer order, zero JavaScript required; each later rung (native, dormant, activated) is additive on top of this markup.",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "effect-atom-jsx": "file:../.."
+  },
+  "peerDependencies": {
+    "effect": ">=4.0.0-beta"
+  }
+}

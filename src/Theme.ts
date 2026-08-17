@@ -187,3 +187,6 @@ export const ThemeLight: Layer.Layer<ThemeService> = layer(defaultThemeTokens);
 
 /** Default theme definition for path helpers and lookups. */
 export const ThemeDefault = define(defaultThemeTokens);
+
+/** The default token schema, re-exported for foundation-stylesheet emitters. */
+export { defaultThemeTokens, type ThemeTokenSchema } from "./style-types.js";

@@ -210,22 +210,73 @@ describe("per-subtree layer isolation", () => {
 
 describe("determinism", () => {
   it("[K3] a time-dependent widget is deterministic under an injected Clock/Locale", async () => {
-    // The plan promises: *"a date picker with an injected clock is deterministic
-    // under test; a missing service is a compile error"* (mandated coverage item
-    // 10). There is nothing to inject a clock *into*: no `Clock`/`Locale` kit
-    // service exists, and no behaviour or widget in `src/` reads the current
-    // time or a locale — the only wall-clock read in the kit is `press`'s
-    // `Date.now() + 50` click-suppression window (findings §4), which takes no
-    // service and is exactly the pattern the claim forbids.
-    //
-    // Rather than invent a clock-consuming widget to inject into, this is
-    // declared open: K3's DatePicker gate owns it. Note the second half of the
-    // claim ("a missing service is a compile error") is a *type* obligation and
-    // belongs in `src/type-tests/` once the service exists — a runtime spec
-    // cannot assert it.
-    unbuilt(
-      "an injected Clock/Locale service and a time-dependent widget to make deterministic (nothing in src/ consumes a clock service today; press uses wall-clock Date.now directly)",
-      "K3",
+    // Built with K3's first time-holding widget (ratified DQ-066(b)):
+    // `kit/time` ships the `Clock`/`Locale` services and `RelativeTime`,
+    // which reads BOTH from context — so a test provides fixed layers and
+    // owns time and locale wholesale, no fake globals, no sleeping.
+    // (`press`'s 50ms window deliberately stays on its function-prop seam —
+    // DQ-066(a) — because a suppression window holds no cross-async state.)
+    const time = await loadSrc("kit/time");
+    const { Clock, Locale, clockLayer, localeLayer, clockLive, RelativeTime } = pick(
+      time,
+      "kit/time",
+      "Clock",
+      "Locale",
+      "clockLayer",
+      "localeLayer",
+      "clockLive",
+      "RelativeTime",
     );
+    const Component = await loadSrc("Component");
+    const { setupEffect, withLayer } = pick(Component, "Component", "setupEffect", "withLayer");
+
+    const NOW = 1_700_000_000_000;
+    const THREE_MINUTES_AGO = NOW - 3 * 60_000;
+
+    const render = (locale: string) => {
+      const Deterministic = withLayer(
+        Layer.mergeAll(clockLayer(() => NOW), localeLayer(locale)),
+      )(RelativeTime);
+      const scope = Scope.makeUnsafe();
+      const bindings: any = Effect.runSync(
+        Effect.provideService(
+          setupEffect(Deterministic, { at: THREE_MINUTES_AGO }),
+          Scope.Scope,
+          scope,
+        ) as any,
+      );
+      const label = bindings.label;
+      Effect.runSync(Scope.close(scope, Exit.void));
+      return label as string;
+    };
+
+    // Deterministic: same injected instant, same output, every run — and the
+    // LOCALE is injected too, so the two languages prove the service is read
+    // rather than a formatting default.
+    expect(render("en")).toBe("3 minutes ago");
+    expect(render("en")).toBe("3 minutes ago");
+    expect(render("de")).toBe("vor 3 Minuten");
+
+    // NEGATIVE CONTROL: the live clock layer disagrees with the fixed one
+    // for an old timestamp (it is not 3 minutes ago in wall-clock time), so
+    // an implementation ignoring the injected service cannot pass above.
+    const Live = withLayer(
+      Layer.mergeAll(clockLive, localeLayer("en")),
+    )(RelativeTime);
+    const liveScope = Scope.makeUnsafe();
+    const liveBindings: any = Effect.runSync(
+      Effect.provideService(
+        setupEffect(Live, { at: THREE_MINUTES_AGO }),
+        Scope.Scope,
+        liveScope,
+      ) as any,
+    );
+    expect(liveBindings.label).not.toBe("3 minutes ago");
+    Effect.runSync(Scope.close(liveScope, Exit.void));
+
+    // The services are ordinary Context services — the tags are exported so
+    // "a missing service is a compile error" can be pinned in type-tests.
+    expect(Context.isKey?.(Clock) ?? typeof Clock).toBeTruthy();
+    expect(Context.isKey?.(Locale) ?? typeof Locale).toBeTruthy();
   });
 });

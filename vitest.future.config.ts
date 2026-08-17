@@ -18,6 +18,9 @@ export default defineConfig({
     alias: {
       "effect-atom-jsx/Agent": here("./src/Agent.ts"),
       "@affe/agent": here("./packages/agent/src/index.ts"),
+      "@affe/css": here("./packages/css/src/index.ts"),
+      "effect-atom-jsx/Style": here("./src/Style.ts"),
+      "effect-atom-jsx/Theme": here("./src/Theme.ts"),
     },
   },
   test: {

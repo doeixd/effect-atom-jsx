@@ -15,7 +15,7 @@
  */
 import { Effect, Exit, Layer, Scope } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick, unbuilt } from "../harness.js";
+import { fromPackage, fromSrc, loadSrc, pick, unbuilt } from "../harness.js";
 
 /**
  * Scopes opened by `styleHarness().resolve(...)`. Closed only AFTER a spec's
@@ -445,10 +445,43 @@ describe("theme tokens", () => {
     );
   });
 
-  it("[K1] CSS-Tags rung zero: absorbed as @affe/css or depended on externally", async () => {
-    unbuilt(
-      "CSS-Tags foundation stylesheet --- absorb into the @affe/* workspace vs depend externally (token-namespace ownership)",
-      "kit milestone: @affe/css workspace package (ratified 2026-08-17: absorb — token namespace, layer order, and Theme refs version as one surface)",
+  it("[K1] CSS-Tags rung zero: absorbed as @affe/css (ratified DQ-063)", async () => {
+    // The foundation stylesheet is OURS: one token namespace, the ratified
+    // @layer order stated first (which is what makes precedence hold
+    // regardless of import order), zero JavaScript.
+    const { foundationStylesheet, tokenVariableName, cssLayerOrder } = await fromPackage(
+      "@affe/css",
+      "foundationStylesheet",
+      "tokenVariableName",
+      "cssLayerOrder",
     );
+    const Style = await loadSrc("Style");
+    const { cssLayerOrder: coreOrder } = pick(Style, "Style", "cssLayerOrder");
+
+    const css = foundationStylesheet();
+
+    // The @layer declaration IS the recipe merge contract, and it is the
+    // CORE's ratified order — re-exported, never restated.
+    expect(css.startsWith(`@layer ${coreOrder.join(", ")};`)).toBe(true);
+    expect(cssLayerOrder).toEqual(coreOrder);
+
+    // The one token namespace: Theme's dotted paths become custom
+    // properties mechanically, so recipes and CSS resolve the same names.
+    expect(tokenVariableName("color.text.primary")).toBe("--af-color-text-primary");
+    expect(css).toContain("--af-color-text-primary");
+    expect(css).toContain("--af-color-surface: #ffffff");
+
+    // Zero-JS theming floor: the platform owns mode switching.
+    expect(css).toContain("color-scheme: light dark");
+
+    // Custom token schemas emit under the same namespace; nothing is
+    // hard-coded to the default theme.
+    const custom = foundationStylesheet({
+      tokens: { brand: { accent: "#123456" } },
+      selector: ".themed",
+    });
+    expect(custom).toContain(".themed {");
+    expect(custom).toContain("--af-brand-accent: #123456");
+    expect(custom).not.toContain("--af-color-surface");
   });
 });

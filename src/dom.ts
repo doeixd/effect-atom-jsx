@@ -28,6 +28,7 @@ import {
 } from "./resume-session.js";
 import { ServerRenderStateTag, currentServerRenderState } from "./render-state.js";
 import * as SafeHtml from "./SafeHtml.js";
+import { isView } from "./View.js";
 import {
   ResumeStreamPayloadTooLargeError,
   buildStreamRegionRecord,
@@ -1387,6 +1388,11 @@ export function serverValueToHTML(value: unknown): string {
   }
   if (Array.isArray(value)) {
     return value.map(serverValueToHTML).join("");
+  }
+  // A typed `View` renders as its node: the wrapper carries slot metadata
+  // for attachment/validation, not markup of its own.
+  if (isView(value)) {
+    return serverValueToHTML((value as { readonly node: unknown }).node);
   }
   return value == null ? "" : String(value);
 }

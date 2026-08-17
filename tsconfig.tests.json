@@ -8,9 +8,12 @@
     // to src/), so the suite never depends on a stale dist build.
     "paths": {
       "@affe/agent": ["./packages/agent/src/index.ts"],
+      "@affe/css": ["./packages/css/src/index.ts"],
+      "effect-atom-jsx/Style": ["./src/Style.ts"],
+      "effect-atom-jsx/Theme": ["./src/Theme.ts"],
       "effect-atom-jsx/Agent": ["./src/Agent.ts"]
     }
   },
-  "include": ["src/**/*", "packages/agent/src/**/*"],
+  "include": ["src/**/*", "packages/agent/src/**/*", "packages/css/src/**/*"],
   "exclude": ["node_modules", "dist", "examples"]
 }
