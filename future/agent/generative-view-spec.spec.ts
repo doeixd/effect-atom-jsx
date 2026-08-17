@@ -469,6 +469,74 @@ describe("AN-5 / json-render Phase 1", () => {
     expect(jsonRoundTrips(lowered)).toBe(true);
   });
 
+  it("[JR-P1/v0.20] lowering targets json-render v0.20: named slots survive, leaves carry children:[], action bindings carry params", async () => {
+    // Upstream json-render v0.20.0 (vercel-labs/json-render #320) added
+    // `UIElement.slots` as named structural child references — a 1:1 match
+    // for our slot-shaped IR, so the lowering maps named slots VERBATIM
+    // instead of flattening them into the default-children array (which
+    // lost exactly the names our slot-contract system carries). #299 made
+    // `children` explicitly required with `[]` on leaves (models omit it
+    // ~1/3 of the time otherwise), and #307 forwards full
+    // `{ action, params }` bindings, so params need no side channel.
+    // See docs/af-ui-json-render/JSON_RENDER_V0.20_UPSTREAM.md.
+    const ViewSpec = await loadSrc("ViewSpec");
+    const { element, text, viewTree, on, action } = pick(
+      ViewSpec,
+      "ViewSpec",
+      "element",
+      "text",
+      "viewTree",
+      "on",
+      "action",
+    );
+    const { lower } = await fromSrc("view-spec-json-render", "lower");
+
+    const tree = viewTree(
+      element("Card", {
+        props: { title: "Sprint 3" },
+        slots: { body: [text("Two open items")] },
+        events: [on("click", action("project.rename", { projectId: "p-1" }))],
+      }),
+    );
+
+    const lowered = await run(lower(tree));
+    const json = JSON.stringify(lowered);
+
+    // Named slots survive AS slots: the name "body" appears under a `slots`
+    // field, and the lowering invented no wrapper element to fake it.
+    expect(json).toContain('"slots"');
+    expect(json).toContain('"body"');
+
+    // Every lowered ELEMENT carries a `children` array — `[]` on leaves,
+    // never omitted (upstream models drop the required field otherwise;
+    // our lowering is not allowed to reproduce that bug deterministically).
+    const elements: Array<any> = [];
+    const walk = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item);
+        return;
+      }
+      if (typeof value === "object" && value !== null) {
+        const record = value as Record<string, unknown>;
+        if (typeof record.type === "string") elements.push(record);
+        for (const item of Object.values(record)) walk(item);
+      }
+    };
+    walk(lowered);
+    expect(elements.length).toBeGreaterThan(0);
+    for (const loweredElement of elements) {
+      expect(Array.isArray(loweredElement.children)).toBe(true);
+    }
+
+    // The action binding lowers WHOLE: name and params together (#307's
+    // `executeAction(ActionBinding)` contract), so the allowlisted name and
+    // its arguments cannot drift apart on the wire.
+    expect(json).toContain("project.rename");
+    expect(json).toContain("p-1");
+
+    expect(jsonRoundTrips(lowered)).toBe(true);
+  });
+
   it("[AN-5] the agent emit-spec action refuses an invalid spec through normal dispatch", async () => {
     // Generative UI is not a special surface: the agent emits a spec through a
     // catalog action like any other, and validation is the action's boundary.

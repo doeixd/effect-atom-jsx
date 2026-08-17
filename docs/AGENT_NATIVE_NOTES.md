@@ -193,7 +193,12 @@ grammar the kit uses for behaviors.
    not the dependency. Module names ratified with the same decision:
    `src/ViewSpec.ts` (core namespace module — the §4.2 security claim is a
    library boundary) and `src/view-spec-json-render.ts` (core internal
-   target-format projection, per the `result-wire.ts` precedent).)
+   target-format projection, per the `result-wire.ts` precedent).
+   The lowering targets json-render **v0.20.0** semantics — named slots map
+   1:1 to `UIElement.slots` (no flattening), leaves carry `children: []`,
+   action bindings carry `params`, and the renderer-bridge contract is
+   `executeAction(ActionBinding)` — see
+   `docs/af-ui-json-render/JSON_RENDER_V0.20_UPSTREAM.md`.)
 6. Governance services (CallerContext/Approval/audit middleware) land inside
    AN-1 as its requirement set.
 
