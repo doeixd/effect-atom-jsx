@@ -1,3 +1,17 @@
+import * as ComponentModule from "../Component.js";
+import * as A11yModule from "../A11y.js";
+import * as ViewModule from "../View.js";
+import * as ElementModule from "../Element.js";
+import * as BehaviorModule from "../Behavior.js";
+import * as StyleModule from "../Style.js";
+import * as MachineModule from "../Machine.js";
+import * as ThemeModule from "../Theme.js";
+import * as domModule from "../dom.js";
+import * as kitIndexModule from "../kit/index.js";
+import * as kitDialogModule from "../kit/dialog.js";
+import * as kitTimeModule from "../kit/time.js";
+import * as formControlModule from "../behaviors/form-control.js";
+import * as liveAnnounceModule from "../behaviors/live-announce.js";
 /**
  * Kit services: swappable wholesale, isolated per subtree, deterministic.
  *
@@ -18,24 +32,15 @@
  */
 import { Context, Effect, Exit, Layer, Scope } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick, unbuilt } from "../harness.js";
+
 
 /** What a captured announcement looks like, for the mock below. */
 type Announcement = { readonly politeness: "polite" | "assertive"; readonly message: string };
 
 describe("services swap wholesale in tests", () => {
   it("[AF-UI] a widget's announcements go through an injected service a mock captures with no DOM", async () => {
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, setupEffect, withLayer } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "setupEffect",
-      "withLayer",
-    );
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, setupEffect, withLayer } = ((Component) as any);
 
     // The shape a kit announcer service must satisfy to be testable: an
     // interface in `R`, never a module-level aria-live region.
@@ -99,13 +104,8 @@ describe("services swap wholesale in tests", () => {
   it("[K0b] the kit's own LiveAnnouncer service + liveAnnounce behavior", async () => {
     // DQ-072 ratified and built: one announce(message, politeness?) method,
     // clear-after-timeout on the Layer maker, mock captures with no DOM.
-    const { liveAnnounce, LiveAnnouncer, makeLiveAnnouncer } = await fromSrc(
-      "behaviors/live-announce",
-      "liveAnnounce",
-      "LiveAnnouncer",
-      "makeLiveAnnouncer",
-    );
-    const { attachScoped } = await fromSrc("Behavior", "attachScoped");
+    const { liveAnnounce, LiveAnnouncer, makeLiveAnnouncer } = liveAnnounceModule as Record<string, any>;
+    const { attachScoped } = BehaviorModule as Record<string, any>;
 
     const captured: Array<Announcement> = [];
     const announcer = makeLiveAnnouncer({
@@ -130,17 +130,8 @@ describe("services swap wholesale in tests", () => {
 
 describe("per-subtree layer isolation", () => {
   it("[AF-UI] two sibling subtrees given different layers do not cross-contaminate", async () => {
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, setupEffect, withLayer } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "setupEffect",
-      "withLayer",
-    );
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, setupEffect, withLayer } = ((Component) as any);
 
     // A stack service that owns mutable state — the layer-stack shape, reduced
     // to its essentials so the spec tests isolation and nothing else.
@@ -216,19 +207,10 @@ describe("determinism", () => {
     // owns time and locale wholesale, no fake globals, no sleeping.
     // (`press`'s 50ms window deliberately stays on its function-prop seam —
     // DQ-066(a) — because a suppression window holds no cross-async state.)
-    const time = await loadSrc("kit/time");
-    const { Clock, Locale, clockLayer, localeLayer, clockLive, RelativeTime } = pick(
-      time,
-      "kit/time",
-      "Clock",
-      "Locale",
-      "clockLayer",
-      "localeLayer",
-      "clockLive",
-      "RelativeTime",
-    );
-    const Component = await loadSrc("Component");
-    const { setupEffect, withLayer } = pick(Component, "Component", "setupEffect", "withLayer");
+    const time = kitTimeModule as Record<string, any>;
+    const { Clock, Locale, clockLayer, localeLayer, clockLive, RelativeTime } = ((time) as any);
+    const Component = ComponentModule as Record<string, any>;
+    const { setupEffect, withLayer } = ((Component) as any);
 
     const NOW = 1_700_000_000_000;
     const THREE_MINUTES_AGO = NOW - 3 * 60_000;

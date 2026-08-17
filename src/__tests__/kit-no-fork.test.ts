@@ -1,3 +1,16 @@
+import * as ComponentModule from "../Component.js";
+import * as A11yModule from "../A11y.js";
+import * as ViewModule from "../View.js";
+import * as ElementModule from "../Element.js";
+import * as BehaviorModule from "../Behavior.js";
+import * as StyleModule from "../Style.js";
+import * as MachineModule from "../Machine.js";
+import * as ThemeModule from "../Theme.js";
+import * as domModule from "../dom.js";
+import * as kitIndexModule from "../kit/index.js";
+import * as kitDialogModule from "../kit/dialog.js";
+import * as kitTimeModule from "../kit/time.js";
+import * as formControlModule from "../behaviors/form-control.js";
 /**
  * K1 / K4 — the no-fork guarantee, written as the "hostile customization"
  * suite the plan demands.
@@ -15,39 +28,24 @@
  */
 import { Effect, Exit, Scope } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick } from "../harness.js";
+
 
 /** Stand-in for one published kit widget's exported layer set. */
 async function publishedWidget() {
-  const Component = await loadSrc("Component");
-  const { make, props, require, setup, withSlots } = pick(
-    Component,
-    "Component",
-    "make",
-    "props",
-    "require",
-    "setup",
-    "withSlots",
-  );
-  const Behavior = await loadSrc("Behavior");
-  const { make: behaviorMake, provides, binding, attachTo } = pick(
-    Behavior,
-    "Behavior",
-    "make",
-    "provides",
-    "binding",
-    "attachTo",
-  );
-  const Style = await loadSrc("Style");
+  const Component = ComponentModule as Record<string, any>;
+  const { make, props, require, setup, withSlots } = ((Component) as any);
+  const Behavior = BehaviorModule as Record<string, any>;
+  const { make: behaviorMake, provides, binding, attachTo } = ((Behavior) as any);
+  const Style = StyleModule as Record<string, any>;
   const {
     slot: styleSlot,
     recipe: styleRecipe,
     attachToSlots: attachStyle,
     make: styleMake,
-  } = pick(Style, "Style", "slot", "recipe", "attachToSlots", "make");
-  const ViewModule = await loadSrc("View");
-  const { Slots, fromSlots } = pick(ViewModule, "View", "Slots", "fromSlots");
-  const { Capability } = await fromSrc("Element", "Capability");
+  } = ((Style) as any);
+  const ViewNS = ViewModule as Record<string, any>;
+  const { Slots, fromSlots } = ((ViewNS) as any);
+  const { Capability } = ElementModule as Record<string, any>;
 
   /** Layer 1 — anatomy. */
   const Anatomy = Slots.define({
@@ -124,8 +122,8 @@ async function publishedWidget() {
     styleMake,
     Component,
     assembled,
-    setupEffect: pick(Component, "Component", "setupEffect").setupEffect,
-    renderViewWithBindings: pick(Component, "Component", "renderViewWithBindings")
+    setupEffect: ((Component) as any).setupEffect,
+    renderViewWithBindings: ((Component) as any)
       .renderViewWithBindings,
     slotsOfBindings: (bindings: any) => bindings.slots,
   };
@@ -152,7 +150,7 @@ function runWidget(kit: any, component: unknown) {
 describe("hostile customization (no-fork guarantee)", () => {
   it("[K1] restyle: a consumer patches the kit recipe with mergeRecipes and gets a new variant + default, without touching kit source", async () => {
     const kit = await publishedWidget();
-    const { mergeRecipes } = await fromSrc("Style", "mergeRecipes");
+    const { mergeRecipes } = StyleModule as Record<string, any>;
 
     const brandRecipe = mergeRecipes(kit.recipeData, {
       variants: {
@@ -213,7 +211,7 @@ describe("hostile customization (no-fork guarantee)", () => {
 
   it("[K1] override: wrapping the kit behavior adds a step, and replacing it swaps the algorithm", async () => {
     const kit = await publishedWidget();
-    const { compose } = await fromSrc("Behavior", "compose");
+    const { compose } = BehaviorModule as Record<string, any>;
 
     // WRAP — compose a sibling that adds bindings and observes the same event.
     const announced: Array<number> = [];
@@ -317,7 +315,7 @@ describe("hostile customization (no-fork guarantee)", () => {
 
   it("[K1] a behavior's `provides` state is materialized in the COMPONENT's scope, so replacing its owner does not reset it", async () => {
     const kit = await publishedWidget();
-    const { state } = pick(kit.Component, "Component", "state");
+    const { state } = ((kit.Component) as any);
 
     // DQ-053. `Component.state` called inside a behavior's `run` binds to that
     // BEHAVIOR's scope today, so the sanctioned no-fork move — replace the
@@ -374,7 +372,7 @@ describe("hostile customization (no-fork guarantee)", () => {
 
   it("[K1] replacing a behavior whose `provides` shape does NOT match is surfaced, never a silent reset", async () => {
     const kit = await publishedWidget();
-    const { state } = pick(kit.Component, "Component", "state");
+    const { state } = ((kit.Component) as any);
 
     const owned = (init: unknown) =>
       kit.provides({ count: kit.binding("count", { state: () => state(init) }) })(
@@ -420,8 +418,8 @@ describe("hostile customization (no-fork guarantee)", () => {
 
   it("[K1] the slot contract survives every customization stage (Props/Req/E/Bindings are pinned by src/type-tests)", async () => {
     const kit = await publishedWidget();
-    const { getSlotContract } = pick(kit.Component, "Component", "getSlotContract");
-    const { compose } = await fromSrc("Behavior", "compose");
+    const { getSlotContract } = ((kit.Component) as any);
+    const { compose } = BehaviorModule as Record<string, any>;
 
     const customized = kit.assembled.pipe(
       kit.attachTo(
@@ -451,26 +449,16 @@ describe("hostile customization (no-fork guarantee)", () => {
     // Tokens → Recipe → Anatomy (+A11y pattern) → Machine → Behavior →
     // assembled Component, each independently importable so "customize" means
     // recomposing published layers.
-    const dialog = await loadSrc("kit/dialog");
-    const { tokens, Anatomy, pattern, machine, behavior, recipe, Dialog } = pick(
-      dialog,
-      "kit/dialog",
-      "tokens",
-      "Anatomy",
-      "pattern",
-      "machine",
-      "behavior",
-      "recipe",
-      "Dialog",
-    );
+    const dialog = kitDialogModule as Record<string, any>;
+    const { tokens, Anatomy, pattern, machine, behavior, recipe, Dialog } = ((dialog) as any);
     // Each layer must be usable *on its own*, which is the whole point of
     // exporting them: our anatomy with your machine, our machine with your DOM.
-    const { Slots } = await fromSrc("View", "Slots");
-    const { validate } = await fromSrc("A11y", "validate");
-    const { fromSlots } = await fromSrc("View", "fromSlots");
-    const { spawn } = await fromSrc("Machine", "spawn");
-    const { attachScoped } = await fromSrc("Behavior", "attachScoped");
-    const { recipe: styleRecipe } = await fromSrc("Style", "recipe");
+    const { Slots } = ViewModule as Record<string, any>;
+    const { validate } = A11yModule as Record<string, any>;
+    const { fromSlots } = ViewModule as Record<string, any>;
+    const { spawn } = MachineModule as Record<string, any>;
+    const { attachScoped } = BehaviorModule as Record<string, any>;
+    const { recipe: styleRecipe } = StyleModule as Record<string, any>;
 
     // anatomy + pattern: the anatomy alone satisfies the ARIA contract.
     expect(pattern.name).toBe("dialog");
@@ -502,7 +490,7 @@ describe("hostile customization (no-fork guarantee)", () => {
     expect(typeof tokens.layer).toBe("function");
 
     // ...and the assembled default is a component, not a factory of one.
-    const { ComponentTypeId } = await fromSrc("Component", "ComponentTypeId");
+    const { ComponentTypeId } = ComponentModule as Record<string, any>;
     expect((Dialog as any)[ComponentTypeId]).toBeDefined();
 
     Effect.runSync(Scope.close(scope, Exit.void));

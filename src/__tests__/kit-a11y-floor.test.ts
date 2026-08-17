@@ -1,3 +1,16 @@
+import * as ComponentModule from "../Component.js";
+import * as A11yModule from "../A11y.js";
+import * as ViewModule from "../View.js";
+import * as ElementModule from "../Element.js";
+import * as BehaviorModule from "../Behavior.js";
+import * as StyleModule from "../Style.js";
+import * as MachineModule from "../Machine.js";
+import * as ThemeModule from "../Theme.js";
+import * as domModule from "../dom.js";
+import * as kitIndexModule from "../kit/index.js";
+import * as kitDialogModule from "../kit/dialog.js";
+import * as kitTimeModule from "../kit/time.js";
+import * as formControlModule from "../behaviors/form-control.js";
 /**
  * A11y as a gate, and the platform-native / zero-JS floor.
  *
@@ -11,16 +24,16 @@
  */
 import { Effect, Exit, Scope } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick } from "../harness.js";
+
 
 describe("pattern contract gate", () => {
   it("[K2] a rendered widget view that drops a pattern slot fails A11y.validate, and the complete one passes clean", async () => {
-    const A11y = await loadSrc("A11y");
-    const { validate, Dialog } = pick(A11y, "A11y", "validate", "Dialog");
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Event } = pick(View, "View", "Event");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const A11y = A11yModule as Record<string, any>;
+    const { validate, Dialog } = ((A11y) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Event } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     const complete = Slots.define({
       root: { capability: Capability.Container },
@@ -40,11 +53,11 @@ describe("pattern contract gate", () => {
   });
 
   it("[K2] a pattern slot that renders without the required event is a diagnostic", async () => {
-    const A11y = await loadSrc("A11y");
-    const { validate, Dialog } = pick(A11y, "A11y", "validate", "Dialog");
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const A11y = A11yModule as Record<string, any>;
+    const { validate, Dialog } = ((A11y) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     // The dialog pattern requires `trigger` to accept Press. Rendering the
     // trigger without it must fail the gate — otherwise deleting the whole
@@ -60,11 +73,11 @@ describe("pattern contract gate", () => {
   });
 
   it("[K2] a pattern slot rendered with too weak a capability is a diagnostic, not a silent downgrade", async () => {
-    const A11y = await loadSrc("A11y");
-    const { validate, pattern } = pick(A11y, "A11y", "validate", "pattern");
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    const A11y = A11yModule as Record<string, any>;
+    const { validate, pattern } = ((A11y) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule as Record<string, any>;
 
     const contract = pattern(
       "future-combobox",
@@ -83,12 +96,12 @@ describe("pattern contract gate", () => {
     // The gate, mechanised: iterate the catalog rather than trusting per-widget
     // discipline. A widget in the kit index whose default render fails its
     // pattern contract must fail this spec.
-    const kit = await loadSrc("kit/index");
-    const { widgets } = pick(kit, "kit/index", "widgets");
-    const A11y = await loadSrc("A11y");
-    const { validate } = pick(A11y, "A11y", "validate");
-    const Component = await loadSrc("Component");
-    const { renderViewEffect } = pick(Component, "Component", "renderViewEffect");
+    const kit = kitIndexModule as Record<string, any>;
+    const { widgets } = ((kit) as any);
+    const A11y = A11yModule as Record<string, any>;
+    const { validate } = ((A11y) as any);
+    const Component = ComponentModule as Record<string, any>;
+    const { renderViewEffect } = ((Component) as any);
 
     expect(widgets.length).toBeGreaterThan(0);
     for (const widget of widgets as ReadonlyArray<any>) {
@@ -108,11 +121,11 @@ describe("pattern contract gate", () => {
 
 describe("the zero-JS floor", () => {
   it("[K0b] formControl projects a native input at SSR time, so a dormant custom widget submits in a real form before any JS loads", async () => {
-    const { formControl } = await fromSrc("behaviors/form-control", "formControl");
-    const { attachScoped } = await fromSrc("Behavior", "attachScoped");
-    const Element = await loadSrc("Element");
-    const { container } = pick(Element, "Element", "container");
-    const { state } = await fromSrc("Component", "state");
+    const { formControl } = formControlModule as Record<string, any>;
+    const { attachScoped } = BehaviorModule as Record<string, any>;
+    const Element = ElementModule as Record<string, any>;
+    const { container } = ((Element) as any);
+    const { state } = ComponentModule as Record<string, any>;
 
     const scope = Scope.makeUnsafe();
     const value = Effect.runSync(
@@ -165,11 +178,11 @@ describe("the zero-JS floor", () => {
   });
 
   it("[K3] a dormant dialog uses the platform floor: native <dialog> + invoker command, no JS required for the first open", async () => {
-    const dialog = await loadSrc("kit/dialog");
-    const { Dialog, platformFloor } = pick(dialog, "kit/dialog", "Dialog", "platformFloor");
-    const Component = await loadSrc("Component");
-    const { renderEffect } = pick(Component, "Component", "renderEffect");
-    const { renderToString } = await fromSrc("dom", "renderToString");
+    const dialog = kitDialogModule as Record<string, any>;
+    const { Dialog, platformFloor } = ((dialog) as any);
+    const Component = ComponentModule as Record<string, any>;
+    const { renderEffect } = ((Component) as any);
+    const { renderToString } = domModule as Record<string, any>;
 
     // The floor is declared, per-behavior, as the plan requires: what native
     // covers, what the behavior adds, and the feature-detection seam.
@@ -196,9 +209,9 @@ describe("the zero-JS floor", () => {
   });
 
   it("[K1] light/dark theming needs no JavaScript: token values use light-dark()", async () => {
-    const Theme = await loadSrc("Theme");
-    const { define } = pick(Theme, "Theme", "define");
-    const { lightDark } = pick(Theme, "Theme", "lightDark");
+    const Theme = ThemeModule as Record<string, any>;
+    const { define } = ((Theme) as any);
+    const { lightDark } = ((Theme) as any);
 
     // A dormant page must honour an OS theme change with zero framework code —
     // the platform handles mode, the Theme service only governs which tokens
