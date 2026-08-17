@@ -5,7 +5,7 @@ import * as MetadataToken from "./MetadataToken.js";
 import * as Theme from "./Theme.js";
 import * as View from "./View.js";
 import { createContext, useContext } from "./api.js";
-import { mergeMany, resolveTokenValue } from "./style-runtime.js";
+import { mergeMany, resolveTokenValue, tokenPathForProperty } from "./style-runtime.js";
 import type { SlotStyle, ThemeTokenSchema } from "./style-types.js";
 import { defaultThemeTokens } from "./style-types.js";
 import type { TokenPath } from "./style-types.js";
@@ -734,7 +734,7 @@ function resolveSlot(piece: StyleValue, bindings?: unknown): SlotStyle {
 function resolveSlotTokens(style: SlotStyle): SlotStyle {
   const out: Record<string, unknown> = {};
   for (const [prop, value] of Object.entries(style)) {
-    out[prop] = prop === "_states" || prop.startsWith("__") ? value : resolveTokenValue(value);
+    out[prop] = prop === "_states" || prop.startsWith("__") ? value : resolveTokenValue(value, undefined, prop);
   }
   return out;
 }
@@ -798,34 +798,11 @@ export interface ExtractStaticOptions {
   readonly tokens?: ThemeTokenSchema;
 }
 
-/** Mirror of `Theme.lookupToken`'s candidate list, returning the PATH hit. */
-function tokenPathOf(tokens: ThemeTokenSchema, token: string): string | undefined {
-  const candidates = [
-    token,
-    `color.${token}`,
-    `spacing.${token}`,
-    `fontSize.${token}`,
-    `fontWeight.${token}`,
-    `radius.${token}`,
-    `shadow.${token}`,
-    `transition.${token}`,
-    `breakpoint.${token}`,
-  ];
-  for (const candidate of candidates) {
-    let current: unknown = tokens;
-    let ok = true;
-    for (const part of candidate.split(".")) {
-      if (typeof current !== "object" || current === null || !(part in current)) {
-        ok = false;
-        break;
-      }
-      current = (current as Record<string, unknown>)[part];
-    }
-    if (ok && (typeof current === "string" || typeof current === "number")) {
-      return candidate;
-    }
-  }
-  return undefined;
+/** A style object whose every declaration is a statically known value. */
+function staticStyleObject(style: Record<string, unknown>): boolean {
+  return Object.values(style).every(
+    (value) => typeof value === "string" || typeof value === "number",
+  );
 }
 
 /** Only pieces whose every value is statically known extract; anything else fails open. */
@@ -834,18 +811,27 @@ function pieceIsStaticallyExtractable(piece: StyleValue): boolean {
   const node = piece as Exclude<StyleValue, ReadonlyArray<StyleValue>>;
   switch (node._tag) {
     case "SlotPiece":
-      return Object.values(node.style).every(
-        (value) => typeof value === "string" || typeof value === "number",
-      );
+      return staticStyleObject(node.style);
     case "VarsPiece":
-      return Object.values(node.vars).every(
-        (value) => typeof value === "string" || typeof value === "number",
+      return staticStyleObject(node.vars);
+    case "StatesPiece":
+      return Object.values(node.states).every(staticStyleObject);
+    case "PseudoPiece":
+      return Object.values(node.pseudo).every(staticStyleObject);
+    case "NestPiece":
+      return Object.values(node.selectors).every(staticStyleObject);
+    case "MediaPiece":
+      return Object.values(node.media).every((value) =>
+        isStyleValue(value)
+          ? pieceIsStaticallyExtractable(value)
+          : staticStyleObject(value as Record<string, unknown>),
       );
     case "LayerPiece":
       return pieceIsStaticallyExtractable(node.piece);
     default:
-      // Conditionals, binding conditionals (reactive, DQ-056), states,
-      // media/pseudo/etc.: the whole slot runtime-composes.
+      // Conditionals and binding conditionals (reactive, DQ-056) — and any
+      // piece kind without a static serialization — send the whole slot to
+      // runtime composition.
       return false;
   }
 }
@@ -856,20 +842,105 @@ function cssPropertyName(property: string): string {
     : property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
 }
 
-function staticDeclarationValue(value: unknown, tokens: ThemeTokenSchema): string {
+function staticDeclarationValue(
+  property: string,
+  value: unknown,
+  tokens: ThemeTokenSchema,
+): string {
   if (typeof value === "string") {
-    const path = tokenPathOf(tokens, value);
-    // A token path becomes a CSS variable reference under the `--af-*`
-    // namespace — the SAME names `@affe/css`'s foundation stylesheet emits —
-    // so extracted CSS stays theme-swappable at runtime.
+    // Property-aware, exactly like runtime resolution: a token path becomes a
+    // CSS variable reference under the `--af-*` namespace — the SAME names
+    // `@affe/css`'s foundation stylesheet emits — so extracted CSS stays
+    // theme-swappable at runtime, and CSS keywords (`display: "none"`) are
+    // never hijacked by token-leaf name collisions.
+    const path = tokenPathForProperty(tokens, cssPropertyName(property), value);
     if (path !== undefined) return `var(--af-${path.replace(/\./g, "-")})`;
     return value;
   }
   return String(value);
 }
 
+function staticDeclarations(
+  style: Record<string, unknown>,
+  tokens: ThemeTokenSchema,
+): string {
+  return Object.entries(style)
+    .filter(([property]) => isStylePropertyKey(property) || property.startsWith("--"))
+    .map(([property, value]) =>
+      `${cssPropertyName(property)}: ${staticDeclarationValue(property, value, tokens)};`,
+    )
+    .join(" ");
+}
+
+/** Everything one slot's static pieces contribute, grouped by emission site. */
+interface SlotCssParts {
+  readonly base: Record<string, unknown>;
+  readonly pseudo: Map<string, Record<string, unknown>>;
+  readonly states: Map<string, Record<string, unknown>>;
+  readonly nest: Map<string, Record<string, unknown>>;
+  readonly media: Map<string, Record<string, unknown>>;
+  layer: CssLayer | undefined;
+}
+
+function collectSlotParts(piece: StyleValue, parts: SlotCssParts): void {
+  if (Array.isArray(piece)) {
+    for (const inner of piece) collectSlotParts(inner, parts);
+    return;
+  }
+  const node = piece as Exclude<StyleValue, ReadonlyArray<StyleValue>>;
+  switch (node._tag) {
+    case "SlotPiece":
+      Object.assign(parts.base, node.style);
+      return;
+    case "VarsPiece":
+      Object.assign(parts.base, node.vars);
+      return;
+    case "StatesPiece":
+      for (const [state, style] of Object.entries(node.states)) {
+        // `default` is the base rule; every other state becomes a
+        // `[data-state="..."]` attribute selector (the DQ-056 dormant-widget
+        // payoff: SSR stamps the attribute, loaded CSS does the rest).
+        if (state === "default") {
+          Object.assign(parts.base, style);
+        } else {
+          parts.states.set(state, { ...(parts.states.get(state) ?? {}), ...style });
+        }
+      }
+      return;
+    case "PseudoPiece":
+      for (const [selector, style] of Object.entries(node.pseudo)) {
+        parts.pseudo.set(selector, { ...(parts.pseudo.get(selector) ?? {}), ...style });
+      }
+      return;
+    case "NestPiece":
+      for (const [selector, style] of Object.entries(node.selectors)) {
+        parts.nest.set(selector, { ...(parts.nest.get(selector) ?? {}), ...style });
+      }
+      return;
+    case "MediaPiece":
+      for (const [query, value] of Object.entries(node.media)) {
+        const style = isStyleValue(value) ? resolveSlot(value) : value as SlotStyle;
+        parts.media.set(query, { ...(parts.media.get(query) ?? {}), ...style });
+      }
+      return;
+    case "LayerPiece":
+      parts.layer = node.layer as CssLayer;
+      collectSlotParts(node.piece, parts);
+      return;
+    default:
+      return;
+  }
+}
+
 /**
  * Extract every fully-static slot of `style` to CSS, failing open per SLOT.
+ *
+ * Extractable per slot: flat declarations, custom-property vars, pseudo
+ * selectors, machine states (as `[data-state="..."]` attribute selectors),
+ * nested selectors (`&` splices the slot selector), media blocks, and
+ * `inLayer` cascade-layer overrides. Any runtime condition, binding
+ * conditional, or dynamic value anywhere in the slot fails the WHOLE slot
+ * open to runtime composition (`DQ-064`).
  *
  * @example
  * const { css, runtimeSlots } = Style.extractStatic(cardStyle)
@@ -882,37 +953,75 @@ export function extractStatic<S extends string>(
 ): StaticExtraction<S> {
   const tokens = options?.tokens ?? defaultThemeTokens;
   const selectorOf = options?.selector ?? ((slot: string) => `.af-${slot}`);
-  const layer: CssLayer = options?.layer ?? "components";
+  const defaultLayer: CssLayer = options?.layer ?? "components";
   const staticSlots: Array<S> = [];
   const runtimeSlots: Array<S> = [];
-  const rules: Array<string> = [];
+  const rulesByLayer = new Map<CssLayer, Array<string>>();
+  const pushRule = (layer: CssLayer, rule: string): void => {
+    const bucket = rulesByLayer.get(layer) ?? [];
+    bucket.push(rule);
+    rulesByLayer.set(layer, bucket);
+  };
   for (const [slotName, piece] of Object.entries(style.slots) as Array<[S, StyleValue]>) {
     if (!pieceIsStaticallyExtractable(piece)) {
       runtimeSlots.push(slotName);
       continue;
     }
-    const resolved = resolveSlot(piece);
-    const declarations = Object.entries(resolved)
-      .filter(([property]) => isStylePropertyKey(property) || property.startsWith("--"))
-      .map(([property, value]) =>
-        `${cssPropertyName(property)}: ${staticDeclarationValue(value, tokens)};`,
-      );
     staticSlots.push(slotName);
-    if (declarations.length > 0) {
-      rules.push(`${selectorOf(slotName)} { ${declarations.join(" ")} }`);
+    const parts: SlotCssParts = {
+      base: {},
+      pseudo: new Map(),
+      states: new Map(),
+      nest: new Map(),
+      media: new Map(),
+      layer: undefined,
+    };
+    collectSlotParts(piece, parts);
+    const selector = selectorOf(slotName);
+    const layer = parts.layer ?? defaultLayer;
+    const emit = (ruleSelector: string, decls: Record<string, unknown>): void => {
+      const body = staticDeclarations(decls, tokens);
+      if (body.length > 0) pushRule(layer, `${ruleSelector} { ${body} }`);
+    };
+    emit(selector, parts.base);
+    for (const [pseudoSelector, decls] of parts.pseudo) {
+      emit(`${selector}${pseudoSelector}`, decls);
+    }
+    for (const [state, decls] of parts.states) {
+      emit(`${selector}[data-state="${state}"]`, decls);
+    }
+    for (const [nestSelector, decls] of parts.nest) {
+      emit(
+        nestSelector.startsWith("&")
+          ? `${selector}${nestSelector.slice(1)}`
+          : `${selector} ${nestSelector}`,
+        decls,
+      );
+    }
+    for (const [query, decls] of parts.media) {
+      const body = staticDeclarations(decls, tokens);
+      if (body.length > 0) {
+        pushRule(layer, `@media ${query} { ${selector} { ${body} } }`);
+      }
     }
   }
-  const css = rules.length === 0 ? "" : `@layer ${layer} {\n${rules.join("\n")}\n}`;
-  return { css, staticSlots, runtimeSlots };
+  const blocks: Array<string> = [];
+  for (const layer of cssLayerOrder) {
+    const rules = rulesByLayer.get(layer);
+    if (rules !== undefined && rules.length > 0) {
+      blocks.push(`@layer ${layer} {\n${rules.join("\n")}\n}`);
+    }
+  }
+  return { css: blocks.join("\n"), staticSlots, runtimeSlots };
 }
 
 function applyResolvedStyleToHandle(handle: Element.Handle, styleDef: SlotStyle): Effect.Effect<void> {
   return Effect.forEach(Object.entries(styleDef), ([prop, value]) => {
     if (prop === "_states" || prop.startsWith("__")) return handle.setStyleOnce(prop, value);
     if (typeof value === "function") {
-      return handle.setStyle(prop, () => resolveTokenValue((value as () => unknown)()));
+      return handle.setStyle(prop, () => resolveTokenValue((value as () => unknown)(), undefined, prop));
     }
-    return handle.setStyleOnce(prop, resolveTokenValue(value));
+    return handle.setStyleOnce(prop, resolveTokenValue(value, undefined, prop));
   }).pipe(Effect.asVoid) as Effect.Effect<void>;
 }
 
@@ -986,7 +1095,7 @@ function applyStylePieceToHandle(
         const value = typeof current === "function"
           ? (current as () => unknown)()
           : current;
-        const resolved = resolveTokenValue(value);
+        const resolved = resolveTokenValue(value, undefined, prop);
         // A branch switching OFF unsets the property (the K1 null-unset rule)
         // instead of freezing its last value.
         return resolved === undefined ? null : resolved;
