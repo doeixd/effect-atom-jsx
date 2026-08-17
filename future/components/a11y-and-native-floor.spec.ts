@@ -147,13 +147,18 @@ describe("the zero-JS floor", () => {
     expect(hiddenInput.getAttr("required")).toBe(true);
 
     // The atom stays the single source of truth and the projection follows it —
-    // one mechanism, no controlled/uncontrolled split.
+    // one mechanism, no controlled/uncontrolled split. (Propagation rides the
+    // repo's batched reactive scheduler — one microtask — like every other
+    // reactive attribute; the guarantee is "follows the atom", not
+    // "same-tick".)
     value.set("blue");
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(hiddenInput.getAttr("value")).toBe("blue");
 
     // Validity is an atom too, so it composes with `Style.whenBinding` and is
     // snapshotted by resume for free — not an imperative setter.
     attached.bindings.invalid.set(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(root.getAttr("aria-invalid")).toBe(true);
 
     Effect.runSync(Scope.close(scope, Exit.void));

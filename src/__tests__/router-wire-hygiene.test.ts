@@ -122,7 +122,7 @@ describe("R5 — wire hygiene", () => {
     // ISOLATION: scoped to this spec's own route id, never a process-wide wipe.
     clearLoaderCache(routeId);
     // No `url`, no `loaders`: structurally invalid payload.
-    const exit = await invoke({ ok: true, payload: { mutation: 1 } });
+    const exit = await invoke({ version: 1, ok: true, payload: { mutation: 1 } });
 
     expect(Exit.isFailure(exit)).toBe(true);
     if (!Exit.isFailure(exit)) return;
@@ -159,6 +159,7 @@ describe("R5 — wire hygiene", () => {
     // ISOLATION: scoped to this spec's own route id, never a process-wide wipe.
     clearLoaderCache(routeId);
     const ok = await invoke({
+      version: 1,
       ok: true,
       payload: { mutation: 1, url: "http://localhost/r5-bad/alice", loaders: [] },
     });
@@ -235,6 +236,7 @@ describe("R5 — wire hygiene", () => {
       execute: () => Effect.sync(() => {
         calls.push(label);
         return {
+          version: 1,
           ok: true,
           payload: { mutation: label, url: "http://localhost/", loaders: [] },
         };
@@ -267,13 +269,14 @@ describe("R5 — wire hygiene", () => {
     const contextTransport = Layer.succeed(SingleFlightTransportTag, {
       execute: () => Effect.sync(() => {
         seen.push("context");
-        return { ok: true, payload: { mutation: "context", url: "http://localhost/", loaders: [] } };
+        return { version: 1, ok: true, payload: { mutation: "context", url: "http://localhost/", loaders: [] } };
       }),
     });
     const endpointFetch = async () => {
       seen.push("endpoint");
       return {
         json: async () => ({
+          version: 1,
           ok: true,
           payload: { mutation: "endpoint", url: "http://localhost/", loaders: [] },
         }),

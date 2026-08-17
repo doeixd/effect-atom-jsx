@@ -754,7 +754,7 @@ describe("Route loader", () => {
 
     const handler = Route.createSingleFlightHandler(run, { baseUrl: "http://test.local" });
     const response = Effect.runSync(
-      handler({ args: ["alice"], url: "/sfm-handler/users/alice" }) as Effect.Effect<Route.SingleFlightResponse<{ readonly ok: string }, never>, never, never>,
+      handler({ args: ["alice"], url: "/sfm-handler/users/alice" }) as Effect.Effect<Route.SingleFlightWireResponse, never, never>,
     );
 
     expect(response.ok).toBe(true);
@@ -792,7 +792,7 @@ describe("Route loader", () => {
       { args: ["alice"], url: "/sfm-invoke/users/alice" },
       {
         app: RouteForInvoke,
-        fetch: async () => ({ json: async () => ({ ok: true as const, payload }) }),
+        fetch: async () => ({ json: async () => ({ version: 1, ok: true as const, payload }) }),
       },
     ));
 
@@ -842,6 +842,7 @@ describe("Route loader", () => {
           url: (userId) => `/atom-sfm/users/${userId}`,
           fetch: async () => ({
             json: async () => ({
+              version: 1,
               ok: true as const,
               payload: {
                 mutation: { ok: "alice" },
@@ -881,6 +882,7 @@ describe("Route loader", () => {
           url: (userId) => `/runtime-sfm/users/${userId}`,
           fetch: async () => ({
             json: async () => ({
+              version: 1,
               ok: true as const,
               payload: {
                 mutation: { ok: "alice" },
@@ -913,6 +915,7 @@ describe("Route loader", () => {
     const routeId = routeIdOf(AutoRoute);
     const runtime = Atom.runtime(Layer.succeed(Route.SingleFlightTransportTag, {
       execute: () => Effect.succeed({
+        version: 1,
         ok: true as const,
         payload: {
           mutation: { ok: "alice" },
@@ -944,6 +947,7 @@ describe("Route loader", () => {
     const routeId = routeIdOf(AutoRoute);
     const transport = Layer.succeed(Route.SingleFlightTransportTag, {
       execute: () => Effect.succeed({
+        version: 1,
         ok: true as const,
         payload: {
           mutation: { ok: "alice" },
@@ -1019,7 +1023,7 @@ describe("Route loader", () => {
     );
 
     const response = Effect.runSync(
-      handler({ args: ["alice"], url: "/sfm-endpoint/users/alice" }) as Effect.Effect<Route.SingleFlightResponse<{ readonly id: string; readonly name: string }, never>, never, never>,
+      handler({ args: ["alice"], url: "/sfm-endpoint/users/alice" }) as Effect.Effect<Route.SingleFlightWireResponse, never, never>,
     );
 
     expect(response.ok).toBe(true);
@@ -1050,7 +1054,7 @@ describe("Route loader", () => {
     );
 
     const response = Effect.runSync(
-      handler({ args: ["alice"], url: "/sfm-seed-helper/users/alice" }) as Effect.Effect<Route.SingleFlightResponse<{ readonly id: string; readonly name: string }, never>, never, never>,
+      handler({ args: ["alice"], url: "/sfm-seed-helper/users/alice" }) as Effect.Effect<Route.SingleFlightWireResponse, never, never>,
     );
 
     expect(response.ok).toBe(true);

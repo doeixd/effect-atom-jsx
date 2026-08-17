@@ -44,6 +44,17 @@ export function defineTokens<const Tokens extends ThemeTokenSchema>(tokens: Toke
 }
 
 /**
+ * CSS `light-dark()` token value (K1): light/dark theming with **zero
+ * JavaScript** — the PLATFORM switches mode (`color-scheme`), the Theme
+ * service only governs which tokens apply. A dormant page honours an OS
+ * theme change with no framework code, which is what makes this the
+ * dormancy-compatible theming primitive.
+ */
+export function lightDark(light: string, dark: string): string {
+  return `light-dark(${light}, ${dark})`;
+}
+
+/**
  * Define a theme and get helpers for paths, lookup, and Effect layers.
  *
  * @example

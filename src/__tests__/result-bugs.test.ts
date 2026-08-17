@@ -112,6 +112,7 @@ describe("Decision 6 fence — single-flight goes through the projection", () =>
     expect(JSON.stringify(wire)).not.toContain("rawCause");
 
     const body = JSON.stringify({
+      version: 1,
       ok: true,
       payload: {
         mutation: { saved: true },
@@ -157,6 +158,7 @@ describe("Decision 6 fence — single-flight goes through the projection", () =>
               fetch: async () => ({
                 json: async () =>
                   ({
+                    version: 1,
                     ok: true,
                     payload: { mutation: null, url: "http://localhost/", loaders },
                   }) as unknown,

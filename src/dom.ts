@@ -27,6 +27,7 @@ import {
   runInResumeSession,
 } from "./resume-session.js";
 import { ServerRenderStateTag, currentServerRenderState } from "./render-state.js";
+import * as SafeHtml from "./SafeHtml.js";
 import {
   ResumeStreamPayloadTooLargeError,
   buildStreamRegionRecord,
@@ -131,12 +132,41 @@ function toNode(val: Child): Node | null {
   return document.createTextNode(String(val));
 }
 
+/**
+ * Materialize a branded `SafeHtml` value as real nodes (K1: branding-aware
+ * rendering). This is the ONLY child-insertion path that interprets a string
+ * as markup, and it is reachable exclusively through the brand — an
+ * unbranded string in the same position stays on the escaping text path.
+ */
+function safeHtmlChildNodes(value: SafeHtml.SafeHtml): Node[] {
+  const markup = SafeHtml.unwrap(value);
+  if (_ssrMode || currentServerRenderState() !== undefined) {
+    return parseHTML(markup) as unknown as Node[];
+  }
+  const templateElement = document.createElement("template") as HTMLTemplateElement;
+  templateElement.innerHTML = markup;
+  const nodes: Node[] = [];
+  const children = templateElement.content.childNodes;
+  for (let index = 0; index < children.length; index += 1) {
+    nodes.push(children[index]!);
+  }
+  return nodes;
+}
+
 function insertExpression(
   parent: Element,
   value: Child,
   current: Node | Node[] | null,
   marker: Node | null,
 ): Node | Node[] | null {
+  if (SafeHtml.isSafeHtml(value)) {
+    return insertExpression(
+      parent,
+      safeHtmlChildNodes(value) as unknown as Child,
+      current,
+      marker,
+    );
+  }
   if (Array.isArray(value)) {
     const newNodes: Node[] = value.flatMap(flattenChild).filter(Boolean) as Node[];
     reconcileArrays(parent, current as Node[] | null ?? [], newNodes, marker);

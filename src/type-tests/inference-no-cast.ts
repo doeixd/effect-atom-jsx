@@ -50,6 +50,7 @@ const _stillComponent: Component.Component<{}, never, never, {}, {}> =
 const _transportLayer = Layer.succeed(SingleFlightTransportTag, {
   execute: () =>
     Effect.succeed({
+      version: 1,
       ok: true,
       payload: { mutation: "x", url: "http://localhost/", loaders: [] },
     }),

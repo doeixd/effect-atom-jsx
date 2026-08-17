@@ -778,6 +778,85 @@ function applyResolvedStyleToHandle(handle: Element.Handle, styleDef: SlotStyle)
   }).pipe(Effect.asVoid) as Effect.Effect<void>;
 }
 
+function pieceHasBindingConditional(piece: StyleValue): boolean {
+  if (Array.isArray(piece)) return piece.some(pieceHasBindingConditional);
+  const node = piece as Exclude<StyleValue, ReadonlyArray<StyleValue>>;
+  switch (node._tag) {
+    case "BindingConditionalPiece":
+      return true;
+    case "ConditionalPiece":
+      return pieceHasBindingConditional(node.piece);
+    case "ResponsivePiece":
+      return node.map.base !== undefined && pieceHasBindingConditional(node.map.base);
+    default:
+      return false;
+  }
+}
+
+/** Every property any branch of `piece` could contribute, conditions ignored. */
+function flattenPieceAllBranches(piece: StyleValue): ReadonlyArray<SlotStyle> {
+  if (Array.isArray(piece)) {
+    return piece.flatMap(flattenPieceAllBranches);
+  }
+  const node = piece as Exclude<StyleValue, ReadonlyArray<StyleValue>>;
+  switch (node._tag) {
+    case "BindingConditionalPiece":
+      return flattenPieceAllBranches(node.piece);
+    case "ConditionalPiece":
+      return flattenPieceAllBranches(node.piece);
+    default:
+      return flattenPiece(node);
+  }
+}
+
+/**
+ * Apply one slot's style piece to a handle. A piece with a binding
+ * conditional (`Style.whenBinding`) applies REACTIVELY: piece selection
+ * re-evaluates whenever the binding it reads changes, so machine state (or
+ * any signal-valued binding) drives styling live rather than snapshotting
+ * at attach time — the fix for the known attach-time-snapshot gap. Pieces
+ * without binding conditionals keep the cheap resolve-once path.
+ */
+function applyStylePieceToHandle(
+  handle: Element.Handle,
+  piece: StyleValue,
+  bindings: unknown,
+): Effect.Effect<void> {
+  if (!pieceHasBindingConditional(piece)) {
+    return applyResolvedStyleToHandle(handle, resolveSlot(piece, bindings));
+  }
+  return Effect.gen(function* () {
+    // Meta keys (states/nest/media/...) come from the attach-time resolution;
+    // branch-conditional META remains out of scope for the reactive path.
+    const attachResolution = resolveSlot(piece, bindings);
+    for (const [prop, value] of Object.entries(attachResolution)) {
+      if (prop === "_states" || prop.startsWith("__")) {
+        yield* handle.setStyleOnce(prop, value);
+      }
+    }
+    // Every property ANY branch can contribute becomes a reactive style:
+    // reading the binding inside the accessor is what makes selection track.
+    const dynamicProps = new Set<string>();
+    for (const branch of flattenPieceAllBranches(piece)) {
+      for (const prop of Object.keys(branch)) {
+        if (isStylePropertyKey(prop)) dynamicProps.add(prop);
+      }
+    }
+    for (const prop of dynamicProps) {
+      yield* handle.setStyle(prop, () => {
+        const current = resolveSlot(piece, bindings)[prop];
+        const value = typeof current === "function"
+          ? (current as () => unknown)()
+          : current;
+        const resolved = resolveTokenValue(value);
+        // A branch switching OFF unsets the property (the K1 null-unset rule)
+        // instead of freezing its last value.
+        return resolved === undefined ? null : resolved;
+      });
+    }
+  });
+}
+
 type Overrides = Record<string, StyleValue>;
 const OverrideContext = createContext<Overrides>({});
 
@@ -808,16 +887,15 @@ function attachToBindingSlotsImpl<S extends string, StyleBindings extends string
       }
       const overrides = useContext(OverrideContext);
       for (const [slotName, slotPiece] of Object.entries(style.slots as Record<string, StyleValue>)) {
-        const overridePiece = overrides[slotName];
-        const resolved = resolveSlot(overridePiece ?? slotPiece, bindings);
+        const piece = overrides[slotName] ?? slotPiece;
         const target = (bindings as any).slots?.[slotName] as Element.Handle | Element.Collection<Element.Handle> | undefined;
         if (!target) continue;
 
         if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
           const collection = target as Element.Collection<Element.Handle>;
-          yield* collection.observeEach((item) => applyResolvedStyleToHandle(item, resolved).pipe(Effect.as(() => {})));
+          yield* collection.observeEach((item) => applyStylePieceToHandle(item, piece, bindings).pipe(Effect.as(() => {})));
         } else {
-          yield* applyResolvedStyleToHandle(target as Element.Handle, resolved);
+          yield* applyStylePieceToHandle(target as Element.Handle, piece, bindings);
         }
       }
     })) as any;
@@ -847,15 +925,14 @@ function attachByViewImpl<S extends string, StyleBindings extends string>(
     const overrides = useContext(OverrideContext);
     const slots = result.slots as Record<string, Element.Handle | Element.Collection<Element.Handle>>;
     for (const [slotName, slotPiece] of Object.entries(style.slots as Record<string, StyleValue>)) {
-      const overridePiece = overrides[slotName];
-      const resolved = resolveSlot(overridePiece ?? slotPiece, _bindings);
+      const piece = overrides[slotName] ?? slotPiece;
       const target = slots[slotName];
       if (!target) continue;
       if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
         const collection = target as Element.Collection<Element.Handle>;
-        Effect.runSync(collection.observeEach((item) => applyResolvedStyleToHandle(item, resolved).pipe(Effect.as(() => {}))));
+        Effect.runSync(collection.observeEach((item) => applyStylePieceToHandle(item, piece, _bindings).pipe(Effect.as(() => {}))));
       } else {
-        Effect.runSync(applyResolvedStyleToHandle(target as Element.Handle, resolved));
+        Effect.runSync(applyStylePieceToHandle(target as Element.Handle, piece, _bindings));
       }
     }
     return result;
@@ -981,12 +1058,11 @@ export function attachToAllWithCapability<C extends View.SlotCapability>(
       const target = slots[slotName];
       if (!target) continue;
 
-      const resolved = resolveSlot(style, _bindings);
       if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
         const collection = target as Element.Collection<Element.Handle>;
-        Effect.runSync(collection.observeEach((item) => applyResolvedStyleToHandle(item, resolved).pipe(Effect.as(() => {}))));
+        Effect.runSync(collection.observeEach((item) => applyStylePieceToHandle(item, style, _bindings).pipe(Effect.as(() => {}))));
       } else {
-        Effect.runSync(applyResolvedStyleToHandle(target as Element.Handle, resolved));
+        Effect.runSync(applyStylePieceToHandle(target as Element.Handle, style, _bindings));
       }
     }
     return result;

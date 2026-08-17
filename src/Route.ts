@@ -421,12 +421,26 @@ export const SingleFlightWirePayloadSchema = Schema.Struct({
   loaders: Schema.Array(SingleFlightWireLoaderEntrySchema),
 });
 
+/**
+ * Wire version of the single-flight envelope (`DQ-091`, closed 2026-08-17).
+ * Bump on any envelope-shape change. The version rides on the ENVELOPE, not
+ * the payload, so a client from build N talking to a server from build N+1
+ * fails closed with a decode error instead of misreading the shape — the
+ * same rule the loader handoff already follows.
+ */
+export const singleFlightWireVersion = 1 as const;
+
 export const SingleFlightResponseSchema = Schema.Union([
   Schema.Struct({
+    version: Schema.Literal(singleFlightWireVersion),
     ok: Schema.Literal(true),
     payload: SingleFlightWirePayloadSchema,
   }),
-  Schema.Struct({ ok: Schema.Literal(false), error: Schema.Unknown }),
+  Schema.Struct({
+    version: Schema.Literal(singleFlightWireVersion),
+    ok: Schema.Literal(false),
+    error: Schema.Unknown,
+  }),
 ]);
 
 /** The schema-validated response shape a single-flight handler emits. */
@@ -3257,10 +3271,12 @@ export function createSingleFlightHandler<Args extends ReadonlyArray<unknown>, A
       Effect.provide(Server({ url: requestUrl })),
       Effect.match({
         onSuccess: (payload) => ({
+          version: singleFlightWireVersion,
           ok: true as const,
           payload: encodeSingleFlightPayload(payload),
         }),
         onFailure: (error) => ({
+          version: singleFlightWireVersion,
           ok: false as const,
           error: Serialization.encodeWireValue(error),
         }),

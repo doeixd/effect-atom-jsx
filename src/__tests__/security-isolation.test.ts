@@ -62,6 +62,7 @@ function recordingTransport(name: string): RecordingTransport {
       execute: (request) => {
         calls.push(request);
         return Effect.succeed({
+          version: 1,
           ok: true,
           payload: { mutation: name, url: request.url, loaders: [] },
         });

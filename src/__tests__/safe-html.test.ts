@@ -19,15 +19,16 @@
  * control.
  */
 import { describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick } from "../harness.js";
+import * as domModule from "../dom.js";
+import * as SafeHtmlModule from "../SafeHtml.js";
+import * as ViewModule from "../View.js";
 
 /** An XSS-shaped payload: nothing here may survive as live markup. */
 const PAYLOAD = `<img src=x onerror="alert(1)">&<script>bad()</script>`;
 
 describe("SafeHtml: unbranded strings are text", () => {
   it("[K1] an unbranded string inserted as a child escapes to entities", async () => {
-    const dom = await loadSrc("dom");
-    const { renderToString, insert } = pick(dom, "dom", "renderToString", "insert");
+    const { renderToString, insert } = domModule;
 
     // Rendered through the same child-insertion path a widget uses for dynamic
     // content — the real injection surface, not a string helper.
@@ -47,8 +48,7 @@ describe("SafeHtml: unbranded strings are text", () => {
   });
 
   it("[K1] a reactive accessor returning a string is escaped on every update, not just the first", async () => {
-    const dom = await loadSrc("dom");
-    const { renderToString, insert } = pick(dom, "dom", "renderToString", "insert");
+    const { renderToString, insert } = domModule;
 
     // The dangerous shape is the dynamic one: escaping must live in the
     // insertion path, not in a one-off sanitize at authoring time.
@@ -64,14 +64,7 @@ describe("SafeHtml: unbranded strings are text", () => {
   });
 
   it("[K1] the brand cannot be forged by shape: only the constructor produces SafeHtml", async () => {
-    const SafeHtml = await loadSrc("SafeHtml");
-    const { make, isSafeHtml, unwrap } = pick(
-      SafeHtml,
-      "SafeHtml",
-      "make",
-      "isSafeHtml",
-      "unwrap",
-    );
+    const { make, isSafeHtml, unwrap } = SafeHtmlModule;
 
     // Negative control first: the real thing is accepted, and round-trips.
     const safe = make("<strong>trusted</strong>");
@@ -94,10 +87,8 @@ describe("SafeHtml: unbranded strings are text", () => {
   });
 
   it("[K1] View.html fails closed on an unbranded string instead of minting an html hole", async () => {
-    const View = await loadSrc("View");
-    const { html: htmlHole } = pick(View, "View", "html");
-    const SafeHtml = await loadSrc("SafeHtml");
-    const { make, isSafeHtml } = pick(SafeHtml, "SafeHtml", "make", "isSafeHtml");
+    const htmlHole = ViewModule.html;
+    const { make, isSafeHtml } = SafeHtmlModule;
 
     // Negative control: the branded value is accepted, cleanly, and the hole
     // carries the brand through — this is what "accepted" looks like.
@@ -129,9 +120,8 @@ describe("SafeHtml: unbranded strings are text", () => {
 
 describe("SafeHtml: branded values are markup", () => {
   it("[K1] the same insertion position renders SafeHtml as markup and its unbranded twin as text", async () => {
-    const dom = await loadSrc("dom");
-    const { renderToString, insert } = pick(dom, "dom", "renderToString", "insert");
-    const { make } = await fromSrc("SafeHtml", "make");
+    const { renderToString, insert } = domModule;
+    const { make } = SafeHtmlModule;
 
     const markup = "<strong>trusted</strong>";
 

@@ -1,7 +1,7 @@
 import { Effect, Layer, Context } from "effect";
 import * as Element from "./Element.js";
 import * as MetadataToken from "./MetadataToken.js";
-import type * as SafeHtml from "./SafeHtml.js";
+import * as SafeHtml from "./SafeHtml.js";
 
 export const ViewTypeId: unique symbol = Symbol.for("effect-atom-jsx/View");
 
@@ -985,6 +985,15 @@ export function style(value: StyleHoleValue): StyleHole {
 }
 
 export function html(value: SafeHtml.SafeHtml): HtmlHole {
+  // The type says `SafeHtml`, but generated/dynamic callers (JSON-driven,
+  // codegen) reach this with `unknown`. An unbranded string must FAIL CLOSED
+  // here rather than silently minting an html hole indistinguishable from a
+  // trusted one — the brand is the authorization, not the field shape.
+  if (!SafeHtml.isSafeHtml(value)) {
+    throw new Error(
+      "[View.html] Value is not SafeHtml. Markup positions require the SafeHtml brand (SafeHtml.make); unbranded strings render as text, never as HTML.",
+    );
+  }
   return {
     kind: "view.hole.html",
     value,

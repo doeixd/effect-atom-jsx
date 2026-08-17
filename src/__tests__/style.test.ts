@@ -182,11 +182,12 @@ describe("Style", () => {
   // The two tests above compare *separately constructed* components, which
   // cannot distinguish "whenBinding evaluated the binding" from "whenBinding
   // re-evaluates when the binding changes". These two pin the actual contract:
-  // `Style.whenBinding` picks pieces once, at attach time (`resolveSlot` runs
-  // outside any reaction), while a function-valued style *property* stays
-  // reactive through `handle.setStyle`.
+  // `Style.whenBinding` piece selection is REACTIVE (fixed 2026-08-17;
+  // previously a pinned known-defect: `resolveSlot` ran once at attach and
+  // snapshotted signal-valued bindings). Reading the binding inside the
+  // per-property accessor is what makes selection track.
 
-  it("evaluates a signal-valued binding once at attach time (whenBinding is not reactive)", () => {
+  it("re-evaluates a signal-valued binding: whenBinding piece selection is reactive", () => {
     const [isOpen, setIsOpen] = createSignal(false);
     const Card = Component.make<{}, never, never, {
       readonly isOpen: () => boolean;
@@ -212,7 +213,13 @@ describe("Style", () => {
 
     setIsOpen(true);
     flush();
-    // Characterized, not aspirational: piece selection does not re-run.
+    // Machine state (or any signal-valued binding) drives styling live.
+    expect(bindings.slots.root.getStyle("opacity")).toBe(1);
+
+    // …and switching the branch OFF returns to the base piece rather than
+    // freezing the last value.
+    setIsOpen(false);
+    flush();
     expect(bindings.slots.root.getStyle("opacity")).toBe(0.5);
   });
 

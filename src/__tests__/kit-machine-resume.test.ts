@@ -15,13 +15,21 @@
  */
 import { Effect, Exit, Schema, Scope } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, loadSrc, pick, unbuilt } from "../harness.js";
+import * as MachineModule from "../Machine.js";
+import * as ComponentModule from "../Component.js";
+import * as ResumeModule from "../Resume.js";
+import * as SerializationModule from "../Serialization.js";
+import * as BehaviorModule from "../Behavior.js";
+import * as ElementModule from "../Element.js";
+import * as StyleModule from "../Style.js";
+import * as ViewModule from "../View.js";
+import * as domModule from "../dom.js";
 
 const TestBuildId = "future-components-build";
 
 async function disclosureMachine() {
-  const Machine = await loadSrc("Machine");
-  const { defineStates, make } = pick(Machine, "Machine", "defineStates", "make");
+  const Machine = MachineModule as Record<string, any>;
+  const { defineStates, make } = ((Machine) as any);
 
   class Closed extends Schema.TaggedClass<Closed>()("Closed", {}) {}
   class Opened extends Schema.TaggedClass<Opened>()("Opened", {
@@ -59,13 +67,9 @@ async function disclosureMachine() {
 describe("machine-backed widget state", () => {
   it("[K0] a machine spawned in a behavior stops when the behavior's Scope closes", async () => {
     const { Machine, definition, OpenEvent } = await disclosureMachine();
-    const { spawn } = pick(Machine, "Machine", "spawn");
-    const { make: behaviorMake, attachScoped } = await fromSrc(
-      "Behavior",
-      "make",
-      "attachScoped",
-    );
-    const { interactive } = await fromSrc("Element", "interactive");
+    const { spawn } = ((Machine) as any);
+    const { make: behaviorMake, attachScoped } = BehaviorModule as Record<string, any>;
+    const { interactive } = ElementModule;
 
     let clicks = 0;
     const b = behaviorMake((elements: any) =>
@@ -108,31 +112,16 @@ describe("machine-backed widget state", () => {
 
   it("[K0] a dormant widget's machine restores its state from a resume snapshot without replaying setup", async () => {
     const { Machine, definition } = await disclosureMachine();
-    const { spawn } = pick(Machine, "Machine", "spawn");
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, withDefinition, renderEffect } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "withDefinition",
-      "renderEffect",
-    );
-    const Resume = await loadSrc("Resume");
-    const { collect, restoreStateBindings, snapshotState } = pick(
-      Resume,
-      "Resume",
-      "collect",
-      "restoreStateBindings",
-      "snapshotState",
-    );
-    const { state } = pick(Component, "Component", "state");
+    const { spawn } = ((Machine) as any);
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, withDefinition, renderEffect } = ((Component) as any);
+    const Resume = ResumeModule as Record<string, any>;
+    const { collect, restoreStateBindings, snapshotState } = ((Resume) as any);
+    const { state } = ((Component) as any);
     const SchemaNumber = Schema.Number;
-    const { renderToString } = await fromSrc("dom", "renderToString");
-    const Serialization = await loadSrc("Serialization");
-    const { layer: serializationLayer } = pick(Serialization, "Serialization", "layer");
+    const { renderToString } = domModule;
+    const Serialization = SerializationModule as Record<string, any>;
+    const { layer: serializationLayer } = ((Serialization) as any);
 
     const counters = { setupRuns: 0 };
 
@@ -155,7 +144,7 @@ describe("machine-backed widget state", () => {
     // rejects value steps outright), so the interim's second binding is a
     // `.bind` publishing the machine's encoded state atom with
     // `Machine.snapshotPolicy()` — exactly the DQ-055 interim text.
-    const { snapshotPolicy } = pick(Machine, "Machine", "snapshotPolicy");
+    const { snapshotPolicy } = ((Machine) as any);
     const Widget = make(
       props(),
       require(),
@@ -237,35 +226,13 @@ describe("machine-backed widget state", () => {
     // correctly but leaves it without a running machine. This is the other
     // half: `send`/`matches` must work on the restored binding.
     const { Machine, definition, OpenEvent } = await disclosureMachine();
-    const { spawn, EncodedSnapshotSchema } = pick(
-      Machine,
-      "Machine",
-      "spawn",
-      "EncodedSnapshotSchema",
-    );
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, withDefinition, renderEffect, state } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "withDefinition",
-      "renderEffect",
-      "state",
-    );
-    const Resume = await loadSrc("Resume");
-    const { collect, restoreStateBindings, snapshotVia, snapshotState } = pick(
-      Resume,
-      "Resume",
-      "collect",
-      "restoreStateBindings",
-      "snapshotVia",
-      "snapshotState",
-    );
-    const { renderToString } = await fromSrc("dom", "renderToString");
-    const { layer: serializationLayer } = await fromSrc("Serialization", "layer");
+    const { spawn, EncodedSnapshotSchema } = ((Machine) as any);
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, withDefinition, renderEffect, state } = ((Component) as any);
+    const Resume = ResumeModule as Record<string, any>;
+    const { collect, restoreStateBindings, snapshotVia, snapshotState } = ((Resume) as any);
+    const { renderToString } = domModule;
+    const { layer: serializationLayer } = SerializationModule;
 
     const counters = { setupRuns: 0 };
 
@@ -352,25 +319,12 @@ describe("machine-backed widget state", () => {
     // `resumable` binding must produce the same manifest entry as the
     // hand-written projection above, so there is exactly one mechanism.
     const { Machine, definition, OpenEvent } = await disclosureMachine();
-    const { resumable, spawn } = pick(Machine, "Machine", "resumable", "spawn");
-    const Component = await loadSrc("Component");
-    const { make, props, require, setup, withDefinition, renderEffect } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "withDefinition",
-      "renderEffect",
-    );
-    const { collect, restoreStateBindings } = await fromSrc(
-      "Resume",
-      "collect",
-      "restoreStateBindings",
-    );
-    const { renderToString } = await fromSrc("dom", "renderToString");
-    const { layer: serializationLayer } = await fromSrc("Serialization", "layer");
+    const { resumable, spawn } = ((Machine) as any);
+    const Component = ComponentModule as Record<string, any>;
+    const { make, props, require, setup, withDefinition, renderEffect } = ((Component) as any);
+    const { collect, restoreStateBindings } = ResumeModule as Record<string, any>;
+    const { renderToString } = domModule;
+    const { layer: serializationLayer } = SerializationModule;
 
     // `resumable` folds spawn + schema + read + restore into one binding
     // source: no `{ resume: … }` option at the call site at all.
@@ -422,12 +376,7 @@ describe("machine-backed widget state", () => {
 
   it("[K0] encoded machine state survives a JSON wire round trip and rebinds initial on respawn", async () => {
     const { Machine, definition, OpenEvent, HighlightEvent } = await disclosureMachine();
-    const { spawn, EncodedSnapshotSchema } = pick(
-      Machine,
-      "Machine",
-      "spawn",
-      "EncodedSnapshotSchema",
-    );
+    const { spawn, EncodedSnapshotSchema } = ((Machine) as any);
 
     const firstScope = Scope.makeUnsafe();
     const first: any = await Effect.runPromise(
@@ -461,8 +410,8 @@ describe("machine-backed widget state", () => {
 
   it("[K0] machine state drives styling: a binding-conditional style tracks the active state path", async () => {
     const { Machine, definition, OpenEvent } = await disclosureMachine();
-    const { spawn } = pick(Machine, "Machine", "spawn");
-    const Component = await loadSrc("Component");
+    const { spawn } = ((Machine) as any);
+    const Component = ComponentModule as Record<string, any>;
     const {
       make,
       props,
@@ -471,30 +420,12 @@ describe("machine-backed widget state", () => {
       setupEffect,
       renderViewWithBindings,
       withSlots,
-    } = pick(
-      Component,
-      "Component",
-      "make",
-      "props",
-      "require",
-      "setup",
-      "setupEffect",
-      "renderViewWithBindings",
-      "withSlots",
-    );
-    const Style = await loadSrc("Style");
-    const { slot, whenBinding, compose, make: styleMake, attachToSlots } = pick(
-      Style,
-      "Style",
-      "slot",
-      "whenBinding",
-      "compose",
-      "make",
-      "attachToSlots",
-    );
-    const View = await loadSrc("View");
-    const { Slots, fromSlots } = pick(View, "View", "Slots", "fromSlots");
-    const { Capability } = await fromSrc("Element", "Capability");
+    } = ((Component) as any);
+    const Style = StyleModule as Record<string, any>;
+    const { slot, whenBinding, compose, make: styleMake, attachToSlots } = ((Style) as any);
+    const View = ViewModule as Record<string, any>;
+    const { Slots, fromSlots } = ((View) as any);
+    const { Capability } = ElementModule;
 
     const Anatomy = Slots.define({ root: { capability: Capability.Container } });
 

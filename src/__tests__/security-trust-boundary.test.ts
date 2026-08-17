@@ -23,9 +23,18 @@
  * AN-1 (dispatch).
  */
 
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, unbuilt } from "../harness.js";
+import * as ViewSpecModule from "../ViewSpec.js";
+import * as SafeHtmlModule from "../SafeHtml.js";
+import * as ViewModule from "../View.js";
+import * as domModule from "../dom.js";
+import * as SerializationModule from "../Serialization.js";
+import * as RouteModule from "../Route.js";
+import * as ResumeModule from "../Resume.js";
+import * as routerRuntimeModule from "../router-runtime.js";
+import * as AgentModule from "../Agent.js";
+import * as PortableModule from "../Portable.js";
 import {
   classifiedTag,
   distinctCodes,
@@ -33,7 +42,7 @@ import {
   runPromiseExit,
   runSyncExit,
   withGlobal,
-} from "./support.js";
+} from "./security-support.js";
 
 const BuildId = "future-security-build";
 
@@ -51,7 +60,7 @@ const emptyManifest = (buildId = BuildId) => ({
 describe("[SEC/DQ-091] Single-flight response boundary", () => {
   /** Drive `invokeSingleFlight` with a fake fetch returning `body` verbatim. */
   async function invoke(body: unknown) {
-    const Route = await fromSrc("Route", "invokeSingleFlight");
+    const Route = RouteModule;
     return runPromiseExit(
       Route.invokeSingleFlight(
         "/__single-flight",
@@ -77,7 +86,7 @@ describe("[SEC/DQ-091] Single-flight response boundary", () => {
       // confusion that today's `"ok" in parsed` check waves through.
       [
         "wrong types",
-        { ok: true, payload: { mutation: 1, url: 5, loaders: "not-an-array" } },
+        { version: 1, ok: true, payload: { mutation: 1, url: 5, loaders: "not-an-array" } },
       ],
       // Tampered: internally inconsistent — both arms of the two-arm envelope
       // present at once (`DQ-080` decided exactly two arms). An implementation
@@ -86,18 +95,20 @@ describe("[SEC/DQ-091] Single-flight response boundary", () => {
       [
         "tampered: both arms",
         {
+          version: 1,
           ok: true,
           error: { _tag: "Forbidden" },
           payload: { mutation: { id: 1 }, url: "/items", loaders: [] },
         },
       ],
       // Truncated: the envelope tag survived, the body did not.
-      ["truncated", { ok: true }],
+      ["truncated", { version: 1, ok: true }],
       // Drift: a loader entry naming a route this build does not have. `DQ-081`
       // decided a drifted call fails closed rather than degrading.
       [
         "route drift",
         {
+          version: 1,
           ok: true,
           payload: {
             mutation: { id: 1 },
@@ -128,6 +139,7 @@ describe("[SEC/DQ-091] Single-flight response boundary", () => {
     // mutation value survives untouched. Without this, an implementation that
     // rejected every response would satisfy every assertion above forever.
     const good = await invoke({
+      version: 1,
       ok: true,
       payload: { mutation: { id: 1, name: "ok" }, url: "/items", loaders: [] },
     });
@@ -139,12 +151,8 @@ describe("[SEC/DQ-091] Single-flight response boundary", () => {
   });
 
   it("never hydrates loader state out of an invalid response", async () => {
-    const Route = await fromSrc("Route", "invokeSingleFlight");
-    const router = await fromSrc(
-      "router-runtime",
-      "LoaderCacheTag",
-      "makeLoaderCacheStore",
-    );
+    const Route = RouteModule;
+    const router = routerRuntimeModule;
     // The observable consequence of believing a bad payload is *state*, not an
     // error code: a hydrated loader cache entry. So assert the cache stayed
     // empty, which is the thing an attacker actually wants to change.
@@ -156,6 +164,7 @@ describe("[SEC/DQ-091] Single-flight response boundary", () => {
         {
           fetch: async () => ({
             json: async () => ({
+              version: 1,
               ok: true,
               payload: {
                 mutation: null,
@@ -173,13 +182,39 @@ describe("[SEC/DQ-091] Single-flight response boundary", () => {
     expect(cache.cache.size).toBe(0);
   });
 
-  it("declares a version on the wire envelope", async () => {
-    // The loader handoff carries `version: 1`; the single-flight envelope
-    // carries nothing, so a client from build N cannot tell it is talking to a
-    // server from build N+1. Shape is owned by `DQ-091`, so this is not pinned
-    // here — but the semantics ("a mismatched envelope version fails closed")
-    // are the thing this file exists to guarantee.
-    unbuilt("versioned single-flight wire envelope", "DQ-091");
+  it("declares a version on the wire envelope, and a mismatch fails closed", async () => {
+    // DQ-091's remaining half, closed 2026-08-17: the envelope carries
+    // `version: 1` (`Route.singleFlightWireVersion`) on BOTH arms, so a
+    // client from build N talking to a server from build N+1 fails closed
+    // with a decode error instead of misreading the shape — the same rule
+    // the loader handoff has always followed.
+    const Route = RouteModule;
+    expect(Route.singleFlightWireVersion).toBe(1);
+
+    const payload = { mutation: { id: 1 }, url: "/items", loaders: [] };
+    // Missing version: the pre-versioning envelope is refused.
+    expect(classifiedTag(await invoke({ ok: true, payload }))).toBe(
+      "SingleFlightDecodeError",
+    );
+    // Wrong version: a future server fails closed on this client.
+    expect(
+      classifiedTag(await invoke({ version: 99, ok: true, payload })),
+    ).toBe("SingleFlightDecodeError");
+    // NEGATIVE CONTROL: the current version is accepted, on both arms.
+    expect(
+      classifiedTag(
+        await invoke({ version: Route.singleFlightWireVersion, ok: true, payload }),
+      ),
+    ).toBe("success");
+    expect(
+      classifiedTag(
+        await invoke({
+          version: Route.singleFlightWireVersion,
+          ok: false,
+          error: { _tag: "Forbidden" },
+        }),
+      ),
+    ).toBe("SingleFlightInvokeError");
   });
 });
 
@@ -187,8 +222,8 @@ describe("[SEC/DQ-091] Single-flight response boundary", () => {
 
 describe("[SEC/M8c] Resume manifest boundary", () => {
   async function decode(serialized: string, expected = BuildId) {
-    const Resume = await fromSrc("Resume", "decodeManifest");
-    const Serialization = await fromSrc("Serialization", "layer");
+    const Resume = ResumeModule;
+    const Serialization = SerializationModule;
     return runPromiseExit(
       Resume.decodeManifest(serialized, expected).pipe(
         Effect.provide(Serialization.layer),
@@ -254,7 +289,7 @@ describe("[SEC/M8c] Resume manifest boundary", () => {
     // the private `WeakSet` it would replace, because
     // `Object.getOwnPropertySymbols` makes such a brand forgeable onto any
     // object. The type is branded; the runtime witness stays unforgeable.
-    const Resume = await fromSrc("Resume", "installClient");
+    const Resume = ResumeModule;
     const { ManagedRuntime, Layer } = await import("effect");
 
     const manifest: any = emptyManifest();
@@ -298,8 +333,8 @@ describe("[SEC/M8c] Resume manifest boundary", () => {
 
 describe("[SEC/R2] Loader handoff boundary", () => {
   async function read(value: unknown) {
-    const Route = await fromSrc("Route", "readLoaderHandoff", "loaderHandoffGlobalKey");
-    const Serialization = await fromSrc("Serialization", "layer");
+    const Route = RouteModule;
+    const Serialization = SerializationModule;
     return withGlobal(Route.loaderHandoffGlobalKey, value, () =>
       runPromiseExit(
         Route.readLoaderHandoff().pipe(Effect.provide(Serialization.layer)),
@@ -307,7 +342,7 @@ describe("[SEC/R2] Loader handoff boundary", () => {
   }
 
   it("rejects every malformed shape a page script could assign, and accepts the well-formed envelope", async () => {
-    const Route = await fromSrc("Route", "loaderHandoffVersion");
+    const Route = RouteModule;
     const entry = {
       routeId: "items",
       params: {},
@@ -354,14 +389,9 @@ describe("[SEC/AN-1] Agent dispatch boundary", () => {
     // `Schema.Tuple` BEFORE `run` observes them. An arg list that does not
     // decode never reaches the handler and fails with the typed
     // `AgentArgsDecodeError` inside the two-arm envelope.
-    const { catalog, expose, dispatch } = await fromSrc(
-      "Agent",
-      "catalog",
-      "expose",
-      "dispatch",
-    );
-    const { code } = await fromSrc("Portable", "code");
-    const { Schema } = await import("effect");
+    const { catalog, expose, dispatch } = AgentModule;
+    const { code } = PortableModule;
+    
 
     const runs: Array<unknown> = [];
     const c = catalog({
@@ -386,7 +416,12 @@ describe("[SEC/AN-1] Agent dispatch boundary", () => {
     });
     const send = async (args: unknown) =>
       Effect.runPromise(
-        dispatch(c)({ tool: "save", args, buildId: BuildId }) as Effect.Effect<any>,
+        dispatch(c)({
+          // The boundary's whole point: args arrive as untrusted wire data.
+          args: args as ReadonlyArray<unknown>,
+          tool: "save",
+          buildId: BuildId,
+        }) as Effect.Effect<any>,
       );
 
     // The same five shapes as every other boundary in this file.

@@ -21,9 +21,18 @@
  * (`SafeHtml`), `ROUTER_CONSOLIDATION_PLAN.md` R2 (loader scripts).
  */
 
-import { Exit } from "effect";
+import { Exit, Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { fromSrc, unbuilt } from "../harness.js";
+import * as ViewSpecModule from "../ViewSpec.js";
+import * as SafeHtmlModule from "../SafeHtml.js";
+import * as ViewModule from "../View.js";
+import * as domModule from "../dom.js";
+import * as SerializationModule from "../Serialization.js";
+import * as RouteModule from "../Route.js";
+import * as ResumeModule from "../Resume.js";
+import * as routerRuntimeModule from "../router-runtime.js";
+import * as AgentModule from "../Agent.js";
+import * as PortableModule from "../Portable.js";
 import {
   classifiedTag,
   containsLiveMarkup,
@@ -31,7 +40,7 @@ import {
   runPromiseExit,
   ScriptBreakoutPayload,
   XssPayload,
-} from "./support.js";
+} from "./security-support.js";
 
 describe("[SEC/AF-UI] SSR text escaping", () => {
   it("escapes an XSS-shaped string in text position and still renders it as visible text", async () => {
@@ -39,7 +48,7 @@ describe("[SEC/AF-UI] SSR text escaping", () => {
     // place a regression would be catastrophic and silent: a future
     // `insert`/`toHTML` fast path that skips `escapeHTML` for "plain strings"
     // would pass every existing rendering test.
-    const dom = await fromSrc("dom", "renderToString", "template", "insert");
+    const dom = domModule;
     const html = dom.renderToString(() => {
       const span = dom.template("<span>")();
       dom.insert(span, XssPayload);
@@ -60,7 +69,7 @@ describe("[SEC/AF-UI] SSR text escaping", () => {
   });
 
   it("escapes an XSS-shaped string in attribute position, including a quote breakout", async () => {
-    const dom = await fromSrc("dom", "renderToString", "template", "setAttribute");
+    const dom = domModule;
     const breakout = `" onmouseover="globalThis.__afuiPwned=1`;
     const html = dom.renderToString(() => {
       const span = dom.template("<span>")();
@@ -88,7 +97,7 @@ describe("[SEC/AF-UI] SSR text escaping", () => {
     // Event wiring must never become an `on*` attribute in serialized HTML: an
     // inline handler is both an injection surface and incompatible with any
     // strict CSP the host may set.
-    const dom = await fromSrc("dom", "renderToString", "template", "addEventListener");
+    const dom = domModule;
     const html = dom.renderToString(() => {
       const button = dom.template("<button>")();
       dom.addEventListener(button, "click", () => {});
@@ -101,8 +110,8 @@ describe("[SEC/AF-UI] SSR text escaping", () => {
 
 describe("[SEC/AF-UI] SafeHtml is the only markup channel", () => {
   it("renders branded SafeHtml as markup and refuses a look-alike that is not branded", async () => {
-    const SafeHtml = await fromSrc("SafeHtml", "make", "isSafeHtml", "unwrap");
-    const View = await fromSrc("View", "html");
+    const SafeHtml = SafeHtmlModule;
+    const View = ViewModule;
 
     // The brand is a symbol, so a plain object cannot forge it by structure.
     const forged = { html: "<b>forged</b>", [Symbol.for("not-the-real-one")]: true };
@@ -115,13 +124,29 @@ describe("[SEC/AF-UI] SafeHtml is the only markup channel", () => {
     expect(SafeHtml.unwrap(branded)).toBe("<b>trusted</b>");
     expect(View.html(branded).value).toBe(branded);
 
-    // The renderer half. `View.html(...)` produces a `view.hole.html` node that
-    // `src/dom.ts` has no branch for today, so a `SafeHtml` hole silently
-    // renders as nothing. That is fail-closed, which is the right default — but
-    // it means the *only* markup channel in the design is currently
-    // unimplemented, and the day it is implemented is the day the brand check
-    // becomes load-bearing at runtime rather than only at the type level.
-    unbuilt("renderer branch for View.html / SafeHtml holes", "COMPONENT_KIT_PLAN.md");
+    // The renderer half (built with the K1 SafeHtml slice): the brand check
+    // is load-bearing at RUNTIME now, on both sides of the seam —
+    // `View.html` fails closed on an unbranded value instead of minting a
+    // markup hole, and the insertion path renders the branded value as
+    // markup while its unbranded twin escapes.
+    expect(() => View.html(XssPayload as never)).toThrow(/SafeHtml/);
+
+    const dom = domModule;
+    const rendered: string = dom.renderToString(() => {
+      const host = (globalThis as { document?: { createElement: (tag: string) => unknown } })
+        .document!.createElement("div");
+      dom.insert(host as Parameters<typeof dom.insert>[0], branded);
+      return host;
+    });
+    const escaped: string = dom.renderToString(() => {
+      const host = (globalThis as { document?: { createElement: (tag: string) => unknown } })
+        .document!.createElement("div");
+      dom.insert(host as Parameters<typeof dom.insert>[0], XssPayload);
+      return host;
+    });
+    expect(rendered).toContain("<b>trusted</b>");
+    expect(containsLiveMarkup(escaped)).toBe(false);
+    expect(escaped).toContain("&lt;img");
   });
 });
 
@@ -132,8 +157,8 @@ describe("[SEC/R2] Serialized payloads inside <script>", () => {
     // Any attacker-controlled string that reaches component state or a loader
     // result reaches this encoder, so `</script>` must not survive it — and the
     // escaped form must still be valid JSON, or the fix would break hydration.
-    const Serialization = await fromSrc("Serialization", "encodeSync", "escapeJsonForHtml");
-    const { Schema } = await import("effect");
+    const Serialization = SerializationModule;
+    
 
     const encoded = Serialization.encodeSync(
       Schema.Struct({ note: Schema.String }),
@@ -163,12 +188,12 @@ describe("[SEC/R2] Serialized payloads inside <script>", () => {
   });
 
   it("keeps a `</script>` breakout out of the streamed deferred loader scripts", async () => {
-    const Route = await fromSrc("Route", "streamDeferredLoaderScripts");
+    const Route = RouteModule;
     const hostile = Route.streamDeferredLoaderScripts([
       {
         routeId: "items",
         params: {},
-        result: { _tag: "Success", value: ScriptBreakoutPayload },
+        result: { _tag: "Success", value: ScriptBreakoutPayload } as unknown as Parameters<typeof Route.streamDeferredLoaderScripts>[0][number]["result"],
       },
     ]);
     const joined = hostile.join("");
@@ -183,7 +208,11 @@ describe("[SEC/R2] Serialized payloads inside <script>", () => {
     // NEGATIVE CONTROL: a benign entry still streams, and still carries its
     // value, so this is not satisfied by emitting nothing.
     const benign = Route.streamDeferredLoaderScripts([
-      { routeId: "items", params: {}, result: { _tag: "Success", value: "ordinary" } },
+      {
+        routeId: "items",
+        params: {},
+        result: { _tag: "Success", value: "ordinary" } as unknown as Parameters<typeof Route.streamDeferredLoaderScripts>[0][number]["result"],
+      },
     ]).join("");
     expect(benign).toContain("ordinary");
     expect(benign).toContain("<script");
@@ -195,7 +224,7 @@ describe("[SEC/DQ-090] The generated-UI spec IR has no markup node kind", () => 
     // `DQ-090` is the strongest form of this guarantee available: not "raw
     // HTML is validated away" but "raw HTML is unrepresentable". Built as
     // `src/ViewSpec.ts` (names ratified by `DQ-094`).
-    const { decodeSpec } = await fromSrc("ViewSpec", "decodeSpec");
+    const { decodeSpec } = ViewSpecModule;
 
     // A markup kind — whatever name a contributor might reach for — fails
     // with the IR's UNKNOWN-KIND refusal, the same one an outright typo
