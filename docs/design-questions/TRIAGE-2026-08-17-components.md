@@ -11,13 +11,14 @@ This packet is the gateway to the **kit-widget milestone** — the last one in
 `future/` (7 reds: `src/kit/` widgets + pattern registry, six-layer exports,
 Clock seam, and the three parked DQs below).
 
-Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when deciding).
+Status key: ☐ pending · ✅ ratified · ❌ rejected.
+**All nine items ratified as recommended, 2026-08-17 (user-delegated).**
 
 ---
 
 ## Group A — outcome records (implemented; close with a note)
 
-### ☐ 1. DQ-056 — binding-conditional style subscription and granularity
+### ✅ 1. DQ-056 — binding-conditional style subscription and granularity
 
 - **Context change:** the defect half ("`whenBinding` is not reactive") was
   **fixed 2026-08-17** (`59e0f02`), and the fix embodies concrete answers to
@@ -40,7 +41,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
 
 ## Group B — the three parked DQs blocking `future/` reds
 
-### ☐ 2. DQ-063 — CSS-Tags: absorb as `@affe/css` or depend externally?
+### ✅ 2. DQ-063 — CSS-Tags: absorb as `@affe/css` or depend externally?
 
 - **Blocks:** `recipe-merge.spec.ts` (1 of its 2 reds).
 - **Premise check:** the entry's deciding fact ("upstream's release cadence
@@ -61,7 +62,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
 - **Cost:** package scaffold + stylesheet import surface, sequenced INTO the
   kit milestone (the foundation stylesheet is rung zero under the widgets).
 
-### ☐ 3. DQ-064 — static CSS extraction across cross-module `Style.compose`
+### ✅ 3. DQ-064 — static CSS extraction across cross-module `Style.compose`
 
 - **Blocks:** `recipe-merge.spec.ts` (the other red).
 - **Recommendation (= the entry's own):** **Option 1 with the slot as the
@@ -79,7 +80,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
   from "blocked on DQ-064" to "owned by K4".
 - **Cost now:** zero code; the K4 work item gains a decided shape.
 
-### ☐ 4. DQ-070 — slot-as-projection (slot = addressable named region)
+### ✅ 4. DQ-070 — slot-as-projection (slot = addressable named region)
 
 - **Blocks:** `slots-and-dynamic-attachment.spec.ts` (its last red).
 - **Context change — the hard prerequisite is DONE:** the entry gates
@@ -100,7 +101,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
 
 ## Group C — timing, granularity, and surface-freeze items
 
-### ☐ 5. DQ-066 — behaviour timing seam
+### ✅ 5. DQ-066 — behaviour timing seam
 
 - **Blocks (indirectly):** the K3 Clock/Locale marker in
   `services-and-determinism.spec.ts`.
@@ -115,7 +116,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
 - **Cost:** small (two knobs on press + a deterministic test); the service
   half lands inside the kit milestone.
 
-### ☐ 6. DQ-067 — `collection` invalidation granularity
+### ✅ 6. DQ-067 — `collection` invalidation granularity
 
 - **Recommendation (= the 2026-08-12 status update, now ratified):** keep
   the single version counter; finer granularity is a **measurement-gated**
@@ -125,7 +126,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
   disabled epoch vs order epoch).
 - **Cost:** zero now; a Decided-table row.
 
-### ☐ 7. DQ-068 — attribute value type and coercion contract
+### ✅ 7. DQ-068 — attribute value type and coercion contract
 
 - **Recommendation (= the entry's option 1):** typed attribute tokens with
   per-token value types plus an explicit absence rule, stated once on the
@@ -137,7 +138,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
 - **Cost:** small-medium (token table + two implementations aligned +
   conformance test), inside the kit milestone.
 
-### ☐ 8. DQ-069 — closed-union batch (platformFloor, RecipeSelection, a11y gate)
+### ✅ 8. DQ-069 — closed-union batch (platformFloor, RecipeSelection, a11y gate)
 
 - **Recommendation (= the entry's own):** closed unions for
   `platformFloor.covers` and the a11y-gate `widgets` array (whose
@@ -147,7 +148,7 @@ Status key: ☐ pending · ✅ ratified · ❌ rejected (edit inline when decidi
   consume them.
 - **Cost:** small, inside the kit milestone.
 
-### ☐ 9. DQ-059 + DQ-060 — the shipped setup/render surface and authoring form
+### ✅ 9. DQ-059 + DQ-060 — the shipped setup/render surface and authoring form
 
 Taken together because they freeze the same first-touch surface.
 

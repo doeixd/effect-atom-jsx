@@ -10,18 +10,9 @@ here except where a real choice sits behind them (see the last section).
 
 ## Summary
 
-| ID | Question | Severity | Owning plan |
-| --- | --- | --- | --- |
-| DQ-056 | What subscribes to a binding-conditional style, and at what granularity? | deferrable | `COMPONENT_KIT_PLAN.md` (seq. step 5) |
-| DQ-059 | What is the shipped component setup/render surface, and does the library owe a scoped test helper? | deferrable | DIN-20 |
-| DQ-060 | `setup()` builder or positional `make(props(), require(), …)` — which ships? | deferrable | DIN-20 |
-| DQ-063 | CSS-Tags: absorb as `@affe/css` or depend externally? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-8 |
-| DQ-064 | How does static CSS extraction survive a cross-module `Style.compose` chain? | deferrable | `COMPONENT_KIT_PLAN.md` OQ-9 |
-| DQ-066 | Where does interruptible behaviour timing come from? | deferrable | `COMPONENT_KIT_PLAN.md` K0b |
-| DQ-067 | What is `collection`'s invalidation granularity? | deferrable | `COMPONENT_KIT_PLAN.md` K0b |
-| DQ-068 | What is the attribute value type and coercion contract? | deferrable | DIN-17 |
-| DQ-069 | Batch: three closed-union / exhaustiveness tightenings. | cosmetic | `COMPONENT_KIT_PLAN.md` §4 items |
-| DQ-070 | Does a slot become an addressable named region (slot-as-projection)? | deferrable | DIN-11 |
+**No open entries.** Every components-lane question is decided — the last
+ten were ratified 2026-08-17 via `TRIAGE-2026-08-17-components.md`
+(user-delegated), which also defines the kit-milestone work list.
 
 ---
 
@@ -43,6 +34,16 @@ still resolves. The decision and its rejected alternatives live in the plan.
 | DQ-058 | Double-attach is LEGAL but reported: attach records behaviour identity + elements, a repeat emits `component:duplicate-attachment` through the opt-in diagnostics reporter, and nothing is ever silently de-duplicated. | implemented in `src/Component.ts` (`recordBehaviorAttachment`), tested in `src/__tests__/lifecycle-disposal.test.ts` |
 | DQ-057 | Last-wins TRUTH types: variadic `compose` over a tuple with `MergeAll` bindings (later keys override), `provides`/`events`/`emits` stay last-wins with a `behavior:provides-override` diagnostic through the DQ-058 reporter channel (report, never block). Deps stay intersection (inputs). Pipe landed. Rejected: intersection-with-conflict-errors — it outlaws the sanctioned REPLACE path. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b |
 | DQ-065 | Option 1 confirmed and DISCHARGED: the five factories were fixed first and now prove the boilerplate; `Mixin` (K0c) proceeds, extracted from the working shape — it must collapse the three observed repetitions (factory name, doubled witness names, options pick-list) and desugar to the same Schema+Behavior patterns, never a second runtime. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0c |
+| DQ-056 | OUTCOME: the 2026-08-17 `whenBinding` fix answers it — per-property reactive accessors (`handle.setStyle` reaction), whole-piece re-resolution per read, branch-off unsets (K1 null-unset); non-conditional pieces keep resolve-once. Residual: dormancy (snapshot-driven styling of dormant regions) stays with the resume lane, gated on a real consumer. | ratified 2026-08-17, TRIAGE-2026-08-17-components.md item 1 |
+| DQ-063 | Absorb as **`@affe/css`** (workspace package; CSS-Tags is this repo's author's own project, so absorption is deliberate ownership, not a fork) — token namespace, `@layer` order, and Theme's typed refs version as one surface. Build lands with the kit milestone. | ratified 2026-08-17, item 2 |
+| DQ-064 | Static extraction: per-module with the **slot** as the fail-open unit (fully-resolvable-in-module slots extract; boundary-crossing slots runtime-compose whole; binding-conditional pieces are never extracted — they are reactive per DQ-056). Owned by **K4**. | ratified 2026-08-17, item 3 |
+| DQ-066 | `press` gains a `now?: () => number` seam + `clickSuppressionMs` Schema knob (injected-seam precedent); the Effect `Clock`/`Locale` SERVICE ships with K3's first time-holding widget. | ratified 2026-08-17, item 5 |
+| DQ-067 | Keep the single version counter; finer granularity is MEASUREMENT-GATED (bench lane first, then split per-item disabled epoch vs order epoch), per the DQ-100/M8d precedent. | ratified 2026-08-17, item 6 |
+| DQ-068 | Typed attribute tokens with per-token value types + explicit absence rule (booleans: `false` removes / `true` sets `""`; numbers stringify; absent reads `undefined`; `data-*` escape). Both handle implementations must agree; conformance test shared. Lands with the kit dialog work. | ratified 2026-08-17, item 7 |
+| DQ-069 | Closed unions for `platformFloor.covers` and the a11y-gate `widgets`/`PropsOf` tie (the false-green risk, first); `null` = explicit deselection for `RecipeSelection` axes with defaults. Lands with the kit widgets. | ratified 2026-08-17, item 8 |
+| DQ-070 | Slot-as-projection: **option 1, unblocked** (DQ-050 per-instance handles + M11/M11b are done). A slot emits a comment-pair region as itself — one identity for compile-time slots and runtime regions, typed mount targets for fragments. Sequenced LAST in the kit milestone; upstream ABI watch stays. | ratified 2026-08-17, item 4 |
+| DQ-059 | Two blessed entry points — `setupEffect` + `renderEffect` (view-typed results via the `SlotContract` axis, folding `renderViewEffect` in); `…WithBindings` demoted at the export audit; one scoped test helper replaces hand-rolled `Scope.makeUnsafe()` sites. Lands with the kit milestone. | ratified 2026-08-17, item 9 |
+| DQ-060 | Both `make` forms ship with a stated division: golden path is the `make(setup, view)` shorthand (view-inferred props — its existence answers WHY specs preferred positional), growing to the 4-arg form only when props validation/requirement tags are declared; the `setup()` builder is the blessed way to author the setup value. `Component.require` shadowing noted for the v1 export audit. | ratified 2026-08-17, item 9 |
 | DQ-071 | `presence` packages as option 1: a `ReducedMotion` Context service (boolean reader, static default `false`, `Layer`-swappable per subtree) + `PresenceOptions` Schema for per-instance knobs; bindings are `isPresent` + `phase` (machine handle stays internal); the `animationend` listener attaches to the single `root` element. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b item 6 |
 | DQ-072 | `LiveAnnouncer` is option 1: one `announce(message, politeness?)` method; clear-after-timeout is the LAYER's policy (`makeLiveAnnouncer({ clearAfterMs })`); a mock Layer captures `[message, politeness]` tuples. Queue handles deferred until a consumer needs backpressure. | ratified 2026-08-12, `COMPONENT_KIT_PLAN.md` K0b item 5 |
 | DQ-062 | Widening is the explicit, name-carrying `Style.extendRecipeSlots(base, names)` returning the widened `RecipeDef` union; `mergeRecipes` stays two-arg with patch slots type-constrained to the base and dynamic unknown slots reported as `style:unknown-recipe-slot` diagnostics (never silent, never a throw). | ratified+built 2026-08-12, `COMPONENT_KIT_PLAN.md` K1 ratifications |

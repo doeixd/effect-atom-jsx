@@ -20,6 +20,13 @@ export const PressOptions = Schema.Struct({
   trackPressed: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
+  /**
+   * How long a synthetic click is suppressed after a real pointer press
+   * (`DQ-066`). Default 50ms.
+   */
+  clickSuppressionMs: Schema.Number.pipe(
+    Schema.withDecodingDefault(Effect.succeed(50)),
+  ),
 });
 
 export type PressOptions = typeof PressOptions.Type;
@@ -30,6 +37,12 @@ export type PressConfig = typeof PressOptions.Encoded & {
   readonly onPressStart?: () => void;
   readonly onPressEnd?: () => void;
   readonly isDisabled?: () => boolean;
+  /**
+   * Timing seam (`DQ-066`, ratified): behaviour listener callbacks are
+   * synchronous, so an Effect Clock cannot be read inside them — the
+   * injected `now` is how deterministic tests own time. Default `Date.now`.
+   */
+  readonly now?: () => number;
 };
 
 export type PressBindings = {
@@ -76,7 +89,9 @@ export const press = (config: PressConfig = {}) =>
       const options = yield* Behavior.decodeOptions("press", PressOptions, {
         preventFocusOnPress: config.preventFocusOnPress,
         trackPressed: config.trackPressed,
+        clickSuppressionMs: config.clickSuppressionMs,
       });
+      const now = config.now ?? Date.now;
       const isPressed = yield* Component.state(false);
       let pointerDown = false;
       let activePointerId: number | undefined;
@@ -116,7 +131,7 @@ export const press = (config: PressConfig = {}) =>
           event.preventDefault?.();
         }
         // Suppress following synthetic click after real pointer press.
-        ignoreClickUntil = Date.now() + 50;
+        ignoreClickUntil = now() + options.clickSuppressionMs;
       });
 
       yield* elements.target.on("pointerup", (raw) => {
@@ -165,7 +180,7 @@ export const press = (config: PressConfig = {}) =>
       yield* elements.target.on("click", (raw) => {
         const event = raw as ClickLike;
         if (disabled()) return;
-        if (Date.now() < ignoreClickUntil) return;
+        if (now() < ignoreClickUntil) return;
         // Virtual / SR click often has detail 0
         if (event.detail === 0 || event.pointerType === "virtual") {
           firePress();

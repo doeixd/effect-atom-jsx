@@ -441,14 +441,14 @@ describe("theme tokens", () => {
   it("[K1] static CSS extraction preserves cross-module compose and fails open to runtime CSS", async () => {
     unbuilt(
       "static style extraction pass (must not break cross-module Style.compose; fail-open to runtime CSS)",
-      "DQ-064",
+      "COMPONENT_KIT_PLAN.md K4 (design ratified 2026-08-17: slot-unit fail-open; binding-conditionals never extracted)",
     );
   });
 
   it("[K1] CSS-Tags rung zero: absorbed as @affe/css or depended on externally", async () => {
     unbuilt(
       "CSS-Tags foundation stylesheet --- absorb into the @affe/* workspace vs depend externally (token-namespace ownership)",
-      "DQ-063",
+      "kit milestone: @affe/css workspace package (ratified 2026-08-17: absorb — token namespace, layer order, and Theme refs version as one surface)",
     );
   });
 });

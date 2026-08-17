@@ -491,7 +491,7 @@ describe("slot as projection", () => {
   it("[DIN-11] a slot is a named region: it emits its own resume boundary and can be a typed mount target", async () => {
     unbuilt(
       "slot-as-projection-element (`Slot.render name=...`): lazy child evaluation at placement, slot-owned comment-pair region, typed named mount targets for M11b fragments",
-      "DQ-070",
+      "kit milestone finale (DQ-070 ratified 2026-08-17, unblocked by DQ-050: slot emits its region as itself; typed mount targets for fragments)",
     );
   });
 });

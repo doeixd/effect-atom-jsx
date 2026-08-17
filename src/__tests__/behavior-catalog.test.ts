@@ -35,6 +35,38 @@ describe("catalog option contract", () => {
     Effect.runSync(attached.dispose);
   });
 
+  it("press timing is deterministic under an injected `now` seam (DQ-066)", () => {
+    // Behaviour listener callbacks are synchronous, so time enters through
+    // the injected function-prop seam, never wall-clock arithmetic — a test
+    // OWNS time instead of sleeping through it.
+    let clock = 1000;
+    let presses = 0;
+    const behavior = press({
+      onPress: () => {
+        presses += 1;
+      },
+      now: () => clock,
+      clickSuppressionMs: 100,
+    });
+    const target = Element.interactive();
+    const attached = Effect.runSync(Behavior.attachScoped(behavior, { target }));
+
+    // A real pointer press opens the suppression window…
+    target.emit("pointerdown", { button: 0, pointerId: 1 });
+    target.emit("pointerup", { button: 0, pointerId: 1 });
+    expect(presses).toBe(1);
+    // …so the trailing synthetic click inside the window is suppressed…
+    clock += 99;
+    target.emit("click", { detail: 0 });
+    expect(presses).toBe(1);
+    // …and an independent virtual click after the window fires normally.
+    clock += 2;
+    target.emit("click", { detail: 0 });
+    expect(presses).toBe(2);
+
+    Effect.runSync(attached.dispose);
+  });
+
   it("rovingTabindex() works with a partial config and keeps the full option unions", () => {
     // A single non-default field; everything else defaults from the Schema.
     const behavior = rovingTabindex({ loop: false });
@@ -65,7 +97,7 @@ describe("catalog option contract", () => {
     const roundTrips: ReadonlyArray<
       readonly [Schema.Codec<unknown, unknown>, unknown]
     > = [
-      [PressOptions, { trackPressed: true, preventFocusOnPress: false }],
+      [PressOptions, { trackPressed: true, preventFocusOnPress: false, clickSuppressionMs: 50 }],
       [RovingTabindexOptions, {
         orientation: "horizontal",
         loop: false,
