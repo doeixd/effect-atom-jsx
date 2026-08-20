@@ -14,6 +14,17 @@ Three jobs in one folder:
 - **Red-green TDD at plan scale.** `npm run test:future` prints the remaining
   work as failures. Implementing a milestone means turning specs green.
 
+## Current state (2026-08-20)
+
+**The suite is empty.** Every spec written here has been driven green and
+promoted into `src/__tests__/`; only the harness and the two `support.ts`
+fixture files remain. `npm run test:future` therefore exits non-zero with
+"No test files found" — that is an empty suite, not a broken one.
+
+This folder is still the right place for the next milestone: write the
+finished design here first, then implement against it. See the workflow
+below.
+
 ## The contract
 
 1. **A failure here is a work item, never an emergency.** This suite is
@@ -64,6 +75,11 @@ there means a spec has a genuine mistake in it.
 | `harness.ts` | `loadSrc`/`fromSrc`/`pick`/`unbuilt` | — |
 | `components/` | slots, views, styles, behaviors, kit | `COMPONENT_KIT_PLAN.md`, AF-UI contract |
 | `agent/` | action catalog, MCP/HTTP surfaces, generative UI | `AGENT_NATIVE_NOTES.md`, `af-ui-json-render/` |
+| `security/` | trust boundaries, wire validation, authorization | `docs/design-questions/platform.md` |
+
+(Lane directories are created when a lane opens and removed when its last
+spec is promoted; only `agent/` and `security/` survive today, and only for
+their `support.ts` fixtures.)
 
 ## The four dimensions a spec can cover
 

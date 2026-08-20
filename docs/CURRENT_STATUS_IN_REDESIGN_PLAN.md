@@ -1,10 +1,10 @@
 # Current Status In Redesign Plan
 
-Last updated: 2026-08-17 (agent lane COMPLETE; security future-lane EMPTY;
-all fixable issues fixed — the 7 remaining future reds are exactly the
-unbuilt kit-widget milestone)
+Last updated: 2026-08-20 (every lane COMPLETE; `future/` holds no specs;
+no open design question in any lane; the ADR-006 examples gap — the last
+standing `typecheck:all` red — is closed)
 
-## Status as of 2026-08-17
+## Status as of 2026-08-20
 
 - **The agent-native lane (AN-1–AN-5) is complete.** `src/Agent.ts`
   (catalog/dispatch/governance/audit/ApprovalStore/suggestions),
@@ -32,17 +32,39 @@ unbuilt kit-widget milestone)
   New kit primitives: `behaviors/form-control.ts` (hidden native-input
   projection — dormant widgets submit real forms pre-JS) and
   `Theme.lightDark` (zero-JS light/dark tokens).
-- **Gates** (verified 2026-08-17): `npm run typecheck` (+ tests, browser,
-  permissive, agent legs), `npm test` (**1361 passing**, 102 files),
-  `npm run build`. The only `typecheck:all` red is the pre-existing ADR-006
-  examples pipe-facet gap.
-- **What remains in `future/`** (7 reds, all one milestone): the kit-widget
-  phase — `src/kit/` widgets + pattern-contract registry (K3), six-layer
-  kit exports (K4), the injected Clock/Locale seam (K3), and three parked
-  design questions (`DQ-063` CSS-Tags ownership, `DQ-064` static style
-  extraction, `DQ-070` slot-as-projection). Next step: a components-lane
-  ratification packet, then the kit build — the same playbook that closed
-  the agent lane.
+- **The kit-widget milestone is complete** (`ee268d9`, `b09427e`,
+  `aa98735`). `src/kit/` widgets + the pattern-contract registry, six-layer
+  kit exports, the injected Clock/Locale seam, and `@affe/css`. All three
+  parked components-lane questions are executed: `DQ-063` (CSS-Tags
+  ownership), `DQ-064` (static style extraction — per-module, with the
+  **slot** as the fail-open unit: any slot touched by a runtime condition
+  or a binding conditional runtime-composes whole), and `DQ-070`
+  (slot-as-projection — a slot emits its own comment-pair region on both
+  the client and SSR paths). Token resolution is now **property-aware**:
+  a bare token name resolves only within its property's own category, so
+  CSS keywords are no longer hijacked by token-leaf collisions
+  (`display: "none"` used to extract as `var(--af-radius-none)`).
+- **The ADR-006/R3 enhancer inference gap is closed** (`8da1de5`) — the
+  last standing `typecheck:all` red. Route enhancers no longer type
+  differently depending on `.pipe(...)` chain shape. Two independent
+  causes: `Route` extended `Pipeable<Route<...>>`, so `self` in a pipe was
+  the route facet alone and a `Component.route` sugar value lost its
+  component facet (now a `this`-polymorphic pipe); and each enhancer's
+  `RouteNodePipeOp` brand was **intersected** with its generic call
+  signature, which stops TypeScript instantiating that signature in the
+  context of `pipe` (the brand is now a member of the same object type).
+  Three casts died with it — two in `route-loader.test.ts` and
+  `Route.seedLoader(UserPage as any)` in both single-flight examples.
+  Pinned by `src/type-tests/route-pipe-collapse.ts` (compile-time) and
+  `src/__tests__/route-pipe-inference.test.ts` (runtime).
+- **Gates** (verified 2026-08-20): `npm run typecheck:all` **0 errors**
+  across every leg (src, tests, examples, browser, permissive, agent, css,
+  effect), `npm test` (**1415 passing**, 110 files), `npm run build`.
+- **`future/` holds no specs** — only `harness.ts` and the `agent/` and
+  `security/` support files. Every lane's forward specification has been
+  discharged and promoted into `src/__tests__/`, and no design question in
+  any lane (`docs/design-questions/`) is still open. There is no forward
+  worklist: the next substantive build needs a new discovery pass first.
 
 The sections below predate the agent lane and describe the 2026-07/08
 redesign era; they remain accurate for the surfaces they cover.
@@ -1500,6 +1522,33 @@ Bugs to avoid and test:
 8. the package builds correctly.
 
 ## In Progress / Next
+
+### Next actionable step (2026-08-20)
+
+Nothing is in progress. `future/` holds no specs, every design question is
+decided, and all gates are green, so there is no forward worklist to pull
+from. The remaining pre-release work is consolidation, not architecture:
+
+1. **PR #11** (`agent/resumability-foundation`) is still a draft titled
+   "Add hydration identity and resumability foundations", but now carries
+   the agent lane, the security sweep, the kit milestone, and the ADR-006
+   collapse. It needs to be retitled and marked ready, or split — an
+   owner decision, not an agent one.
+2. **D2 remainder** — publish `llms.txt` as a versioned agent skill (the
+   artifact exists at the repo root; packaging does not).
+3. **The `docs/` sweep** described under "Design Improvement Proposals
+   (round 3)" — ~70 documents to triage into proposals/backlog/next.
+
+Note: the older "physically remove the deprecated `attach`/`attachByView`"
+follow-up is **withdrawn**, not outstanding. Both are documented in source
+as intentionally retained escape hatches for components without a
+published `View.Slots` contract (`src/Style.ts:1189`, `src/Behavior.ts:721`),
+and neither carries a `@deprecated` tag.
+
+Anything beyond that needs a discovery pass in `docs/design-questions/`
+first; there is no unbuilt target specified anywhere right now.
+
+### Earlier
 
 - Slot contract unification is closed for now — `View.Slots` is the authored
   contract path, component slot axes are collapsed to `SlotContract`, typed
