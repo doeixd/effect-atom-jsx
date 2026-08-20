@@ -39,7 +39,15 @@ const SearchPage = Component.make(
     </section>
   ),
 ).pipe(
-  Component.route("/search"),
+  // The query schema is what types `Route.Link`'s `query` prop. Without it a
+  // query is string-valued, and `page: 2` is correctly rejected.
+  Component.route("/search", {
+    query: Schema.Struct({
+      page: Schema.NumberFromString,
+      sort: Schema.String,
+      search: Schema.String,
+    }),
+  }),
 ).pipe(
   Route.title("Search"),
   Route.meta({ description: "Typed query atom route" }),

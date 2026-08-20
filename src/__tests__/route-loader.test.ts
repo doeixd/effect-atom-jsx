@@ -60,10 +60,7 @@ describe("Route loader", () => {
     );
 
     const out = Effect.runSync(
-      // KNOWN INFERENCE GAP (ADR-006 collapse, see LoaderRouteEnhancer): a
-      // pipe-built sugar route loses its component facet in contextual
-      // inference, so this render still needs the cast.
-      Component.renderEffect(UserPage, {}).pipe(Effect.provide(memoryRouter("/users/alice"))) as Effect.Effect<unknown, never, never>,
+      Component.renderEffect(UserPage, {}).pipe(Effect.provide(memoryRouter("/users/alice"))),
     );
     expect(out).toBe("alice");
   });
@@ -329,8 +326,7 @@ describe("Route loader", () => {
     );
 
     const out = Effect.runSync(
-      // KNOWN INFERENCE GAP (ADR-006 collapse): same as above.
-      Component.renderEffect(StreamingUser, {}).pipe(Effect.provide(memoryRouter("/streaming/users/alice"))) as Effect.Effect<unknown, never, never>,
+      Component.renderEffect(StreamingUser, {}).pipe(Effect.provide(memoryRouter("/streaming/users/alice"))),
     );
 
     expect(["Initial", "Success", "Failure"]).toContain(String(out));

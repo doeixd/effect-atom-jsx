@@ -145,7 +145,7 @@ const saveUserHandler = Route.singleFlight(
   {
     baseUrl: "http://example.local",
     target: (result) => `/users/${result.id}`,
-    setLoaders: Route.seedLoader(UserPage as any),
+    setLoaders: Route.seedLoader(UserPage),
   },
 );
 

@@ -135,7 +135,17 @@ interface UnifiedRouteInternals<P, Q, H, LD, LE> {
  * with route helpers like `Route.paramsSchema(...)`, `Route.loader(...)`, and
  * `Route.title(...)`.
  */
-export interface Route<C, P, Q, H, LD = void, LE = never> extends Pipeable<Route<C, P, Q, H, LD, LE>> {
+export interface Route<C, P, Q, H, LD = void, LE = never> {
+  // `this`-polymorphic pipe (ADR-006): a self-stamped `Component.route` sugar
+  // value is a ComponentType AND a Route. A `Pipeable<Route<...>>` would type
+  // `self` as the route facet ALONE, so an enhancer piped off the sugar never
+  // saw the component facet and typed the result non-callable. `this` carries
+  // the whole intersection into the enhancer's target-conditional result.
+  pipe(): this;
+  pipe<A>(ab: (self: this) => A): A;
+  pipe<A, B>(ab: (self: this) => A, bc: (a: A) => B): B;
+  pipe<A, B, C>(ab: (self: this) => A, bc: (a: A) => B, cd: (b: B) => C): C;
+  pipe<A, B, C, D>(ab: (self: this) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D): D;
   readonly [UnifiedRouteSymbol]: UnifiedRouteInternals<P, Q, H, LD, LE>;
   readonly component: C;
   readonly kind: UnifiedRouteKind;
@@ -148,7 +158,12 @@ export interface Route<C, P, Q, H, LD = void, LE = never> extends Pipeable<Route
  *
  * Only layout routes can accept `Route.children(...)`.
  */
-export interface LayoutRoute<C, P, Q, H, LD = void, LE = never> extends Route<C, P, Q, H, LD, LE> {
+export interface LayoutRoute<C, P, Q, H, LD = void, LE = never> extends Omit<Route<C, P, Q, H, LD, LE>, "pipe"> {
+  pipe(): this;
+  pipe<A>(ab: (self: this) => A): A;
+  pipe<A, B>(ab: (self: this) => A, bc: (a: A) => B): B;
+  pipe<A, B, C>(ab: (self: this) => A, bc: (a: A) => B, cd: (b: B) => C): C;
+  pipe<A, B, C, D>(ab: (self: this) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D): D;
   readonly kind: "layout";
   pipe(): LayoutRoute<C, P, Q, H, LD, LE>;
   pipe<A>(ab: (self: LayoutRoute<C, P, Q, H, LD, LE>) => A): A;
@@ -218,23 +233,70 @@ type PipeRouteNode<T extends AnyAppRouteNode, Ops extends readonly unknown[]> =
     ? PipeRouteNode<ApplyRouteNodePipeOp<T, Head>, Tail>
     : T;
 type AnyRouteAttachTarget = AnyAppRouteNode | ComponentType<any, any, any, any, any>;
-type RouteIdEnhancer =
-  & (<C, P, Q, H, LD, LE>(route: LayoutRoute<C, P, Q, H, LD, LE>) => LayoutRoute<C, P, Q, H, LD, LE>)
-  & (<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, Q, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
-  & (<C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
-  & RouteNodePipeOp<"identity">;
-type RouteParamsSchemaEnhancer<P> =
-  & (<Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<any, Q, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
-  & (<C, Q, H, LD, LE>(route: Route<C, any, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
-  & RouteNodePipeOp<"params", P>;
-type RouteQuerySchemaEnhancer<Q> =
-  & (<P, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, any, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
-  & (<C, P, H, LD, LE>(route: Route<C, P, any, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
-  & RouteNodePipeOp<"query", Q>;
-type RouteHashSchemaEnhancer<H> =
-  & (<P, Q, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, Q, any, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
-  & (<C, P, Q, LD, LE>(route: Route<C, P, Q, any, LD, LE>) => Route<C, P, Q, H, LD, LE>)
-  & RouteNodePipeOp<"hash", H>;
+type AnyComponentType = ComponentType<any, any, any, any, any>;
+
+// ── The ADR-006 collapse ─────────────────────────────────────────────────────
+//
+// Enhancers used to be overload-INTERSECTION types dispatching on the target
+// facet (node / unified route / component). TypeScript's contextual inference
+// uses only the LAST call signature of an intersection, so which facet a
+// `.pipe(...)` chain typed to depended on the chain's SHAPE — one op vs two
+// ops changed the result type (the "KNOWN INFERENCE GAP" below, now closed).
+// The collapse: every enhancer is ONE generic call signature whose result is
+// target-CONDITIONAL. Inference is then arity- and order-independent by
+// construction. Each enhancer carries its `RouteNodePipeOp` brand as a MEMBER
+// of the same object type rather than as an intersection: intersecting a brand
+// with a generic call signature stops TypeScript from instantiating that
+// signature in the context of `pipe`, which silently re-opens the same gap.
+
+/** Every value an enhancer can attach to. */
+type EnhancerTarget = AnyAppRouteNode | AnyRoute | AnyComponentType;
+
+/**
+ * Refresh the ROUTE facet of a self-stamped `Component.route` sugar value
+ * while preserving the component facet (with `R`/`E` folded into its
+ * requirement and error channels) and every extra decoration on the value.
+ */
+type RefreshSugar<T, R, E, P, Q, H, LD, LE> =
+  T extends ComponentType<infer Props, infer Req, infer Err, infer B, infer SC>
+    ? ComponentType<Props, Req | R, Err | E, B, SC>
+      & Omit<T, keyof ComponentType<any, any, any, any, any> | typeof UnifiedRouteSymbol | "pipe" | "kind" | "path" | "children" | "component">
+      & Route<ComponentType<Props, Req | R, Err | E, B, SC>, P, Q, H, LD, LE>
+    : never;
+
+type IdentityEnhance<T> = T;
+
+type RouteIdEnhancer = {
+  <T>(target: T): IdentityEnhance<T>;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "identity"; readonly value: never };
+};
+type RouteParamsSchemaEnhancer<P> = {
+  <T>(target: T):
+    T extends AnyAppRouteNode ? WithNodeParams<T, P>
+    : T extends Route<infer C, any, infer Q, infer H, infer LD, infer LE>
+      ? (T extends AnyComponentType ? RefreshSugar<T, never, never, P, Q, H, LD, LE>
+        : Route<C, P, Q, H, LD, LE>)
+    : T;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "params"; readonly value: P };
+};
+type RouteQuerySchemaEnhancer<Q> = {
+  <T>(target: T):
+    T extends AnyAppRouteNode ? WithNodeQuery<T, Q>
+    : T extends Route<infer C, infer P, any, infer H, infer LD, infer LE>
+      ? (T extends AnyComponentType ? RefreshSugar<T, never, never, P, Q, H, LD, LE>
+        : Route<C, P, Q, H, LD, LE>)
+    : T;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "query"; readonly value: Q };
+};
+type RouteHashSchemaEnhancer<H> = {
+  <T>(target: T):
+    T extends AnyAppRouteNode ? WithNodeHash<T, H>
+    : T extends Route<infer C, infer P, infer Q, any, infer LD, infer LE>
+      ? (T extends AnyComponentType ? RefreshSugar<T, never, never, P, Q, H, LD, LE>
+        : Route<C, P, Q, H, LD, LE>)
+    : T;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "hash"; readonly value: H };
+};
 type RouteChildrenEnhancer =
   & (<T extends AnyLayoutRoute | AnyAppRouteNode>(route: T) => T)
   & RouteNodePipeOp<"identity">;
@@ -244,37 +306,47 @@ type RouteTargetComponent = ComponentType<any, any, any, any, any> | AnyRoute;
 // the same object, so preserving the caller's full intersection type (routed
 // metadata, loader tags) matters more than reflecting Req/E enrichment, which
 // the unified form carries.
-type GuardEnhancer<Req, E> = UnifiedGuardEnhancer<Req, E>
-  & (<C extends ComponentType<any, any, any, any, any>>(component: C) => C);
-type TitleRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(route: T) => T)
-  & NodeTitleEnhancer<AnyAppRouteNode>
-  & TitleEnhancer<P, A, E>;
-type MetaRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(route: T) => T)
-  & NodeMetaEnhancer<AnyAppRouteNode>
-  & MetaEnhancer<P, A, E>;
-// Signature order is load-bearing (TypeScript resolves intersection overloads
-// in declaration order):
-// 1. Self-stamped `Component.route` sugar is Component AND Route; the runtime
-//    returns the same object, so the type preserves the component facet and
-//    refreshes the route facet — `renderEffect(loaderified sugar)` and
-//    `runMatchedLoaders(loaderified sugar)` both infer without casts.
-// 2. Detached unified routes take the pure route signature.
-// 3. Legacy routed components / nodes fall through to the historical shapes.
-// The unified signature comes FIRST: a self-stamped `Component.route` sugar
-// value matches both the route and component call signatures, and TypeScript
-// resolves intersection overloads in declaration order — unified typing must
-// win for the value the runtime treats as unified (R3).
-//
-// KNOWN INFERENCE GAP (ADR-006 collapse): `.pipe(Component.route, Route.loader)`
-// chains contextually infer through a different signature than direct calls,
-// so `renderEffect` on a pipe-built sugar route still needs a cast at the call
-// site. Fixing this properly means collapsing the three-way dispatcher types,
-// which is the remaining R3 workstream — not another signature reorder.
-type LoaderRouteEnhancer<P, A, E, R> =
-  (<C, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<ComponentWithAddedReqE<C, R, E>, P, Q, H, A, E>)
-  & LoaderEnhancer<P, A, E, R>
-  & NodeLoaderEnhancer<AnyAppRouteNode, A, E, R>
-  & RouteNodePipeOp<"loader", { readonly data: A; readonly error: E }>;
+type GuardEnhancer<Req, E> = {
+  <T>(target: T):
+    T extends AnyAppRouteNode ? T
+    : T extends Route<infer C, infer P, infer Q, infer H, infer LD, infer LE>
+      ? (T extends AnyComponentType ? RefreshSugar<T, Req, E, P, Q, H, LD, LE>
+        : Route<ComponentWithAddedReqE<C, Req, E>, P, Q, H, LD, LE>)
+    // The legacy component branch mutates and returns the same object, so
+    // identity typing preserves the caller's full intersection.
+    : T;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "identity"; readonly value: never };
+};
+// Title and meta stamp metadata without changing any type axis: identity on
+// EVERY facet, which is what makes them immune to chain shape.
+type TitleRouteEnhancer<P, A, E> = {
+  <T>(target: T): IdentityEnhance<T>;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "identity"; readonly value: never };
+};
+type MetaRouteEnhancer<P, A, E> = {
+  <T>(target: T): IdentityEnhance<T>;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "identity"; readonly value: never };
+};
+// ADR-006 collapse (was: "KNOWN INFERENCE GAP"): the loader enhancer is one
+// generic call signature with a target-conditional result — node gets a
+// loader-typed node, self-stamped `Component.route` sugar keeps its callable
+// component facet (with the loader's R/E folded in) and refreshes its route
+// facet, detached unified routes take the pure route result, and plain
+// components get the legacy loader-tagged shape. Chain shape and pipe arity
+// no longer change the type, so `renderEffect(loaderified sugar)` and
+// `runMatchedLoaders(loaderified sugar)` infer without casts.
+type LoaderApply<T, A, E, R> =
+  T extends AnyAppRouteNode ? WithNodeLoader<T, A, E>
+  : T extends Route<infer C, infer P2, infer Q, infer H, any, any>
+    ? (T extends AnyComponentType
+        ? RefreshSugar<T, R, E, P2, Q, H, A, E> & LoaderTaggedComponent<A, E>
+        : Route<ComponentWithAddedReqE<C, R, E>, P2, Q, H, A, E>)
+  : T extends AnyComponentType ? WithLoaderComponent<T, R, E, A, E>
+  : T;
+type LoaderRouteEnhancer<P, A, E, R> = {
+  <T>(target: T): LoaderApply<T, A, E, R>;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "loader"; readonly value: { readonly data: A; readonly error: E } };
+};
 
 export type MaterializedAppRoute<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE> =
   C extends ComponentType<infer Props, infer Req, infer Err, infer B, infer SlotContract>
@@ -980,15 +1052,13 @@ type WithLoaderComponent<C, RAdd, EAdd, A, E> = C extends ComponentType<infer Pr
 
 type RouteComponentEnhancer<I extends ComponentType<any, any, any, any, any>, O extends ComponentType<any, any, any, any, any>> = (component: I) => O;
 
-type LoaderEnhancer<P, A, E, R> =
-  & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, any, any>) => AppRouteNode<P, Q, H, C, A, E>)
-  & (<C extends RoutedComponent<P, any, any> & ComponentType<any, any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>)
-  & (<C extends ComponentType<any, any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>);
+// ADR-006 collapse: both loader-enhancer aliases share the ONE conditional
+// call signature; the node flavor only differs in how the loader fn's params
+// were typed at the `Route.loader<typeof Node>(...)` call.
+type LoaderEnhancer<P, A, E, R> = LoaderRouteEnhancer<P, A, E, R>;
 
 type NodeLoaderEnhancer<T extends AnyAppRouteNode, A, E, R> =
-  & LoaderEnhancer<RouteNodeParamsOf<T>, A, E, R>
-  & (<RouteNode extends T>(route: RouteNode) => WithNodeLoader<RouteNode, A, E>)
-  & RouteNodePipeOp<"loader", { readonly data: A; readonly error: E }>;
+  LoaderRouteEnhancer<RouteNodeParamsOf<T>, A, E, R>;
 
 type TitleEnhancer<P, A, E> =
   & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, A, E>) => AppRouteNode<P, Q, H, C, A, E>)
