@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import { createSignal, createMemo } from "../api.js";
+import * as Behavior from "../Behavior.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
 import { defineQuery, defineMutation, useService } from "../effect-ts.js";
@@ -30,7 +31,7 @@ interface Api {
   fetchData(): Effect.Effect<string, Error>;
   saveData(n: number): Effect.Effect<void, Error>;
 }
-const Api = ServiceMap.Service<Api>("Api");
+const Api = Context.Service<Api>("Api");
 
 describe("testing.ts harness", () => {
   it("withTestLayer executes logic inside a reactive root with layer services", async () => {
@@ -107,20 +108,24 @@ describe("testing.ts harness", () => {
       button: { capability: Element.Capability.Interactive },
     });
     let pressed = 0;
-    const ButtonCard = Component.make<{}, never, never, { readonly slots: View.Slots.HandlesOf<typeof Slots> }>(
+    // DQ-050: handles are per-instance, so listeners attach through the
+    // sanctioned path — a Behavior over the slot contract, wired AFTER
+    // withSlots so it selects the instance handles the view renders.
+    const pressCounter = Behavior.forSlots(Slots)((elements) =>
+      elements.button.on("press", () => {
+        pressed += 1;
+      }).pipe(Effect.as({})),
+    );
+    const ButtonCard = Component.make(
       Component.props<{}>(),
       Component.require<never>(),
-      () => {
-        const slots = View.Slots.handles(Slots);
-        return slots.button.on("press", () => {
-          pressed += 1;
-        }).pipe(Effect.as({ slots }));
-      },
+      () => Effect.succeed({}),
       () => View.fromSlots(Slots, null),
     ).pipe(
       Component.withSlots(Slots),
+      Behavior.attachToSlots(pressCounter, Slots),
       Style.attachToSlots(
-        Style.forSlots(Slots)({
+        Style.make(Slots, {
           root: Style.slot({ opacity: 1 }),
         }),
         Slots,

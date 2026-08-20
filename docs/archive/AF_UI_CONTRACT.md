@@ -178,6 +178,38 @@ Bindings also act as the component-level async commit boundary: setup produces a
 coherent binding snapshot, then the view renders from that snapshot and
 style/behavior effects attach after the view/slot snapshot exists.
 
+Advanced tooling may inspect this boundary through `Component.inspect(...)`.
+The inspection surface exposes an immutable component definition, one explicit
+props decoder, the setup Effect, and render-from-committed-bindings functions.
+Adapters decode props once, then pass the parsed value to inspection setup and
+render methods; those methods do not decode it again.
+
+Named setup builders retain structural step metadata. Raw setup functions and
+wrappers whose captured behavior has no portable descriptor are explicitly
+opaque. `Component.withSlots(...)` is a known portable transform because its
+effect can be reconstructed from the published `View.Slots` contract.
+`Component.renderWithBindings(...)` and
+`Component.renderViewWithBindings(...)` skip setup, but do not by themselves
+claim that bindings are serializable or that a component is resumable.
+Definition metadata is inspection-only unless an adapter explicitly projects
+and validates a wire representation.
+
+Portable executable code is a separate, opt-in capability. `Portable.code(...)`
+defines an addressable Effect with a logical code ID, deployment build ID,
+capture codec, argument tuple, success type, typed error, and requirements.
+`Portable.bind(...)` retains typed captures, while `Portable.describe(...)`
+projects only the ID, build ID, and schema-encoded JSON-safe captures. A fresh
+runtime resolves that descriptor through a new `Portable.Resolver` Layer;
+Layers, Scopes, fibers, closures, atoms, and DOM handles are never included in
+the descriptor.
+
+`Component.action(...)` accepts both ordinary Effect functions and bound
+portable code. Both produce the same callable action handle and preserve the
+existing setup requirement/error behavior. Portable handles expose their
+descriptor through the executable inspection protocol; ordinary closures
+inspect as `opaque`. This protocol is adapter-enabling infrastructure, not by
+itself a claim that the component or application is resumable.
+
 Optimistic UI follows the same separation. Committed atom state remains durable
 truth, optimistic overlays are temporary visible truth, and actions/mutations
 carry the async lifecycle through `Result`. The improved design is tracked in

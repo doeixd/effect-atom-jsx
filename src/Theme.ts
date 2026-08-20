@@ -7,7 +7,7 @@
  * lookup/layer sites). Full user-theme-parametric `Style.slot` property types
  * are not required for v1 — keep `Style.tokenColor(...)` default-typed.
  */
-import { Layer, ServiceMap } from "effect";
+import { Layer, Context } from "effect";
 import * as Atom from "./Atom.js";
 import { defaultThemeTokens, type ThemeTokenSchema, type ThemeTokens, type TokenPathOf } from "./style-types.js";
 
@@ -18,7 +18,7 @@ export interface ThemeService {
   readonly resolve: (token: string) => string;
 }
 
-export const Theme = ServiceMap.Service<ThemeService>("Theme");
+export const Theme = Context.Service<ThemeService>("Theme");
 
 /**
  * User-defined theme contract.
@@ -41,6 +41,17 @@ export interface ThemeDefinition<Tokens extends ThemeTokenSchema> {
 /** Preserve literal token schema types for a theme token object. */
 export function defineTokens<const Tokens extends ThemeTokenSchema>(tokens: Tokens): Tokens {
   return tokens;
+}
+
+/**
+ * CSS `light-dark()` token value (K1): light/dark theming with **zero
+ * JavaScript** — the PLATFORM switches mode (`color-scheme`), the Theme
+ * service only governs which tokens apply. A dormant page honours an OS
+ * theme change with no framework code, which is what makes this the
+ * dormancy-compatible theming primitive.
+ */
+export function lightDark(light: string, dark: string): string {
+  return `light-dark(${light}, ${dark})`;
 }
 
 /**
@@ -90,7 +101,36 @@ export function lookupToken(tokens: ThemeTokenSchema, token: string): unknown {
       return current;
     }
   }
+  // Literal-key fallback: several categories use dotted LITERAL keys
+  // ("body.sm" under fontSize), which the path walk above cannot reach —
+  // without this, no fontSize token ever resolved.
+  for (const category of Object.values(tokens)) {
+    if (
+      typeof category === "object" && category !== null
+      && token in (category as Record<string, unknown>)
+    ) {
+      return (category as Record<string, unknown>)[token];
+    }
+  }
   return token;
+}
+
+/**
+ * Resolve a token, following SEMANTIC INDIRECTION (`DQ-061`, ratified): a
+ * token whose value is itself a token path ("brand" -> "color.blue500")
+ * resolves through the palette level. Bounded and cycle-guarded; a miss
+ * still fails open to the input string (recorded separately in DIN-18).
+ */
+export function resolveToken(tokens: ThemeTokenSchema, token: string): unknown {
+  let current: unknown = token;
+  const seen = new Set<string>();
+  while (typeof current === "string" && !seen.has(current)) {
+    seen.add(current);
+    const next = lookupToken(tokens, current);
+    if (next === current) break;
+    current = next;
+  }
+  return current;
 }
 
 /** Create a Theme service layer from a token schema. */
@@ -103,12 +143,50 @@ export function layer<Tokens extends ThemeTokenSchema>(
   return Layer.succeed(Theme, {
     tokens,
     mode: Atom.value(options?.mode ?? "light") as Atom.ReadonlyAtom<"light" | "dark">,
-    resolve: (token: string) => String(lookupToken(tokens, token)),
+    resolve: (token: string) => String(resolveToken(tokens, token)),
   });
 }
+
+/**
+ * Compose independently-defined themes into ONE definition (`DQ-061`,
+ * ratified option 1): composition is a DEFINITION-time operation producing a
+ * complete Layer — never merge-aware `Layer.merge` semantics for the Theme
+ * service, which would make one Context service behave against Effect's
+ * grain. "Zinc color + compact spacing" is category composition: categories
+ * merge by key, later definitions winning per token.
+ */
+export function compose<
+  const Definitions extends readonly [
+    ThemeDefinition<any>,
+    ...ReadonlyArray<ThemeDefinition<any>>,
+  ],
+>(
+  ...definitions: Definitions
+): ThemeDefinition<MergedTokensOf<Definitions>> {
+  const merged: Record<string, Record<string, unknown>> = {};
+  for (const definition of definitions) {
+    for (const [category, tokens] of Object.entries(definition.tokens)) {
+      merged[category] = {
+        ...(merged[category] ?? {}),
+        ...(tokens as Record<string, unknown>),
+      };
+    }
+  }
+  return define(merged as MergedTokensOf<Definitions>);
+}
+
+type UnionToIntersection<U> =
+  (U extends unknown ? (u: U) => void : never) extends (i: infer I) => void ? I
+    : never;
+type MergedTokensOf<Definitions extends readonly ThemeDefinition<any>[]> =
+  UnionToIntersection<Definitions[number]["tokens"]> extends
+    infer Merged extends ThemeTokenSchema ? Merged : ThemeTokenSchema;
 
 /** Default light theme layer. */
 export const ThemeLight: Layer.Layer<ThemeService> = layer(defaultThemeTokens);
 
 /** Default theme definition for path helpers and lookups. */
 export const ThemeDefault = define(defaultThemeTokens);
+
+/** The default token schema, re-exported for foundation-stylesheet emitters. */
+export { defaultThemeTokens, type ThemeTokenSchema } from "./style-types.js";

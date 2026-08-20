@@ -1,5 +1,7 @@
-import { Effect, Fiber, Layer, ServiceMap } from "effect";
+import { Effect, Fiber, Layer, Context } from "effect";
+import * as Atom from "./Atom.js";
 import * as Route from "./Route.js";
+import { SwrRefreshSupervisorTag } from "./router-runtime.js";
 import type { Result as CoreResultType } from "./effect-ts.js";
 import * as ServerRoute from "./ServerRoute.js";
 import type { AnyRoute, AppRouteNode } from "./Route.js";
@@ -186,9 +188,9 @@ export interface NavigationService {
   readonly cancel: RouterRuntimeInstance["cancel"];
 }
 
-export const HistoryTag = ServiceMap.Service<HistoryService>("History");
-export const NavigationTag = ServiceMap.Service<NavigationService>("Navigation");
-export const RouterRuntimeTag = ServiceMap.Service<RouterRuntimeInstance>("RouterRuntime");
+export const HistoryTag = Context.Service<HistoryService>("History");
+export const NavigationTag = Context.Service<NavigationService>("Navigation");
+export const RouterRuntimeTag = Context.Service<RouterRuntimeInstance>("RouterRuntime");
 
 /** Configuration for a router runtime instance. */
 export interface RouterRuntimeConfig {
@@ -291,10 +293,8 @@ function isUnifiedAppRoute(node: AppRouteNode<any, any, any, any, any, any> | An
   return Route.UnifiedRouteSymbol in node;
 }
 
-function nodePath(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
-  return isUnifiedAppRoute(node)
-    ? Route.fullPathOf(node, node)
-    : Route.fullPathOf(node, node);
+function nodePath(root: AppRouteNode<any, any, any, any, any, any> | AnyRoute, node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
+  return Route.fullPathOf(root, node);
 }
 
 function nodeExact(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): boolean | undefined {
@@ -303,17 +303,18 @@ function nodeExact(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute):
     : node.kind === "index" ? true : node.options.exact;
 }
 
-function nodeId(node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
+function nodeId(root: AppRouteNode<any, any, any, any, any, any> | AnyRoute, node: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string {
   return isUnifiedAppRoute(node)
-    ? node[Route.UnifiedRouteSymbol].meta.id ?? nodePath(node)
-    : node.options.id ?? nodePath(node);
+    ? node[Route.UnifiedRouteSymbol].meta.id ?? nodePath(root, node)
+    : node.options.id ?? nodePath(root, node);
 }
 
 function matchedAppNodes(
+  root: AppRouteNode<any, any, any, any, any, any> | AnyRoute,
   nodes: ReadonlyArray<AppRouteNode<any, any, any, any, any, any> | AnyRoute>,
   pathname: string,
 ): ReadonlyArray<AppRouteNode<any, any, any, any, any, any> | AnyRoute> {
-  return nodes.filter((node) => nodePath(node).length > 0 && Route.matchPattern(nodePath(node), pathname, nodeExact(node)));
+  return nodes.filter((node) => nodePath(root, node).length > 0 && Route.matchPattern(nodePath(root, node), pathname, nodeExact(node)));
 }
 
 function routeResultEntriesToMaps(
@@ -324,17 +325,25 @@ function routeResultEntriesToMaps(
 } {
   const nextLoaderData = new Map<string, unknown>();
   let nextErrors: Map<string, unknown> | null = null;
+  const recordError = (routeId: string, error: unknown): void => {
+    if (nextErrors === null) nextErrors = new Map();
+    nextErrors.set(routeId, error);
+  };
   for (const item of results) {
     if (item.result._tag === "Success") {
       nextLoaderData.set(item.routeId, item.result.value);
     } else if (item.result._tag === "Refreshing" && item.result.previous._tag === "Success") {
       nextLoaderData.set(item.routeId, item.result.previous.value);
+    } else if (item.result._tag === "Stale") {
+      // The whole point of `Stale`: the data is still in hand AND the typed
+      // error is available alongside it. Dropping either half loses what the
+      // state exists to carry.
+      nextLoaderData.set(item.routeId, item.result.data);
+      recordError(item.routeId, item.result.error);
     } else if (item.result._tag === "Failure") {
-      if (nextErrors === null) nextErrors = new Map();
-      nextErrors.set(item.routeId, item.result.error);
+      recordError(item.routeId, item.result.error);
     } else if (item.result._tag === "Defect") {
-      if (nextErrors === null) nextErrors = new Map();
-      nextErrors.set(item.routeId, { defect: item.result.cause });
+      recordError(item.routeId, { defect: item.result.cause });
     }
   }
   return { loaderData: nextLoaderData, errors: nextErrors };
@@ -366,13 +375,14 @@ function createSnapshot(state: {
   lastDispatchResult: RouterRuntimeOutcome | null;
   restoreScrollPosition: number | false | null;
   preventScrollReset: boolean;
+  appRoot: AppRouteNode<any, any, any, any, any, any> | AnyRoute;
   appNodes: ReadonlyArray<AppRouteNode<any, any, any, any, any, any> | AnyRoute>;
   serverRoutes: ReadonlyArray<ServerRouteNode<any, any, any, any>>;
 }): RouterRuntimeSnapshot {
   const pathname = state.location.pathname;
   const appMatches = state.appNodes
-    .filter((node) => nodePath(node).length > 0 && Route.matchPattern(nodePath(node), pathname, nodeExact(node)))
-    .map((node) => nodeId(node));
+    .filter((node) => nodePath(state.appRoot, node).length > 0 && Route.matchPattern(nodePath(state.appRoot, node), pathname, nodeExact(node)))
+    .map((node) => nodeId(state.appRoot, node));
   const matchedServer = ServerRoute.find(state.serverRoutes, "GET", pathname, { kind: "document" })
     ?? ServerRoute.find(state.serverRoutes, "GET", pathname);
   const serverMatch = matchedServer?.key ?? matchedServer?.path ?? null;
@@ -451,24 +461,67 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
   const serverRoutes = config.server ?? [];
   let unsubscribeHistory: (() => void) | null = null;
 
+  // DQ-032, the navigation-scope half: SWR refreshes started under a
+  // navigation register here, and a superseding navigation interrupts them.
+  // (They still complete normally if no later navigation arrives — the store's
+  // scope, not the navigation's completion, bounds the write.)
+  const outstandingSwrRefreshes = new Set<Fiber.Fiber<unknown, unknown>>();
+  const interruptOutstandingSwrRefreshes = (): void => {
+    for (const fiber of [...outstandingSwrRefreshes]) {
+      outstandingSwrRefreshes.delete(fiber);
+      Effect.runFork(Fiber.interrupt(fiber));
+    }
+  };
   const loadMatchedRouteResultsAt = (nextLocation: URL): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: CoreResultType<unknown, unknown> }>> => {
-    return Route.runMatchedLoaders(config.app, nextLocation, { includeDeferred: true });
+    return Route.runMatchedLoaders(config.app, nextLocation, { includeDeferred: true }).pipe(
+      Effect.provideService(SwrRefreshSupervisorTag, {
+        register: (fiber) => {
+          outstandingSwrRefreshes.add(fiber);
+          fiber.addObserver(() => {
+            outstandingSwrRefreshes.delete(fiber);
+          });
+        },
+      }),
+    );
+  };
+
+  const commitLoaderResults = (
+    results: ReadonlyArray<{ readonly routeId: string; readonly result: CoreResultType<unknown, unknown> }>,
+  ): void => {
+    const next = routeResultEntriesToMaps(results);
+    loaderData.clear();
+    for (const [key, value] of next.loaderData) loaderData.set(key, value);
+    errors = next.errors;
   };
 
   const refreshMatchedLoaders = (): Effect.Effect<void> => Effect.gen(function* () {
     const results = yield* loadMatchedRouteResultsAt(location);
-    const next = routeResultEntriesToMaps(results);
-    loaderData.clear();
-    for (const [key, value] of next.loaderData) loaderData.set(key, value);
-    errors = next.errors;
+    commitLoaderResults(results);
   });
 
   const refreshMatchedLoadersAt = (nextLocation: URL): Effect.Effect<void> => Effect.gen(function* () {
     const results = yield* loadMatchedRouteResultsAt(nextLocation);
-    const next = routeResultEntriesToMaps(results);
-    loaderData.clear();
-    for (const [key, value] of next.loaderData) loaderData.set(key, value);
-    errors = next.errors;
+    commitLoaderResults(results);
+  });
+
+  /**
+   * Load matched loaders for `nextLocation` and commit the results only if the
+   * owning task is still current when the loaders settle.
+   *
+   * This is the supersession guard: a superseded (late-loser) run resolves its
+   * loaders but its `isCurrent()` check fails, so it never clobbers the winner's
+   * loader data. Real fiber interruption stops most losers before they reach
+   * this point; the guard closes the remaining race where a loser resumes in
+   * the same tick as the interrupt request.
+   */
+  const refreshMatchedLoadersGuarded = (
+    nextLocation: URL,
+    isCurrent: () => boolean,
+  ): Effect.Effect<boolean> => Effect.gen(function* () {
+    const results = yield* loadMatchedRouteResultsAt(nextLocation);
+    if (!isCurrent()) return false;
+    commitLoaderResults(results);
+    return true;
   });
 
   const prepareRequestLocation = (request: Request): Effect.Effect<void> => Effect.gen(function* () {
@@ -509,6 +562,7 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       },
       restoreScrollPosition,
       preventScrollReset,
+      appRoot: config.app,
       appNodes,
       serverRoutes,
     });
@@ -633,28 +687,57 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       initialized = true;
       unsubscribeHistory = config.history.subscribe((event) => {
         historyAction = event.action;
+        const previousLocation = location;
         location = new URL(event.location.toString());
-        if (inFlightNavigationFiber) {
-          Effect.runFork(Fiber.interrupt(inFlightNavigationFiber));
-        }
-        const taskId = inFlightNavigation ?? allocateTaskId();
+        const nextLocation = location;
+        // Hand the superseded navigation fiber to the new run so it can be
+        // interrupted (finalizers run) before the winner commits loader state.
+        const supersededFiber = inFlightNavigationFiber;
+        inFlightNavigationFiber = null;
+        const taskId = allocateTaskId();
         inFlightNavigation = taskId;
         if (navigation.phase === "idle" || navigation.phase === "cancelled") {
-          navigation = loadingTask(location.pathname);
+          navigation = loadingTask(nextLocation.pathname);
           emit();
         }
-        const body = refreshMatchedLoaders().pipe(
-          Effect.tap(() => Effect.sync(() => {
+        const body = Effect.gen(function* () {
+          if (supersededFiber) yield* Fiber.interrupt(supersededFiber);
+          // A new navigation supersedes any SWR refresh a previous one left
+          // in flight (DQ-032).
+          interruptOutstandingSwrRefreshes();
+          // R3 (`DQ-030`): guards run in the navigation path, before any
+          // loader. A failing guard refuses the navigation — the location is
+          // rolled back, no loader runs, and no loader data is committed. A
+          // guard that exists but does not gate would be an authorization API
+          // shipped as an auth bypass.
+          const guardExit = yield* Effect.exit(
+            Route.runMatchedRouteGuards(config.app, nextLocation),
+          );
+          if (guardExit._tag === "Failure") {
             if (isCurrentTask("navigation", taskId)) {
-              finishTask((state) => {
-                navigation = state;
-              }, new Map(loaderData));
+              location = previousLocation;
+              navigation = cancelledTask(nextLocation.pathname, navigation.outcome);
               clearInFlight("navigation");
+              inFlightNavigationFiber = null;
+              emit();
             }
-          })),
+            return;
+          }
+          const committed = yield* refreshMatchedLoadersGuarded(
+            nextLocation,
+            () => isCurrentTask("navigation", taskId),
+          );
+          if (committed && isCurrentTask("navigation", taskId)) {
+            finishTask((state) => {
+              navigation = state;
+            }, new Map(loaderData));
+            clearInFlight("navigation");
+            inFlightNavigationFiber = null;
+          }
+        }).pipe(
           Effect.onInterrupt(() => Effect.sync(() => {
             if (isCurrentTask("navigation", taskId)) {
-              navigation = cancelledTask(location.pathname, navigation.outcome);
+              navigation = cancelledTask(nextLocation.pathname, navigation.outcome);
               clearInFlight("navigation");
               emit();
             }
@@ -691,6 +774,7 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       },
       restoreScrollPosition,
       preventScrollReset,
+      appRoot: config.app,
       appNodes,
       serverRoutes,
     })),
@@ -701,7 +785,8 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       };
     },
     navigate: (to, options) => Effect.sync(() => {
-      Effect.runFork(interruptTrackedFiber("navigation"));
+      // Navigation-fiber interruption is owned by the history listener, which
+      // interrupts the superseded fiber before the new run commits.
       if (typeof to === "number") {
         const taskId = allocateTaskId();
         inFlightNavigation = taskId;
@@ -721,7 +806,6 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       else config.history.push(to);
     }),
     navigateApp: (route, options) => Effect.sync(() => {
-      Effect.runFork(interruptTrackedFiber("navigation"));
       const to = isUnifiedAppRoute(route)
         ? Route.link(route)(options?.params ?? {})
         : (() => {
@@ -868,16 +952,22 @@ export function create(config: RouterRuntimeConfig): RouterRuntimeInstance {
       supersedeTask(revalidation, (state) => {
         revalidation = state;
       }, loadingTask(location.pathname));
-      yield* refreshMatchedLoaders();
-      if (isCurrentTask("revalidate", taskId)) {
+      const committed = yield* refreshMatchedLoadersGuarded(
+        location,
+        () => isCurrentTask("revalidate", taskId),
+      );
+      if (committed && isCurrentTask("revalidate", taskId)) {
         finishTask((state) => {
           revalidation = state;
         }, new Map(loaderData));
         clearInFlight("revalidate");
       }
     })) as RouterRuntimeInstance["revalidate"],
-    cancel: (target) => Effect.sync(() => {
+    cancel: (target) => Effect.gen(function* () {
       cancelTask(target);
+      // Real interruption: stop the in-flight fiber for the cancelled task so
+      // its loaders/finalizers unwind promptly (e.g. on unmount mid-flight).
+      yield* interruptTrackedFiber(target ?? "navigation");
     }),
     renderRequest: (request, options) => Effect.gen(function* () {
       cancelTask("request");
@@ -993,9 +1083,32 @@ export function createMemoryHistory(initial: string): HistoryAdapter {
   };
 }
 
-/** Expose a RouterRuntime instance as Effect services/layers. */
-export function toLayer(runtime: RouterRuntimeInstance, history: HistoryAdapter): Layer.Layer<RouterRuntimeInstance | HistoryService | NavigationService> {
+/**
+ * Expose a RouterRuntime instance as Effect services/layers.
+ *
+ * DQ-031(a): this includes `Route.RouterTag` — the narrow read/command facade
+ * — implemented BY the runtime, so `Link`, `queryAtom`, `Route.reload`, and
+ * any script written against `RouterService` drive the runtime's supersession
+ * path. The facade deliberately exposes only `url`/`navigate`/`back`/`forward`:
+ * a loader-less layer must be able to honour the same interface, so it cannot
+ * promise pending state or supersession.
+ */
+export function toLayer(runtime: RouterRuntimeInstance, history: HistoryAdapter): Layer.Layer<RouterRuntimeInstance | HistoryService | NavigationService | Route.RouterService> {
+  // Reactive URL sourced from the history adapter, which emits synchronously
+  // on every push/replace/go — the runtime's own snapshot emission is gated on
+  // task phases and would lag a burst of navigations.
+  const urlAtom = Atom.value(new URL(history.location().toString()));
+  history.subscribe((event) => {
+    urlAtom.set(new URL(event.location.toString()));
+  });
+  const routerService: Route.RouterService = {
+    url: urlAtom,
+    navigate: (to, options) => runtime.navigate(to, options?.replace === true ? { replace: true } : undefined),
+    back: () => runtime.navigate(-1),
+    forward: () => runtime.navigate(1),
+  };
   return Layer.mergeAll(
+    Layer.succeed(Route.RouterTag, routerService),
     Layer.succeed(RouterRuntimeTag, runtime),
     Layer.succeed(HistoryTag, {
       location: () => history.location(),

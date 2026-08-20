@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Effect, Layer, Schema, Context } from "effect";
 import * as Component from "../Component.js";
 import * as Route from "../Route.js";
 import * as ServerRoute from "../ServerRoute.js";
@@ -280,7 +280,7 @@ describe("ServerRoute", () => {
   });
 
   it("provides the dispatch layer to data-route handlers with per-request isolation", async () => {
-    const RequestContext = ServiceMap.Service<{ readonly id: number }>("RequestContext");
+    const RequestContext = Context.Service<{ readonly id: number }>("RequestContext");
 
     let built = 0;
     // Request-scoped layer: constructing the service marks a new request.

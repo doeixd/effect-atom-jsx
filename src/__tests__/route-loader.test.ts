@@ -1,16 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Effect, Layer, Schema, Context } from "effect";
 import * as Atom from "../Atom.js";
 import * as Component from "../Component.js";
 import * as Route from "../Route.js";
 import { Result } from "../effect-ts.js";
-import { clearLoaderCache, getLoaderCacheEntry, isFresh } from "../router-runtime.js";
+import { RouteLoaderTimeoutError, clearLoaderCache, getLoaderCacheEntry, isFresh } from "../router-runtime.js";
 import * as Reactivity from "../Reactivity.js";
 import { installReactivityService } from "../reactivity-runtime.js";
-import { installSingleFlightTransport } from "../single-flight-runtime.js";
 
 function memoryRouter(initial: string) {
-  const url = Atom.value(new URL(initial, "http://test.local")) as unknown as Atom.WritableAtom<URL>;
+  const url = Atom.value(new URL(initial, "http://test.local"));
   return Layer.succeed(Route.RouterTag, {
     url,
     navigate: (to: string) => Effect.sync(() => {
@@ -24,6 +23,18 @@ function memoryRouter(initial: string) {
 
 function withUserIdRoute<C extends Component.Component<any, any, any, any>>(pattern: string, component: C) {
   return Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(Route.path(pattern)(component));
+}
+
+
+/** Narrow a loader result's success value to an object field, castlessly. */
+function successField(result: unknown, name: string): unknown {
+  if (typeof result !== "object" || result === null) return undefined;
+  const tagged = result as { readonly _tag?: unknown; readonly value?: unknown };
+  if (tagged._tag !== "Success") return undefined;
+  const value = tagged.value;
+  return typeof value === "object" && value !== null && name in value
+    ? (value as Record<string, unknown>)[name]
+    : undefined;
 }
 
 function routeIdOf(route: Route.AnyRoute): string {
@@ -49,7 +60,7 @@ describe("Route loader", () => {
     );
 
     const out = Effect.runSync(
-      (Component.renderEffect(UserPage, {}).pipe(Effect.provide(memoryRouter("/users/alice"))) as unknown as Effect.Effect<unknown, never, never>),
+      Component.renderEffect(UserPage, {}).pipe(Effect.provide(memoryRouter("/users/alice"))),
     );
     expect(out).toBe("alice");
   });
@@ -72,11 +83,12 @@ describe("Route loader", () => {
       ),
     );
 
-    void Parent;
-    void Child;
+    // R2: routes no longer self-register; the registry is explicit and route
+    // identity is the resolved pattern (no `route-N` counter).
+    const routes = Route.registry([Parent, Child]);
 
-    const results = Effect.runSync(Route.runMatchedLoaders(new URL("http://test.local/users/alice/posts")));
-    const child = results.find((r) => String(r.routeId).includes("route-"));
+    const results = Effect.runSync(Route.runMatchedLoaders(routes, new URL("http://test.local/users/alice/posts")));
+    const child = results.find((r) => r.routeId === "/users/:userId/posts");
     expect(child).toBeDefined();
   });
 
@@ -91,8 +103,9 @@ describe("Route loader", () => {
           return { id: params.userId };
         })),
     );
-    void User;
 
+    // R2: `preload` resolves the app's routes from the injected route source
+    // instead of a module-global registry.
     Effect.runSync(
       Effect.gen(function* () {
         const router = yield* Route.RouterTag;
@@ -100,15 +113,18 @@ describe("Route loader", () => {
           yield* router.preload("/preload/users/alice");
         }
         expect(router.url().pathname).toBe("/");
-      }).pipe(Effect.provide(Route.Memory("/"))),
+      }).pipe(
+        Effect.provide(Route.Memory("/")),
+        Effect.provide(Route.routeSourceLayer(Route.registry([User]))),
+      ) as Effect.Effect<void, never, never>,
     );
 
     expect(loads).toBe(1);
   });
 
   it("serializes streamed loader payload and sitemap entries", () => {
-    const entries = Effect.runSync(Route.collectSitemapEntries("https://example.com"));
-    expect(Array.isArray(entries)).toBe(true);
+    const entries = Effect.runSync(Route.collectSitemapEntries(Route.registry([]), "https://example.com"));
+    expect(entries).toEqual([]);
 
     const serialized = Route.serializeLoaderData([
       { routeId: "r1", result: Result.success({ ok: true }) },
@@ -116,10 +132,18 @@ describe("Route loader", () => {
     const parsed = Route.deserializeLoaderData(serialized);
     expect(parsed.r1).toBeDefined();
 
+    // R2: the ad-hoc `__LOADER_DATA__`/`__HYDRATE_ROUTE__` pair is replaced by
+    // one declared, versioned envelope.
     const scripts = Route.streamDeferredLoaderScripts([
       { routeId: "r1", result: Result.success(1) },
     ]);
-    expect(scripts[0]).toContain("__LOADER_DATA__");
+    // R6 (DQ-034): one handoff. Streamed entries are inert JSON on the
+    // manifest channel; neither the legacy ad-hoc global nor the handoff
+    // global appears in served scripts.
+    expect(scripts[0]).toContain(Route.loaderEntryScriptAttribute);
+    expect(scripts[0]).toContain('type="application/json"');
+    expect(scripts[0]).not.toContain(Route.loaderHandoffGlobalKey);
+    expect(scripts[0]).not.toContain("__LOADER_DATA__");
   });
 
   // ── Finding-5 characterization: pin the CURRENT on-the-wire loader-result
@@ -193,10 +217,10 @@ describe("Route loader", () => {
         Effect.succeed({ bio: `bio-${params.userId}` }), { priority: "deferred", dependsOnParent: true }),
     );
 
-    void Critical;
-    void Deferred;
-
-    const streamed = Effect.runSync(Route.runStreamingNavigation(new URL("http://test.local/stream/users/alice/details")));
+    const streamed = Effect.runSync(Route.runStreamingNavigation(
+      Route.registry([Critical, Deferred]),
+      new URL("http://test.local/stream/users/alice/details"),
+    ));
     expect(streamed.critical.length).toBeGreaterThan(0);
     expect(streamed.deferredScripts.length).toBeGreaterThan(0);
   });
@@ -242,6 +266,46 @@ describe("Route loader", () => {
     expect(cacheEntry?.result._tag === "Success" ? cacheEntry.result.value : undefined).toEqual({ id: "alice", name: "Alice" });
   });
 
+  it("reports unknown route ids during single-flight hydration via onMissingRoute", () => {
+    clearLoaderCache();
+    const UserRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ id: params.userId }))(
+      Route.id("sf.users.known")(
+        Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
+          Route.path("/sf-users/:userId")(Component.from<{}>(() => null)),
+        ),
+      ),
+    );
+
+    const payload = {
+      mutation: { ok: true },
+      url: "http://test.local/sf-users/alice",
+      loaders: [
+        {
+          routeId: "sf.users.unknown",
+          result: Result.success({ id: "nobody" }),
+        },
+        {
+          routeId: "sf.users.known",
+          result: Result.success({ id: "alice" }),
+        },
+      ],
+    } satisfies Route.SingleFlightPayload<{ readonly ok: boolean }>;
+
+    const missing: Array<string> = [];
+    Effect.runSync(Route.hydrateSingleFlightPayload(payload, UserRoute, {
+      onMissingRoute: (routeId) => {
+        missing.push(routeId);
+      },
+    }));
+
+    expect(missing).toEqual(["sf.users.unknown"]);
+    // The known entry still hydrates; nothing is hydrated under the unknown id.
+    expect(getLoaderCacheEntry("sf.users.known", { userId: "alice" })?.result?._tag).toBe("Success");
+    expect(getLoaderCacheEntry("sf.users.unknown", { userId: "alice" })).toBeUndefined();
+    expect(getLoaderCacheEntry("sf.users.unknown", {})).toBeUndefined();
+  });
+
   it("exposes loaderResult as Result for async UI control flow", () => {
     const StreamingUser = Component.make(
       Component.props<{}>(),
@@ -262,7 +326,7 @@ describe("Route loader", () => {
     );
 
     const out = Effect.runSync(
-      (Component.renderEffect(StreamingUser, {}).pipe(Effect.provide(memoryRouter("/streaming/users/alice"))) as unknown as Effect.Effect<unknown, never, never>),
+      Component.renderEffect(StreamingUser, {}).pipe(Effect.provide(memoryRouter("/streaming/users/alice"))),
     );
 
     expect(["Initial", "Success", "Failure"]).toContain(String(out));
@@ -283,9 +347,10 @@ describe("Route loader", () => {
           { reactivityKeys: ["users"], staleTime: "5 minutes" },
         ),
       );
-      void RouteWithKey;
-
-      const results = Effect.runSync(Route.runMatchedLoaders(new URL("http://test.local/reactive/users/alice")));
+      const results = Effect.runSync(Route.runMatchedLoaders(
+        Route.registry([RouteWithKey]),
+        new URL("http://test.local/reactive/users/alice"),
+      ));
       const routeId = results[0]?.routeId;
       expect(routeId).toBeDefined();
 
@@ -321,10 +386,10 @@ describe("Route loader", () => {
           { reactivityKeys: [Projects.child("p1")], staleTime: "5 minutes" },
         ),
       );
-      void RouteWithWitness;
+      const routes = Route.registry([RouteWithWitness]);
 
       const url = new URL("http://test.local/witness/projects/p1");
-      const results = Effect.runSync(Route.runMatchedLoaders(url));
+      const results = Effect.runSync(Route.runMatchedLoaders(routes, url));
       const routeId = results[0]?.routeId;
       expect(routeId).toBeDefined();
 
@@ -334,7 +399,7 @@ describe("Route loader", () => {
       expect(entry?.reactivityKeys).toContain("projects:p1");
 
       // matcher filter accepts a witness and selects the loader via the parent key
-      const matched = Effect.runSync(Route.runMatchedLoaders(url, { reactivityKeys: [Projects] }));
+      const matched = Effect.runSync(Route.runMatchedLoaders(routes, url, { reactivityKeys: [Projects] }));
       expect(matched.map((item) => item.routeId)).toContain(String(routeId));
 
       // invalidating the parent witness marks the child-keyed cache entry stale
@@ -357,9 +422,10 @@ describe("Route loader", () => {
         Effect.sync(() => ({ name: reactiveName() })),
       ),
     );
-    void ReactiveLoaderRoute;
-
-    const results = Effect.runSync(Route.runMatchedLoaders(new URL("http://test.local/reactive-capture/users/alice")));
+    const results = Effect.runSync(Route.runMatchedLoaders(
+      Route.registry([ReactiveLoaderRoute]),
+      new URL("http://test.local/reactive-capture/users/alice"),
+    ));
     const routeId = results[0]?.routeId;
     const entry = getLoaderCacheEntry(String(routeId), { userId: "alice" });
 
@@ -475,6 +541,9 @@ describe("Route loader", () => {
       Route.actionSingleFlight((userId: string) => Effect.succeed({ ok: userId }), {
         app: RouteForFlight,
         target: (_result, [userId]) => `/sfm/users/${userId}`,
+        // Default mode is "reactivity": a mutation that invalidates nothing
+        // returns no loader entries. "matched" always returns the matched set.
+        revalidate: "matched",
       }),
     );
 
@@ -485,6 +554,66 @@ describe("Route loader", () => {
     expect(payload.mutation.ok).toBe("alice");
     expect(payload.url.endsWith("/sfm/users/alice")).toBe(true);
     expect(payload.loaders.length).toBeGreaterThan(0);
+  });
+
+  it('revalidate: "matched" returns all matched loader results', () => {
+    clearLoaderCache();
+    const UserRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ name: params.userId }))(
+      Route.id("sfm.matched.user")(withUserIdRoute("/sfm-matched/users/:userId", Component.from<{}>(() => null))),
+    );
+    const PostsRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.succeed({ posts: [`post-for-${params.userId}`] }))(
+      Route.id("sfm.matched.posts")(withUserIdRoute("/sfm-matched/users/:userId/posts", Component.from<{}>(() => null))),
+    );
+    const App = Route.children([UserRoute, PostsRoute])(
+      Route.layout()(Route.path("/")(Component.from<{}>(() => null))),
+    );
+
+    const run = Effect.runSync(
+      Route.actionSingleFlight(() => Effect.succeed({ ok: true as const }), {
+        app: App,
+        target: "/sfm-matched/users/alice/posts",
+        revalidate: "matched",
+      }),
+    );
+
+    const payload = Effect.runSync(
+      run().pipe(Effect.provide(memoryRouter("/"))) as Effect.Effect<Route.SingleFlightPayload<{ readonly ok: true }>, never, never>,
+    );
+
+    const routeIds = payload.loaders.map((item) => item.routeId);
+    expect(routeIds).toContain("sfm.matched.user");
+    expect(routeIds).toContain("sfm.matched.posts");
+    expect(payload.loaders.length).toBe(2);
+  });
+
+  it('revalidate: "reactivity" with no invalidations returns no loaders and runs them once', () => {
+    clearLoaderCache();
+    let executions = 0;
+    const UserRoute = Route.loader((params: { readonly userId: string }) =>
+      Effect.sync(() => {
+        executions += 1;
+        return { name: params.userId };
+      }))(
+      Route.id("sfm.empty.user")(withUserIdRoute("/sfm-empty/users/:userId", Component.from<{}>(() => null))),
+    );
+
+    const run = Effect.runSync(
+      Route.actionSingleFlight((userId: string) => Effect.succeed({ ok: userId }), {
+        app: UserRoute,
+        target: (_result, [userId]) => `/sfm-empty/users/${userId}`,
+      }),
+    );
+
+    const payload = Effect.runSync(
+      run("alice").pipe(Effect.provide(memoryRouter("/"))) as Effect.Effect<Route.SingleFlightPayload<{ readonly ok: string }>, never, never>,
+    );
+
+    // Nothing was invalidated: the payload carries no loader entries, and the
+    // loader executed exactly the single matched pass (no duplicate rerun).
+    expect(payload.loaders.length).toBe(0);
+    expect(executions).toBe(1);
   });
 
   it("revalidates only loaders whose captured reactivity keys were invalidated", () => {
@@ -521,13 +650,13 @@ describe("Route loader", () => {
     );
 
     expect(payload.loaders.length).toBe(1);
-    expect((payload.loaders[0]?.result as any)?.value?.name).toBe("alice");
+    expect(successField(payload.loaders[0]?.result, "name")).toBe("alice");
   });
 
   it("captures tracked service reads and invalidating service writes for single-flight", () => {
     clearLoaderCache();
     const usersState = Atom.value([{ id: "alice", name: "Alice" }]);
-    const Users = ServiceMap.Service<{
+    const Users = Context.Service<{
       readonly byId: (id: string) => Effect.Effect<{ readonly id: string; readonly name: string }>;
       readonly rename: (id: string, name: string) => Effect.Effect<{ readonly id: string; readonly name: string }>;
     }>("Users:RouteLoaderTest");
@@ -573,7 +702,7 @@ describe("Route loader", () => {
     );
 
     expect(payload.loaders.length).toBe(1);
-    expect((payload.loaders[0]?.result as any).value.name).toBe("Alicia");
+    expect(successField(payload.loaders[0]?.result, "name")).toBe("Alicia");
   });
 
   it("hydrates loader cache from a single-flight payload", () => {
@@ -588,6 +717,8 @@ describe("Route loader", () => {
       Route.actionSingleFlight((userId: string) => Effect.succeed({ ok: userId }), {
         app: RouteForHydrate,
         target: (_result, [userId]) => `/sfm-hydrate/users/${userId}`,
+        // The mutation invalidates nothing; "matched" keeps loader data in the payload.
+        revalidate: "matched",
       }),
     );
     const payload = Effect.runSync(
@@ -612,12 +743,14 @@ describe("Route loader", () => {
       Route.actionSingleFlight((userId: string) => Effect.succeed({ ok: userId }), {
         app: RouteForHandler,
         target: (_result, [userId]) => `/sfm-handler/users/${userId}`,
+        // The mutation invalidates nothing; "matched" keeps loader data in the payload.
+        revalidate: "matched",
       }),
     );
 
     const handler = Route.createSingleFlightHandler(run, { baseUrl: "http://test.local" });
     const response = Effect.runSync(
-      handler({ args: ["alice"], url: "/sfm-handler/users/alice" }) as Effect.Effect<Route.SingleFlightResponse<{ readonly ok: string }, never>, never, never>,
+      handler({ args: ["alice"], url: "/sfm-handler/users/alice" }) as Effect.Effect<Route.SingleFlightWireResponse, never, never>,
     );
 
     expect(response.ok).toBe(true);
@@ -636,13 +769,16 @@ describe("Route loader", () => {
     void RouteForInvoke;
 
     const routeId = routeIdOf(RouteForInvoke);
-    const payload: Route.SingleFlightPayload<{ readonly ok: string }> = {
+    // The value a fake fetch returns is the WIRE payload — the flat DTO the
+    // schema validates — not the in-memory `SingleFlightPayload` of core
+    // Results, so it types against the exported wire schema.
+    const payload: typeof Route.SingleFlightWirePayloadSchema.Type = {
       mutation: { ok: "alice" },
       url: "http://test.local/sfm-invoke/users/alice",
       loaders: [
         {
           routeId,
-          result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } as any,
+          result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() },
         },
       ],
     };
@@ -652,7 +788,7 @@ describe("Route loader", () => {
       { args: ["alice"], url: "/sfm-invoke/users/alice" },
       {
         app: RouteForInvoke,
-        fetch: async () => ({ json: async () => ({ ok: true as const, payload }) }),
+        fetch: async () => ({ json: async () => ({ version: 1, ok: true as const, payload }) }),
       },
     ));
 
@@ -670,6 +806,8 @@ describe("Route loader", () => {
     const make = Route.mutationSingleFlight((userId: string) => Effect.succeed({ ok: userId }), {
       app: RouteForMutationHandle,
       target: (_result, [userId]) => `/sfm-mutation/users/${userId}`,
+      // The mutation invalidates nothing; "matched" keeps loader data in the payload.
+      revalidate: "matched",
       onPayload: (payload) => Effect.sync(() => {
         seen.push(String(payload.mutation.ok));
       }),
@@ -690,17 +828,17 @@ describe("Route loader", () => {
       Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
       withUserIdRoute("/atom-sfm/users/:userId", Component.from<{}>(() => null)),
     );
-    void AtomRoute;
-
     const routeId = routeIdOf(AtomRoute);
     const saveUser = Atom.action(
       (userId: string) => Effect.succeed({ ok: userId }),
       {
         singleFlight: {
+          app: AtomRoute,
           endpoint: "/api/sfm",
           url: (userId) => `/atom-sfm/users/${userId}`,
           fetch: async () => ({
             json: async () => ({
+              version: 1,
               ok: true as const,
               payload: {
                 mutation: { ok: "alice" },
@@ -708,7 +846,7 @@ describe("Route loader", () => {
                 loaders: [
                   {
                     routeId,
-                    result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } as any,
+                    result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() },
                   },
                 ],
               },
@@ -729,18 +867,18 @@ describe("Route loader", () => {
       Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
       withUserIdRoute("/runtime-sfm/users/:userId", Component.from<{}>(() => null)),
     );
-    void RuntimeRoute;
-
     const routeId = routeIdOf(RuntimeRoute);
     const runtime = Atom.runtime(Layer.empty);
     const saveUser = runtime.action(
       (userId: string) => Effect.succeed({ ok: userId }),
       {
         singleFlight: {
+          app: RuntimeRoute,
           endpoint: "/api/sfm",
           url: (userId) => `/runtime-sfm/users/${userId}`,
           fetch: async () => ({
             json: async () => ({
+              version: 1,
               ok: true as const,
               payload: {
                 mutation: { ok: "alice" },
@@ -748,7 +886,7 @@ describe("Route loader", () => {
                 loaders: [
                   {
                     routeId,
-                    result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } as any,
+                    result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() },
                   },
                 ],
               },
@@ -773,17 +911,18 @@ describe("Route loader", () => {
     const routeId = routeIdOf(AutoRoute);
     const runtime = Atom.runtime(Layer.succeed(Route.SingleFlightTransportTag, {
       execute: () => Effect.succeed({
+        version: 1,
         ok: true as const,
         payload: {
           mutation: { ok: "alice" },
           url: "http://test.local/auto-runtime/users/alice",
-          loaders: [{ routeId, result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } as any }],
+          loaders: [{ routeId, result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } }],
         },
-      }) as any,
+      }),
     }));
     const saveUser = runtime.action(
       (userId: string) => Effect.succeed({ ok: userId }),
-      { name: "/api/sfm/auto-runtime" },
+      { name: "/api/sfm/auto-runtime", singleFlight: { app: AutoRoute } },
     );
 
     const result = await Effect.runPromise(saveUser.runEffect("alice"));
@@ -792,35 +931,37 @@ describe("Route loader", () => {
     await runtime.dispose();
   });
 
-  it("uses globally installed transport automatically in Atom.action", async () => {
+  it("uses a context-provided transport in free Atom.action (no process-global slot)", async () => {
+    // DQ-033: the process-global transport install is deleted. A free action
+    // reaches a transport exclusively through Effect context, so the caller
+    // provides it as a layer on `runEffect` — request-scoped by construction.
     clearLoaderCache();
     const AutoRoute = Route.loader((params: { readonly userId: string }) =>
       Effect.succeed({ name: params.userId }), { staleTime: "5 minutes" })(
       withUserIdRoute("/auto-global/users/:userId", Component.from<{}>(() => null)),
     );
     const routeId = routeIdOf(AutoRoute);
-    const restore = installSingleFlightTransport({
+    const transport = Layer.succeed(Route.SingleFlightTransportTag, {
       execute: () => Effect.succeed({
+        version: 1,
         ok: true as const,
         payload: {
           mutation: { ok: "alice" },
           url: "http://test.local/auto-global/users/alice",
-          loaders: [{ routeId, result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } as any }],
+          loaders: [{ routeId, result: { _tag: "Success", value: { name: "alice" }, waiting: false, timestamp: Date.now() } }],
         },
-      }) as any,
+      }),
     });
 
-    try {
-      const saveUser = Atom.action(
-        (userId: string) => Effect.succeed({ ok: userId }),
-        { name: "/api/sfm/auto-global" },
-      );
-      const result = await Effect.runPromise(saveUser.runEffect("alice"));
-      expect(result.ok).toBe("alice");
-      expect(getLoaderCacheEntry(routeId, { userId: "alice" })).toBeDefined();
-    } finally {
-      restore();
-    }
+    const saveUser = Atom.action(
+      (userId: string) => Effect.succeed({ ok: userId }),
+      { name: "/api/sfm/auto-global", singleFlight: { app: AutoRoute } },
+    );
+    const result = await Effect.runPromise(
+      saveUser.runEffect("alice").pipe(Effect.provide(transport)) as Effect.Effect<{ readonly ok: string }, never, never>,
+    );
+    expect(result.ok).toBe("alice");
+    expect(getLoaderCacheEntry(routeId, { userId: "alice" })).toBeDefined();
   });
 
   it("can seed loader payload directly from mutation result and skip rerun", () => {
@@ -847,13 +988,13 @@ describe("Route loader", () => {
     );
 
     expect(payload.loaders).toHaveLength(1);
-    expect((payload.loaders[0]?.result as any).value.name).toBe("client-alice");
+    expect(successField(payload.loaders[0]?.result, "name")).toBe("client-alice");
     expect(loaderRuns).toBe(0);
 
     Effect.runSync(Route.hydrateSingleFlightPayload(payload as Route.SingleFlightPayload<unknown>, SeededRoute));
     const routeId = routeIdOf(SeededRoute);
     const cached = getLoaderCacheEntry(routeId, { userId: "alice" });
-    expect((cached?.result as any).value.name).toBe("client-alice");
+    expect(successField(cached?.result, "name")).toBe("client-alice");
   });
 
   it("supports high-level singleFlight handler with direct loader seeding", () => {
@@ -878,13 +1019,13 @@ describe("Route loader", () => {
     );
 
     const response = Effect.runSync(
-      handler({ args: ["alice"], url: "/sfm-endpoint/users/alice" }) as Effect.Effect<Route.SingleFlightResponse<{ readonly id: string; readonly name: string }, never>, never, never>,
+      handler({ args: ["alice"], url: "/sfm-endpoint/users/alice" }) as Effect.Effect<Route.SingleFlightWireResponse, never, never>,
     );
 
     expect(response.ok).toBe(true);
     if (response.ok) {
       expect(response.payload.loaders).toHaveLength(1);
-      expect((response.payload.loaders[0]?.result as any).value.name).toBe("client-alice");
+      expect(successField(response.payload.loaders[0]?.result, "name")).toBe("client-alice");
     }
     expect(loaderRuns).toBe(0);
   });
@@ -909,12 +1050,38 @@ describe("Route loader", () => {
     );
 
     const response = Effect.runSync(
-      handler({ args: ["alice"], url: "/sfm-seed-helper/users/alice" }) as Effect.Effect<Route.SingleFlightResponse<{ readonly id: string; readonly name: string }, never>, never, never>,
+      handler({ args: ["alice"], url: "/sfm-seed-helper/users/alice" }) as Effect.Effect<Route.SingleFlightWireResponse, never, never>,
     );
 
     expect(response.ok).toBe(true);
     if (response.ok) {
-      expect((response.payload.loaders[0]?.result as any).value.name).toBe("client-alice");
+      expect(successField(response.payload.loaders[0]?.result, "name")).toBe("client-alice");
+    }
+  });
+
+  it("fails a loader that exceeds its configured timeout", async () => {
+    clearLoaderCache();
+    const SlowRoute = Route.loader((_: { readonly userId: string }) =>
+      Effect.never,
+      { timeout: 20 },
+    )(
+      withUserIdRoute("/loader-timeout/users/:userId", Component.from<{}>(() => null)),
+    );
+
+    const routeId = routeIdOf(SlowRoute);
+    const results = await Effect.runPromise(
+      Route.runMatchedLoaders(SlowRoute, new URL("http://test.local/loader-timeout/users/alice")),
+    );
+
+    const entry = results.find((item) => item.routeId === routeId);
+    expect(entry?.result._tag).toBe("Failure");
+    // DQ-036: the timeout is attributable — it names the route and the budget,
+    // not a bare `TimeoutError` that names neither.
+    const error = entry?.result._tag === "Failure" ? entry.result.error : undefined;
+    expect(error).toBeInstanceOf(RouteLoaderTimeoutError);
+    if (error instanceof RouteLoaderTimeoutError) {
+      expect(error.routeId).toBe(routeId);
+      expect(error.timeoutMs).toBe(20);
     }
   });
 });

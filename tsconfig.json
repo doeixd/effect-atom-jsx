@@ -15,10 +15,34 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnostics": true,
+        "includeSuggestionsInTsc": false,
+        "ignoreEffectSuggestionsInTscExitCode": true,
+        "ignoreEffectWarningsInTscExitCode": false,
+        "ignoreEffectErrorsInTscExitCode": false,
+        "overrides": [
+          {
+            "include": ["src/type-tests/**/*.ts"],
+            "options": {
+              "diagnostics": false
+            }
+          }
+        ]
+      }
+    ],
     // TS7 no longer auto-includes all @types/* for ambient globals; CLI +
     // Node entrypoints need node, while browser types still come from "lib".
     "types": ["node"]
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "examples", "src/__tests__/**/*", "src/__bench__/**/*"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "examples",
+    "src/__tests__/**/*",
+    "src/__bench__/**/*"
+  ]
 }

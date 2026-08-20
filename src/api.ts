@@ -55,6 +55,36 @@ export function createEffect<T>(fn: (prev: T | undefined) => T, initialValue?: T
 }
 
 /**
+ * Create a reactive side-effect that can also be disposed explicitly.
+ *
+ * Behaves exactly like {@link createEffect} with respect to ownership — the
+ * reaction is created under a dedicated {@link Owner} parented to the ambient
+ * owner, so a render owner still tears it down — but additionally returns a
+ * dispose function for callers whose lifetime is governed by something other
+ * than the reactive owner tree (e.g. an Effect `Scope`).
+ *
+ * Disposal is idempotent and safe to combine with owner-driven disposal:
+ * whichever happens first wins, and the second is a no-op.
+ *
+ * @example
+ * const dispose = createDisposableEffect(() => console.log(count()));
+ * dispose(); // stops recomputing
+ */
+export function createDisposableEffect<T>(
+  fn: (prev: T | undefined) => T,
+  initialValue?: T,
+): () => void {
+  const owner = new Owner(getOwner());
+  runWithOwner(owner, () => {
+    createEffect(fn, initialValue);
+  });
+  // `Owner.dispose()` guards on its own `_disposed` flag and detaches itself
+  // from its parent, so an explicit dispose after (or before) owner-driven
+  // disposal runs the computation teardown exactly once.
+  return () => owner.dispose();
+}
+
+/**
  * Register a cleanup callback that runs before the next effect execution
  * or when the current owner is disposed.
  */
@@ -198,24 +228,130 @@ export function useContext<T>(ctx: Context<T>): T {
 
 // ─── Props helpers ────────────────────────────────────────────────────────────
 
+export type PropsSource =
+  | object
+  | (() => object | null | undefined)
+  | null
+  | undefined;
+
+type ResolvedPropsSource<Source> =
+  Source extends () => infer Value
+    ? NonNullable<Value>
+    : NonNullable<Source>;
+
+type PropsSourceValue<Source> =
+  [ResolvedPropsSource<Source>] extends [never]
+    ? {}
+    : ResolvedPropsSource<Source> extends object
+      ? ResolvedPropsSource<Source>
+      : {};
+
+type Simplify<Value> = { [Key in keyof Value]: Value[Key] } & {};
+
+type MergePropSources<
+  Sources extends ReadonlyArray<PropsSource>,
+  Accumulator extends object = {},
+> = Sources extends readonly [
+  infer Source extends PropsSource,
+  ...infer Rest extends ReadonlyArray<PropsSource>,
+]
+  ? MergePropSources<
+    Rest,
+    Simplify<
+      Omit<Accumulator, keyof PropsSourceValue<Source>>
+      & PropsSourceValue<Source>
+    >
+  >
+  : Accumulator;
+
+export type MergePropsResult<Sources extends ReadonlyArray<PropsSource>> =
+  Simplify<MergePropSources<Sources>>;
+
 /**
- * Merge multiple prop objects, last-write-wins for non-function values,
- * composed for event handlers. Returns a reactive merged view.
+ * Merge prop sources into one live, last-source-wins view.
+ *
+ * The JSX compiler passes reactive spreads as function sources. Those sources
+ * may change both values and keys, so eagerly copying them would silently drop
+ * the spread and disconnect it from reactivity. Static sources retain the
+ * cheaper descriptor-copy path; function sources use a memoized proxy whose
+ * key set is resolved on demand.
  */
-export function mergeProps<T extends object>(...sources: Partial<T>[]): T {
-  const result = {} as T;
-  for (const source of sources) {
-    if (source == null) continue;
-    for (const key of Object.keys(source) as (keyof T)[]) {
-      const descriptor = Object.getOwnPropertyDescriptor(source, key)!;
-      if (descriptor.get) {
-        Object.defineProperty(result, key, { get: descriptor.get, enumerable: true });
-      } else {
-        (result as Record<keyof T, unknown>)[key] = source[key];
+export function mergeProps<const Sources extends ReadonlyArray<PropsSource>>(
+  ...sources: Sources
+): MergePropsResult<Sources>;
+export function mergeProps(
+  ...sources: ReadonlyArray<PropsSource>
+): object {
+  const hasDynamicSource = sources.some((source) => typeof source === "function");
+  if (!hasDynamicSource) {
+    const result: Record<PropertyKey, unknown> = {};
+    for (const source of sources) {
+      if (source == null) continue;
+      const staticSource = source as Record<PropertyKey, unknown>;
+      for (const key of Object.keys(staticSource)) {
+        if (key === "__proto__" || key === "constructor") continue;
+        const descriptor = Object.getOwnPropertyDescriptor(staticSource, key);
+        if (descriptor === undefined) continue;
+        if (descriptor.get !== undefined) {
+          Object.defineProperty(result, key, {
+            configurable: true,
+            enumerable: descriptor.enumerable,
+            get: descriptor.get.bind(staticSource),
+          });
+        } else {
+          Object.defineProperty(result, key, {
+            ...descriptor,
+            configurable: true,
+          });
+        }
       }
     }
+    return result;
   }
-  return result;
+
+  const liveSources = sources.map((source): (() => object) => {
+    if (typeof source !== "function") {
+      return () => source ?? {};
+    }
+    const resolved = createMemo(
+      source as () => object | null | undefined,
+    );
+    return () => resolved() ?? {};
+  });
+  const resolveValue = (property: PropertyKey): unknown => {
+    for (let index = liveSources.length - 1; index >= 0; index--) {
+      const source = liveSources[index]!();
+      if (Reflect.has(source, property)) return Reflect.get(source, property);
+    }
+    return undefined;
+  };
+
+  return new Proxy({}, {
+    get: (_target, property) => resolveValue(property),
+    has: (_target, property) =>
+      liveSources.some((resolve) => Reflect.has(resolve(), property)),
+    ownKeys: () => {
+      const keys = new Set<string | symbol>();
+      for (const resolve of liveSources) {
+        for (const key of Reflect.ownKeys(resolve())) keys.add(key);
+      }
+      return [...keys];
+    },
+    getOwnPropertyDescriptor: (_target, property) => {
+      for (let index = liveSources.length - 1; index >= 0; index--) {
+        const source = liveSources[index]!();
+        const descriptor = Reflect.getOwnPropertyDescriptor(source, property);
+        if (descriptor !== undefined) {
+          return {
+            configurable: true,
+            enumerable: descriptor.enumerable,
+            get: () => resolveValue(property),
+          };
+        }
+      }
+      return undefined;
+    },
+  });
 }
 
 export function splitProps<T extends object, K extends keyof T>(

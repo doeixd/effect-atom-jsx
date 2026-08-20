@@ -8,15 +8,34 @@ import {
   Scope,
   Schema,
   Stream as FxStream,
-  ServiceMap,
+  Context,
 } from "effect";
 import { createEffect, createSignal, onCleanup, useContext, type Accessor, type Setter } from "./api.js";
 import { Owner, getOwner, runWithOwner } from "./owner.js";
 import * as Atom from "./Atom.js";
 import type * as Behavior from "./Behavior.js";
 import * as Element from "./Element.js";
+import * as Portable from "./Portable.js";
 import * as Route from "./Route.js";
 import * as View from "./View.js";
+import {
+  annotateHandle,
+  type AnyBindingSnapshotPolicy,
+  type BindingResumePolicy,
+  type PolicyBindingOf,
+  type InspectableActionHandle,
+  type InspectableDerivedHandle,
+  type InspectableQueryHandle,
+  type InspectableRefHandle,
+  isStateHandleValue,
+  markControlledBinding,
+  type InspectableStateHandle,
+} from "./resume-handle.js";
+import {
+  observeCommittedComponentBindings,
+  observeRenderedComponentBoundary,
+  withRenderedComponentOwner,
+} from "./resume-session.js";
 import {
   defineMutation,
   defineQuery,
@@ -29,6 +48,8 @@ import {
   type RuntimeLike,
 } from "./effect-ts.js";
 import { currentComponentScope } from "./component-scope.js";
+import { normalizeReactivityKeys } from "./reactivity-runtime.js";
+import { currentLoaderCacheStore } from "./router-runtime.js";
 
 export const ComponentTypeId: unique symbol = Symbol.for("effect-atom-jsx/Component");
 
@@ -81,9 +102,43 @@ type Pipeable<Self> = {
 type Simplify<T> = { readonly [K in keyof T]: T[K] };
 type NoDuplicateName<Bindings, Name extends string> = Name extends keyof Bindings ? never : Name;
 type NoDuplicateFragment<Bindings, Added> = Extract<keyof Bindings, keyof Added> extends never ? unknown : never;
-type SetupStep<Props> = (
-  input: { readonly props: Props; readonly bindings: Readonly<Record<string, unknown>> },
-) => Effect.Effect<Readonly<Record<string, unknown>>, unknown, unknown>;
+
+/** Inspectable category for one named setup-builder step. */
+export type SetupStepKind = "binding" | "value" | "effect" | "fragment";
+
+/** Read-only setup step metadata retained after builder construction. */
+export interface SetupStepInspection {
+  readonly name?: string;
+  readonly kind: SetupStepKind;
+  readonly plan?: SetupPlan;
+  readonly resume?: AnyBindingSnapshotPolicy;
+}
+
+/** Inspectable setup shape. Raw setup functions are intentionally opaque. */
+export type SetupPlan =
+  | {
+    readonly kind: "named";
+    readonly steps: ReadonlyArray<SetupStepInspection>;
+  }
+  | {
+    readonly kind: "opaque";
+  };
+
+type SetupStep<Props> = {
+  readonly inspection: SetupStepInspection;
+  readonly run: (
+    input: { readonly props: Props; readonly bindings: Readonly<Record<string, unknown>> },
+  ) => Effect.Effect<Readonly<Record<string, unknown>>, unknown, unknown>;
+};
+
+const opaqueSetupPlan: SetupPlan = Object.freeze({ kind: "opaque" as const });
+
+function setupPlanFromSteps<Props>(steps: ReadonlyArray<SetupStep<Props>>): SetupPlan {
+  return Object.freeze({
+    kind: "named" as const,
+    steps: Object.freeze(steps.map((step) => Object.freeze({ ...step.inspection }))),
+  });
+}
 
 /** Input passed to each step of the named setup builder. */
 export interface SetupInput<Props, Bindings> {
@@ -113,6 +168,30 @@ export interface Setup<Props, Bindings, E = never, R = never> extends Pipeable<S
     readonly R: R;
   };
   readonly effect: (props: Props) => Effect.Effect<Bindings, E, R>;
+  readonly plan: SetupPlan;
+  bind<const Name extends string, A, E2, R2>(
+    name: NoDuplicateName<Bindings, Name>,
+    source: BindingSource<A, E2, R2, SetupInput<Props, Bindings>>,
+  ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E | E2, R | R2>;
+  // The three-argument form infers the resume policy into its own `A`-free
+  // parameter `P` and validates it through `A`'s CONSTRAINT (checked after
+  // inference). Typing the options as `BindOptions<A>` instead would fix
+  // `A` to `unknown` before a context-sensitive callback is processed —
+  // which is exactly the differential-pair call site
+  // `bind("value", ({ props }) => bindable(props.value ?? init), { resume })`.
+  // An incompatible policy still fails AT THIS CALL: the constraint is
+  // violated, no overload matches.
+  bind<
+    const Name extends string,
+    const P extends AnyBindingSnapshotPolicy,
+    A extends PolicyBindingOf<P>,
+    E2 = never,
+    R2 = never,
+  >(
+    name: NoDuplicateName<Bindings, Name>,
+    f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E2, R2>,
+    options: { readonly resume?: P },
+  ): Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E | E2, R | R2>;
   bind<const Name extends string, A, E2, R2>(
     name: NoDuplicateName<Bindings, Name>,
     f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E2, R2>,
@@ -136,6 +215,42 @@ export type SetupRequirementsOf<T> = T extends Setup<any, any, any, infer R> ? R
 type SetupSource<Props, Bindings, E, R> =
   | ((props: Props) => Effect.Effect<Bindings, E, R>)
   | Setup<Props, Bindings, E, R>;
+
+export interface BindOptions<A> {
+  readonly resume?: BindingResumePolicy<A>;
+}
+
+const BindingSourceTypeId: unique symbol = Symbol.for(
+  "effect-atom-jsx/Component/BindingSource",
+);
+
+/**
+ * A binding factory PLUS its resume policy in one statically visible value
+ * (`DQ-055`: `Machine.resumable(definition)` is the canonical producer).
+ * `.bind(name, source)` records the policy on the setup plan without a
+ * `{ resume }` option at the call site — statically, because restoration
+ * inspects the PLAN and never runs the factory.
+ */
+export interface BindingSource<A, E = never, R = never, Deps = unknown> {
+  readonly [BindingSourceTypeId]: true;
+  readonly make: (input: Deps) => Effect.Effect<A, E, R>;
+  readonly resume: BindingResumePolicy<A>;
+}
+
+/** Package a factory + resume policy as a `.bind`-able source. */
+export function bindingSource<A, E = never, R = never, Deps = unknown>(
+  source: Omit<BindingSource<A, E, R, Deps>, typeof BindingSourceTypeId>,
+): BindingSource<A, E, R, Deps> {
+  return { ...source, [BindingSourceTypeId]: true };
+}
+
+export function isBindingSource(
+  value: unknown,
+): value is BindingSource<unknown, unknown, unknown> {
+  return (
+    typeof value === "object" && value !== null && BindingSourceTypeId in value
+  );
+}
 
 /** Any authored slot contract accepted by component/style/behavior APIs. */
 export type AnySlotContract = View.Slots.Any | Record<string, View.Slot.Any>;
@@ -182,20 +297,138 @@ type PropsSpec<Props> = {
 };
 
 type RequirementSpec<Req> = {
-  readonly tags: ReadonlyArray<ServiceMap.Key<any, any>>;
+  readonly tags: ReadonlyArray<Context.Key<any, any>>;
   readonly _Req?: (_: Req) => Req;
 };
+
+/** Phase affected by an inspectable component wrapper. */
+export type ComponentTransformPhase = "setup" | "view";
+
+/** An execution transform whose captured behavior is not yet portable. */
+export interface OpaqueComponentTransformDescriptor {
+  readonly kind: "component.wrapper";
+  readonly phase: ComponentTransformPhase;
+  readonly portability: "opaque";
+}
+
+/**
+ * The canonical slot wrapper can be reconstructed from the published slot
+ * contract, so it remains portable even though it augments setup bindings.
+ */
+export interface SlotsComponentTransformDescriptor {
+  readonly kind: "component.withSlots";
+  readonly phase: "setup";
+  readonly portability: "portable";
+}
+
+/**
+ * A behavior attachment recorded by `Component.withBehavior(...)`.
+ *
+ * `portability` reflects the behavior's declarative attachment record:
+ * portable attachments list the code identities whose resolution reproduces
+ * the behavior on a resumed client; opaque attachments require fallback
+ * activation.
+ */
+export interface BehaviorComponentTransformDescriptor {
+  readonly kind: "component.withBehavior";
+  readonly phase: "setup";
+  readonly portability: "portable" | "opaque";
+  readonly codeIds?: ReadonlyArray<string>;
+  /**
+   * Runtime-only reattachment recipe. This is deliberately not a wire
+   * descriptor: the component activation entry already loads the authored
+   * component module, and restoration invokes this recipe without rerunning
+   * the component's base setup.
+   */
+  readonly reattach?: (
+    bindings: unknown,
+    props: unknown,
+  ) => Effect.Effect<unknown, unknown, unknown>;
+}
+
+/** Inspectable metadata for a wrapper that changes component execution. */
+export type ComponentTransformDescriptor =
+  | OpaqueComponentTransformDescriptor
+  | SlotsComponentTransformDescriptor
+  | BehaviorComponentTransformDescriptor;
+
+/** Immutable, read-only definition metadata retained by a component value. */
+export interface ComponentDefinition {
+  readonly name?: string;
+  readonly setupPlan: SetupPlan;
+  readonly transforms: ReadonlyArray<ComponentTransformDescriptor>;
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Authored metadata accepted by `Component.withDefinition(...)`.
+ *
+ * Metadata is inspection-only and is not implicitly treated as wire-safe.
+ * Adapters must explicitly project and validate anything they serialize.
+ */
+export interface ComponentDefinitionOptions {
+  readonly name?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
 
 type InternalComponent<Props, Req, E, Bindings> = {
   readonly [ComponentImplTypeId]: true;
   readonly props: PropsSpec<Props>;
   readonly requirements: RequirementSpec<Req>;
   readonly setup: (props: Props) => Effect.Effect<Bindings, E, Req>;
+  readonly definition: ComponentDefinition;
   readonly view?: (props: Props, bindings: Bindings) => unknown;
   readonly loading?: () => unknown;
   readonly boundary?: ErrorHandlers;
   readonly memo?: (prev: Props, next: Props) => boolean;
 };
+
+function freezeDefinition(
+  definition: {
+    readonly name?: string;
+    readonly setupPlan: SetupPlan;
+    readonly transforms?: ReadonlyArray<ComponentTransformDescriptor>;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+  },
+): ComponentDefinition {
+  return Object.freeze({
+    ...(definition.name === undefined ? {} : { name: definition.name }),
+    setupPlan: definition.setupPlan,
+    transforms: Object.freeze([...(definition.transforms ?? [])]),
+    metadata: Object.freeze({ ...(definition.metadata ?? {}) }),
+  });
+}
+
+function definitionForSetup<Props, Bindings, E, R>(
+  source: SetupSource<Props, Bindings, E, R>,
+): ComponentDefinition {
+  return freezeDefinition({
+    setupPlan: isSetup<Props, Bindings, E, R>(source) ? source.plan : opaqueSetupPlan,
+  });
+}
+
+function appendOpaqueTransform(
+  definition: ComponentDefinition,
+  phase: ComponentTransformPhase,
+): ComponentDefinition {
+  return appendTransform(definition, {
+    kind: "component.wrapper",
+    phase,
+    portability: "opaque",
+  });
+}
+
+function appendTransform(
+  definition: ComponentDefinition,
+  transform: ComponentTransformDescriptor,
+): ComponentDefinition {
+  return freezeDefinition({
+    name: definition.name,
+    setupPlan: definition.setupPlan,
+    transforms: [...definition.transforms, transform],
+    metadata: definition.metadata,
+  });
+}
 
 function isInternalComponent<Props, Req, E, Bindings>(
   value: unknown,
@@ -226,7 +459,7 @@ function makeSetup<Props, Bindings, E, R>(
     Effect.gen(function* () {
       let bindings: Record<string, unknown> = {};
       for (const step of steps) {
-        const added = yield* step({ props, bindings });
+        const added = yield* step.run({ props, bindings });
         bindings = { ...bindings, ...added };
       }
       return bindings as Bindings;
@@ -240,31 +473,65 @@ function makeSetup<Props, Bindings, E, R>(
       R: undefined as unknown as R,
     },
     effect,
-    bind: (name: string, f: (input: SetupInput<Props, Bindings>) => Effect.Effect<unknown, unknown, unknown>) =>
-      makeSetup<Props, any, any, any>([
+    plan: setupPlanFromSteps(steps),
+    bind: (
+      name: string,
+      f:
+        | ((input: SetupInput<Props, Bindings>) => Effect.Effect<unknown, unknown, unknown>)
+        | BindingSource<unknown, unknown, unknown, SetupInput<Props, Bindings>>,
+      options?: BindOptions<unknown>,
+    ) => {
+      // A BindingSource carries factory + policy in one statically visible
+      // value (DQ-055): the plan records its resume policy exactly as if the
+      // author had written the { resume } option by hand.
+      const factory = (isBindingSource(f) ? f.make : f) as (
+        input: SetupInput<Props, Bindings>,
+      ) => Effect.Effect<unknown, unknown, unknown>;
+      const resume = isBindingSource(f) ? f.resume : options?.resume;
+      return makeSetup<Props, any, any, any>([
         ...steps,
-        (input) =>
-          f(input as unknown as SetupInput<Props, Bindings>).pipe(
-            Effect.map((value) => ({ [name]: value })),
-          ),
-      ]),
+        {
+          inspection: {
+            kind: "binding",
+            name,
+            ...(resume === undefined ? {} : { resume }),
+          },
+          run: (input) =>
+            factory(input as unknown as SetupInput<Props, Bindings>).pipe(
+              Effect.map((value) => ({ [name]: value })),
+            ),
+        },
+      ]);
+    },
     value: (name: string, f: (input: SetupInput<Props, Bindings>) => unknown) =>
       makeSetup<Props, any, any, any>([
         ...steps,
-        (input) => Effect.succeed({ [name]: f(input as unknown as SetupInput<Props, Bindings>) }),
+        {
+          inspection: { kind: "value", name },
+          run: (input) => Effect.succeed({ [name]: f(input as unknown as SetupInput<Props, Bindings>) }),
+        },
       ]),
     doEffect: (f: (input: SetupInput<Props, Bindings>) => Effect.Effect<void, unknown, unknown>) =>
       makeSetup<Props, Bindings, any, any>([
         ...steps,
-        (input) =>
-          f(input as unknown as SetupInput<Props, Bindings>).pipe(
-            Effect.as({}),
-          ),
+        {
+          inspection: { kind: "effect" },
+          run: (input) =>
+            f(input as unknown as SetupInput<Props, Bindings>).pipe(
+              Effect.as({}),
+            ),
+        },
       ]),
     use: (fragment: Setup<Props, unknown, unknown, unknown>) =>
       makeSetup<Props, any, any, any>([
         ...steps,
-        (input) => fragment.effect(input.props).pipe(Effect.map((added) => added as Readonly<Record<string, unknown>>)),
+        {
+          inspection: { kind: "fragment", plan: fragment.plan },
+          run: (input) =>
+            fragment.effect(input.props).pipe(
+              Effect.map((added) => added as Readonly<Record<string, unknown>>),
+            ),
+        },
       ]),
   } as unknown as Setup<Props, Bindings, E, R>;
 
@@ -307,7 +574,7 @@ function toComponent<Props, Req, E, Bindings, SlotContract = SlotsFromBindings<B
 
     const fiber = runForkWithAmbient(
       Effect.all({
-        bindings: internal.setup(props),
+        bindings: runComponentSetup(out, internal, props),
         platform: Effect.serviceOption(View.PlatformTag),
         diagnostics: Effect.serviceOption(DiagnosticsReporterTag),
       }).pipe(
@@ -369,6 +636,7 @@ function toComponent<Props, Req, E, Bindings, SlotContract = SlotsFromBindings<B
     props: internal.props,
     requirements: internal.requirements,
     setup: internal.setup,
+    definition: internal.definition,
     view: internal.view,
     loading: internal.loading,
     boundary: internal.boundary,
@@ -427,7 +695,7 @@ export function propsSchema<SchemaProps>(schema: Schema.Schema<SchemaProps>): Pr
  * Tags are metadata for authoring and tooling; the Effect requirement type is
  * still the source of truth and is preserved through setup and wrappers.
  */
-export function require<Req = never>(...tags: ReadonlyArray<ServiceMap.Key<any, any>>): RequirementSpec<Req> {
+export function require<Req = never>(...tags: ReadonlyArray<Context.Key<any, any>>): RequirementSpec<Req> {
   return { tags };
 }
 
@@ -440,10 +708,11 @@ export function setup<Props = {}>(): Setup<Props, {}, never, never> {
 export function bind<const Name extends string, Props = any, Bindings = any, A = unknown, E = never, R = never>(
   name: Name,
   f: (input: SetupInput<Props, Bindings>) => Effect.Effect<A, E, R>,
+  options?: BindOptions<A>,
 ): <E0, R0>(
   source: Setup<Props, Bindings, E0, R0> & (Name extends keyof Bindings ? never : unknown),
 ) => Setup<Props, Simplify<Bindings & { readonly [K in Name]: A }>, E0 | E, R0 | R> {
-  return (source) => source.bind(name as any, f as any) as any;
+  return (source) => source.bind(name as any, f as any, options as any) as any;
 }
 
 /** Add a synchronous binding to a setup builder. */
@@ -472,6 +741,25 @@ export function use<Props = any, Added = any, E = never, R = never>(
   return (source) => source.use(fragment as any) as any;
 }
 
+export function make<Props, SetupReq, E, Bindings>(
+  setup: SetupSource<Props, Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => unknown,
+): Component<Props, SetupReq, E, Bindings>;
+export function make<Props, SetupReq, E, Bindings, Slots>(
+  setup: SetupSource<Props, Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => View.View<Slots>,
+): Component<Props, SetupReq, E, Bindings, Slots>;
+// A bare `setup()` is `Setup<{}, …>`, which is deliberately usable with any
+// richer view-props type: its bind callbacks were written against `{}`, so
+// they cannot observe fields the caller adds. Props then infer from the view.
+export function make<Props, SetupReq, E, Bindings>(
+  setup: SetupSource<{}, Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => unknown,
+): Component<Props, SetupReq, E, Bindings>;
+export function make<Props, SetupReq, E, Bindings, Slots>(
+  setup: SetupSource<{}, Bindings, E, SetupReq>,
+  view: (props: Props, bindings: Bindings) => View.View<Slots>,
+): Component<Props, SetupReq, E, Bindings, Slots>;
 export function make<Props, Req, E, Bindings>(
   propSpec: PropsSpec<Props>,
   req: RequirementSpec<Req>,
@@ -513,16 +801,36 @@ export function make<Props, Req, SetupReq, E, Bindings, Slots>(
   view: (props: Props, bindings: Bindings) => View.View<Slots>,
 ): Component<Props, Req | SetupReq, E, Bindings, Slots>;
 export function make<Props, Req, SetupReq, E, Bindings>(
-  propSpec: PropsSpec<Props>,
-  req: RequirementSpec<Req>,
-  setup: SetupSource<Props, Bindings, E, SetupReq>,
-  view: (props: Props, bindings: Bindings) => unknown,
+  propSpecOrSetup: PropsSpec<Props> | SetupSource<Props, Bindings, E, SetupReq>,
+  reqOrView:
+    | RequirementSpec<Req>
+    | ((props: Props, bindings: Bindings) => unknown),
+  maybeSetup?: SetupSource<Props, Bindings, E, SetupReq>,
+  maybeView?: (props: Props, bindings: Bindings) => unknown,
 ): Component<Props, Req | SetupReq, E, Bindings> {
+  // Two-argument shorthand: `make(setup, view)` — pass-through props, no
+  // declared service requirements. The full four-argument form remains the
+  // authoritative constructor when props validation or requirement tags
+  // matter.
+  const shorthand = maybeSetup === undefined && maybeView === undefined;
+  const propSpec = shorthand
+    ? props<Props>()
+    : (propSpecOrSetup as PropsSpec<Props>);
+  const req = shorthand
+    ? require<Req | SetupReq>()
+    : (reqOrView as RequirementSpec<Req>);
+  const setup = shorthand
+    ? (propSpecOrSetup as SetupSource<Props, Bindings, E, SetupReq>)
+    : maybeSetup!;
+  const view = shorthand
+    ? (reqOrView as (props: Props, bindings: Bindings) => unknown)
+    : maybeView!;
   return toComponent({
     [ComponentImplTypeId]: true,
     props: propSpec,
     requirements: req as unknown as RequirementSpec<Req | SetupReq>,
     setup: setupSourceEffect(setup),
+    definition: definitionForSetup(setup),
     view,
   });
 }
@@ -548,6 +856,7 @@ export function headless<Props, Req, SetupReq, E, Bindings>(
     props: propSpec as unknown as PropsSpec<Props & HeadlessChildren<Bindings>>,
     requirements: req as unknown as RequirementSpec<Req | SetupReq>,
     setup: setupEffect as unknown as (props: Props & HeadlessChildren<Bindings>) => Effect.Effect<Bindings, E, Req | SetupReq>,
+    definition: definitionForSetup(setup),
   }) as HeadlessComponent<Props, Req | SetupReq, E, Bindings>;
 }
 
@@ -587,7 +896,10 @@ export type ComponentDiagnosticCode =
   | "component:undeclared-view-slot"
   | "component:slot-capability-mismatch"
   | "component:missing-bindings-slot"
-  | "component:undeclared-bindings-slot";
+  | "component:undeclared-bindings-slot"
+  // DQ-050/051 backstop: bindings.slots and the rendered view disagree on a
+  // slot's handle IDENTITY while names and capabilities line up.
+  | "component:slot-target-drift";
 
 export interface ComponentDiagnostic {
   readonly code: ComponentDiagnosticCode;
@@ -637,6 +949,7 @@ export function validateSlotContract<Props, Req, E, Bindings, Slots>(
   if (contract === undefined) return [];
 
   const diagnostics: ComponentDiagnostic[] = [];
+  const driftedSlots: string[] = [];
   const componentName = view.name;
   const declaredMetadata = slotContractMetadata(contract);
   const renderedSlots = slotsRecord(view.slots);
@@ -669,6 +982,21 @@ export function validateSlotContract<Props, Req, E, Bindings, Slots>(
         declaredCapability: capabilityName(declared.capability),
         renderedCapability: capabilityName(renderedCapability),
       });
+    }
+
+    // DQ-050/051 backstop: names and capabilities can both line up while the
+    // IDENTITY diverges — setup publishing one handle set and the view
+    // rendering another means styles land on one and listeners on the other,
+    // silently. Drifted slots are collected and reported as ONE diagnostic
+    // per component after the loop.
+    if (
+      bindingSlots !== undefined
+      && slot in bindingSlots
+      && renderedSlots[slot] !== undefined
+      && bindingSlots[slot] !== undefined
+      && bindingSlots[slot] !== renderedSlots[slot]
+    ) {
+      driftedSlots.push(slot);
     }
 
     if (bindingSlots !== undefined && !(slot in bindingSlots)) {
@@ -708,6 +1036,14 @@ export function validateSlotContract<Props, Req, E, Bindings, Slots>(
     }
   }
 
+  if (driftedSlots.length > 0) {
+    diagnostics.push({
+      code: "component:slot-target-drift",
+      message: `Component ${componentName ?? "<anonymous>"} publishes slots [${driftedSlots.join(", ")}] on bindings.slots with a different handle identity than its rendered view — styles and listeners would target different elements.`,
+      component: componentName,
+      slot: driftedSlots[0]!,
+    });
+  }
   return diagnostics;
 }
 
@@ -717,13 +1053,9 @@ export function validateRenderedSlotContract<Props, Req, E, Bindings, Slots>(
 ): Effect.Effect<readonly ComponentDiagnostic[], E, Req> {
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
-  return i.setup(parsed).pipe(
+  return runComponentSetup(component, i, parsed).pipe(
     Effect.map((bindings) => {
-      const result = i.view === undefined
-        ? typeof (parsed as RenderPropChildren<Bindings>).children === "function"
-          ? (parsed as RenderPropChildren<Bindings>).children?.(bindings)
-          : undefined
-        : i.view(parsed, bindings);
+      const result = invokeCommittedView(i, parsed, bindings);
       if (!View.isView(result)) return [];
       registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
       return validateSlotContract(component, result as View.View<Slots>, bindings);
@@ -746,10 +1078,10 @@ type DiagnosticsReporterService = {
 
 /**
  * Well-known service id shared with `Diagnostics.ReporterTag`. Effect
- * ServiceMap resolves by string id, so Component can auto-report without
+ * Context resolves by string id, so Component can auto-report without
  * importing Diagnostics (avoids a Component ↔ Diagnostics cycle).
  */
-const DiagnosticsReporterTag = ServiceMap.Service<DiagnosticsReporterService>("DiagnosticsReporter");
+const DiagnosticsReporterTag = Context.Service<DiagnosticsReporterService>("DiagnosticsReporter");
 
 function toAutoReportDiagnostics(
   component: Component<any, any, any, any, any>,
@@ -811,7 +1143,96 @@ function renderViewResult(
     }
     reportDevDiagnostics(component, result, bindings, diagnosticsReporter);
   }
-  return View.node(result);
+  return observeRenderedComponentBoundary(View.node(result), bindings);
+}
+
+const SlotInstanceContractTypeId: unique symbol = Symbol.for(
+  "effect-atom-jsx/Component/SlotInstanceContract",
+);
+
+/**
+ * Mark a bindings-published slot record with its contract and the
+ * AUTHORITATIVE render instance for that contract (DQ-050). When setup
+ * supplied its own record, the render instance may be a different handle
+ * set — which is exactly the `component:slot-target-drift` condition.
+ */
+function tagSlotInstance(
+  record: Record<string, unknown>,
+  contract: object,
+  renderHandles: Record<string, unknown>,
+): void {
+  if (SlotInstanceContractTypeId in record) return;
+  Object.defineProperty(record, SlotInstanceContractTypeId, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: { contract, handles: renderHandles },
+  });
+}
+
+function slotInstanceOf(value: unknown): {
+  readonly contract: object;
+  readonly handles: Record<string, unknown>;
+} | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  return (value as {
+    readonly [SlotInstanceContractTypeId]?: {
+      readonly contract: object;
+      readonly handles: Record<string, unknown>;
+    };
+  })[SlotInstanceContractTypeId];
+}
+
+function invokeCommittedView<Props, Req, E, Bindings>(
+  internal: InternalComponent<Props, Req, E, Bindings>,
+  propsValue: Props,
+  bindings: Bindings,
+): unknown {
+  // DQ-050: while this instance renders, its contract resolves to the
+  // instance handles setup materialized (when bindings.slots IS that tagged
+  // instance), so the view and bindings.slots stay one handle set.
+  const slotsRecord = (bindings as { readonly slots?: unknown } | null)?.slots;
+  const instance = slotInstanceOf(slotsRecord);
+  return View.runWithSlotInstance(
+    instance?.contract,
+    instance?.handles,
+    () =>
+      withRenderedComponentOwner(bindings, () => {
+        if (internal.view === undefined) {
+          const renderProp = (propsValue as RenderPropChildren<Bindings>).children;
+          return typeof renderProp === "function" ? renderProp(bindings) : null;
+        }
+        return internal.view(propsValue, bindings);
+      }),
+  );
+}
+
+function runComponentSetup<Props, Req, E, Bindings>(
+  component: Component<Props, Req, E, Bindings, any>,
+  internal: InternalComponent<Props, Req, E, Bindings>,
+  propsValue: Props,
+): Effect.Effect<Bindings, E, Req> {
+  return internal.setup(propsValue).pipe(
+    Effect.map((bindings) => {
+      observeCommittedComponentBindings(
+        component,
+        internal.definition.name,
+        internal.definition.setupPlan,
+        propsValue,
+        bindings,
+      );
+      return bindings;
+    }),
+  );
+}
+
+function committedView<Slots>(
+  component: Component<any, any, any, any, any>,
+  result: unknown,
+): View.View<View.NormalizeSlots<Slots>> | undefined {
+  if (!View.isView(result)) return undefined;
+  registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
+  return result as unknown as View.View<View.NormalizeSlots<Slots>>;
 }
 
 /**
@@ -826,7 +1247,7 @@ export function setupEffect<Props, Req, E, Bindings, SlotContract>(
 ): Effect.Effect<Bindings, E, Req> {
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
-  return i.setup(parsed);
+  return runComponentSetup(component, i, parsed);
 }
 
 export function renderEffect<Props, Req, E, Bindings, SlotContract>(
@@ -835,7 +1256,7 @@ export function renderEffect<Props, Req, E, Bindings, SlotContract>(
 ): Effect.Effect<unknown, E, Req> {
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
-  return i.setup(parsed).pipe(
+  return runComponentSetup(component, i, parsed).pipe(
     Effect.flatMap((bindings) =>
       Effect.all({
         platform: Effect.serviceOption(View.PlatformTag),
@@ -843,13 +1264,7 @@ export function renderEffect<Props, Req, E, Bindings, SlotContract>(
       }).pipe(Effect.map(({ platform: maybePlatform, diagnostics: maybeDiagnostics }) => {
         const platform = maybePlatform._tag === "Some" ? maybePlatform.value : undefined;
         const diagnosticsReporter = maybeDiagnostics._tag === "Some" ? maybeDiagnostics.value : undefined;
-        if (i.view === undefined) {
-          const renderProp = (parsed as RenderPropChildren<Bindings>).children;
-          return typeof renderProp === "function"
-            ? renderViewResult(component, renderProp(bindings), bindings, platform, diagnosticsReporter)
-            : null;
-        }
-        const result = i.view(parsed, bindings);
+        const result = invokeCommittedView(i, parsed, bindings);
         return renderViewResult(component, result, bindings, platform, diagnosticsReporter);
       })),
     ),
@@ -869,22 +1284,102 @@ export function renderViewEffect<Props, Req, E, Bindings, Slots>(
 ): Effect.Effect<View.View<View.NormalizeSlots<Slots>> | undefined, E, Req> {
   const i = internals(component);
   const parsed = i.props.parse(propsValue);
-  return i.setup(parsed).pipe(
+  return runComponentSetup(component, i, parsed).pipe(
     Effect.map((bindings) => {
-      const result = i.view === undefined
-        ? typeof (parsed as RenderPropChildren<Bindings>).children === "function"
-          ? (parsed as RenderPropChildren<Bindings>).children?.(bindings)
-          : undefined
-        : i.view(parsed, bindings);
-      if (!View.isView(result)) return undefined;
-      registerViewSlots(result.slots as unknown as ViewSlotRecord, component);
-      // Runtime slots are the handle map; NormalizeSlots aligns the type.
-      return result as unknown as View.View<View.NormalizeSlots<Slots>>;
+      const result = invokeCommittedView(i, parsed, bindings);
+      return committedView<Slots>(component, result);
     }),
   );
 }
 
-export interface ComponentAction<Args extends ReadonlyArray<unknown>, A, E> {
+/**
+ * Render a component from an already committed setup snapshot.
+ *
+ * Props are parsed and View slots are registered exactly as on the normal
+ * render path, but setup is not executed. Platform diagnostics that require
+ * Effect services remain available through explicit View/component validation
+ * or the normal `renderEffect` path.
+ */
+export function renderWithBindings<Props, Req, E, Bindings, SlotContract>(
+  component: Component<Props, Req, E, Bindings, SlotContract>,
+  propsValue: Props,
+  bindings: Bindings,
+): unknown {
+  const i = internals(component);
+  const parsed = i.props.parse(propsValue);
+  const result = invokeCommittedView(i, parsed, bindings);
+  return renderViewResult(component, result, bindings, undefined, undefined);
+}
+
+/**
+ * Render a component from committed bindings and return its explicit View.
+ *
+ * JSX-only and headless components without a View return `undefined`. Setup is
+ * never executed.
+ */
+export function renderViewWithBindings<Props, Req, E, Bindings, Slots>(
+  component: Component<Props, Req, E, Bindings, Slots>,
+  propsValue: Props,
+  bindings: Bindings,
+): View.View<View.NormalizeSlots<Slots>> | undefined {
+  const i = internals(component);
+  const parsed = i.props.parse(propsValue);
+  const result = invokeCommittedView(i, parsed, bindings);
+  return committedView<Slots>(component, result);
+}
+
+/**
+ * Read-only supported inspection surface for component tooling and adapters.
+ *
+ * Call `parseProps` once at the input boundary. The setup/render methods
+ * consume that parsed value and never decode it again.
+ */
+export interface ComponentInspection<Props, Req, E, Bindings, SlotContract> {
+  readonly definition: ComponentDefinition;
+  readonly parseProps: (input: unknown) => Props;
+  readonly setup: (propsValue: Props) => Effect.Effect<Bindings, E, Req>;
+  readonly render: (propsValue: Props, bindings: Bindings) => unknown;
+  readonly renderView: (
+    propsValue: Props,
+    bindings: Bindings,
+  ) => View.View<View.NormalizeSlots<SlotContract>> | undefined;
+  readonly slotContract?: SlotContract;
+}
+
+/**
+ * Inspect a component without exposing its mutable/private representation.
+ */
+export function inspect<Props, Req, E, Bindings, SlotContract>(
+  component: Component<Props, Req, E, Bindings, SlotContract>,
+): ComponentInspection<Props, Req, E, Bindings, SlotContract> {
+  const i = internals(component);
+  const slotContract = getSlotContract(component);
+  return Object.freeze({
+    definition: i.definition,
+    parseProps: (input: unknown) => i.props.parse(input),
+    setup: (propsValue: Props) => runComponentSetup(component, i, propsValue),
+    render: (propsValue: Props, bindings: Bindings) => {
+      const result = invokeCommittedView(i, propsValue, bindings);
+      return renderViewResult(component, result, bindings, undefined, undefined);
+    },
+    renderView: (propsValue: Props, bindings: Bindings) => {
+      const result = invokeCommittedView(i, propsValue, bindings);
+      return committedView<SlotContract>(component, result);
+    },
+    ...(slotContract === undefined
+      ? {}
+      : { slotContract: slotContract as SlotContract }),
+  });
+}
+
+export interface ComponentAction<
+  Args extends ReadonlyArray<unknown>,
+  A,
+  E,
+> extends
+  Portable.InspectableExecutable<Args, A, E, any>,
+  InspectableActionHandle<A, E>
+{
   (...args: Args): void;
   run(...args: Args): void;
   runEffect(...args: Args): Effect.Effect<A, E>;
@@ -998,23 +1493,94 @@ export function effect<T>(
   });
 }
 
+/** Writable component-local state with read-only resumability inspection. */
+export type StateAtom<A> = Atom.WritableAtom<A> & InspectableStateHandle<A>;
+
+/**
+ * Is this value a live state handle — a framework-managed reactive primitive
+ * with hydration identity (an annotated `Component.state` handle or a
+ * writable atom)? Never true for the wire form a serialization reference
+ * replaced: a hydration-key string is data, not a handle.
+ */
+export function isStateHandle(value: unknown): value is Atom.WritableAtom<unknown> {
+  return isStateHandleValue(value);
+}
+
+/**
+ * Controlled/uncontrolled collapse: one mechanism, no `value`/`defaultValue`
+ * split (`docs/kit-research/behaviors/controlled-uncontrolled.md`).
+ *
+ * Given a caller's writable atom, ADOPT it: the widget reads and writes the
+ * caller's value directly, never overwrites it on spawn, and — because the
+ * caller owns it — resume collection deliberately skips its snapshot
+ * ("snapshot only for setup-owned state"). Given a plain initial value,
+ * allocate ordinary setup-owned `Component.state`, which the existing resume
+ * kernel snapshots with no new kernel code.
+ *
+ * Any writable atom argument is treated as controlled — a widget whose state
+ * VALUE is itself an atom cannot route it through `bindable`.
+ */
+export function bindable<A>(value: Atom.WritableAtom<A>): Effect.Effect<Atom.WritableAtom<A>>;
+export function bindable<A>(
+  value: Extract<A, Atom.Atom<unknown>> extends never ? A : never,
+): Effect.Effect<StateAtom<A>>;
+// The differential-pair call site itself: `bindable(props.value ?? initial)`
+// — a union of "caller's atom" and "own initial value". Both arms are
+// writable, so the binding types as a writable atom either way; the
+// state-handle refinement stays a runtime question (`isStateHandle`).
+export function bindable<A>(
+  value: Atom.WritableAtom<A> | A,
+): Effect.Effect<Atom.WritableAtom<A> | StateAtom<A>>;
+export function bindable<A>(
+  value: Atom.WritableAtom<A> | A,
+): Effect.Effect<Atom.WritableAtom<A>> {
+  if (
+    Atom.isAtom(value)
+    && Atom.isWritable(value as Atom.Atom<unknown>)
+  ) {
+    return Effect.sync(() =>
+      markControlledBinding(value as Atom.WritableAtom<A>)
+    );
+  }
+  return state(value as A);
+}
+
 /** Allocate a component-scoped writable atom during setup. */
-export function state<A>(initial: A): Effect.Effect<Atom.WritableAtom<A>> {
+export function state<A>(
+  initial: A,
+): Effect.Effect<StateAtom<A>> {
   return Effect.gen(function* () {
     const lifetime = yield* setupLifetime("Component.state");
     const [getValue, setValue] = createSignal(initial);
-    return Atom.writable(
+    const atom = Atom.writable(
       () => getValue(),
       (_ctx, value: A) => {
         lifetime.assertLive();
         setValue(() => value);
       },
     );
+    return annotateHandle(atom, {
+      kind: "state",
+      read: getValue,
+      isDisposed: lifetime.isDisposed,
+    });
   });
 }
 
-export function derived<A>(fn: () => A): Effect.Effect<Atom.ReadonlyAtom<A>> {
-  return Effect.sync(() => Atom.derived(() => fn()));
+/** Recomputed component-local value with read-only resumability inspection. */
+export type DerivedAtom<A> = Atom.ReadonlyAtom<A> & InspectableDerivedHandle<A>;
+
+export function derived<A>(fn: () => A): Effect.Effect<DerivedAtom<A>> {
+  return Effect.gen(function* () {
+    const lifetime = yield* setupLifetime("Component.derived");
+    const atom = Atom.derived(() => fn());
+    return annotateHandle(atom, {
+      kind: "derived",
+      read: () => atom(),
+      isDisposed: lifetime.isDisposed,
+      recomputed: true,
+    });
+  });
 }
 
 /**
@@ -1023,22 +1589,162 @@ export function derived<A>(fn: () => A): Effect.Effect<Atom.ReadonlyAtom<A>> {
  * The returned atom has `Atom.ResultAtom<A, E>` semantics and participates in
  * the component's runtime/layer context.
  */
-export function query<A, E, R>(
+export interface QueryOptions<
+  E = unknown,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+> {
+  readonly name?: string;
+  /**
+   * Semantic keys that rerun the query after invalidation and are preserved in
+   * resumability metadata for client-side revalidation.
+   */
+  readonly reactivityKeys?: Atom.ReactivityKeysInput;
+  readonly retrySchedule?: Schedule.Schedule<
+    unknown,
+    NoInfer<E>,
+    RetryError,
+    RetryR
+  >;
+  readonly pollSchedule?: Schedule.Schedule<
+    unknown,
+    unknown,
+    PollError,
+    PollR
+  >;
+}
+
+/** Read-only component query result atom with resumability inspection. */
+export type QueryAtom<A, E> =
+  & Atom.ReadonlyAtom<Result<A, E>, E>
+  & InspectableQueryHandle<A, E>;
+
+export function query<
+  Captures,
+  EncodedCaptures,
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
+  executable: Portable.BoundCode<Captures, EncodedCaptures, readonly [], A, E, R>,
+  options?: QueryOptions<E, RetryError, RetryR, PollError, PollR>,
+): Effect.Effect<
+  QueryAtom<A, E | RetryError>,
+  never,
+  R | RetryR | PollR
+>;
+export function query<
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
   effect: () => Effect.Effect<A, E, R>,
-  options?: {
-    readonly name?: string;
-    readonly retrySchedule?: Schedule.Schedule<unknown, any, any>;
-    readonly pollSchedule?: Schedule.Schedule<unknown, any, any>;
-  },
-): Effect.Effect<Atom.ReadonlyAtom<Result<A, E>, E>, never, R> {
+  options?: QueryOptions<E, RetryError, RetryR, PollError, PollR>,
+): Effect.Effect<
+  QueryAtom<A, E | RetryError>,
+  never,
+  R | RetryR | PollR
+>;
+export function query<
+  A,
+  E,
+  R,
+  RetryError = never,
+  RetryR = never,
+  PollError = never,
+  PollR = never,
+>(
+  executableOrEffect:
+    | (() => Effect.Effect<A, E, R>)
+    | Portable.BoundCode<any, any, readonly [], A, E, R>,
+  options?: QueryOptions<E, RetryError, RetryR, PollError, PollR>,
+): Effect.Effect<
+  QueryAtom<A, E | RetryError>,
+  never,
+  R | RetryR | PollR
+> {
   return Effect.gen(function* () {
-    const runtimeContext = yield* Effect.services<R>();
-    return yield* setupReactiveOwner(() =>
-      defineQuery(effect, {
-        ...options,
-        runtime: runtimeContext as RuntimeLike<R, unknown>,
-      }).result as Atom.ReadonlyAtom<Result<A, E>, E>
-    );
+    const isPortable = Portable.isBoundCode(executableOrEffect);
+    const reactivityKeys = options?.reactivityKeys === undefined
+      ? []
+      : normalizeReactivityKeys(options.reactivityKeys);
+    const execute: () => Effect.Effect<A, E, R> = isPortable
+      ? () =>
+        Portable.execute(
+          executableOrEffect as Portable.BoundCode<any, any, readonly [], A, E, R>,
+        )
+      : executableOrEffect as () => Effect.Effect<A, E, R>;
+    const run = (): Effect.Effect<A, E, R> => {
+      if (reactivityKeys.length > 0) {
+        Atom.trackReactivity(reactivityKeys);
+      }
+      return execute();
+    };
+    const lifetime = yield* setupLifetime("Component.query");
+    const runtimeContext = yield* Effect.context<R | RetryR | PollR>();
+    return yield* setupReactiveOwner(() => {
+      const atom = defineQuery<
+        A,
+        E,
+        R,
+        RetryError,
+        RetryR,
+        PollError,
+        PollR
+      >(run, {
+        name: options?.name,
+        retrySchedule: options?.retrySchedule,
+        pollSchedule: options?.pollSchedule,
+        runtime: runtimeContext as RuntimeLike<
+          R | RetryR | PollR,
+          unknown
+        >,
+      }).result as Atom.ReadonlyAtom<Result<A, E | RetryError>, E | RetryError>;
+      if (isPortable) {
+        Portable.annotateExecutable(atom, {
+          kind: "portable",
+          executable: executableOrEffect as Portable.BoundCode<
+            any,
+            any,
+            readonly [],
+            A,
+            E,
+            R
+          >,
+          execution: {
+            kind: "component-query",
+            hasRetry: options?.retrySchedule !== undefined,
+            hasPoll: options?.pollSchedule !== undefined,
+            reactivityKeys,
+          },
+        });
+      }
+      return annotateHandle<typeof atom, A, E | RetryError>(atom, {
+        kind: "query",
+        read: () => atom(),
+        isDisposed: lifetime.isDisposed,
+        ...(isPortable
+          ? {
+            executable: executableOrEffect as Portable.AnyBoundCode,
+          }
+          : {}),
+        reactivityKeys,
+        semantics: {
+          hasRetry: options?.retrySchedule !== undefined,
+          hasPoll: options?.pollSchedule !== undefined,
+        },
+      });
+    });
   });
 }
 
@@ -1049,13 +1755,57 @@ export function query<A, E, R>(
  * `reactivityKeys` to invalidate queries after successful mutations and
  * `singleFlight` to route the call through a server transport.
  */
+export function action<
+  Captures,
+  EncodedCaptures,
+  Args extends ReadonlyArray<unknown>,
+  A,
+  E,
+  R,
+>(
+  executable: Portable.BoundCode<Captures, EncodedCaptures, Args, A, E, R>,
+  options?: ActionOptions,
+): Effect.Effect<ComponentAction<Args, A, E>, never, R>;
 export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
   fn: (...args: Args) => Effect.Effect<A, E, R>,
   options?: ActionOptions,
+): Effect.Effect<ComponentAction<Args, A, E>, never, R>;
+export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
+  executable:
+    | ((...args: Args) => Effect.Effect<A, E, R>)
+    | Portable.BoundCode<any, any, Args, A, E, R>,
+  options?: ActionOptions,
 ): Effect.Effect<ComponentAction<Args, A, E>, never, R> {
   return Effect.gen(function* () {
+    const isPortable = Portable.isBoundCode(executable);
+    const actionReactivityKeys = options?.reactivityKeys === undefined
+      ? []
+      : normalizeReactivityKeys(options.reactivityKeys);
+    const inspection: Portable.ExecutableInspection<Args, A, E, any> =
+      isPortable
+        ? {
+          kind: "portable",
+          executable: executable as Portable.BoundCode<any, any, Args, A, E, R>,
+          execution: {
+            kind: "component-action",
+            hasReactivityKeys: options?.reactivityKeys !== undefined,
+            hasTransitionObserver: options?.onTransition !== undefined,
+            ...(options?.concurrency === undefined
+              ? {}
+              : { concurrency: options.concurrency }),
+            detached: options?.detached === true,
+          },
+        }
+        : { kind: "opaque" };
+    const fn: (...args: Args) => Effect.Effect<A, E, R> = isPortable
+      ? (...args: Args) =>
+        Portable.execute(
+          executable as Portable.BoundCode<any, any, Args, A, E, R>,
+          ...args,
+        )
+      : executable as (...args: Args) => Effect.Effect<A, E, R>;
     const lifetime = yield* setupLifetime("Component.action");
-    const runtimeContext = yield* Effect.services<R>();
+    const runtimeContext = yield* Effect.context<R>();
     return yield* setupReactiveOwner(() => {
     const handle = defineMutation<Args, E, R>(
       (args) => fn(...args),
@@ -1099,7 +1849,15 @@ export function action<Args extends ReadonlyArray<unknown>, A, E, R>(
       );
     out.result = handle.result;
     out.pending = handle.pending;
-    return out;
+    annotateHandle<typeof out, A, E>(out, {
+      kind: "action",
+      isDisposed: lifetime.isDisposed,
+      ...(isPortable
+        ? { executable: executable as Portable.AnyBoundCode }
+        : {}),
+      reactivityKeys: actionReactivityKeys,
+    });
+    return Portable.annotateExecutable(out, inspection);
     });
   });
 }
@@ -1116,7 +1874,7 @@ export function optimistic<A>(source: Atom.WritableAtom<A>): OptimisticBuilder<A
     spec: Atom.OptimisticActionSpec<A, Input, Success, E, R>,
     ) => Effect.gen(function* () {
       const lifetime = yield* setupLifetime("Component.optimistic");
-      const runtimeContext = yield* Effect.services<R>();
+      const runtimeContext = yield* Effect.context<R>();
       return yield* setupReactiveOwner(() => {
         const handle = Atom.optimistic(source, runtimeContext as RuntimeLike<R, unknown>).action(spec);
         const out = ((input: Input) => {
@@ -1152,16 +1910,25 @@ export function optimistic<A>(source: Atom.WritableAtom<A>): OptimisticBuilder<A
 
 export type ComponentRef<T> = { current: T | null };
 
-export function ref<T>(): Effect.Effect<ComponentRef<T>> {
+/** Host-bound component ref with read-only resumability inspection. */
+export type RefHandle<T> = ComponentRef<T> & InspectableRefHandle<T>;
+
+export function ref<T>(): Effect.Effect<RefHandle<T>> {
   return Effect.gen(function* () {
     const ref: ComponentRef<T> = { current: null };
+    const lifetime = yield* setupLifetime("Component.ref");
     const scope = yield* Effect.serviceOption(Scope.Scope);
     if (scope._tag === "Some") {
       yield* Scope.addFinalizer(scope.value, Effect.sync(() => {
         ref.current = null;
       }));
     }
-    return ref;
+    return annotateHandle(ref, {
+      kind: "ref",
+      read: () => ref.current,
+      isDisposed: lifetime.isDisposed,
+      hostBound: true,
+    });
   });
 }
 
@@ -1209,6 +1976,34 @@ export function withLayer<ROut, E2, RIn>(
     provideLayerToSetup(component, layer) as PreserveRouteMetadata<C, Component<PropsOf<C>, Exclude<Requirements<C>, ROut> | RIn, Errors<C> | E2, BindingsOf<C>, SlotContractOf<C>>>;
 }
 
+/**
+ * Add immutable authored metadata to a component definition.
+ *
+ * This advanced inspection surface does not change setup or rendering.
+ * Repeated calls merge metadata and replace the optional diagnostic name.
+ */
+export function withDefinition(
+  options: ComponentDefinitionOptions,
+): <C extends Component<any, any, any, any, any>>(
+  component: C,
+) => PreserveRouteMetadata<C, Component<PropsOf<C>, Requirements<C>, Errors<C>, BindingsOf<C>, SlotContractOf<C>>> {
+  return <C extends Component<any, any, any, any, any>>(component: C) => {
+    const i = internals(component);
+    return toComponentLike(component, {
+      ...i,
+      definition: freezeDefinition({
+        name: options.name ?? i.definition.name,
+        setupPlan: i.definition.setupPlan,
+        transforms: i.definition.transforms,
+        metadata: {
+          ...i.definition.metadata,
+          ...options.metadata,
+        },
+      }),
+    });
+  };
+}
+
 export function withSlotContract<const SlotContract extends AnySlotContract>(
   slotContract: SlotContract,
 ): <C extends Component<any, any, any, any, any>>(
@@ -1252,23 +2047,117 @@ export function withSlots<const SlotContract extends AnySlotContract>(
     }
 
     const i = internals(component);
-    const handles = View.Slots.handles(slots);
     const wrapped = toComponentLike(component, {
       ...i,
       setup: (props) => i.setup(props).pipe(Effect.map((bindings) => {
+        // DQ-050: handles materialize PER INSTANCE at setup, and the render
+        // instance is tagged onto the record so `fromSlots` binds the view
+        // to these exact handles. Setup-supplied slots are kept as
+        // `bindings.slots` for compatibility, but the render instance is
+        // authoritative — a divergence is `component:slot-target-drift`.
+        const instance = View.Slots.instantiate(slots) as Record<string, unknown>;
+        tagSlotInstance(instance, slots, instance);
         if (typeof bindings === "object" && bindings !== null) {
           const existingSlots = (bindings as { readonly slots?: unknown }).slots;
+          if (
+            existingSlots !== undefined
+            && typeof existingSlots === "object" && existingSlots !== null
+          ) {
+            // Setup supplied its own record: it stays published, but the
+            // render instance is authoritative — the drift diagnostic
+            // reports any identity divergence.
+            tagSlotInstance(existingSlots as Record<string, unknown>, slots, instance);
+          }
           return {
             ...(bindings as Record<string, unknown>),
-            slots: existingSlots === undefined ? handles : existingSlots,
+            slots: existingSlots === undefined ? instance : existingSlots,
           };
         }
-        return { value: bindings, slots: handles };
+        return { value: bindings, slots: instance };
       })) as any,
+    }, {
+      setup: {
+        kind: "component.withSlots",
+        phase: "setup",
+        portability: "portable",
+      },
     });
     slotContractRegistry.set(wrapped, slots);
     return wrapped as any;
   };
+}
+
+/** Options for the golden-path `makeWithSlots(...)` entry point. */
+export interface MakeWithSlotsOptions<Props, Req, SetupReq, E, Bindings> {
+  /** Props declaration. Defaults to `Component.props<{}>()` when omitted. */
+  readonly props?: PropsSpec<Props>;
+  /** Service requirements. Defaults to `Component.require<never>()` when omitted. */
+  readonly require?: RequirementSpec<Req>;
+  /** Setup effect or named setup builder producing committed bindings. */
+  readonly setup: SetupSource<Props, Bindings, E, SetupReq>;
+  /** Authored view returning plain JSX; wrapped in `View.fromSlots(slots, ...)`. */
+  readonly view: (props: Props, bindings: Bindings) => unknown;
+}
+
+/**
+ * Golden-path sugar: create a slot-bearing component in a single call.
+ *
+ * `makeWithSlots(slots, { props, require, setup, view })` is exactly
+ * `make(props, require, setup, (p, b) => View.fromSlots(slots, view(p, b)))`
+ * piped through `withSlots(slots)`. The authored `view` returns plain JSX; the
+ * slot contract is inferred from `slots`, the rendered node is wrapped in
+ * `View.fromSlots(...)`, and the contract is published automatically so styles
+ * and behaviors attach to the same contract. Declared-vs-rendered diagnostics
+ * fire exactly as on the explicit path. `props`/`require` are optional and
+ * default to `Component.props<{}>()` / `Component.require<never>()`.
+ *
+ * The explicit `make(...).pipe(withSlots(...))` form stays available for custom
+ * or shared per-slot handles; this sugar is purely additive.
+ *
+ * @example
+ * const Field = Component.makeWithSlots(FieldSlots, {
+ *   props: Component.props<{ readonly label: string }>(),
+ *   setup: () => Effect.succeed({}),
+ *   view: (props) => (
+ *     <label>
+ *       <span>{props.label}</span>
+ *       <input />
+ *     </label>
+ *   ),
+ * })
+ */
+export function makeWithSlots<
+  const S extends View.Slots.Any,
+  Props = {},
+  Req = never,
+  SetupReq = never,
+  E = never,
+  Bindings = {},
+>(
+  slots: S,
+  options: MakeWithSlotsOptions<Props, Req, SetupReq, E, Bindings>,
+): Component<
+  Props,
+  Req | SetupReq,
+  E,
+  Bindings & { readonly slots: View.Slots.HandlesOf<S> },
+  S
+> {
+  const propSpec = options.props ?? props<Props>();
+  const req = options.require ?? require<Req>();
+  const component = make(
+    propSpec,
+    req,
+    options.setup,
+    (componentProps: Props, bindings: Bindings) => View.fromSlots(slots, options.view(componentProps, bindings)),
+  );
+  return withSlots(slots)(component) as unknown as Component<
+    Props,
+    Req | SetupReq,
+    E,
+    Bindings & { readonly slots: View.Slots.HandlesOf<S> },
+    S
+  >;
 }
 
 /** Attach typed error renderers keyed by `_tag`. */
@@ -1433,6 +2322,7 @@ type RouteBindings<P, Q, H> = {
   readonly __routeInner: unknown;
   readonly __routeCtx: Route.RouteContext<P, Q, H>;
   readonly __routeHeadId: string;
+  readonly __routeHeadStore: Route.RouteHeadStore;
   readonly __routePattern: string;
 };
 
@@ -1446,7 +2336,7 @@ function setRoutedMeta<P, Q, H>(component: Component<any, any, any, any, any>, m
   (asRoutedComponent<P, Q, H>(component) as RoutedComponentInternals<P, Q, H, unknown, unknown> & WithRouteMeta<P, Q, H>)[Route.RouteMetaSymbol] = meta;
 }
 
-function copyRouteDecorations(
+function copySlotContract(
   source: Component<any, any, any, any, any>,
   target: Component<any, any, any, any, any>,
 ): void {
@@ -1454,14 +2344,60 @@ function copyRouteDecorations(
   if (slotContract !== undefined) {
     slotContractRegistry.set(target, slotContract);
   }
+}
 
+/**
+ * Metadata stamped onto a component *value* by another module (rather than
+ * carried in `InternalComponent`) which every component wrapper must preserve.
+ *
+ * This is the single registration site for that kind of metadata. Wrappers
+ * build a fresh component object and copy metadata through
+ * `copyComponentMetadata`, so any subsystem that stamps a component — e.g.
+ * `Resume.addressable`, which stamps a non-enumerable activation symbol and a
+ * module-private WeakMap entry — registers a copier here instead of relying on
+ * an unenforceable "must be applied last" convention.
+ */
+const componentMetadataCopiers: Array<
+  (
+    source: Component<any, any, any, any, any>,
+    target: Component<any, any, any, any, any>,
+  ) => void
+> = [];
+
+/**
+ * Register a copier that carries externally stamped component metadata across
+ * wrappers such as `withSlots`, `withBehavior`, and the route combinators.
+ */
+export function registerComponentMetadataCopier(
+  copy: (
+    source: Component<any, any, any, any, any>,
+    target: Component<any, any, any, any, any>,
+  ) => void,
+): void {
+  componentMetadataCopiers.push(copy);
+}
+
+function copyComponentMetadata(
+  source: Component<any, any, any, any, any>,
+  target: Component<any, any, any, any, any>,
+): void {
+  copySlotContract(source, target);
+  for (const copy of componentMetadataCopiers) {
+    copy(source, target);
+  }
+}
+
+function copyRouteDecorations(
+  source: Component<any, any, any, any, any>,
+  target: Component<any, any, any, any, any>,
+): void {
+  copyComponentMetadata(source, target);
   const sourceRoute = asRoutedComponent(source);
   const targetRoute = asRoutedComponent(target);
 
   const meta = sourceRoute[Route.RouteMetaSymbol];
   if (meta) {
     setRoutedMeta(target, meta);
-    Route.registerRoute(target, meta);
   }
 
   const loaderMeta = sourceRoute[Route.RouteLoaderMetaSymbol];
@@ -1469,19 +2405,41 @@ function copyRouteDecorations(
     (targetRoute as RoutedComponentInternals<any, any, any, unknown, unknown> & { [Route.RouteLoaderMetaSymbol]: typeof loaderMeta })[Route.RouteLoaderMetaSymbol] = loaderMeta;
   }
 
-  targetRoute.__routeLoader = sourceRoute.__routeLoader;
-  targetRoute.__routeLoaderOptions = sourceRoute.__routeLoaderOptions;
-  targetRoute.__routeLoaderError = sourceRoute.__routeLoaderError;
-  targetRoute.__routeTitle = sourceRoute.__routeTitle;
-  targetRoute.__routeMetaExtra = sourceRoute.__routeMetaExtra;
-  targetRoute.__routeGuards = sourceRoute.__routeGuards;
+  for (const field of Route.RouteDecorationFields) {
+    (targetRoute as Record<string, unknown>)[field] =
+      (sourceRoute as unknown as Record<string, unknown>)[field];
+  }
 }
 
 function toComponentLike<Source extends Component<any, any, any, any, any>, Props, Req, E, Bindings, SlotContract = SlotContractOf<Source>>(
   source: Source,
   internal: InternalComponent<Props, Req, E, Bindings>,
+  transforms?: {
+    readonly setup?: ComponentTransformDescriptor;
+    readonly view?: ComponentTransformDescriptor;
+  },
 ): PreserveRouteMetadata<Source, Component<Props, Req, E, Bindings, SlotContract>> {
-  const wrapped = toComponent<Props, Req, E, Bindings, SlotContract>(internal);
+  const previous = internals(source);
+  let definition = internal.definition;
+  if (internal.setup !== previous.setup) {
+    definition = transforms?.setup === undefined
+      ? appendOpaqueTransform(definition, "setup")
+      : appendTransform(definition, transforms.setup);
+  }
+  if (
+    internal.view !== previous.view
+    || internal.loading !== previous.loading
+    || internal.boundary !== previous.boundary
+    || internal.memo !== previous.memo
+  ) {
+    definition = transforms?.view === undefined
+      ? appendOpaqueTransform(definition, "view")
+      : appendTransform(definition, transforms.view);
+  }
+  const wrapped = toComponent<Props, Req, E, Bindings, SlotContract>({
+    ...internal,
+    definition,
+  });
   copyRouteDecorations(source, wrapped);
   return wrapped as PreserveRouteMetadata<Source, Component<Props, Req, E, Bindings, SlotContract>>;
 }
@@ -1520,18 +2478,31 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
 ): <Props, Req, E, Bindings, SlotContract>(
   component: Component<Props, Req, E, Bindings, SlotContract>,
 ) => (Component<Props, Exclude<Req, Route.RouteContext<any, any, any>> | Route.RouterService, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract>
-  & Route.RoutedComponent<P, Q, H>) {
+  & Route.RoutedComponent<P, Q, H>
+  // R3: the sugar result IS a unified route (self-stamped), and the type says
+  // so — `Route.loader` and the runtime select the unified path without casts.
+  & Route.Route<any, P, Q, H, void, never>) {
   return <Props, Req, E, Bindings, SlotContract>(component: Component<Props, Req, E, Bindings, SlotContract>) => {
     const i = internals(component);
 
     let wrapped: Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
 
+    const routeDefinition = appendOpaqueTransform(
+      appendOpaqueTransform(i.definition, "setup"),
+      "view",
+    );
     wrapped = toComponent({
       ...i,
+      definition: routeDefinition,
       setup: (props) => Effect.gen(function* () {
         const router = yield* Route.RouterTag;
         const parentPrefix = "";
-        const headId = Route.createRouteHeadId();
+        // Head state is resolved once, here: on the server this is the
+        // per-request store provided by `renderRequest`; on the client it is
+        // the document store. Closing over it scopes every later head write
+        // (including atom-subscription callbacks) to this render's owner.
+        const headStore = yield* Route.currentRouteHeadStore;
+        const headId = Route.createRouteHeadId(headStore);
 
         const fullPattern = Route.resolvePattern(parentPrefix, pattern);
         const routeMatched = yield* derived(() => Route.matchPattern(fullPattern, router.url().pathname, options?.exact));
@@ -1591,16 +2562,25 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
           routeId: undefined,
         };
 
+        // R3's server half: a request whose matched guards already refused
+        // (marked on the request's loader-cache store by `renderRequest` /
+        // `renderRequestStream`) renders the route as BLOCKED — guards are
+        // not re-run and, crucially, the loader below never executes. Without
+        // this, a render-time cache miss would run the protected query the
+        // guard refusal just prevented.
+        const requestGuardDenied =
+          (yield* currentLoaderCacheStore).guardDenied === true;
+
         const guards = asRoutedComponent<P, Q, H, unknown, unknown>(wrapped).__routeGuards ?? [];
-        if (routeMatched()) {
+        if (routeMatched() && !requestGuardDenied) {
           for (const guardEffect of guards) {
             yield* guardEffect;
           }
         }
 
-        if (!routeMatched()) {
-          Route.removeRouteHead(headId);
-          return { __routeMatched: routeMatched, __routeInner: null, __routeCtx: ctx, __routeHeadId: headId, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
+        if (!routeMatched() || requestGuardDenied) {
+          Route.removeRouteHead(headStore, headId);
+          return { __routeMatched: routeMatched, __routeInner: null, __routeCtx: ctx, __routeHeadId: headId, __routeHeadStore: headStore, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
         }
 
         const wrappedRoute = asRoutedComponent<P, Q, H, unknown, unknown>(wrapped);
@@ -1635,7 +2615,7 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
                 const handler = cases[tag] ?? cases._;
                 if (handler) {
                   const fallbackView = handler(loaderResult.error, paramsAtom());
-                  return { __routeMatched: routeMatched, __routeInner: { __routeLoaderErrorView: fallbackView }, __routeCtx: ctx, __routeHeadId: headId, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
+                  return { __routeMatched: routeMatched, __routeInner: { __routeLoaderErrorView: fallbackView }, __routeCtx: ctx, __routeHeadId: headId, __routeHeadStore: headStore, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
                 }
               }
               throw loaderResult.error;
@@ -1665,13 +2645,13 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
           | undefined = wrappedRoute.__routeMetaExtra;
         const applyHead = () => {
           if (!routeMatched()) {
-            Route.removeRouteHead(headId);
+            Route.removeRouteHead(headStore, headId);
             return;
           }
           const loaderDataForHead = loaderDataAtom ? loaderDataAtom() : undefined;
           // Head callbacks receive the unified Result model (matching the
-          // tree-render path and Route.loaderResult()); the cache is FetchResult.
-          const loaderResultForHead = Route.toUnifiedLoaderResult(loaderResultAtom ? loaderResultAtom() : undefined);
+          // tree-render path and Route.loaderResult()); the cache holds core Results.
+          const loaderResultForHead = loaderResultAtom ? loaderResultAtom() : undefined;
           const titleResolved = routeTitle === undefined
             ? undefined
             : typeof routeTitle === "function"
@@ -1683,7 +2663,7 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
               ? routeMetaExtra(paramsAtom(), loaderDataForHead, loaderResultForHead)
               : routeMetaExtra;
 
-          Route.setRouteHead({
+          Route.setRouteHead(headStore, {
             id: headId,
             depth: fullPattern.split("/").filter(Boolean).length,
             title: titleResolved,
@@ -1708,16 +2688,16 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
             for (const unsubscribe of headUnsubscribers) {
               unsubscribe();
             }
-            Route.removeRouteHead(headId);
+            Route.removeRouteHead(headStore, headId);
           })).pipe(Scope.provide(componentScope));
         }
 
-        return { __routeMatched: routeMatched, __routeInner: inner, __routeCtx: ctxWithLoader, __routeHeadId: headId, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
+        return { __routeMatched: routeMatched, __routeInner: inner, __routeCtx: ctxWithLoader, __routeHeadId: headId, __routeHeadStore: headStore, __routePattern: fullPattern } satisfies RouteBindings<P, Q, H>;
       }),
       view: (props, bindings: RouteBindings<P, Q, H>) => {
         if (!bindings.__routeMatched()) {
           if (bindings.__routeHeadId) {
-            Route.removeRouteHead(String(bindings.__routeHeadId));
+            Route.removeRouteHead(bindings.__routeHeadStore, String(bindings.__routeHeadId));
           }
           return null;
         }
@@ -1731,8 +2711,15 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
         }
         return i.view(props, bindings.__routeInner as Bindings);
       },
-    }) as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
+    }) as unknown as Component<Props, Req | Route.RouterService | Route.RouteContext<any, any, any>, E | { readonly _tag: "RouteParseError" }, RouteBindings<P, Q, H>, SlotContract>;
 
+    // Decorations, not just metadata: a component reaching this wrapper may
+    // already carry stamped `__route*` fields (`Route.guard(check)(component)`
+    // and friends), and `materializeNode` routes EVERY node component through
+    // here. Copying only component metadata silently dropped them all —
+    // including guards, which turned "the component is protected" into an
+    // auth bypass on the materialized tree.
+    copyRouteDecorations(component, wrapped);
     const meta: Route.RouteMeta<P, Q, H> = {
       pattern,
       fullPattern: Route.resolvePattern("", pattern),
@@ -1740,11 +2727,15 @@ export function route<P = Record<string, string>, Q = Record<string, string | un
       querySchema: options?.query,
       hashSchema: options?.hash,
       exact: options?.exact,
-      id: Route.createRouteId(),
     };
     setRoutedMeta<P, Q, H>(wrapped, meta);
-    Route.registerRoute(wrapped, meta);
-    return wrapped as unknown as Component<Props, Exclude<Req, Route.RouteContext<any, any, any>> | Route.RouterService, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract> & Route.RoutedComponent<P, Q, H>;
+    // R3 (`DQ-030`): `Component.route` is thin sugar over the unified `Route`
+    // value, so the result *is* a unified route — self-stamped: the route's
+    // `component` is the routed component itself, which keeps it usable
+    // directly in JSX while `Route.collectAll` / `runMatchedLoaders` /
+    // `RouterRuntime` see the same identity `Route.path` would produce.
+    Route.stampSelfRoute(wrapped, meta);
+    return wrapped as unknown as Component<Props, Exclude<Req, Route.RouteContext<any, any, any>> | Route.RouterService, E | { readonly _tag: "RouteParseError" }, Bindings, SlotContract> & Route.RoutedComponent<P, Q, H> & Route.Route<any, P, Q, H, void, never>;
   };
 }
 
@@ -1767,8 +2758,198 @@ export function guard<Req, E>(
   };
 }
 
-export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bindings, Slots = SlotsFromBindings<Bindings>, SlotContract = {}>(
-  behavior: Behavior.Behavior<Elements, AddedBindings, BR, BE>,
+/**
+ * Attachment registry for `DQ-058` (ratified 2026-08-12): behavior identity +
+ * slot name recorded at attach; a repeat emits a
+ * `component:duplicate-attachment` diagnostic through the opt-in diagnostics
+ * reporter. The diagnostic REPORTS — it does not de-duplicate — because
+ * attaching the same behavior twice currently installs duplicate listeners,
+ * and a silently doubled `press` handler is indistinguishable from a bug in
+ * the behavior itself.
+ */
+const attachmentRegistryKey = Symbol.for(
+  "effect-atom-jsx/Component/attachmentRegistry",
+);
+
+/**
+ * DQ-053: per-instance registry of provided-state bindings, carried across
+ * wrapper spreads like the attachment registry. Maps binding name to the
+ * COMPONENT-owned atom and its initial value (for shape compatibility).
+ */
+const providedStateRegistryKey = Symbol.for(
+  "effect-atom-jsx/Component/providedStateRegistry",
+);
+
+type ProvidedStateRegistry = Map<string, { readonly atom: unknown; readonly initial: unknown }>;
+
+/** Loud, named failure for an incompatible provided-state replacement. */
+export class ProvidedStateMismatchError extends Error {
+  readonly _tag = "ProvidedStateMismatchError";
+  constructor(binding: string, expected: string, actual: string) {
+    super(
+      `Behavior replacement provides binding "${binding}" with an incompatible state shape (existing initial is ${expected}, replacement's is ${actual}). The component owns provided state — a replacement must match it, never silently reset it (DQ-053).`,
+    );
+  }
+}
+
+function providedStateRegistryOf(bindings: object): ProvidedStateRegistry {
+  const existing = (bindings as {
+    [providedStateRegistryKey]?: ProvidedStateRegistry;
+  })[providedStateRegistryKey];
+  if (existing !== undefined) return existing;
+  const registry: ProvidedStateRegistry = new Map();
+  if (Object.isExtensible(bindings)) {
+    Object.defineProperty(bindings, providedStateRegistryKey, {
+      enumerable: false,
+      configurable: false,
+      writable: false,
+      value: registry,
+    });
+  }
+  return registry;
+}
+
+/**
+ * DQ-053: materialize declared provided-state in the COMPONENT's scope.
+ *
+ * For each `provides` witness carrying a `state` factory: a component that
+ * already owns a matching binding (authored, or materialized by an earlier
+ * attachment on this instance) REUSES that atom — replacing the behavior
+ * keeps the state. A replacement whose state shape does not match dies
+ * loudly with `ProvidedStateMismatchError`, never a silent reset. The
+ * materialized atom lands on the bindings record before the behavior runs,
+ * so the DQ-052 deps channel hands it in by name.
+ */
+function materializeProvidedState(
+  base: unknown,
+  behavior: Behavior.Behavior<any, any, any, any, any>,
+): Effect.Effect<void, never, never> {
+  return Effect.gen(function* () {
+    const provided = behavior.metadata?.provides;
+    if (
+      provided === undefined
+      || typeof base !== "object" || base === null
+    ) {
+      return;
+    }
+    const record = base as Record<string, unknown>;
+    for (const [key, witness] of Object.entries(provided)) {
+      const factory = (witness as { readonly state?: () => Effect.Effect<unknown, unknown, unknown> }).state;
+      if (factory === undefined) continue;
+      const registry = providedStateRegistryOf(base);
+      let entry = registry.get(key);
+      if (entry === undefined && isStateHandle(record[key])) {
+        // The component already authored this binding: adopt it as the
+        // owned state — the behavior's factory is the fallback, not an
+        // override.
+        const owned = record[key] as () => unknown;
+        entry = { atom: owned, initial: owned() };
+        registry.set(key, entry);
+      }
+      if (entry !== undefined) {
+        // Compatibility probe: materialize this attachment's initial and
+        // compare shapes before reusing the owned atom.
+        const probe = yield* factory().pipe(Effect.orDie) as Effect.Effect<unknown>;
+        const probeInitial = typeof probe === "function" ? (probe as () => unknown)() : probe;
+        if (typeof probeInitial !== typeof entry.initial) {
+          const maybeReporter = yield* Effect.serviceOption(DiagnosticsReporterTag);
+          const error = new ProvidedStateMismatchError(
+            key,
+            typeof entry.initial,
+            typeof probeInitial,
+          );
+          if (maybeReporter._tag === "Some") {
+            maybeReporter.value.reporter.reportAll([{
+              source: "behavior",
+              severity: "error",
+              code: "behavior:provides-state-mismatch",
+              message: error.message,
+            }]);
+          }
+          return yield* Effect.die(error);
+        }
+      } else {
+        const atom = yield* factory().pipe(Effect.orDie) as Effect.Effect<unknown>;
+        entry = {
+          atom,
+          initial: typeof atom === "function" ? (atom as () => unknown)() : undefined,
+        };
+        registry.set(key, entry);
+      }
+      Object.defineProperty(record, key, {
+        enumerable: true,
+        configurable: true,
+        writable: true,
+        value: entry.atom,
+      });
+    }
+  });
+}
+
+function carryAttachmentRegistry(from: object, to: object): void {
+  if (from === to || typeof to !== "object" || to === null) return;
+  for (const key of [attachmentRegistryKey, providedStateRegistryKey] as const) {
+    const registry = (from as Record<symbol, unknown>)[key];
+    if (registry === undefined || !Object.isExtensible(to) || key in to) continue;
+    Object.defineProperty(to, key, {
+      enumerable: false,
+      configurable: false,
+      writable: false,
+      value: registry,
+    });
+  }
+}
+
+function recordBehaviorAttachment(
+  bindings: object,
+  behavior: object,
+  elements: unknown,
+  reporter: DiagnosticsReporterService | undefined,
+): void {
+  const carrier = bindings as {
+    [attachmentRegistryKey]?: Map<object, Set<string>>;
+  };
+  let registry = carrier[attachmentRegistryKey];
+  if (registry === undefined) {
+    // A frozen bindings object (e.g. a restored resume snapshot) cannot
+    // carry the registry; skip tracking rather than dying — the double-attach
+    // hazard is an authoring-time composition mistake, not a restore one.
+    if (!Object.isExtensible(bindings)) return;
+    registry = new Map();
+    Object.defineProperty(bindings, attachmentRegistryKey, {
+      enumerable: false,
+      configurable: false,
+      writable: false,
+      value: registry,
+    });
+  }
+  const slotNames =
+    typeof elements === "object" && elements !== null
+      ? Object.keys(elements)
+      : [];
+  let attached = registry.get(behavior);
+  if (attached === undefined) {
+    attached = new Set();
+    registry.set(behavior, attached);
+  }
+  for (const slot of slotNames) {
+    if (attached.has(slot)) {
+      reporter?.reporter.reportAll([{
+        source: "behavior",
+        severity: "warning",
+        code: "component:duplicate-attachment",
+        message:
+          `The same behavior is attached to slot "${slot}" more than once; every attachment installs its own listeners, so handlers will fire once per attachment.`,
+        slot,
+      }]);
+    } else {
+      attached.add(slot);
+    }
+  }
+}
+
+export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bindings, Deps = {}, Slots = SlotsFromBindings<Bindings>, SlotContract = {}>(
+  behavior: Behavior.Behavior<Elements, AddedBindings, BR, BE, Deps>,
   selectElements: (bindings: Bindings, props: Props) => Elements,
   merge?: (bindings: Bindings, added: AddedBindings) => Bindings & AddedBindings,
 ): (
@@ -1776,17 +2957,62 @@ export function withBehavior<Elements, AddedBindings, BR, BE, Props, Req, E, Bin
 ) => Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract> {
   return (component) => {
     const i = internals(component);
+    const attachment = behavior.attachment;
+    const descriptor: BehaviorComponentTransformDescriptor =
+      attachment?.kind === "portable"
+        ? {
+          kind: "component.withBehavior",
+          phase: "setup",
+          portability: "portable",
+          codeIds: attachment.executables.map((executable) => executable.code.id),
+          reattach: (bindings, props) =>
+            Effect.gen(function* () {
+              const current = bindings as Bindings;
+              const elements = selectElements(current, props as Props);
+              // DQ-052: behavior-to-behavior dependencies resolve from the
+              // component's existing bindings by name.
+              const added = yield* behavior.run(elements, current as unknown as Deps);
+              return merge
+                ? merge(current, added)
+                : { ...(current as any), ...(added as any) };
+            }),
+        }
+        : {
+          kind: "component.withBehavior",
+          phase: "setup",
+          portability: "opaque",
+        };
     return toComponentLike(component, {
       ...i,
       setup: (props) => Effect.gen(function* () {
         const base: Bindings = yield* (i.setup(props) as any);
+        // DQ-053: provided state materializes in the COMPONENT's scope
+        // before the behavior runs, so deps resolve it by name and a
+        // replacement reuses (never resets) the owned atom.
+        yield* materializeProvidedState(base, behavior);
         const elements = selectElements(base, props);
-        const added: AddedBindings = yield* (behavior.run(elements) as any);
-        if (merge) {
-          return merge(base, added);
+        // DQ-058: report (never de-duplicate) a second attach of the same
+        // behavior to a slot it already occupies on this instance.
+        const maybeReporter = yield* Effect.serviceOption(DiagnosticsReporterTag);
+        if (typeof base === "object" && base !== null) {
+          recordBehaviorAttachment(
+            base,
+            behavior as object,
+            elements,
+            maybeReporter._tag === "Some" ? maybeReporter.value : undefined,
+          );
         }
-        return { ...(base as any), ...(added as any) };
+        const added: AddedBindings = yield* (behavior.run(elements, base as unknown as Deps) as any);
+        const result = merge
+          ? merge(base, added)
+          : { ...(base as any), ...(added as any) };
+        // The registry rides a non-enumerable symbol, which spreads drop --
+        // carry it so the NEXT layer sees this layer's attachments.
+        carryAttachmentRegistry(base as object, result as object);
+        return result;
       }) as any,
+    }, {
+      setup: descriptor,
     }) as Component<Props, Req | BR, E | BE, Bindings & AddedBindings, SlotContract>;
   };
 }
@@ -1935,6 +3161,9 @@ export const Component = {
   setupEffect,
   renderEffect,
   renderViewEffect,
+  renderWithBindings,
+  renderViewWithBindings,
+  inspect,
   validateSlotContract,
   validateRenderedSlotContract,
   mount,
@@ -1953,8 +3182,10 @@ export const Component = {
   schedule,
   scheduleEffect,
   withLayer,
+  withDefinition,
   withSlotContract,
   withSlots,
+  makeWithSlots,
   withErrorBoundary,
   withLoading,
   withSpan,
@@ -1974,5 +3205,3 @@ export const Component = {
   slotCollection,
   subscription,
 } as const;
-
-

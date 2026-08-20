@@ -1,7 +1,7 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import * as Element from "./Element.js";
 import * as MetadataToken from "./MetadataToken.js";
-import type * as SafeHtml from "./SafeHtml.js";
+import * as SafeHtml from "./SafeHtml.js";
 
 export const ViewTypeId: unique symbol = Symbol.for("effect-atom-jsx/View");
 
@@ -133,7 +133,9 @@ export type ViewDiagnosticCode =
   | "view:unsupported-slot-capability"
   | "view:unsupported-slot-event"
   | "view:unsupported-slot-attribute"
-  | "view:missing-platform-requirement";
+  | "view:missing-platform-requirement"
+  // DQ-051: dynamic attachment onto a slot whose capability is too weak.
+  | "component:slot-capability-mismatch";
 
 /** Structured view diagnostic used directly and normalized by `Diagnostics`. */
 export interface ViewDiagnostic {
@@ -467,6 +469,149 @@ export namespace Slot {
       hidden: true,
     }) as any;
   }
+
+  // ── Slot-as-projection (`DQ-070`, ratified) ────────────────────────────────
+  //
+  // A slot is a NAMED REGION, not only attachment metadata: placing
+  // `Slot.render(slot, children)` in a tree emits a comment-pair region
+  // (`af:slot:<name>:start` / `af:slot:<name>:end`) OWNED by the slot — one
+  // identity for compile-time slots and runtime regions. Children are a
+  // thunk evaluated lazily at PLACEMENT (insertion/serialization), never at
+  // construction, and the emitted region is addressable afterwards as a
+  // typed named mount target for fragments (`Slot.mountTarget`).
+
+  export const ProjectionTypeId: unique symbol = Symbol.for(
+    "effect-atom-jsx/View/SlotProjection",
+  );
+
+  /** A slot placed into a tree as its own region. */
+  export interface Projection<S extends Any = Any> {
+    readonly [ProjectionTypeId]: typeof ProjectionTypeId;
+    readonly slot: S;
+    readonly children: (() => unknown) | undefined;
+  }
+
+  /**
+   * Project a slot into a tree as a named region. `children` is evaluated
+   * lazily when the projection is PLACED, not when it is constructed.
+   */
+  export function render<S extends Any>(
+    slot: S,
+    children?: () => unknown,
+  ): Projection<S> {
+    return { [ProjectionTypeId]: ProjectionTypeId, slot, children };
+  }
+
+  export function isProjection(value: unknown): value is Projection {
+    return typeof value === "object" && value !== null && ProjectionTypeId in value;
+  }
+
+  /** The comment texts bounding one slot's region. */
+  export function regionMarkers(name: string): {
+    readonly start: string;
+    readonly end: string;
+  } {
+    return { start: `af:slot:${name}:start`, end: `af:slot:${name}:end` };
+  }
+
+  /** Minimal node surface shared by browser DOM and the server document. */
+  interface RegionNode {
+    readonly parentNode?: RegionNode | null;
+    nextSibling?: RegionNode | null;
+    readonly childNodes?: ArrayLike<RegionNode>;
+    readonly nodeName?: string;
+    readonly data?: string;
+    readonly _commentText?: string;
+    insertBefore?(node: RegionNode, ref: RegionNode | null): unknown;
+    removeChild?(node: RegionNode): unknown;
+  }
+
+  /**
+   * A slot's emitted region, addressable as a typed mount target: `mount`
+   * replaces everything between the slot's comment pair with a fragment,
+   * node array, view, or text value.
+   */
+  export interface Region<S extends Any = Any> {
+    readonly slot: S;
+    readonly name: NameOf<S>;
+    readonly start: unknown;
+    readonly end: unknown;
+    readonly nodes: () => ReadonlyArray<unknown>;
+    readonly mount: (value: unknown) => void;
+  }
+
+  function commentText(node: RegionNode): string | undefined {
+    if (node.nodeName !== "#comment") return undefined;
+    return node._commentText ?? node.data;
+  }
+
+  function findComment(root: RegionNode, text: string): RegionNode | undefined {
+    if (commentText(root) === text) return root;
+    const children = root.childNodes;
+    if (children === undefined) return undefined;
+    for (let index = 0; index < children.length; index += 1) {
+      const found = findComment(children[index]!, text);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  function toRegionNodes(value: unknown): ReadonlyArray<RegionNode> {
+    if (value === null || value === undefined || value === false || value === true) return [];
+    if (Array.isArray(value)) return value.flatMap(toRegionNodes);
+    if (isView(value)) return toRegionNodes((value as { readonly node: unknown }).node);
+    if (typeof value === "object") return [value as RegionNode];
+    const doc = (globalThis as { document?: { createTextNode?: (text: string) => unknown } })
+      .document;
+    if (typeof doc?.createTextNode !== "function") {
+      throw new Error(
+        "[View.Slot.mountTarget] cannot mount a text value without a document.",
+      );
+    }
+    return [doc.createTextNode(String(value)) as RegionNode];
+  }
+
+  /**
+   * Find the region a projected slot emitted under `root` and return it as a
+   * typed mount target. Returns `undefined` when the slot was never placed.
+   */
+  export function mountTarget<S extends Any>(
+    root: unknown,
+    slot: S,
+  ): Region<S> | undefined {
+    const markers = regionMarkers(slot.name);
+    const start = findComment(root as RegionNode, markers.start);
+    const end = start === undefined
+      ? undefined
+      : findComment(root as RegionNode, markers.end);
+    if (start === undefined || end === undefined) return undefined;
+    const parent = start.parentNode;
+    if (parent == null || parent !== end.parentNode) return undefined;
+    const nodes = (): ReadonlyArray<unknown> => {
+      const out: Array<unknown> = [];
+      let cursor = start.nextSibling ?? null;
+      while (cursor !== null && cursor !== end) {
+        out.push(cursor);
+        cursor = cursor.nextSibling ?? null;
+      }
+      return out;
+    };
+    return {
+      slot,
+      name: slot.name as NameOf<S>,
+      start,
+      end,
+      nodes,
+      mount: (value) => {
+        while (start.nextSibling != null && start.nextSibling !== end) {
+          parent.removeChild?.(start.nextSibling);
+        }
+        for (const node of toRegionNodes(value)) {
+          parent.insertBefore?.(node, end);
+        }
+      },
+    };
+  }
 }
 
 type BoundSlotRecord = Record<string, Slot.BoundAny>;
@@ -606,7 +751,15 @@ export namespace Slots {
     const bound: Record<string, Slot.BoundAny> = {};
     for (const [name, options] of Object.entries(definitions)) {
       const slot = Slot.make(name, options as never);
-      bound[name] = { slot, handle: Element.handleFor(slot.metadata.capability) };
+      // `defaulted` marks this handle as a define-time DEFAULT (DQ-050):
+      // `instantiate` mints a fresh per-instance handle for it. An explicit
+      // `Slot.bind(slot, handle)` is an author decision and is never
+      // re-minted.
+      bound[name] = {
+        slot,
+        handle: Element.handleFor(slot.metadata.capability),
+        defaulted: true,
+      } as Slot.BoundAny;
     }
     return make(bound as never) as unknown as Defined<T>;
   }
@@ -615,6 +768,23 @@ export namespace Slots {
     const out: Record<string, SlotHandle> = {};
     for (const [name, bound] of Object.entries(slots.bound)) {
       out[name] = bound.handle;
+    }
+    return out as HandlesOf<T>;
+  }
+
+  /**
+   * Materialize a FRESH handle set for one component instance (`DQ-050`:
+   * `define` is a declaration; handles materialize per instance). Unlike
+   * `handles`, which returns the contract's shared define-time handles,
+   * every `instantiate` call mints new element handles.
+   */
+  export function instantiate<T extends Any>(slots: T): HandlesOf<T> {
+    const out: Record<string, SlotHandle> = {};
+    for (const [name, bound] of Object.entries(slots.bound)) {
+      out[name] =
+        (bound as { readonly defaulted?: boolean }).defaulted === true
+          ? Element.handleFor(bound.slot.metadata.capability)
+          : bound.handle;
     }
     return out as HandlesOf<T>;
   }
@@ -816,7 +986,7 @@ export interface PlatformService {
   readonly onDiagnostic?: (diagnostic: ViewDiagnostic) => void;
 }
 
-export const PlatformTag = ServiceMap.Service<PlatformService>("ViewPlatform");
+export const PlatformTag = Context.Service<PlatformService>("ViewPlatform");
 
 export type PlatformLayer<Metadata extends PlatformMetadata = PlatformMetadata> =
   & Layer.Layer<PlatformService>
@@ -958,6 +1128,15 @@ export function style(value: StyleHoleValue): StyleHole {
 }
 
 export function html(value: SafeHtml.SafeHtml): HtmlHole {
+  // The type says `SafeHtml`, but generated/dynamic callers (JSON-driven,
+  // codegen) reach this with `unknown`. An unbranded string must FAIL CLOSED
+  // here rather than silently minting an html hole indistinguishable from a
+  // trusted one — the brand is the authorization, not the field shape.
+  if (!SafeHtml.isSafeHtml(value)) {
+    throw new Error(
+      "[View.html] Value is not SafeHtml. Markup positions require the SafeHtml brand (SafeHtml.make); unbranded strings render as text, never as HTML.",
+    );
+  }
   return {
     kind: "view.hole.html",
     value,
@@ -1082,6 +1261,33 @@ export function tree<Slots>(
  * When `options.tree` is omitted, a minimal fragment tree is attached so
  * authored views always carry `tree` metadata (Finding 6 staging).
  */
+// ── Per-render slot-instance channel (DQ-050) ────────────────────────────────
+// While a component instance renders, its contract resolves to the INSTANCE
+// handles its setup materialized, so `bindings.slots` and the rendered view
+// are two names for one handle set. Outside a render (or for a contract with
+// no active instance) `fromSlots` falls back to the shared define-time
+// handles, which keeps non-component and legacy usage working.
+let activeSlotInstance:
+  | { readonly contract: object; readonly handles: Record<string, unknown> }
+  | undefined;
+
+/** Run `fn` with `contract` resolving to `handles` inside `fromSlots`. */
+export function runWithSlotInstance<A>(
+  contract: object | undefined,
+  handles: Record<string, unknown> | undefined,
+  fn: () => A,
+): A {
+  const previous = activeSlotInstance;
+  activeSlotInstance = contract === undefined || handles === undefined
+    ? undefined
+    : { contract, handles };
+  try {
+    return fn();
+  } finally {
+    activeSlotInstance = previous;
+  }
+}
+
 export function fromSlots<S extends Slots.Any>(
   slots: S,
   node: unknown,
@@ -1093,7 +1299,11 @@ export function fromSlots<S extends Slots.Any>(
     readonly slotRemaps?: readonly SlotRemap<Slots.HandlesOf<S>>[];
   },
 ): View<Slots.HandlesOf<S>> {
-  const handles = Slots.handles(slots);
+  const handles = (
+    activeSlotInstance !== undefined && activeSlotInstance.contract === (slots as object)
+      ? activeSlotInstance.handles
+      : Slots.handles(slots)
+  ) as Slots.HandlesOf<S>;
   const treeNode = options?.tree ?? fragment([]);
   return make(handles, node, {
     ...options,

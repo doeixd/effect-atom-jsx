@@ -139,11 +139,17 @@ Render a `Result` exhaustively — no conditional-hook gymnastics:
 
 ```ts
 Result.builder(users())
-  .onInitial(() => <Spinner />)
+  .onLoading(() => <Spinner />)
   .onSuccess((list) => <UserList users={list} />)
+  .onStale((error, list) => <UserList users={list} warning={error} />)
   .onFailure((error) => <ErrorView error={error} />)
   .render();
 ```
+
+Handlers are optional and the return type accumulates, so adding a state later
+never breaks an existing call site. `Refreshing` falls back to the handler of the
+variant it wraps, and `Stale`/`Defect` fall back to `onFailure`, so the two
+handlers above are already total.
 
 Policies are pipeable data, not config soup:
 

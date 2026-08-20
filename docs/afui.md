@@ -473,7 +473,7 @@ const UserRoute = UserPage.pipe(
 ```
 
 - **Schema-Driven Safety**: Every part of the URL — path params (`Route.paramsSchema`), query (`Route.querySchema`), hash (`Route.hashSchema`) — is validated via Effect Schema. Invalid URLs are caught at the boundary as typed failures, allowing graceful "Not Found" or error state rendering.
-- **Loader Semantics as Data**: `Route.loader` accepts declarative options — `staleTime`/`cacheTime`, `staleWhileRevalidate`, `priority: "critical" | "deferred"` for streaming, `revalidateOnFocus`/`revalidateOnReconnect`, and `reactivityKeys` so semantic invalidation re-runs the right loaders automatically.
+- **Loader Semantics as Data**: `Route.loader` accepts declarative options — `staleTime`/`cacheTime`, `staleWhileRevalidate`, `priority: "critical" | "deferred"` for streaming, `timeout`, and `reactivityKeys` so semantic invalidation re-runs the right loaders automatically.
 - **Trees and Layouts**: `Route.children([...])` nests routes under layouts; `Route.id` assigns stable identities; head metadata (`Route.title`, `Route.meta`) is deep-merged down the matched route chain and applied to the document.
 - **Requirement Bubbling**: Because routes wrap components and loaders are Effects, their requirements bubble up. If a deeply nested route's loader requires a `BillingService`, the top-level router inherits that requirement in its `Req` type.
 - **Typed Extraction**: `RouteParamsOf<T>`, `RouteLoaderDataOf<T>`, and `RouteLoaderErrorOf<T>` recover a route's types anywhere you need them.

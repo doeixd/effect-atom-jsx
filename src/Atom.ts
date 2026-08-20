@@ -24,7 +24,6 @@ import {
   type MutationSupersededError,
   type OptimisticRef,
 } from "./effect-ts.js";
-import * as FetchResult from "./Result.js";
 import {
   flushReactivityRuntime,
   invalidateReactivityRuntime,
@@ -32,7 +31,6 @@ import {
   trackReactivityRuntime,
   type ReactivityKeysInput as RuntimeReactivityKeysInput,
 } from "./reactivity-runtime.js";
-import { getInstalledSingleFlightTransport } from "./single-flight-runtime.js";
 import { SingleFlightTransportTag, type SingleFlightTransportService } from "./SingleFlightTransport.js";
 
 const TypeId = "~effect-atom-jsx/Atom" as const;
@@ -53,9 +51,14 @@ type WidenLiteral<T> =
   T extends symbol ? symbol :
   T;
 
+// Functions and built-in instances pass through unchanged: mapping over a
+// `URL`'s or `Date`'s keys destroys its identity and forces callers of
+// `Atom.value(new URL(...))` into casts. Only plain data is deep-widened.
 type DeepWiden<T> =
+  T extends (...args: ReadonlyArray<any>) => any ? T :
+  T extends Date | RegExp | URL | Error | Promise<any> ? T :
+  T extends Map<any, any> | Set<any> | WeakMap<any, any> | WeakSet<any> ? T :
   T extends ReadonlyArray<infer U> ? Array<DeepWiden<U>> :
-  T extends Array<infer U> ? Array<DeepWiden<U>> :
   T extends object ? { [K in keyof T]: DeepWiden<T[K]> } :
   WidenLiteral<T>;
 
@@ -134,12 +137,17 @@ export type AsyncAtom<A, E, R = never> = ResultAtom<A, E, R>;
 export type ValueOf<T> = T extends ReadonlyAtom<infer A, any, any> ? A : never;
 export type ErrorOf<T> = T extends ReadonlyAtom<any, infer E, any> ? E : never;
 export type RequirementsOf<T> = T extends ReadonlyAtom<any, any, infer R> ? R : never;
-type ResultLikeValue = Result<any, any> | FetchResult.Result<any, any>;
+type ResultLikeValue = Result<any, any>;
 type ResultSuccessOf<T> =
   Extract<T, { readonly _tag: "Success" }> extends { readonly value: infer A } ? A : never;
+// Risk 5 (RESULT_UNIFICATION_PLAN.md): the old `Exclude<E, { defect: string }>`
+// existed only to strip the deleted fetch model's untagged defect arm from
+// `Failure.error`. With one model it was actively wrong for a core error type
+// that legitimately carries a `defect` member, so it is gone — the type tests
+// in `type-tests/atom-type-axes.ts` pin the resulting inference.
 type ResultErrorOf<T> =
   Extract<T, { readonly _tag: "Failure" }> extends { readonly error: infer E }
-    ? Exclude<E, { readonly defect: string }>
+    ? E
     : never;
 type ResultAtomSuccessOf<T extends ReadonlyAtom<ResultLikeValue, any, any>> = ResultSuccessOf<ValueOf<T>>;
 type ResultAtomErrorOf<T extends ReadonlyAtom<ResultLikeValue, any, any>> =
@@ -184,31 +192,23 @@ export interface WriteContext<A> {
 }
 
 function toEffectResult<A, E>(
-  value: Result<A, E> | FetchResult.Result<A, E>,
+  value: Result<A, E>,
 ): Effect.Effect<A, E | BridgeError> {
-  const tagged = value as { readonly _tag?: string };
-  switch (tagged._tag) {
+  switch (value._tag) {
+    case "Idle":
+      return Effect.fail({ _tag: "ResultLoadingError", message: "Result is Idle" } as const);
     case "Loading":
       return Effect.fail({ _tag: "ResultLoadingError", message: "Atom is Loading" } as const);
-    case "Refreshing": {
-      const previous = (value as Refreshing<A, E>).previous;
-      return toEffectResult(previous as Result<A, E> | FetchResult.Result<A, E>);
-    }
+    case "Refreshing":
+      return toEffectResult((value as Refreshing<A, E>).previous);
     case "Success":
       return Effect.succeed((value as Success<A>).value);
     case "Stale":
       return Effect.fail((value as import("./effect-ts.js").Stale<A, E>).error);
-    case "Failure": {
-      const failure = value as Failure<E>;
-      if ("error" in failure) {
-        return Effect.fail(failure.error);
-      }
-      return Effect.fail((value as FetchResult.Failure<A, E>).error as E | BridgeError);
-    }
+    case "Failure":
+      return Effect.fail((value as Failure<E>).error);
     case "Defect":
       return Effect.fail({ _tag: "ResultDefectError", defect: (value as Defect).cause } as const);
-    case "Initial":
-      return Effect.fail({ _tag: "ResultLoadingError", message: "Result is Initial" } as const);
     default:
       return Effect.fail({ _tag: "ResultDefectError", defect: "Unsupported atom result value" } as const);
   }
@@ -522,8 +522,22 @@ export function make<A>(valueOrRead: A | ((get: Context) => A)): ReadonlyAtom<A>
  */
 export interface Family<Args extends ReadonlyArray<unknown>, T> {
   (...args: Args): T;
+  /** Drop the cached member for `args` (and its subtree) from the family. */
   evict(...args: Args): void;
+  /** Drop every cached member from the family. */
   clear(): void;
+  /**
+   * Live member argument-tuples currently retained, in insertion order.
+   *
+   * Enables hydration identity: a family's members can be enumerated,
+   * serialized with their identifying `args`, and restored member-for-member
+   * across an SSR boundary (see `Hydration.dehydrateFamily`).
+   */
+  keys(): Array<Args>;
+  /** Live members as `[args, value]` pairs, in insertion order. */
+  entries(): Array<readonly [Args, T]>;
+  /** Number of live members currently retained. */
+  readonly size: number;
 }
 
 export interface FamilyOptions<Args extends ReadonlyArray<unknown>, T> {
@@ -532,6 +546,13 @@ export interface FamilyOptions<Args extends ReadonlyArray<unknown>, T> {
    * this function instead of reference-equality trie lookup.
    */
   readonly equals?: (a: Args, b: Args) => boolean;
+  /**
+   * Maximum number of live members retained. When creating a member would
+   * exceed the capacity, the oldest-inserted member is evicted first
+   * (insertion-order / FIFO eviction). Bounds unbounded family growth for
+   * per-id caches with open-ended key spaces (ADR-005).
+   */
+  readonly capacity?: number;
 }
 
 export interface FamilySchemaOptions<Args extends ReadonlyArray<unknown>, T, A>
@@ -605,51 +626,81 @@ export function family<Args extends ReadonlyArray<unknown>, T>(
     return value;
   };
 
+  const capacity = options?.capacity;
+  // `members` is the source of truth for enumeration + eviction ordering in
+  // both branches; the trie (default branch) is only a fast lookup index.
+  const members: Array<{ args: Args; value: T }> = [];
+
+  const finalize = (fam: Family<Args, T>): Family<Args, T> => {
+    fam.keys = () => members.map((m) => m.args);
+    fam.entries = () => members.map((m) => [m.args, m.value] as const);
+    Object.defineProperty(fam, "size", { get: () => members.length, enumerable: true });
+    return fam;
+  };
+
   if (options?.equals !== undefined) {
-    const entries: Array<{ args: Args; value: T }> = [];
     const getOrCreate = ((...args: Args) => {
-      const found = entries.find((entry) => options.equals!(entry.args, args));
+      const found = members.find((entry) => options.equals!(entry.args, args));
       if (found) return found.value;
       const next = create(...args);
-      entries.push({ args, value: next });
+      members.push({ args, value: next });
+      if (capacity !== undefined) {
+        while (members.length > capacity) members.shift();
+      }
       return next;
     }) as Family<Args, T>;
 
     getOrCreate.evict = (...args: Args) => {
-      const index = entries.findIndex((entry) => options.equals!(entry.args, args));
-      if (index >= 0) entries.splice(index, 1);
+      const index = members.findIndex((entry) => options.equals!(entry.args, args));
+      if (index >= 0) members.splice(index, 1);
     };
     getOrCreate.clear = () => {
-      entries.length = 0;
+      members.length = 0;
     };
 
-    return getOrCreate;
+    return finalize(getOrCreate);
   }
 
   const root = familyNode<T>();
-  const getOrCreate = ((...args: Args) => {
-    const node = familyPath(root, args, true) as FamilyNode<T>;
-    if (node.hasValue) return node.value as T;
-    const next = create(...args);
-    node.hasValue = true;
-    node.value = next;
-    return next;
-  }) as Family<Args, T>;
-
-  getOrCreate.evict = (...args: Args) => {
+  const evictArgs = (args: Args) => {
     const node = familyPath(root, args, false);
     if (node === null) return;
     node.hasValue = false;
     node.value = undefined;
     node.children.clear();
   };
+  const sameArgs = (a: Args, b: Args) =>
+    a === b || (a.length === b.length && a.every((v, i) => v === b[i]));
+
+  const getOrCreate = ((...args: Args) => {
+    const node = familyPath(root, args, true) as FamilyNode<T>;
+    if (node.hasValue) return node.value as T;
+    const next = create(...args);
+    node.hasValue = true;
+    node.value = next;
+    members.push({ args, value: next });
+    if (capacity !== undefined) {
+      while (members.length > capacity) {
+        const oldest = members.shift();
+        if (oldest !== undefined) evictArgs(oldest.args);
+      }
+    }
+    return next;
+  }) as Family<Args, T>;
+
+  getOrCreate.evict = (...args: Args) => {
+    evictArgs(args);
+    const index = members.findIndex((entry) => sameArgs(entry.args, args));
+    if (index >= 0) members.splice(index, 1);
+  };
   getOrCreate.clear = () => {
     root.children.clear();
     root.hasValue = false;
     root.value = undefined;
+    members.length = 0;
   };
 
-  return getOrCreate;
+  return finalize(getOrCreate);
 }
 
 /**
@@ -1005,6 +1056,12 @@ export interface SingleFlightClientOptions<Input> {
   readonly url?: string | ((input: Input) => string);
   /** Disable automatic loader cache hydration for returned payloads. */
   readonly hydrate?: boolean;
+  /**
+   * Route source (tree root or `Route.registry([...])`) whose loader identities
+   * the returned payload hydrates against. Defaults to the injected
+   * `Route.RouteSourceTag`; without either, hydration is skipped.
+   */
+  readonly app?: unknown;
   /** Optional fetch override for the built-in fetch fallback / fetch transport adapter. */
   readonly fetch?: (input: string, init?: { readonly method?: string; readonly headers?: Record<string, string>; readonly body?: string }) => Promise<{ readonly json: () => Promise<unknown> }>;
 }
@@ -1123,16 +1180,25 @@ function runSingleFlightWithTransport<Input, A>(
       defect: error.message,
     } as const)));
 
-    if (!response.ok) {
-      return yield* Effect.fail({
+    // One wire contract for every transport: the envelope is schema-validated
+    // and loader results rehydrate through the canonical Result projection,
+    // exactly as `invokeSingleFlight` does (R5.1).
+    const payload = yield* Route.decodeSingleFlightResponse<A>(response).pipe(
+      Effect.mapError((error) => ({
         _tag: "ResultDefectError",
-        defect: typeof response.error === "object" ? JSON.stringify(response.error) : String(response.error),
-      } as const);
-    }
+        defect: error.message,
+      } as const)),
+    );
     if (config?.hydrate !== false) {
-      yield* Route.hydrateSingleFlightPayload(response.payload as import("./Route.js").SingleFlightPayload<unknown>);
+      const source = yield* Route.resolveRouteSource(config?.app as import("./Route.js").RouteSource | undefined);
+      if (source !== undefined) {
+        yield* Route.hydrateSingleFlightPayload(
+          payload as import("./Route.js").SingleFlightPayload<unknown>,
+          source,
+        );
+      }
     }
-    return response.payload.mutation;
+    return payload.mutation;
   });
 }
 
@@ -1163,6 +1229,7 @@ function runSingleFlightWithDirectFetch<Input, A>(
         {
           fetch: options.fetch,
           hydrate: options.hydrate,
+          app: options.app as import("./Route.js").RouteSource | undefined,
         },
       ));
       return payload.mutation;
@@ -1203,8 +1270,8 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
       effect: (input: Input) => Effect.Effect<A, E2, RReq>,
       options?: ActionOptions<Input, E2>,
     ): ActionHandle<Input, E2 | ActionInputSchemaError, A> {
-      // Keep runtime-local SingleFlightTransportTag lookup (layer-provided
-      // transport) — free `action` only sees getInstalledSingleFlightTransport().
+      // DQ-033: one resolution ladder — context transport (from this runtime's
+      // layer) → declared endpoint → local runner. No process-global slot.
       const singleFlight = options?.singleFlight === false ? undefined : options?.singleFlight;
       const runBody = (input: Input): Effect.Effect<A, E2 | ResultDefectError, RReq> => {
         if (!shouldUseSingleFlight(options?.singleFlight)) {
@@ -1216,10 +1283,6 @@ const runtimeImpl = <R, E>(layer: Layer.Layer<R, E, never>): AtomRuntime<R, E> =
               return runSingleFlightWithTransport<Input, A>(maybeTransport.value as any, input, singleFlight, options?.name);
             }
             if (singleFlight?.endpoint) {
-              const installed = getInstalledSingleFlightTransport();
-              if (installed) {
-                return runSingleFlightWithTransport<Input, A>(installed as any, input, singleFlight, options?.name);
-              }
               return runSingleFlightWithDirectFetch<Input, A>(input, singleFlight, options?.name);
             }
             if (singleFlight?.mode === "force") {
@@ -1411,21 +1474,29 @@ export function action<A, E, R, Input = void>(
   const options = (hasRuntime ? arg3 : arg2) as ActionOptions<Input, E> | undefined;
   const singleFlight = options?.singleFlight === false ? undefined : options?.singleFlight;
 
+  // DQ-033: one resolution ladder — context transport → declared endpoint →
+  // local runner. The context rung comes first because the injected transport
+  // is the *request-scoped* value while `endpoint` is a static authoring hint;
+  // letting a static hint (or, worse, a process-global slot) outrank request
+  // scope is exactly how the cross-request bleed happened.
   const runBody = (input: Input): Effect.Effect<A, E | ResultDefectError, R> => {
     if (!shouldUseSingleFlight(options?.singleFlight)) {
       return effectFn(input) as Effect.Effect<A, E | ResultDefectError, R>;
     }
-    const installed = getInstalledSingleFlightTransport();
-    if (installed) {
-      return runSingleFlightWithTransport<Input, A>(installed as any, input, singleFlight, options?.name) as Effect.Effect<A, E | ResultDefectError, R>;
-    }
-    if (singleFlight?.endpoint) {
-      return runSingleFlightWithDirectFetch<Input, A>(input, singleFlight, options?.name) as Effect.Effect<A, E | ResultDefectError, R>;
-    }
-    if (singleFlight?.mode === "force") {
-      return Effect.fail({ _tag: "ResultDefectError", defect: "Single-flight transport required but unavailable" } as const) as Effect.Effect<A, E | ResultDefectError, R>;
-    }
-    return effectFn(input) as Effect.Effect<A, E | ResultDefectError, R>;
+    return Effect.serviceOption(SingleFlightTransportTag).pipe(
+      Effect.flatMap((maybeTransport): Effect.Effect<A, E | ResultDefectError, R> => {
+        if (maybeTransport._tag === "Some") {
+          return runSingleFlightWithTransport<Input, A>(maybeTransport.value as any, input, singleFlight, options?.name) as Effect.Effect<A, E | ResultDefectError, R>;
+        }
+        if (singleFlight?.endpoint) {
+          return runSingleFlightWithDirectFetch<Input, A>(input, singleFlight, options?.name) as Effect.Effect<A, E | ResultDefectError, R>;
+        }
+        if (singleFlight?.mode === "force") {
+          return Effect.fail({ _tag: "ResultDefectError", defect: "Single-flight transport required but unavailable" } as const) as Effect.Effect<A, E | ResultDefectError, R>;
+        }
+        return effectFn(input) as Effect.Effect<A, E | ResultDefectError, R>;
+      }),
+    ) as Effect.Effect<A, E | ResultDefectError, R>;
   };
 
   const execute = (input: Input): Effect.Effect<A, E | ActionInputSchemaError | ResultDefectError, R> =>
@@ -1469,11 +1540,20 @@ export function action<A, E, R, Input = void>(
     handle.run(input);
   }) as ActionHandle<Input, ActionE, A>;
   out.run = (input: Input) => handle.run(input);
-  out.runEffect = (input: Input) =>
-    Effect.tryPromise({
-      try: () => runPromiseWithRuntime(runtimeArg, execute(input)),
-      catch: (error) => error as ActionE | BridgeError | MutationSupersededError,
-    });
+  out.runEffect = runtimeArg === undefined
+    // Free form: return the effect itself so the CALLER's context reaches the
+    // action — a layer-provided single-flight transport must be visible here
+    // (DQ-033), which a detached bridge runtime would silently discard.
+    ? (input: Input) =>
+      execute(input) as unknown as Effect.Effect<
+        A,
+        ActionE | BridgeError | MutationSupersededError
+      >
+    : (input: Input) =>
+      Effect.tryPromise({
+        try: () => runPromiseWithRuntime(runtimeArg, execute(input)),
+        catch: (error) => error as ActionE | BridgeError | MutationSupersededError,
+      });
   out.effect = (input: Input) => handle.effect(input) as Effect.Effect<void, ActionE | BridgeError | MutationSupersededError>;
   out.result = handle.result as Accessor<Result<void, ActionE>>;
   out.pending = handle.pending;
@@ -2147,7 +2227,7 @@ export function result<T extends ReadonlyAtom<ResultLikeValue, any, any>>(
 /**
  * Read a result-like atom as an `Effect` value.
  *
- * Supports both core `Result` and compatibility `FetchResult` atoms.
+ * Unwraps core `Result` atoms into typed Effects.
  */
 export function result<T extends ReadonlyAtom<ResultLikeValue, any, any>>(
   self?: T,

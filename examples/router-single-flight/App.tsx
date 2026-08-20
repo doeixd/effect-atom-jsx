@@ -1,5 +1,5 @@
 import { Atom, Component, Reactivity, Route, WithLayer } from "../../src/index.js";
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Effect, Layer, Schema, Context } from "effect";
 
 type User = {
   readonly id: string;
@@ -19,7 +19,7 @@ const usersState = Atom.value<ReadonlyArray<User>>([
 
 const usersStore = usersState.pipe(Atom.withReactivity(["users"]));
 
-const UsersService = ServiceMap.Service<{
+const UsersService = Context.Service<{
   readonly list: () => Effect.Effect<ReadonlyArray<User>>;
   readonly byId: (id: string) => Effect.Effect<User>;
   readonly rename: (input: SaveUserInput) => Effect.Effect<User>;
@@ -95,7 +95,7 @@ const saveUser = Atom.action(
   { name: "save-user" },
 );
 
-const UserPageBase = Component.make(
+const UserPage = Component.make(
   Component.props<{}>(),
   Component.require<Route.RouteContext<any, any, any>>(),
   () => Effect.gen(function* () {
@@ -134,9 +134,8 @@ const UserPageBase = Component.make(
     const users = yield* UsersService;
     return yield* users.byId(params.userId);
   })),
+  Route.title("User"),
 );
-
-const UserPage = UserPageBase.pipe(Route.title("User"));
 
 const saveUserHandler = Route.singleFlight(
   (input: SaveUserInput) => Effect.gen(function* () {
@@ -146,7 +145,7 @@ const saveUserHandler = Route.singleFlight(
   {
     baseUrl: "http://example.local",
     target: (result) => `/users/${result.id}`,
-    setLoaders: Route.seedLoader(UserPageBase as any),
+    setLoaders: Route.seedLoader(UserPage),
   },
 );
 

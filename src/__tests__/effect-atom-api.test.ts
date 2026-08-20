@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Effect } from "effect";
 import { Exit, Option, Schema } from "effect";
-import { Layer, ServiceMap } from "effect";
+import { Layer, Context } from "effect";
 import { Stream } from "effect";
 import { Schedule } from "effect";
 import * as Atom from "../Atom.js";
 import * as AtomRef from "../AtomRef.js";
 import * as Hydration from "../Hydration.js";
-import * as Result from "../Result.js";
+import { fromWire, toWire } from "../result-wire.js";
 import * as Registry from "../Registry.js";
-import { Result as AsyncResult } from "../effect-ts.js";
+import { Result as AsyncResult, type Result as AsyncResultType } from "../effect-ts.js";
 import { createRoot, flush } from "../api.js";
 
 const originalQueueMicrotask = globalThis.queueMicrotask;
@@ -424,66 +424,140 @@ describe("effect-atom style API", () => {
     ).rejects.toMatchObject({ _tag: "HydrationUnknownKeys" });
   });
 
-  it("converts Result <-> FetchResult", () => {
-    const fromLoading = Result.fromResult(AsyncResult.loading);
-    expect(Result.isInitial(fromLoading)).toBe(true);
-    expect(Result.isWaiting(fromLoading)).toBe(true);
-
-    const fromSuccess = Result.fromResult(AsyncResult.success(42));
-    expect(Result.isSuccess(fromSuccess)).toBe(true);
-
-    const asyncAgain = Result.toResult(fromSuccess);
-    expect(asyncAgain).toEqual(AsyncResult.success(42));
-
-    expect(Result.isWaiting(Result.waiting(fromSuccess))).toBe(true);
-
-    const failure = Result.failure<number, string>("nope");
-    expect(Result.isFailure(failure)).toBe(true);
-    expect(Result.isNotInitial(failure)).toBe(true);
+  it("enumerates live family members via keys/entries/size", () => {
+    const byId = Atom.family((id: number) => Atom.make(id * 10));
+    expect(byId.size).toBe(0);
+    byId(1);
+    byId(2);
+    expect(byId.size).toBe(2);
+    expect(byId.keys()).toEqual([[1], [2]]);
+    expect(byId.entries().map(([args]) => args)).toEqual([[1], [2]]);
+    byId.evict(1);
+    expect(byId.size).toBe(1);
+    expect(byId.keys()).toEqual([[2]]);
+    byId.clear();
+    expect(byId.size).toBe(0);
   });
 
-  it("supports Result fromExit/map/match/all helpers", () => {
-    const ok = Result.fromExit(Exit.succeed(3));
-    expect(Result.isSuccess(ok)).toBe(true);
+  it("bounds family growth with capacity (FIFO eviction)", () => {
+    const created: number[] = [];
+    const byId = Atom.family((id: number) => {
+      created.push(id);
+      return Atom.make(id);
+    }, { capacity: 2 });
+    byId(1);
+    byId(2);
+    byId(3); // evicts oldest (1)
+    expect(byId.size).toBe(2);
+    expect(byId.keys()).toEqual([[2], [3]]);
+    byId(1); // re-creates since it was evicted
+    expect(created).toEqual([1, 2, 3, 1]);
+  });
 
-    const mapped = Result.map(ok, (n) => n * 2);
-    expect(Result.isSuccess(mapped) && mapped.value === 6).toBe(true);
+  it("respects capacity with custom equals", () => {
+    const byKey = Atom.family(
+      (k: { id: number }) => Atom.make(k.id),
+      { equals: (a, b) => a[0].id === b[0].id, capacity: 1 },
+    );
+    byKey({ id: 1 });
+    byKey({ id: 2 });
+    expect(byKey.size).toBe(1);
+    expect(byKey.keys()).toEqual([[{ id: 2 }]]);
+  });
 
-    const text = Result.match(mapped, {
-      onInitial: () => "i",
-      onSuccess: (v) => `s:${v}`,
-      onFailure: () => "f",
+  it("round-trips an Atom.family across dehydrate/hydrate", () => {
+    const serverRegistry = Registry.make();
+    const serverFamily = Atom.family((id: number) => Atom.make({ id, done: false }));
+    serverRegistry.set(serverFamily(1), { id: 1, done: true });
+    serverRegistry.set(serverFamily(2), { id: 2, done: false });
+
+    const dump = Hydration.dehydrateFamily(serverRegistry, "todoById", serverFamily);
+    expect(dump).toHaveLength(2);
+
+    // Simulate the SSR boundary via JSON.
+    const wire = JSON.parse(JSON.stringify(dump)) as Hydration.DehydratedAtom[];
+
+    const clientRegistry = Registry.make();
+    const clientFamily = Atom.family((id: number) => Atom.make({ id, done: false }));
+    Hydration.hydrateFamilies(clientRegistry, wire, { todoById: clientFamily });
+
+    expect(clientRegistry.get(clientFamily(1))).toEqual({ id: 1, done: true });
+    expect(clientRegistry.get(clientFamily(2))).toEqual({ id: 2, done: false });
+    // The identical member atom was reused (not a fresh default).
+    expect(clientFamily.size).toBe(2);
+  });
+
+  it("reports family hydration drift by validation mode", () => {
+    const registry = Registry.make();
+    const known = Atom.family((id: number) => Atom.make(id));
+    const state: Hydration.DehydratedFamilyValue[] = [
+      { "~@effect-atom-jsx/DehydratedAtom": true, family: "gone", args: [1], value: 5, dehydratedAt: Date.now() },
+    ];
+
+    const unknown: string[] = [];
+    const missing: string[] = [];
+    Hydration.hydrateFamilies(registry, state, { known }, {
+      mode: "loose",
+      onUnknownKey: (k) => unknown.push(k),
+      onMissingKey: (k) => missing.push(k),
     });
-    expect(text).toBe("s:6");
+    expect(unknown).toEqual(['gone([1])']);
+    expect(missing).toEqual(["known"]);
 
-    const collected = Result.all([Result.success(1), Result.success(2)] as const);
-    expect(Result.isSuccess(collected) && collected.value[1] === 2).toBe(true);
-
-    const waiting = Result.waitingFrom(Option.some(Result.success("x")));
-    expect(Result.isWaiting(waiting)).toBe(true);
+    // strict mode surfaces the unknown family as a thrown HydrationError.
+    expect(() => Hydration.hydrateFamilies(registry, state, { known }, { mode: "strict" }))
+      .toThrow();
   });
 
-  it("supports Result.builder fluent rendering", () => {
-    const initialView = Result.builder(Result.initial<number, string>(true))
-      .onInitial(() => "loading")
-      .onSuccess((n) => `ok:${n}`)
-      .onFailure((e) => `err:${String(e)}`)
-      .render();
-    expect(initialView).toBe("loading");
+  it("supports hydrateFamiliesEffect strict typed errors", async () => {
+    const registry = Registry.make();
+    const known = Atom.family((id: number) => Atom.make(id));
+    const state: Hydration.DehydratedFamilyValue[] = [
+      { "~@effect-atom-jsx/DehydratedAtom": true, family: "gone", args: [1], value: 5, dehydratedAt: Date.now() },
+    ];
+    await expect(
+      Effect.runPromise(Hydration.hydrateFamiliesEffect(registry, state, { known }, { mode: "strict" })),
+    ).rejects.toMatchObject({ _tag: "HydrationUnknownKeys" });
+  });
 
-    const successView = Result.builder(Result.success(42, { waiting: true }))
-      .onSuccess((n, meta) => `${n}/${meta.waiting}`)
-      .render();
-    expect(successView).toBe("42/true");
+  it("round-trips core Results through the canonical wire projection", () => {
+    // Slice 5 (RESULT_UNIFICATION_PLAN.md): the fetch model is deleted; the
+    // conversion these cases used to exercise is now the `toWire`/`fromWire`
+    // projection — the only mapping between the core model and the flat DTO.
+    const success = fromWire(toWire(AsyncResult.success(42)));
+    expect(success._tag).toBe("Success");
+    if (success._tag === "Success") expect(success.value).toBe(42);
 
-    const failureView = Result.builder(Result.failure<number, string>("boom"))
-      .onFailure((e) => `err:${e}`)
-      .render();
-    expect(failureView).toBe("err:boom");
+    const failure = fromWire(toWire(AsyncResult.failure("nope")));
+    expect(failure._tag).toBe("Failure");
+    if (failure._tag === "Failure") expect(failure.error).toBe("nope");
+
+    const loading = fromWire(toWire(AsyncResult.loading));
+    expect(loading._tag).toBe("Loading");
+  });
+
+  it("round-trips core Stale on the wire without losing last-good data", () => {
+    // Core Stale{ error, data } is the failed-refresh keep-stale state. The
+    // wire has no Stale variant: it projects to a failure carrying the
+    // previous success (the flat, wire-friendly shape) and reconstructs core
+    // Stale — not a bare Failure — on the way back.
+    const wire = toWire(AsyncResult.stale("nope", 10));
+    expect(wire._tag).toBe("Failure");
+    if (wire._tag === "Failure") {
+      expect(wire.previousSuccess?.value).toBe(10);
+      expect(wire.waiting).toBe(false);
+    }
+
+    const back = fromWire(wire) as AsyncResultType<number, string>;
+    expect(back._tag).toBe("Stale");
+    if (back._tag === "Stale") {
+      expect(back.error).toBe("nope");
+      expect(back.data).toBe(10);
+    }
   });
 
   it("supports Atom.runtime(...).atom for Layer-backed services", async () => {
-    const Greeting = ServiceMap.Service<{ readonly value: string }>("Greeting");
+    const Greeting = Context.Service<{ readonly value: string }>("Greeting");
     const rt = Atom.runtime(Layer.succeed(Greeting, { value: "hello" }));
 
     const greetingAtom = rt.atom(
@@ -501,7 +575,7 @@ describe("effect-atom style API", () => {
   });
 
   it("supports Atom.runtime(...).atom factory with get/result composition", async () => {
-    const Greeting = ServiceMap.Service<{ readonly value: string }>("Greeting");
+    const Greeting = Context.Service<{ readonly value: string }>("Greeting");
     const rt = Atom.runtime(Layer.succeed(Greeting, { value: "hello" }));
 
     const suffix = Atom.make("!");

@@ -29,11 +29,38 @@ import {
   splitProps,
 } from "../api.js";
 
+/**
+ * Module-scope scheduling fixture.
+ *
+ * `tracking.enqueueComputation` schedules its flush via `queueMicrotask`, so
+ * outside a batch an effect re-runs *asynchronously*. Patching
+ * `queueMicrotask` to run inline makes propagation synchronous, which is what
+ * lets the tests below write `setX(2); expect(log).toEqual([0, 1, 2])`.
+ *
+ * That is a deliberate convenience, but it means **no test running under this
+ * fixture can observe deferral** — any test claiming to cover microtask
+ * batching must opt back out via `withRealMicrotasks` below.
+ */
 const originalQueueMicrotask = globalThis.queueMicrotask;
 
-beforeAll(() => {
+const useInlineMicrotasks = () => {
   globalThis.queueMicrotask = ((cb: VoidFunction) => cb()) as typeof queueMicrotask;
-});
+};
+
+/**
+ * Run `f` against the *real* microtask queue, then restore the inline fixture.
+ * Use this for anything asserting that work is deferred rather than immediate.
+ */
+const withRealMicrotasks = async (f: () => Promise<void>): Promise<void> => {
+  globalThis.queueMicrotask = originalQueueMicrotask;
+  try {
+    await f();
+  } finally {
+    useInlineMicrotasks();
+  }
+};
+
+beforeAll(useInlineMicrotasks);
 
 afterAll(() => {
   globalThis.queueMicrotask = originalQueueMicrotask;
@@ -351,18 +378,57 @@ describe("batch", () => {
     expect(log).toEqual([0, 3]);
   });
 
-  it("uses microtask batching with explicit flush", async () => {
+  it("defers an unbatched write to a microtask, and flush() runs it early", async () => {
+    // This test previously ran under the inline-microtask fixture, so it could
+    // not observe deferral at all: `toContain` held even if every write
+    // propagated synchronously. Opt back out to the real microtask queue.
+    await withRealMicrotasks(async () => {
+      const [x, setX] = createSignal(0);
+      const log: number[] = [];
+      createRoot(() => createEffect(() => log.push(x())));
+      expect(log).toEqual([0]); // initial run is synchronous
+
+      // A write outside a batch is *deferred*, not applied inline.
+      setX(1);
+      expect(log).toEqual([0]);
+
+      // ...and an explicit flush() runs it early, before the microtask lands.
+      flush();
+      expect(log).toEqual([0, 1]);
+
+      // The already-satisfied microtask must not re-run the effect.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(log).toEqual([0, 1]);
+
+      // Without an explicit flush, the pending microtask does the work — once.
+      setX(2);
+      expect(log).toEqual([0, 1]);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(log).toEqual([0, 1, 2]);
+
+      // Several writes before the microtask lands coalesce into one re-run
+      // that sees only the final value.
+      setX(3);
+      setX(4);
+      setX(5);
+      expect(log).toEqual([0, 1, 2]);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(log).toEqual([0, 1, 2, 5]);
+    });
+  });
+
+  it("restores inline microtask scheduling for subsequent tests", () => {
+    // Guards the fixture itself: `withRealMicrotasks` must put the inline
+    // scheduler back, or every later test in this file silently changes
+    // meaning.
     const [x, setX] = createSignal(0);
     const log: number[] = [];
     createRoot(() => createEffect(() => log.push(x())));
-
     setX(1);
-    flush();
-    expect(log).toContain(1);
-
-    setX(2);
-    await Promise.resolve();
-    expect(log).toContain(2);
+    expect(log).toEqual([0, 1]);
   });
 });
 
@@ -491,9 +557,16 @@ describe("mergeProps", () => {
   });
 
   it("skips null / undefined sources", () => {
-    const merged = mergeProps({ a: 1 } as Record<string, unknown>, null as unknown as {}, { b: 2 });
+    const merged = mergeProps(
+      { a: 1 } as Record<string, unknown>,
+      null as unknown as {},
+      undefined as unknown as {},
+      { b: 2 },
+    );
     expect(merged.a).toBe(1);
     expect(merged.b).toBe(2);
+    // The name claims both null *and* undefined; only `null` was exercised.
+    expect(Object.keys(merged).sort()).toEqual(["a", "b"]);
   });
 });
 
@@ -510,10 +583,24 @@ describe("splitProps", () => {
   });
 
   it("preserves getters in both halves", () => {
-    const [n] = createSignal(7);
-    const props = { get val() { return n(); }, other: "x" };
-    const [left] = splitProps(props, ["val"]);
+    // The name claims *both* halves; only `left` used to be checked, and only
+    // for its initial value — a getter copied by value would have passed.
+    const [n, setN] = createSignal(7);
+    const [m, setM] = createSignal("x");
+    const props = { get val() { return n(); }, get other() { return m(); } };
+    const [left, right] = splitProps(props, ["val"] as ("val")[]);
+
     expect(left.val).toBe(7);
+    expect((right as { other: string }).other).toBe("x");
+
+    setN(8);
+    setM("y");
+    expect(left.val).toBe(8);
+    expect((right as { other: string }).other).toBe("y");
+
+    // Keys are partitioned, not duplicated.
+    expect(Object.keys(left)).toEqual(["val"]);
+    expect(Object.keys(right)).toEqual(["other"]);
   });
 });
 

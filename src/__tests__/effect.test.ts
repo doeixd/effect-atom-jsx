@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
-import { Effect, Exit, Scope, Cause, Layer, ServiceMap, ManagedRuntime, Option, Schema, Schedule } from "effect";
+import { Effect, Exit, Scope, Cause, Layer, Context, ManagedRuntime, Option, Schema, Schedule } from "effect";
 import {
   atomEffect,
   defineQuery,
@@ -51,7 +51,7 @@ import {
 } from "../effect-ts.js";
 import { createSignal, createRoot, createEffect, onCleanup } from "../api.js";
 import * as AtomNs from "../Atom.js";
-import { Owner, runWithOwner } from "../owner.js";
+import { Owner, runWithOwner, getOwner } from "../owner.js";
 import { currentComponentScope, withComponentScope } from "../component-scope.js";
 import { createComponent } from "../dom.js";
 import { withTestLayer } from "../testing.js";
@@ -61,6 +61,17 @@ import { withTestLayer } from "../testing.js";
 /** Wait for the microtask / promise queue to drain. */
 const tick = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 
+/**
+ * Module-scope scheduling fixture: reactive propagation is made synchronous by
+ * running `queueMicrotask` callbacks inline, so signal writes appear to
+ * propagate immediately.
+ *
+ * Consequence: **nothing in this file can observe reactive deferral.** Do not
+ * add a test here that claims to cover microtask batching or scheduling — see
+ * `reactive.test.ts`'s `withRealMicrotasks` helper, which opts back out to the
+ * real queue for exactly that purpose. (Effect fibers are unaffected; they run
+ * on the promise queue and are awaited via `tick`.)
+ */
 const originalQueueMicrotask = globalThis.queueMicrotask;
 
 beforeAll(() => {
@@ -347,7 +358,7 @@ describe("atomEffect — Effect.gen", () => {
 });
 
 describe("atomEffect — runtime compatibility", () => {
-  const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
+  const Greeting = Context.Service<{ readonly prefix: string }>("Greeting");
 
   it("accepts ManagedRuntime as the runtime argument", async () => {
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "hello" }));
@@ -374,7 +385,7 @@ describe("atomEffect — runtime compatibility", () => {
 
 describe("useService / defineQuery (ambient runtime behavior)", () => {
   it("useService(tag) throws when no ambient ManagedRuntime is present", () => {
-    const Name = ServiceMap.Service<{ readonly value: string }>("Name");
+    const Name = Context.Service<{ readonly value: string }>("Name");
     expect(() => useService(Name)).toThrow(/outside of an ambient runtime/i);
   });
 
@@ -394,7 +405,7 @@ describe("useService / defineQuery (ambient runtime behavior)", () => {
   });
 
   it("resourceWith(runtime, fn) runs with explicit managed runtime", async () => {
-    const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
+    const Greeting = Context.Service<{ readonly prefix: string }>("Greeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "yo" }));
 
     let result!: () => AsyncResultType<string, never>;
@@ -414,18 +425,18 @@ describe("useService / defineQuery (ambient runtime behavior)", () => {
   });
 
   it("useService(tag) throws without ambient runtime", () => {
-    const Name = ServiceMap.Service<{ readonly value: string }>("Name");
+    const Name = Context.Service<{ readonly value: string }>("Name");
     expect(() => useService(Name)).toThrow(/outside of an ambient runtime/i);
   });
 
   it("useServices throws without ambient runtime", () => {
-    const A = ServiceMap.Service<{ readonly value: string }>("A");
-    const B = ServiceMap.Service<{ readonly n: number }>("B");
+    const A = Context.Service<{ readonly value: string }>("A");
+    const B = Context.Service<{ readonly n: number }>("B");
     expect(() => useServices({ a: A, b: B })).toThrow(/outside of an ambient runtime/i);
   });
 
   it("useService reports missing service key clearly", () => {
-    const Missing = ServiceMap.Service<{ readonly value: string }>("Missing");
+    const Missing = Context.Service<{ readonly value: string }>("Missing");
     const harness = withTestLayer(Layer.empty);
     expect(() => harness.run(() => useService(Missing))).toThrow(/useService\(Missing\): service not found/i);
   });
@@ -456,7 +467,7 @@ describe("query keys / defineQuery", () => {
   });
 
   it("defineQuery runs with explicit runtime", async () => {
-    const Greeting = ServiceMap.Service<{ readonly prefix: string }>("Greeting");
+    const Greeting = Context.Service<{ readonly prefix: string }>("Greeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "hey" }));
 
     let result!: () => AsyncResultType<string, never>;
@@ -504,7 +515,7 @@ describe("query keys / defineQuery", () => {
   });
 
   it("defineQuery accepts explicit runtime", async () => {
-    const Svc = ServiceMap.Service<{ readonly value: string }>("Svc");
+    const Svc = Context.Service<{ readonly value: string }>("Svc");
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { value: "ok" }));
     const query = createRoot(() => defineQuery(
       () => Effect.service(Svc).pipe(Effect.map((s) => s.value)),
@@ -530,8 +541,9 @@ describe("query keys / defineQuery", () => {
     ));
 
     await tick();
-    expect(phases.includes("start")).toBe(true);
-    expect(phases.includes("success")).toBe(true);
+    // Exact sequence, not membership: `includes` passed for an implementation
+    // that emitted every phase on every query.
+    expect(phases).toEqual(["start", "success"]);
     expect(query.result()).toEqual(AsyncResult.success(1));
     await runtime.dispose();
   });
@@ -552,6 +564,56 @@ describe("query keys / defineQuery", () => {
 
     await tick(40);
     expect(query.result()).toEqual(AsyncResult.success(3));
+    // `recurs(2)` means at most three attempts total. Without this, an
+    // implementation that retried without bound also reached `success(3)`.
+    expect(attempts).toBe(3);
+    await runtime.dispose();
+  });
+
+  it("stops retrying once retrySchedule is exhausted", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    let attempts = 0;
+    const query = createRoot(() => defineQuery(
+      () => Effect.sync(() => ++attempts).pipe(Effect.flatMap(() => Effect.fail("always" as const))),
+      {
+        name: "retry-exhausted",
+        runtime,
+        retrySchedule: Schedule.recurs(2),
+      },
+    ));
+
+    await tick(40);
+    expect(query.result()).toEqual(AsyncResult.failure("always"));
+    expect(attempts).toBe(3);
+
+    // And the schedule does not keep firing after it is exhausted.
+    await tick(40);
+    expect(attempts).toBe(3);
+    await runtime.dispose();
+  });
+
+  it("defineQuery surfaces retry-schedule failures", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const retrySchedule = Schedule.recurs(1).pipe(
+      Schedule.addDelay(() =>
+        Effect.fail("retry-schedule-failed" as const)
+      ),
+    );
+    const query = createRoot(() =>
+      defineQuery(
+        () => Effect.fail("query-failed" as const),
+        {
+          name: "schedule-failure",
+          runtime,
+          retrySchedule,
+        },
+      )
+    );
+
+    await tick(20);
+    expect(query.result()).toEqual(
+      AsyncResult.failure("retry-schedule-failed"),
+    );
     await runtime.dispose();
   });
 
@@ -568,8 +630,14 @@ describe("query keys / defineQuery", () => {
     ));
 
     await tick(50);
-    expect(runs).toBeGreaterThan(1);
-    expect(AsyncResult.isSuccess(query.result())).toBe(true);
+    // `recurs(2)` = initial run plus two repeats.
+    expect(runs).toBe(3);
+    expect(query.result()).toEqual(AsyncResult.success(3));
+
+    // The poll must *stop* when the schedule is exhausted. `runs > 1` could
+    // not distinguish a bounded schedule from an unbounded one.
+    await tick(50);
+    expect(runs).toBe(3);
     await runtime.dispose();
   });
 
@@ -607,8 +675,7 @@ describe("query keys / defineQuery", () => {
     ));
 
     await tick(20);
-    expect(phases.includes("start")).toBe(true);
-    expect(phases.includes("failure")).toBe(true);
+    expect(phases).toEqual(["start", "failure"]);
     expect(query.result()).toEqual(AsyncResult.failure("boom"));
     await runtime.dispose();
   });
@@ -718,7 +785,7 @@ describe("strict aliases", () => {
   });
 
   it("defineMutation injects runtime", async () => {
-    const Svc = ServiceMap.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("Svc");
+    const Svc = Context.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("Svc");
     let saved = 0;
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { save: (n) => Effect.sync(() => { saved = n; }) }));
 
@@ -863,7 +930,7 @@ describe("defineMutation", () => {
   });
 
   it("requires runtime when action effect needs services", async () => {
-    const Greeting = ServiceMap.Service<{ readonly prefix: string }>("ActionGreeting");
+    const Greeting = Context.Service<{ readonly prefix: string }>("ActionGreeting");
     const runtime = ManagedRuntime.make(Layer.succeed(Greeting, { prefix: "ok" }));
 
     const action = defineMutation(
@@ -909,7 +976,7 @@ describe("defineMutation", () => {
   });
 
   it("defineMutation supports explicit runtime option", async () => {
-    const Svc = ServiceMap.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("AliasSvc");
+    const Svc = Context.Service<{ readonly save: (n: number) => Effect.Effect<void> }>("AliasSvc");
     let saved = 0;
     const runtime = ManagedRuntime.make(Layer.succeed(Svc, { save: (n) => Effect.sync(() => { saved = n; }) }));
 
@@ -1038,6 +1105,11 @@ describe("createAtom — WritableAtom", () => {
     unsub();
     count.set(3);
     expect(values).toEqual([0, 1, 2]); // stopped
+
+    // Unsubscribing twice is a no-op (the owner is disposed exactly once).
+    unsub();
+    count.set(4);
+    expect(values).toEqual([0, 1, 2]);
   });
 });
 
@@ -1080,6 +1152,10 @@ describe("createAtom — DerivedAtom", () => {
     expect(log).toEqual([100, 9, 16]);
     unsub();
     n.set(5);
+    expect(log).toEqual([100, 9, 16]);
+
+    unsub();
+    n.set(6);
     expect(log).toEqual([100, 9, 16]);
   });
 });
@@ -1385,9 +1461,26 @@ describe("createFrame / Frame", () => {
 
 describe("WithLayer", () => {
   it("renders fallback while layer is unresolved", () => {
-    const layer = Layer.succeed(ServiceMap.Service<{ readonly v: number }>("Tmp"), { v: 1 });
-    const r = WithLayer({ layer, fallback: () => "loading", children: () => "ok" });
-    expect(r === "loading" || r === "ok" || r === null).toBe(true);
+    const layer = Layer.succeed(Context.Service<{ readonly v: number }>("Tmp"), { v: 1 });
+    let fallbacks = 0;
+    let childRuns = 0;
+    const r = WithLayer({
+      layer,
+      fallback: () => {
+        fallbacks += 1;
+        return "loading";
+      },
+      children: () => {
+        childRuns += 1;
+        return "ok";
+      },
+    });
+    // The old assertion (`r === "loading" || r === "ok" || r === null`) was
+    // satisfied by every possible implementation, including one that never
+    // invoked either branch. Pin the synchronous shape instead.
+    expect(r).toBe("loading");
+    expect(fallbacks).toBe(1);
+    expect(childRuns).toBe(0);
   });
 });
 
@@ -1408,16 +1501,30 @@ describe("scopedRoot", () => {
     );
   });
 
-  it("runs fn under the provided owner", () => {
-    Effect.runPromise(
+  it("runs fn exactly once under a fresh reactive owner", async () => {
+    // Previously this test asserted nothing at all (it assigned `owner = null`
+    // and never awaited the promise), so it passed even if `fn` never ran.
+    await Effect.runPromise(
       Effect.gen(function* () {
         const scope = yield* Scope.make();
-        let owner!: Owner | null;
+        const outerOwner = getOwner();
+        let runs = 0;
+        let owner: Owner | null = null;
+
         Effect.runSync(scopedRootEffect(scope, () => {
-          // Just verify fn runs.
-          owner = null; // scope runs synchronously
+          runs += 1;
+          owner = getOwner();
         }));
+
+        expect(runs).toBe(1);
+        expect(owner).not.toBeNull();
+        expect(owner).not.toBe(outerOwner);
+        // The owner is scoped to the call, not left installed afterwards.
+        expect(getOwner()).toBe(outerOwner);
+
         yield* Scope.close(scope, Exit.void);
+        // Closing the scope must not re-run `fn`.
+        expect(runs).toBe(1);
       })
     );
   });
@@ -1482,7 +1589,7 @@ describe("scopedRoot", () => {
 
 describe("layerContext", () => {
   it("binds layer cleanup to component scope finalizers", async () => {
-    const Tmp = ServiceMap.Service<{ readonly value: number }>("TmpLayer");
+    const Tmp = Context.Service<{ readonly value: number }>("TmpLayer");
     const delayedLayer = Layer.effect(Tmp, Effect.succeed({ value: 1 }).pipe(Effect.delay("80 millis")));
     const scope = Scope.makeUnsafe();
     let rendered = 0;

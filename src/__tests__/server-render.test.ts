@@ -112,8 +112,7 @@ describe("Server render bridge", () => {
 
     Effect.runSync(runtime.initialize());
 
-    const renderResult = await Effect.runPromise(Route.renderRequestWithRuntime(
-      runtime,
+    const renderResult = await Effect.runPromise(runtime.renderRequest(
       new Request("http://example.com/users"),
     ));
     expect(renderResult.html).toBe("Users Runtime Document");
@@ -122,8 +121,7 @@ describe("Server render bridge", () => {
     expect(afterRender.loaderData.size).toBeGreaterThanOrEqual(1);
     expect(afterRender.requestState.phase).toBe("idle");
 
-    const dispatchResult = await Effect.runPromise(ServerRoute.dispatchWithRuntime(
-      runtime,
+    const dispatchResult = await Effect.runPromise(runtime.dispatchRequest(
       new Request("http://example.com/health"),
     ));
     expect(dispatchResult._tag).toBe("data");

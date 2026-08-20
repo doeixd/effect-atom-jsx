@@ -8,6 +8,7 @@
  * Computation so they update only the minimal DOM node when deps change.
  */
 
+import { Cause, Effect, Exit, Fiber, Queue, Stream, type Scope } from "effect";
 import { Computation } from "./computation.js";
 import { runUntracked } from "./tracking.js";
 import { createRoot, mergeProps, onCleanup } from "./api.js";
@@ -17,19 +18,76 @@ import {
   forkComponentScope,
   withComponentScope,
 } from "./component-scope.js";
+import {
+  makeResumeSession,
+  observeDirectEventHandler,
+  observeRenderedExpression,
+  observeRenderedExpressionTarget,
+  observeServerEventTarget,
+  runInResumeSession,
+} from "./resume-session.js";
+import { ServerRenderStateTag, currentServerRenderState } from "./render-state.js";
+import * as SafeHtml from "./SafeHtml.js";
+import { isView, Slot as ViewSlot } from "./View.js";
+import { serializeAttribute } from "./attributes.js";
+import {
+  ResumeStreamPayloadTooLargeError,
+  buildStreamRegionRecord,
+  buildStreamTerminalRecord,
+  streamRecordScript,
+} from "./streaming-manifest.js";
+import {
+  inspectExpression,
+  type ExpressionTargetValue,
+  type ResumableExpression,
+} from "./resume-expression.js";
+import {
+  registerActivationEventTarget,
+  replayTargetAttribute,
+} from "./resume-event.js";
 
 /**
- * Create a reusable DOM template from an HTML string.
- * Called once at module load time per unique JSX tree shape.
- * The returned node is cloned by the compiled output: `_tmpl$.cloneNode(true)`.
+ * Create the lazy clone factory required by `babel-plugin-jsx-dom-expressions`.
+ *
+ * The compiler calls `template(...)` at module evaluation time and invokes the
+ * returned function while rendering. Deferring DOM access keeps compiled
+ * modules importable on the server before `renderToString` installs its virtual
+ * document.
  */
-export function template(html: string): Element {
-  const t = document.createElement("template");
-  t.innerHTML = html;
-  const node = (t.content.firstChild ?? t.content) as Element;
-  // Detach so it can be cleanly cloned.
-  node.remove?.();
-  return node;
+export function template(
+  html: string,
+  _isCustomElement?: boolean,
+  _isSVG?: boolean,
+  _hasCustomElement?: boolean,
+): () => Element {
+  const browserTemplates = new WeakMap<Document, Node>();
+  let serverTemplate: ServerNode | undefined;
+
+  return () => {
+    // The fiber-carried render state (M11.2): a component setup suspended
+    // inside `Resume.collectAsync` builds DOM between synchronous slices,
+    // when `_ssrMode` is off — the server branch still applies there.
+    if (_ssrMode || currentServerRenderState() !== undefined) {
+      if (serverTemplate === undefined) {
+        serverTemplate = parseHTML(html)[0] ?? new ServerDocumentFragment();
+      }
+      return serverTemplate.cloneNode(true) as unknown as Element;
+    }
+
+    if (typeof document === "undefined") {
+      throw new Error(
+        "[effect-atom-jsx/template] cannot instantiate a DOM template without a document or active SSR render.",
+      );
+    }
+    let reusable = browserTemplates.get(document);
+    if (reusable === undefined) {
+      const templateElement = document.createElement("template") as HTMLTemplateElement;
+      templateElement.innerHTML = html;
+      reusable = templateElement.content.firstChild ?? templateElement.content;
+      browserTemplates.set(document, reusable);
+    }
+    return reusable.cloneNode(true) as Element;
+  };
 }
 
 // ─── insert ───────────────────────────────────────────────────────────────────
@@ -44,18 +102,30 @@ type Child = string | number | boolean | null | undefined | Node | Child[];
  */
 export function insert(
   parent: Element,
-  accessor: Child | (() => Child),
+  accessor: unknown | (() => unknown),
   marker: Node | null = null,
   current: Node | Node[] | null = null,
 ): Node | Node[] | null {
   if (typeof accessor === "function") {
+    const childAccessor = accessor as () => Child;
     let currentNodes: Node | Node[] | null = current;
+    const resumableExpression = inspectExpression(accessor) === undefined
+      ? undefined
+      : accessor as ResumableExpression;
+    const expressionInsertion = {};
     new Computation(() => {
-      currentNodes = insertExpression(parent, (accessor as () => Child)(), currentNodes, marker);
+      const value = resumableExpression === undefined
+        ? childAccessor()
+        : observeRenderedExpression(
+          resumableExpression,
+          expressionInsertion,
+          childAccessor,
+        ) as Child;
+      currentNodes = insertExpression(parent, value, currentNodes, marker);
     });
     return currentNodes;
   }
-  return insertExpression(parent, accessor, current, marker);
+  return insertExpression(parent, accessor as Child, current, marker);
 }
 
 function toNode(val: Child): Node | null {
@@ -64,12 +134,63 @@ function toNode(val: Child): Node | null {
   return document.createTextNode(String(val));
 }
 
+/**
+ * Materialize a branded `SafeHtml` value as real nodes (K1: branding-aware
+ * rendering). This is the ONLY child-insertion path that interprets a string
+ * as markup, and it is reachable exclusively through the brand — an
+ * unbranded string in the same position stays on the escaping text path.
+ */
+function safeHtmlChildNodes(value: SafeHtml.SafeHtml): Node[] {
+  const markup = SafeHtml.unwrap(value);
+  if (_ssrMode || currentServerRenderState() !== undefined) {
+    return parseHTML(markup) as unknown as Node[];
+  }
+  const templateElement = document.createElement("template") as HTMLTemplateElement;
+  templateElement.innerHTML = markup;
+  const nodes: Node[] = [];
+  const children = templateElement.content.childNodes;
+  for (let index = 0; index < children.length; index += 1) {
+    nodes.push(children[index]!);
+  }
+  return nodes;
+}
+
 function insertExpression(
   parent: Element,
   value: Child,
   current: Node | Node[] | null,
   marker: Node | null,
 ): Node | Node[] | null {
+  if (SafeHtml.isSafeHtml(value)) {
+    return insertExpression(
+      parent,
+      safeHtmlChildNodes(value) as unknown as Child,
+      current,
+      marker,
+    );
+  }
+  // A projected slot (`DQ-070`) emits its comment-pair region AS ITSELF:
+  // start/end markers owned by the slot name, children evaluated lazily at
+  // exactly this placement, and the region addressable afterwards via
+  // `View.Slot.mountTarget`.
+  if (ViewSlot.isProjection(value)) {
+    const markers = ViewSlot.regionMarkers(value.slot.name);
+    const start = document.createComment(markers.start);
+    const end = document.createComment(markers.end);
+    parent.insertBefore(start, marker);
+    parent.insertBefore(end, marker);
+    const child = value.children === undefined ? null : value.children();
+    const inner = insert(
+      parent,
+      isView(child) ? (child as { readonly node: unknown }).node : child,
+      end,
+    );
+    return [
+      start,
+      ...(Array.isArray(inner) ? inner : inner === null ? [] : [inner]),
+      end,
+    ];
+  }
   if (Array.isArray(value)) {
     const newNodes: Node[] = value.flatMap(flattenChild).filter(Boolean) as Node[];
     reconcileArrays(parent, current as Node[] | null ?? [], newNodes, marker);
@@ -85,6 +206,13 @@ function insertExpression(
     }
     if (current.length > 0) {
       if (newNode) {
+        if (
+          current[0]?.nodeName === "#text"
+          && newNode.nodeName === "#text"
+        ) {
+          current[0].textContent = newNode.textContent;
+          return current[0];
+        }
         parent.replaceChild(newNode, current[0]);
       } else {
         parent.removeChild(current[0]);
@@ -97,6 +225,10 @@ function insertExpression(
 
   if (current instanceof Node) {
     if (newNode) {
+      if (current.nodeName === "#text" && newNode.nodeName === "#text") {
+        current.textContent = newNode.textContent;
+        return current;
+      }
       parent.replaceChild(newNode, current);
     } else {
       parent.removeChild(current);
@@ -118,28 +250,41 @@ function flattenChild(c: Child): Node[] {
   return [document.createTextNode(String(c))];
 }
 
-function reconcileArrays(
+/**
+ * Reconcile `parent`'s children from `oldNodes` to `newNodes`, keeping every
+ * surviving node's identity and leaving anything after `marker` untouched.
+ *
+ * Identity preservation is the contract, not an optimisation: subscribers,
+ * focus, selection, scroll position, and media playback all live on the node.
+ * A reconciler that rebuilt rows would produce the right-looking HTML and
+ * silently destroy all of it.
+ *
+ * Nodes present in `oldNodes` but not `newNodes` are removed; the rest are
+ * moved into place. Placement walks backwards so each node is positioned
+ * against an already-final successor, which makes an unchanged list a true
+ * no-op rather than a sequence of self-cancelling moves.
+ */
+export function reconcileArrays(
   parent: Element,
   oldNodes: Node[],
   newNodes: Node[],
   marker: Node | null,
 ): void {
-  // Simple keyed reconciliation using a LCS-free approach.
-  // Good enough for most UI patterns; a keyed For component handles large lists.
-  let o = 0, n = 0;
-  while (o < oldNodes.length && n < newNodes.length) {
-    if (oldNodes[o] === newNodes[n]) {
-      o++; n++;
-    } else {
-      parent.insertBefore(newNodes[n], oldNodes[o]);
-      n++;
+  const surviving = new Set<Node>(newNodes);
+  for (const node of oldNodes) {
+    if (!surviving.has(node) && node.parentNode === parent) {
+      parent.removeChild(node);
     }
   }
-  while (n < newNodes.length) {
-    parent.insertBefore(newNodes[n++], marker);
-  }
-  while (o < oldNodes.length) {
-    parent.removeChild(oldNodes[o++]);
+  // Backwards: `reference` is the node this one must precede, and it is
+  // already in its final position by the time we get here.
+  let reference: Node | null = marker;
+  for (let index = newNodes.length - 1; index >= 0; index -= 1) {
+    const node = newNodes[index]!;
+    if (node.parentNode !== parent || node.nextSibling !== reference) {
+      parent.insertBefore(node, reference);
+    }
+    reference = node;
   }
 }
 
@@ -176,13 +321,11 @@ export function spread(
   isSVG = false,
   skipChildren = false,
 ): void {
-  if (typeof accessor === "function") {
-    new Computation(() => {
-      applyProps(node, accessor(), isSVG, skipChildren);
-    });
-  } else {
-    applyProps(node, accessor, isSVG, skipChildren);
-  }
+  const previous: Record<string, unknown> = {};
+  new Computation(() => {
+    const props = typeof accessor === "function" ? accessor() : accessor;
+    applyProps(node, props ?? {}, isSVG, skipChildren, previous);
+  });
 }
 
 function applyProps(
@@ -190,42 +333,191 @@ function applyProps(
   props: Record<string, unknown>,
   isSVG: boolean,
   skipChildren: boolean,
+  previous: Record<string, unknown>,
 ): void {
+  for (const key of Object.keys(previous)) {
+    if (key in props || (skipChildren && key === "children")) continue;
+    setProp(node, key, null, isSVG, previous[key]);
+    delete previous[key];
+  }
   for (const [key, value] of Object.entries(props)) {
     if (skipChildren && key === "children") continue;
-    setProp(node, key, value, isSVG);
+    const stateful = key === "style" || key === "classList"
+      || key.startsWith("on");
+    if (!stateful && previous[key] === value) continue;
+    previous[key] = setProp(node, key, value, isSVG, previous[key]);
   }
 }
 
 // ─── Prop/attribute setters ───────────────────────────────────────────────────
 
-/** Set an attribute or DOM property on a node. */
-export function attr(node: Element, name: string, value: unknown): void {
-  if (value == null) {
+/** Set an ordinary attribute, removing it for nullish values. */
+export function setAttribute(
+  node: Element,
+  name: string,
+  value?: unknown,
+): void {
+  // DQ-068: one serialization contract shared with the test handle —
+  // `false` on a boolean attribute removes it, `true` sets `""`, numbers
+  // stringify, `null`/`undefined` remove.
+  const serialized = serializeAttribute(name, value);
+  if (serialized === null) {
     node.removeAttribute(name);
   } else {
-    node.setAttribute(name, String(value));
+    node.setAttribute(name, serialized);
   }
+}
+
+/** Backwards-compatible runtime alias for {@link setAttribute}. */
+export const attr = setAttribute;
+
+/** Set a namespaced attribute, removing it for nullish values. */
+export function setAttributeNS(
+  node: Element,
+  namespace: string,
+  name: string,
+  value?: unknown,
+): void {
+  if (value == null) {
+    node.removeAttributeNS(namespace, name);
+  } else {
+    node.setAttributeNS(namespace, name, String(value));
+  }
+}
+
+/** Toggle a boolean attribute using presence semantics. */
+export function setBoolAttribute(
+  node: Element,
+  name: string,
+  value: unknown,
+): void {
+  if (value) node.setAttribute(name, "");
+  else node.removeAttribute(name);
 }
 
 /** Set a DOM property (not attribute) on a node. */
-export function prop(node: Element, name: string, value: unknown): void {
+export function setProperty(node: Element, name: string, value: unknown): void {
   (node as unknown as Record<string, unknown>)[name] = value;
 }
 
-function setProp(node: Element, name: string, value: unknown, isSVG: boolean): void {
-  if (name === "style") {
-    style(node as HTMLElement, value as Record<string, string>);
+/** Backwards-compatible runtime alias for {@link setProperty}. */
+export const prop = setProperty;
+
+/** Apply the compiler's HTML class-string semantics. */
+export function className(node: Element, value: unknown): void {
+  if (value == null) node.removeAttribute("class");
+  else (node as HTMLElement).className = String(value);
+}
+
+interface SpreadEventState {
+  readonly kind: "spread-event";
+  readonly source: unknown;
+  readonly listener: EventListenerOrEventListenerObject;
+  readonly capture: boolean;
+}
+
+function setSpreadEvent(
+  node: Element,
+  name: string,
+  value: unknown,
+  previous: unknown,
+  capture: boolean,
+): SpreadEventState | undefined {
+  if (
+    typeof previous === "object"
+    && previous !== null
+    && (previous as Partial<SpreadEventState>).kind === "spread-event"
+    && (previous as SpreadEventState).source === value
+    && (previous as SpreadEventState).capture === capture
+  ) {
+    return previous as SpreadEventState;
+  }
+  if (
+    typeof previous === "object"
+    && previous !== null
+    && (previous as Partial<SpreadEventState>).kind === "spread-event"
+  ) {
+    const event = previous as SpreadEventState;
+    node.removeEventListener(name, event.listener, event.capture);
+  }
+  if (value == null) return undefined;
+
+  const listener: EventListenerOrEventListenerObject = Array.isArray(value)
+    ? ((event: Event) => {
+      const [handler, data] = value as [
+        (data: unknown, event: Event) => unknown,
+        unknown,
+      ];
+      handler.call(node, data, event);
+    })
+    : value as EventListenerOrEventListenerObject;
+  node.addEventListener(name, listener, capture);
+  return { kind: "spread-event", source: value, listener, capture };
+}
+
+const svgNamespaces: Readonly<Record<string, string>> = {
+  xlink: "http://www.w3.org/1999/xlink",
+  xml: "http://www.w3.org/XML/1998/namespace",
+  xmlns: "http://www.w3.org/2000/xmlns/",
+};
+
+function setProp(
+  node: Element,
+  name: string,
+  value: unknown,
+  isSVG: boolean,
+  previous?: unknown,
+): unknown {
+  if (name === "children") {
+    return insert(
+      node,
+      value,
+      null,
+      previous as Node | Node[] | null | undefined ?? null,
+    );
+  } else if (name === "ref") {
+    if (typeof value === "function" && value !== previous) {
+      use(value as (element: Element) => unknown, node);
+    }
+  } else if (name === "style") {
+    return style(node as HTMLElement, value as StyleValue, previous as StyleState);
   } else if (name === "classList") {
-    classList(node, value as Record<string, boolean>);
+    return classList(
+      node,
+      value as ClassListValue,
+      previous as Record<string, boolean> | undefined,
+    );
+  } else if (name === "class" || name === "className") {
+    if (isSVG) setAttribute(node, "class", value);
+    else className(node, value);
+  } else if (name.startsWith("oncapture:")) {
+    return setSpreadEvent(
+      node,
+      name.slice("oncapture:".length),
+      value,
+      previous,
+      true,
+    );
+  } else if (name.startsWith("on:")) {
+    return setSpreadEvent(
+      node,
+      name.slice("on:".length),
+      value,
+      previous,
+      false,
+    );
   } else if (name.startsWith("on") && name.length > 2) {
     const eventName = name.slice(2).toLowerCase();
-    node.addEventListener(eventName, value as EventListener);
+    return setSpreadEvent(node, eventName, value, previous, false);
   } else if (!isSVG && name in node) {
-    prop(node, name, value);
+    setProperty(node, name, value);
   } else {
-    attr(node, name, value);
+    const colon = isSVG ? name.indexOf(":") : -1;
+    const namespace = colon > 0 ? svgNamespaces[name.slice(0, colon)] : undefined;
+    if (namespace === undefined) setAttribute(node, name, value);
+    else setAttributeNS(node, namespace, name, value);
   }
+  return value;
 }
 
 // ─── classList ────────────────────────────────────────────────────────────────
@@ -236,71 +528,391 @@ function setProp(node: Element, name: string, value: unknown, isSVG: boolean): v
  */
 export function classList(
   node: Element,
-  value: Record<string, boolean>,
+  value: ClassListValue,
   prev: Record<string, boolean> = {},
 ): Record<string, boolean> {
+  const next = value ?? {};
   for (const name of Object.keys(prev)) {
-    if (!value[name]) node.classList.remove(name);
-  }
-  for (const name of Object.keys(value)) {
-    if (value[name] !== prev[name]) {
-      if (value[name]) node.classList.add(name);
-      else node.classList.remove(name);
+    if (!next[name]) {
+      toggleClassKey(node, name, false);
+      delete prev[name];
     }
   }
-  return value;
+  for (const name of Object.keys(next)) {
+    const enabled = Boolean(next[name]);
+    if (enabled !== prev[name]) {
+      toggleClassKey(node, name, enabled);
+      if (enabled) prev[name] = true;
+      else delete prev[name];
+    }
+  }
+  return prev;
+}
+
+type ClassListValue = Record<string, boolean | null | undefined> | null | undefined;
+
+function toggleClassKey(node: Element, key: string, enabled: boolean): void {
+  for (const name of key.trim().split(/\s+/)) {
+    if (name !== "") node.classList.toggle(name, enabled);
+  }
 }
 
 // ─── style ────────────────────────────────────────────────────────────────────
 
-/** Reactively set inline styles. */
+type StylePropertyValue = string | number | null | undefined;
+type StyleRecord = Record<string, StylePropertyValue>;
+type StyleValue = string | StyleRecord | null | undefined;
+type StyleState = string | Record<string, string> | undefined;
+
+/** Set one inline style property using nullish removal semantics. */
+export function setStyleProperty(
+  node: HTMLElement,
+  name: string,
+  value: StylePropertyValue,
+): void {
+  if (value == null) node.style.removeProperty(name);
+  else node.style.setProperty(name, String(value));
+}
+
+/** Reactively set inline styles and return the state for the next diff. */
 export function style(
   node: HTMLElement,
-  value: string | Record<string, string>,
-  prev?: string | Record<string, string>,
-): void {
+  value: StyleValue,
+  prev?: StyleState,
+): StyleState {
+  if (value == null || value === "") {
+    if (prev !== undefined) setAttribute(node, "style", undefined);
+    return undefined;
+  }
   if (typeof value === "string") {
     node.style.cssText = value;
-    return;
+    return value;
   }
-  if (typeof prev === "object") {
-    for (const key of Object.keys(prev)) {
-      if (!(key in value)) node.style.removeProperty(key);
+  if (typeof prev === "string") {
+    node.style.cssText = "";
+    prev = undefined;
+  }
+  const state = prev ?? {};
+  for (const key of Object.keys(state)) {
+    if (value[key] == null) {
+      node.style.removeProperty(key);
+      delete state[key];
     }
   }
   for (const [key, val] of Object.entries(value)) {
-    node.style.setProperty(key, val);
+    if (val == null || state[key] === String(val)) continue;
+    const normalized = String(val);
+    node.style.setProperty(key, normalized);
+    state[key] = normalized;
   }
+  return state;
+}
+
+// ─── Resumable non-text expression targets ────────────────────────────────────
+
+/**
+ * Attach one resumable expression to one non-text target on a host element.
+ *
+ * The ordinary mutation helper is called *inside* the resumable path, so there
+ * is no second DOM-mutation implementation that could drift from the ordinary
+ * one on nullish removal or coercion (Decision 7 of
+ * `docs/RESUMABILITY_M8C_PLAN.md`). Registration is delegated to the single
+ * `observeRenderedExpressionTarget` registrar, which owns target validation and
+ * installation-marker accumulation.
+ */
+function attachExpressionTarget<ElementType extends Element>(
+  node: ElementType,
+  expression: unknown,
+  target: ExpressionTargetValue,
+  write: (node: ElementType, value: unknown) => void,
+): void {
+  const resumable = inspectExpression(expression) === undefined
+    ? undefined
+    : expression as ResumableExpression;
+  const accessor = typeof expression === "function"
+    ? expression as () => unknown
+    : () => expression;
+  if (resumable === undefined) {
+    new Computation(() => {
+      write(node, accessor());
+    });
+    return;
+  }
+  const registration = {};
+  new Computation(() => {
+    const observed = observeRenderedExpressionTarget(
+      node,
+      resumable,
+      registration,
+      target,
+      accessor,
+    );
+    if (observed.write) write(node, observed.value);
+  });
+}
+
+/**
+ * Compiler-facing helper: bind a resumable expression to one allowlisted
+ * ordinary attribute.
+ */
+export function exprAttribute(
+  node: Element,
+  expression: unknown,
+  name: string,
+): void {
+  attachExpressionTarget(
+    node,
+    expression,
+    { kind: "attribute", name },
+    (element, value) => setAttribute(element, name, value),
+  );
+}
+
+/** Compiler-facing helper: bind a resumable expression to the class string. */
+export function exprClass(node: Element, expression: unknown): void {
+  attachExpressionTarget(
+    node,
+    expression,
+    { kind: "class" },
+    (element, value) => className(element, value),
+  );
+}
+
+/**
+ * Compiler-facing helper: bind a resumable expression to one allowlisted
+ * inline style property.
+ */
+export function exprStyleProperty(
+  node: HTMLElement,
+  expression: unknown,
+  name: string,
+): void {
+  attachExpressionTarget(
+    node,
+    expression,
+    { kind: "style-property", name },
+    (element, value) =>
+      setStyleProperty(element, name, value as StylePropertyValue),
+  );
+}
+
+/**
+ * Compiler entry point for resumable non-text targets.
+ *
+ * Called **eagerly** from the generated `ref` callback with the host element
+ * and a plain array of `[boundExpression, target]` pairs — one call per host
+ * element, which is what keeps the generated code and the single
+ * `data-af-expr` marker in agreement by construction. This is not a
+ * dom-expressions directive and receives no accessor.
+ */
+export function resumeExprDirective(
+  node: Element,
+  pairs: ReadonlyArray<readonly [expression: unknown, target: ExpressionTargetValue]>,
+): void {
+  for (const [expression, target] of pairs) {
+    switch (target.kind) {
+      case "attribute":
+        exprAttribute(node, expression, target.name);
+        break;
+      case "class":
+        exprClass(node, expression);
+        break;
+      case "style-property":
+        exprStyleProperty(node as HTMLElement, expression, target.name);
+        break;
+      case "text":
+        throw new TypeError(
+          "[effect-atom-jsx] A text expression target is inserted, not attached to a host element.",
+        );
+    }
+  }
+}
+
+/**
+ * Invoke a compiler-emitted ref or directive outside reactive tracking.
+ *
+ * Directive arguments are accessors chosen by the JSX compiler; the runtime
+ * intentionally passes them through without evaluating them.
+ */
+export function use<ElementType extends Element>(
+  fn: (element: ElementType) => unknown,
+  element: ElementType,
+): unknown;
+export function use<ElementType extends Element, Argument>(
+  fn: (element: ElementType, argument: Argument) => unknown,
+  element: ElementType,
+  argument: Argument,
+): unknown;
+export function use(
+  fn: (element: Element, argument?: unknown) => unknown,
+  element: Element,
+  argument?: unknown,
+): unknown {
+  return runUntracked(() =>
+    arguments.length < 3 ? fn(element) : fn(element, argument)
+  );
 }
 
 // ─── Event delegation ─────────────────────────────────────────────────────────
 
-const delegatedEvents = new Set<string>();
+export type RuntimeEventHandler =
+  | EventListener
+  | EventListenerObject
+  | readonly [
+    (data: unknown, event: Event) => unknown,
+    unknown,
+  ];
+
+const delegatedEvents = new WeakMap<Document, Set<string>>();
+
+/**
+ * Attach an event through the compiler-facing runtime ABI.
+ *
+ * `babel-plugin-jsx-dom-expressions` passes `delegate = true` for delegated
+ * events. Those handlers are stored on the element for the document-level
+ * dispatcher instead of allocating one native listener per element.
+ */
+export function addEventListener(
+  node: Element,
+  name: string,
+  handler: RuntimeEventHandler,
+  delegate = false,
+): void {
+  const activationTargetKey = registerActivationEventTarget(
+    node,
+    name,
+    Array.isArray(handler) ? handler[0] : handler,
+  );
+  if (activationTargetKey !== undefined) {
+    node.setAttribute(replayTargetAttribute(name), activationTargetKey);
+  }
+  if (delegate) {
+    const key = `$$${name}`;
+    const record = node as unknown as Record<string, unknown>;
+    if (Array.isArray(handler)) {
+      record[key] = handler[0];
+      record[`${key}Data`] = handler[1];
+    } else {
+      record[key] = handler;
+      delete record[`${key}Data`];
+    }
+    return;
+  }
+
+  // The delegated branch above records `$$name` on the element, which is what
+  // SSR collection reads. Non-delegated handlers have no such trace — and
+  // `ServerElement.addEventListener` is a no-op — so they are registered with
+  // the collection session explicitly. Off the collection path this is a
+  // single `undefined` check.
+  observeDirectEventHandler(node, name, handler);
+
+  if (Array.isArray(handler)) {
+    const [listener, data] = handler;
+    node.addEventListener(name, function (this: Element, event) {
+      listener.call(this, data, event);
+    });
+    return;
+  }
+  node.addEventListener(name, handler as EventListenerOrEventListenerObject);
+}
 
 /**
  * Set up global event delegation for the listed event names.
  * Delegated handlers are attached to `document` and use
- * a `__handlers` property on each element.
+ * the `$$eventName` property convention emitted by the JSX compiler.
  */
-export function delegateEvents(events: string[], document_: Document = document): void {
+export function delegateEvents(events: string[], document_?: Document): void {
+  const target = document_ ?? (typeof document === "undefined" ? undefined : document);
+  if (target === undefined) return;
+
+  let installed = delegatedEvents.get(target);
+  if (installed === undefined) {
+    installed = new Set<string>();
+    delegatedEvents.set(target, installed);
+  }
   for (const event of events) {
-    if (!delegatedEvents.has(event)) {
-      delegatedEvents.add(event);
-      document_.addEventListener(event, delegatedEventHandler);
+    if (!installed.has(event)) {
+      installed.add(event);
+      target.addEventListener(event, delegatedEventHandler);
     }
   }
 }
 
+/** Remove all delegated listeners installed by this runtime for a document. */
+export function clearDelegatedEvents(document_?: Document): void {
+  const target = document_ ?? (typeof document === "undefined" ? undefined : document);
+  if (target === undefined) return;
+
+  const installed = delegatedEvents.get(target);
+  if (installed === undefined) return;
+  for (const event of installed) {
+    target.removeEventListener(event, delegatedEventHandler);
+  }
+  delegatedEvents.delete(target);
+}
+
 function delegatedEventHandler(e: Event): void {
-  let node = e.target as Element | null;
-  const key = `__${e.type}`;
-  while (node !== null) {
-    const handler = (node as unknown as Record<string, unknown>)[key] as EventListener | undefined;
-    if (handler) {
-      handler(e);
+  const key = `$$${e.type}`;
+  const dataKey = `${key}Data`;
+  const composedPath = typeof e.composedPath === "function" ? e.composedPath() : [];
+  const path: EventTarget[] = composedPath.length > 0
+    ? [...composedPath]
+    : [];
+
+  if (path.length === 0) {
+    let current = e.target as (EventTarget & {
+      readonly parentNode?: EventTarget | null;
+      readonly parentElement?: EventTarget | null;
+      readonly host?: EventTarget | null;
+    }) | null;
+    while (current !== null) {
+      path.push(current);
+      current = current.parentNode ?? current.parentElement ?? current.host ?? null;
+    }
+  }
+
+  let currentTarget: EventTarget | null = null;
+  const previousCurrentTarget = Object.getOwnPropertyDescriptor(e, "currentTarget");
+  let patchedCurrentTarget = false;
+  try {
+    Object.defineProperty(e, "currentTarget", {
+      configurable: true,
+      get: () => currentTarget,
+    });
+    patchedCurrentTarget = true;
+  } catch {
+    // Some custom Event implementations expose a non-configurable property.
+  }
+
+  try {
+    for (const target of path) {
+      const node = target as Element;
+      currentTarget = target;
+      const record = node as unknown as Record<string, unknown>;
+      const handler = record[key] as EventListener | EventListenerObject | undefined;
+      if (handler === undefined || record.disabled === true) continue;
+
+      const data = record[dataKey];
+      if (typeof handler === "function") {
+        if (dataKey in record) {
+          (handler as unknown as (data: unknown, event: Event) => unknown).call(node, data, e);
+        } else {
+          handler.call(node, e);
+        }
+      } else {
+        handler.handleEvent(e);
+      }
       if (e.cancelBubble) return;
     }
-    node = node.parentElement;
+  } finally {
+    currentTarget = null;
+    if (patchedCurrentTarget) {
+      if (previousCurrentTarget === undefined) {
+        delete (e as unknown as Record<string, unknown>).currentTarget;
+      } else {
+        Object.defineProperty(e, "currentTarget", previousCurrentTarget);
+      }
+    }
   }
 }
 
@@ -419,7 +1031,18 @@ class ServerNode {
   textContent = "";
   nextSibling: ServerNode | null = null;
 
+  get firstChild(): ServerNode | null {
+    return this.childNodes[0] ?? null;
+  }
+
+  get lastChild(): ServerNode | null {
+    return this.childNodes[this.childNodes.length - 1] ?? null;
+  }
+
   appendChild(child: ServerNode): ServerNode {
+    // Per DOM semantics, inserting an attached node *moves* it. Without the
+    // detach a reorder duplicates the node instead of relocating it.
+    child.parentNode?.removeChild(child);
     child.parentNode = this;
     this.childNodes.push(child);
     this._updateSiblings();
@@ -428,6 +1051,9 @@ class ServerNode {
 
   insertBefore(newChild: ServerNode, ref: ServerNode | null): ServerNode {
     if (ref == null) return this.appendChild(newChild);
+    // Detach first, then locate `ref`: if `newChild` preceded `ref` under this
+    // same parent, removing it shifts `ref`'s index.
+    newChild.parentNode?.removeChild(newChild);
     const idx = this.childNodes.indexOf(ref);
     if (idx === -1) return this.appendChild(newChild);
     newChild.parentNode = this;
@@ -501,8 +1127,16 @@ class ServerElement extends ServerNode {
     this._attrs[name] = value;
   }
 
+  setAttributeNS(_namespace: string, name: string, value: string): void {
+    this.setAttribute(name, value);
+  }
+
   removeAttribute(name: string): void {
     delete this._attrs[name];
+  }
+
+  removeAttributeNS(_namespace: string, name: string): void {
+    this.removeAttribute(name);
   }
 
   getAttribute(name: string): string | null {
@@ -588,6 +1222,7 @@ class ServerElement extends ServerNode {
     const styleStr = Object.entries(this._style).map(([k, v]) => `${k}: ${v}`).join("; ");
     const attrs = { ...this._attrs };
     if (styleStr) attrs["style"] = styleStr;
+    Object.assign(attrs, observeServerEventTarget(this));
 
     for (const [k, v] of Object.entries(attrs)) {
       attrStr += ` ${k}="${escapeHTML(v)}"`;
@@ -742,7 +1377,7 @@ function parseHTML(html: string): ServerNode[] {
 /**
  * Create a mock `document` object for server-side rendering.
  */
-function createServerDocument(): unknown {
+export function createServerDocument(): unknown {
   const doc = {
     createElement(tag: string): ServerElement {
       return new ServerElement(tag.toUpperCase());
@@ -773,6 +1408,29 @@ function createServerDocument(): unknown {
 let _ssrMode = false;
 let _serverDoc: unknown = null;
 
+/** @internal Serialize a rendered server value; used by Resume async render. */
+export function serverValueToHTML(value: unknown): string {
+  if (value instanceof ServerNode) {
+    return value.toHTML();
+  }
+  if (Array.isArray(value)) {
+    return value.map(serverValueToHTML).join("");
+  }
+  // A typed `View` renders as its node: the wrapper carries slot metadata
+  // for attachment/validation, not markup of its own.
+  if (isView(value)) {
+    return serverValueToHTML((value as { readonly node: unknown }).node);
+  }
+  // A projected slot serializes as its own comment-pair region (`DQ-070`);
+  // children evaluate lazily at this serialization point.
+  if (ViewSlot.isProjection(value)) {
+    const markers = ViewSlot.regionMarkers(value.slot.name);
+    const child = value.children === undefined ? null : value.children();
+    return `<!--${markers.start}-->${serverValueToHTML(child)}<!--${markers.end}-->`;
+  }
+  return value == null ? "" : String(value);
+}
+
 /**
  * Render a component tree to an HTML string on the server.
  *
@@ -794,10 +1452,19 @@ export function renderToString(fn: () => unknown): string {
   const prevSSR = _ssrMode;
   const prevDoc = _serverDoc;
   const origDocument = typeof globalThis.document !== "undefined" ? globalThis.document : undefined;
+  const origNode = typeof globalThis.Node !== "undefined" ? globalThis.Node : undefined;
+  let dispose: (() => void) | undefined;
+
+  // M11.1: inside a `Resume.collectAsync` render, this fiber carries its own
+  // per-render state — the render's stable server document and its resume
+  // session. Installing them for exactly this synchronous slice (and
+  // restoring afterwards, below) is what keeps two interleaved renders'
+  // documents and sessions disjoint.
+  const ambient = currentServerRenderState();
 
   try {
     _ssrMode = true;
-    const serverDoc = createServerDocument();
+    const serverDoc = ambient?.document ?? createServerDocument();
     _serverDoc = serverDoc;
 
     // Temporarily install the server document as the global `document` so
@@ -805,48 +1472,489 @@ export function renderToString(fn: () => unknown): string {
     (globalThis as Record<string, unknown>).document = serverDoc;
 
     // Also patch `Node` so that `instanceof Node` checks work with virtual nodes.
-    const origNode = typeof globalThis.Node !== "undefined" ? globalThis.Node : undefined;
     (globalThis as Record<string, unknown>).Node = ServerNode as unknown;
 
-    let result: unknown;
-    let dispose: (() => void) | undefined;
+    let html!: string;
 
-    createRoot((d) => {
-      dispose = d;
-      result = fn();
-    });
-
-    let html = "";
-    if (result instanceof ServerNode) {
-      html = (result as ServerNode).toHTML();
-    } else if (Array.isArray(result)) {
-      html = (result as unknown[])
-        .map((r) => (r instanceof ServerNode ? (r as ServerNode).toHTML() : String(r ?? "")))
-        .join("");
-    } else if (result != null) {
-      html = String(result);
-    }
-
-    // Dispose the reactive root — we only needed a single snapshot.
-    dispose?.();
-
-    // Restore Node
-    if (origNode !== undefined) {
-      (globalThis as Record<string, unknown>).Node = origNode;
+    // Serialization stays inside the session wrap: event markers are observed
+    // while element props are serialized, so ending the session before
+    // `serverValueToHTML` would silently drop every event of an async render.
+    const renderBody = (): void => {
+      let result: unknown;
+      createRoot((d) => {
+        dispose = d;
+        result = fn();
+      });
+      html = serverValueToHTML(result);
+    };
+    if (ambient !== undefined) {
+      runInResumeSession(ambient.session, renderBody);
     } else {
-      delete (globalThis as Record<string, unknown>).Node;
+      renderBody();
     }
 
     return html;
   } finally {
-    _ssrMode = prevSSR;
-    _serverDoc = prevDoc;
-    if (origDocument !== undefined) {
-      (globalThis as Record<string, unknown>).document = origDocument;
-    } else {
-      delete (globalThis as Record<string, unknown>).document;
+    try {
+      // Dispose on both success and failure; SSR only needs one snapshot.
+      dispose?.();
+    } finally {
+      _ssrMode = prevSSR;
+      _serverDoc = prevDoc;
+      if (origNode !== undefined) {
+        (globalThis as Record<string, unknown>).Node = origNode;
+      } else {
+        delete (globalThis as Record<string, unknown>).Node;
+      }
+      if (origDocument !== undefined) {
+        (globalThis as Record<string, unknown>).document = origDocument;
+      } else {
+        delete (globalThis as Record<string, unknown>).document;
+      }
     }
   }
+}
+
+// ─── Streaming SSR (M11.2/M11.3, ratified DQ-006) ───────────────────────────
+//
+// Async boundaries are AUTHORED: an unresolved `Component.renderEffect(...)`
+// (any Effect value) in the render tree is the boundary — page structure is
+// never a function of timing, so a synchronous region that merely takes
+// wall-clock time renders inline with no region. `renderToStream` lives here
+// beside `renderToString`, and ordered vs out-of-order is one option on the
+// call, not a second entry point.
+
+export interface RenderToStreamOptions {
+  /**
+   * `ordered` flushes regions in document order (no swap scripts);
+   * `out-of-order` emits placeholder regions up front and swaps each region's
+   * content in as it settles, via a nonce-carrying inline script.
+   */
+  readonly mode: "ordered" | "out-of-order";
+  readonly buildId: string;
+  /** CSP nonce stamped on out-of-order swap scripts. */
+  readonly nonce?: string;
+  /**
+   * Cumulative byte budget across ALL streamed manifest records (M11.5,
+   * `DQ-007`): failing per record would let a stream smuggle an unbounded
+   * manifest past the ceiling.
+   */
+  readonly maxPayloadBytes?: number;
+  /**
+   * Out-of-order only: wall-clock budget after which unfinished regions are
+   * abandoned — their placeholders remain, no record is emitted for them, and
+   * the terminal completeness record excludes them (the ghost-snapshot rule,
+   * generalized to streaming).
+   */
+  readonly deadline?: number | string;
+}
+
+let nextStreamSessionOrdinal = 0;
+
+export class RenderToStreamError extends Error {
+  override readonly name = "RenderToStreamError";
+}
+
+type StreamSegment =
+  | { readonly kind: "html"; readonly html: string }
+  | {
+      readonly kind: "async";
+      readonly id: string;
+      readonly effect: Effect.Effect<unknown, unknown, never>;
+    };
+
+const streamRegionStart = (id: string): string => `<!--af:region:${id}:start-->`;
+const streamRegionEnd = (id: string): string => `<!--af:region:${id}:end-->`;
+
+/**
+ * Run one synchronous render slice against a stable per-stream server
+ * document: the same install/restore discipline as `renderToString`, but the
+ * document persists across the stream's whole life so every region serializes
+ * into one coherent tree.
+ */
+/** @internal One synchronous server render/serialize slice; used by Resume async render. */
+export function runStreamSlice<A>(
+  serverDoc: unknown,
+  session: ReturnType<typeof makeResumeSession>,
+  evaluate: () => A,
+  markerScope?: string,
+): A {
+  // M11.5/M11.6: a stream flush slice scopes its markers by REGION id, so
+  // `installClientStreaming` can resolve them against the per-region record
+  // tables. Set/restored synchronously with the slice.
+  const previousScope = session.markerScope;
+  if (markerScope !== undefined) session.markerScope = markerScope;
+  try {
+    return runStreamSliceUnscoped(serverDoc, session, evaluate);
+  } finally {
+    session.markerScope = previousScope;
+  }
+}
+
+function runStreamSliceUnscoped<A>(
+  serverDoc: unknown,
+  session: ReturnType<typeof makeResumeSession>,
+  evaluate: () => A,
+): A {
+  const prevSSR = _ssrMode;
+  const prevDoc = _serverDoc;
+  const origDocument = typeof globalThis.document !== "undefined" ? globalThis.document : undefined;
+  const origNode = typeof globalThis.Node !== "undefined" ? globalThis.Node : undefined;
+  let dispose: (() => void) | undefined;
+  try {
+    _ssrMode = true;
+    _serverDoc = serverDoc;
+    (globalThis as Record<string, unknown>).document = serverDoc;
+    (globalThis as Record<string, unknown>).Node = ServerNode as unknown;
+    let out!: A;
+    runInResumeSession(session, () => {
+      createRoot((d) => {
+        dispose = d;
+        out = evaluate();
+      });
+    });
+    return out;
+  } finally {
+    try {
+      dispose?.();
+    } finally {
+      _ssrMode = prevSSR;
+      _serverDoc = prevDoc;
+      if (origNode !== undefined) {
+        (globalThis as Record<string, unknown>).Node = origNode;
+      } else {
+        delete (globalThis as Record<string, unknown>).Node;
+      }
+      if (origDocument !== undefined) {
+        (globalThis as Record<string, unknown>).document = origDocument;
+      } else {
+        delete (globalThis as Record<string, unknown>).document;
+      }
+    }
+  }
+}
+
+/**
+ * Fully settle one region's value: run every nested Effect (a component view
+ * may itself return an Effect) and resolve arrays element-wise, closing each
+ * setup's Scope after its snapshot — the same lifetime `renderToString`'s
+ * synchronous pass gives a component.
+ */
+function settleStreamValue(
+  value: unknown,
+): Effect.Effect<unknown, unknown, never> {
+  if (Effect.isEffect(value)) {
+    return Effect.scoped(
+      value as Effect.Effect<unknown, unknown, Scope.Scope>,
+    ).pipe(Effect.flatMap(settleStreamValue));
+  }
+  if (Array.isArray(value)) {
+    return Effect.forEach(value, settleStreamValue).pipe(
+      Effect.map((settled) => settled as unknown),
+    );
+  }
+  return Effect.succeed(value);
+}
+
+/** Split the shell pass's value tree into flushable segments. */
+function segmentStreamTree(
+  value: unknown,
+  segments: Array<StreamSegment>,
+  nextRegionOrdinal: { ordinal: number },
+): void {
+  if (Effect.isEffect(value)) {
+    const id = `r${nextRegionOrdinal.ordinal}`;
+    nextRegionOrdinal.ordinal += 1;
+    segments.push({ kind: "async", id, effect: settleStreamValue(value) });
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const child of value) segmentStreamTree(child, segments, nextRegionOrdinal);
+    return;
+  }
+  const html = serverValueToHTML(value);
+  const last = segments[segments.length - 1];
+  if (last !== undefined && last.kind === "html") {
+    segments[segments.length - 1] = { kind: "html", html: last.html + html };
+  } else if (html.length > 0) {
+    segments.push({ kind: "html", html });
+  }
+}
+
+/** The CSP-compatible out-of-order swap: template in, placeholder out. */
+function streamSwapChunk(id: string, html: string, nonce: string | undefined): string {
+  const nonceAttribute = nonce === undefined ? "" : ` nonce="${nonce}"`;
+  return (
+    `<template data-af-region="${id}">${html}</template>`
+    + `<script${nonceAttribute}>(function(d){var t=d.querySelector('template[data-af-region="${id}"]');if(!t)return;`
+    + `var w=d.createTreeWalker(d,128),s=null,e=null;while(w.nextNode()){var c=w.currentNode;`
+    + `if(c.data==="af:region:${id}:start")s=c;else if(c.data==="af:region:${id}:end"){e=c;break;}}`
+    + `if(s&&e&&s.parentNode===e.parentNode){while(s.nextSibling&&s.nextSibling!==e)s.parentNode.removeChild(s.nextSibling);`
+    + `s.parentNode.insertBefore(t.content,e);}if(t.parentNode)t.parentNode.removeChild(t);`
+    + `var x=d.currentScript;if(x&&x.parentNode)x.parentNode.removeChild(x);})(document);</script>`
+  );
+}
+
+/**
+ * Render a component tree to a stream of HTML chunks.
+ *
+ * The render thunk keeps `renderToString`'s shape; each Effect value in the
+ * tree is an authored async boundary that becomes an `af:region` comment-pair.
+ * Every chunk is emitted whole, so no chunk ever splits a resume marker.
+ */
+export function renderToStream(
+  fn: () => unknown,
+  options: RenderToStreamOptions,
+): Stream.Stream<string, unknown> {
+  return Stream.unwrap(
+    Effect.gen(function* () {
+      if (options.mode !== "ordered" && options.mode !== "out-of-order") {
+        return yield* Effect.fail(
+          new RenderToStreamError(
+            `Unknown renderToStream mode ${JSON.stringify(options.mode)}; expected "ordered" or "out-of-order".`,
+          ),
+        );
+      }
+      // The stream renders under one session and one document for its whole
+      // life: the ambient per-render state when composed inside
+      // `Resume.collectAsync`, or a stream-local pair otherwise — an
+      // addressable component's boundary markers must balance regardless of
+      // which chunk carries them.
+      const ambient = currentServerRenderState();
+      const session = ambient !== undefined
+        ? (ambient.session as ReturnType<typeof makeResumeSession>)
+        : makeResumeSession(`s${nextStreamSessionOrdinal++}`);
+      const serverDoc = ambient?.document ?? createServerDocument();
+      const segments: Array<StreamSegment> = [];
+      yield* Effect.try({
+        try: () => {
+          runStreamSlice(
+            serverDoc,
+            session,
+            () => {
+              segmentStreamTree(fn(), segments, { ordinal: 0 });
+            },
+            "shell",
+          );
+        },
+        catch: (error) =>
+          new RenderToStreamError(`Streaming shell render failed: ${String(error)}`),
+      });
+
+      // M11.5: the shell slice's own event range becomes the shell's manifest
+      // record (emitted only when it registered anything).
+      const shellEvents = session.events.slice(0);
+
+      // Every boundary starts computing immediately — ordering constrains
+      // FLUSHING only, never parallelism.
+      interface RegionFlush {
+        readonly html: string;
+        readonly pending: typeof session.events;
+      }
+      const regions: Array<{
+        readonly id: string;
+        readonly fiber: Fiber.Fiber<RegionFlush, unknown>;
+      }> = [];
+      for (const segment of segments) {
+        if (segment.kind !== "async") continue;
+        const fiber = yield* Effect.forkDetach(
+          segment.effect.pipe(
+            Effect.map((settled) =>
+              // The serialization slice is synchronous, so the event range it
+              // registers is captured atomically alongside its HTML — record
+              // attribution cannot be scrambled by a concurrent flush.
+              runStreamSlice(
+                serverDoc,
+                session,
+                (): RegionFlush => {
+                  const before = session.events.length;
+                  const html = serverValueToHTML(settled);
+                  return { html, pending: session.events.slice(before) };
+                },
+                segment.id,
+              ),
+            ),
+            // The region effect runs on its own fiber, suspending freely; the
+            // per-render state travels with it so observation hooks (component
+            // boundaries, markers) fire against THIS stream's session.
+            Effect.provideService(ServerRenderStateTag, {
+              session,
+              document: serverDoc,
+            }),
+          ),
+        );
+        regions.push({ id: segment.id, fiber });
+      }
+      const fiberOf = (id: string): Fiber.Fiber<RegionFlush, unknown> => {
+        const found = regions.find((region) => region.id === id);
+        if (found === undefined) {
+          throw new RenderToStreamError(`Unknown stream region "${id}".`);
+        }
+        return found.fiber;
+      };
+      const joinRegion = (id: string): Effect.Effect<RegionFlush, unknown> =>
+        Fiber.await(fiberOf(id)).pipe(
+          Effect.flatMap((exit) => exit as Effect.Effect<RegionFlush, unknown>),
+        );
+
+      // Cumulative manifest budget (DQ-007) and the flushed-record ledger the
+      // terminal completeness record is built from.
+      const maximumBytes = options.maxPayloadBytes ?? Number.POSITIVE_INFINITY;
+      let cumulativeBytes = 0;
+      const flushedRecordIds: Array<string> = [];
+      const emitRecord = (
+        region: string,
+        pending: typeof session.events,
+      ): Effect.Effect<string, unknown> =>
+        buildStreamRegionRecord(session, pending, region, options.buildId).pipe(
+          Effect.flatMap((record) => {
+            const script = streamRecordScript(record);
+            cumulativeBytes += script.length;
+            if (cumulativeBytes > maximumBytes) {
+              return Effect.fail(
+                new ResumeStreamPayloadTooLargeError({
+                  region,
+                  maximumBytes,
+                  cumulativeBytes,
+                  message: `Streamed manifest records exceeded the cumulative ${maximumBytes}-byte budget at region "${region}".`,
+                }),
+              );
+            }
+            flushedRecordIds.push(region);
+            return Effect.succeed(script);
+          }),
+        );
+      const terminalScript = (): string =>
+        streamRecordScript(
+          buildStreamTerminalRecord(session, options.buildId, [...flushedRecordIds]),
+        );
+      const shellRecord: Effect.Effect<string, unknown> = shellEvents.length > 0
+        ? emitRecord("shell", shellEvents)
+        : Effect.succeed("");
+
+      if (options.mode === "ordered") {
+        // Document order: each region's start marker travels with the
+        // preceding shell chunk, its content, end marker, and manifest record
+        // flush when the region settles. Later regions wait behind earlier
+        // ones.
+        const pieces: Array<Stream.Stream<string, unknown>> = [
+          Stream.fromEffect(shellRecord),
+        ];
+        let pendingHtml = "";
+        for (const segment of segments) {
+          if (segment.kind === "html") {
+            pendingHtml += segment.html;
+            continue;
+          }
+          const prefix = pendingHtml + streamRegionStart(segment.id);
+          pendingHtml = "";
+          pieces.push(Stream.succeed(prefix));
+          pieces.push(
+            Stream.fromEffect(
+              joinRegion(segment.id).pipe(
+                Effect.flatMap((flush) =>
+                  emitRecord(segment.id, flush.pending).pipe(
+                    Effect.map(
+                      (record) =>
+                        flush.html + streamRegionEnd(segment.id) + record,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+        if (pendingHtml.length > 0) pieces.push(Stream.succeed(pendingHtml));
+        // Terminal completeness record: evaluated last, over exactly the
+        // records that flushed (DQ-007's set-equality rule).
+        pieces.push(Stream.fromEffect(Effect.sync(() => terminalScript())));
+        return pieces
+          .reduce(
+            (acc, piece) => Stream.concat(acc, piece),
+            Stream.empty as Stream.Stream<string, unknown>,
+          )
+          .pipe(Stream.filter((chunk) => chunk.length > 0));
+      }
+
+      // Out-of-order: the whole shell — placeholder pairs included — flushes
+      // first; each region swaps in as it settles, fastest first.
+      let shell = "";
+      for (const segment of segments) {
+        shell += segment.kind === "html"
+          ? segment.html
+          : streamRegionStart(segment.id) + streamRegionEnd(segment.id);
+      }
+      const asyncIds = segments.flatMap((segment) =>
+        segment.kind === "async" ? [segment.id] : [],
+      );
+      const swapQueue = Stream.callback<string, unknown>((queue) =>
+        Effect.gen(function* () {
+          // Deadline (DQ-007's ghost rule, generalized): unfinished regions
+          // are abandoned — placeholder kept, no record, excluded from the
+          // terminal id set.
+          const timer = options.deadline === undefined
+            ? undefined
+            : yield* Effect.forkDetach(
+                Effect.sleep(options.deadline as Parameters<typeof Effect.sleep>[0]).pipe(
+                  Effect.andThen(
+                    Effect.forEach(
+                      asyncIds,
+                      (id) => Fiber.interrupt(fiberOf(id)),
+                      { discard: true },
+                    ),
+                  ),
+                ),
+              );
+          yield* Effect.forkDetach(
+            Effect.gen(function* () {
+              yield* Effect.forEach(
+                asyncIds,
+                (id) =>
+                  Fiber.await(fiberOf(id)).pipe(
+                    Effect.flatMap((exit) => {
+                      if (!Exit.isSuccess(exit)) {
+                        // Abandoned or failed region: nothing to swap, nothing
+                        // to record.
+                        return Effect.void;
+                      }
+                      return emitRecord(id, exit.value.pending).pipe(
+                        Effect.map((record) => {
+                          Queue.offerUnsafe(
+                            queue,
+                            streamSwapChunk(id, exit.value.html, options.nonce),
+                          );
+                          if (record.length > 0) {
+                            Queue.offerUnsafe(queue, record);
+                          }
+                        }),
+                        Effect.catch((error) =>
+                          Effect.sync(() => {
+                            Queue.failCauseUnsafe(
+                              queue,
+                              Cause.fail(error) as never,
+                            );
+                          }),
+                        ),
+                      );
+                    }),
+                  ),
+                { concurrency: "unbounded" },
+              );
+              if (timer !== undefined) yield* Fiber.interrupt(timer);
+              Queue.offerUnsafe(queue, terminalScript());
+              Queue.endUnsafe(queue);
+            }),
+          );
+        }),
+      );
+      return Stream.concat(
+        Stream.fromEffect(
+          shellRecord.pipe(Effect.map((record) => shell + record)),
+        ),
+        swapQueue,
+      );
+    }),
+  ) as Stream.Stream<string, unknown>;
 }
 
 // ─── Hydration ────────────────────────────────────────────────────────────────

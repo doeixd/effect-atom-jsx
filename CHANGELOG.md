@@ -2,6 +2,37 @@
 
 ## Unreleased (Redesign Track)
 
+### ADR-005 — family cache & hydration identity (2026-07-27)
+
+- **`Atom.Family` enumeration + eviction.** New `keys()`, `entries()`, and
+  `size` enumerate live members; new `FamilyOptions.capacity` bounds growth
+  with insertion-order (FIFO) eviction. Works in both the default trie and the
+  custom-`equals` branches. `evict`/`clear` unchanged.
+- **Family hydration identity.** `Hydration.dehydrateFamily(registry, key,
+  family, { filter? })` snapshots live members with their identifying `args`
+  (`DehydratedFamilyValue`); `hydrateFamilies` / `hydrateFamiliesEffect`
+  re-call the client family with those `args` to restore the *identical*
+  member atom — member-for-member SSR identity.
+- **Validation modes.** `Hydration.ValidationMode` = `"off" | "loose" |
+  "strict"` (with `resolveMode` folding the legacy `validate`/`strict` flags),
+  applied to both scalar and family hydration. `"off"` preserves the
+  zero-flicker first render; `"strict"` raises typed `HydrationError`s.
+- ADR-005 marked **Implemented**; V1 scope ledger updated.
+
+### Golden-path authoring sugar (Finding 1)
+
+- **`Component.makeWithSlots(slots, options)`** — combined entry point that
+  builds a component, wraps the authored JSX in `View.fromSlots(slots, ...)`,
+  and publishes the contract via `Component.withSlots(slots)` in one call.
+  Props/bindings/errors/requirements and the slot contract are fully inferred
+  (no explicit generics). `options.props` / `options.require` default to
+  `Component.props<{}>()` / `Component.require<never>()`. Equivalent to
+  `make(props, require, setup, (p, b) => View.fromSlots(slots, view(p, b)))
+  .pipe(withSlots(slots))`. Declared-vs-rendered diagnostics fire as before.
+  The explicit `make(...).pipe(withSlots(...))` form remains first-class for
+  custom/shared handles. Golden-path Field component compresses to ~9 lines
+  (~15 with the contract). Docs: `SLOT_CONTRACT_GOLDEN_PATH.md`, `component.md`.
+
 ### 2026-07-09 — Full redesign TODO backlog closed
 
 - **Form** (`Form.make` / fields / schema validate / server errors)
@@ -41,6 +72,29 @@
   helpers.
 - Release class remains **0.x prerelease / beta** while `effect` is
   `^4.0.0-beta.29`. See `docs/RELEASE_CHECKLIST.md` and `docs/V1_SCOPE.md`.
+
+### 2026-07-08 — Result.Stale: keep-stale-on-failure (P15)
+
+- **`Result.Stale<A, E>{ error, data }`** added to the unified core `Result`
+  as the failed-refresh mirror of `Refreshing` — the principled fix for the
+  keep-stale-on-failure capability regressed during the Finding-5 migration
+  (core `Result.Failure` had no data field, so a failed refresh blanked the
+  last-good value that `FetchResult.Failure.previousSuccess` used to carry).
+- Constructors/guards (`Result.stale`, `Result.isStale`) plus `match`
+  (`onStale`), `settled`, `map`, `toOption`, `getOrElse`, `getData`,
+  `getError`, and `latest` understand `Stale`; `<Async>` gains a `stale`
+  branch and `<Errored>` surfaces stale errors.
+- **`atomEffect` failed refreshes** now preserve the previous success as
+  `Stale`; a later successful refresh recovers to `Success`. Mutation/action
+  `void` results intentionally stay plain `Failure` on typed errors.
+- **Wire compatibility preserved:** `Serialization` and `FetchResult` compat
+  project `Stale` to the existing flat failure DTO with `previousSuccess`
+  (no wire version bump); `FetchResult.fromResult` maps `Stale` back to a
+  failure carrying `previousSuccess`.
+- **`Idle`** (nothing-requested) evaluated and deferred — lower value than the
+  stale-on-failure restoration and needs clearer first-run lifecycle semantics.
+- Regression coverage: `phase3.test.ts` (stale preservation, recovery,
+  repeated failed refreshes, `latest`/`getError`) and `serialization.test.ts`.
 
 ### Breaking API consolidation
 

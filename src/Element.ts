@@ -1,5 +1,6 @@
-import { Effect } from "effect";
-import { createEffect, onCleanup } from "./api.js";
+import { Effect, Option, Scope } from "effect";
+import { createDisposableEffect, onCleanup } from "./api.js";
+import { parseAttribute, serializeAttribute } from "./attributes.js";
 import * as MetadataToken from "./MetadataToken.js";
 
 type EventHandler = (event: unknown) => void;
@@ -154,6 +155,28 @@ function makeHandle<T extends string>(tag: T): Handle & { readonly kind: T } {
   const styles = new Map<string, unknown>();
   const listeners: ListenerMap = new Map();
 
+  /**
+   * Create a reactive reaction whose lifetime is owned by the ambient Effect
+   * `Scope` when one is present, falling back to the reactive render owner.
+   *
+   * Without this, a reaction created outside a render owner (behavior/style
+   * attachment through a scoped path, resume reattachment) would be permanent:
+   * unlike a leaked listener, it keeps recomputing on every dependency change
+   * for the life of the process.
+   *
+   * The reaction is always parented to the ambient reactive owner, so the
+   * ordinary DOM mount path is unchanged. `dispose` is idempotent, so when both
+   * an owner and a Scope are present the teardown still runs exactly once.
+   */
+  const reaction = (run: () => void): Effect.Effect<void> =>
+    Effect.flatMap(Effect.serviceOption(Scope.Scope), (maybeScope) => {
+      const dispose = createDisposableEffect(run);
+      if (Option.isSome(maybeScope)) {
+        return Scope.addFinalizer(maybeScope.value, Effect.sync(dispose));
+      }
+      return Effect.void;
+    });
+
   const base: Handle & { readonly kind: T } = {
     kind: tag,
     id: `el-${Math.random().toString(36).slice(2, 10)}`,
@@ -168,11 +191,30 @@ function makeHandle<T extends string>(tag: T): Handle & { readonly kind: T } {
       });
     },
     on(event, handler) {
-      return base.listen(event, handler).pipe(Effect.tap((cleanup) => Effect.sync(() => {
-        onCleanup(() => {
-          cleanup();
-        });
-      })), Effect.asVoid);
+      // Removal is owned by the ambient Effect `Scope` when one is present, so
+      // listeners acquired outside a reactive render owner (behavior
+      // reattachment / resume, `Component.setupEffect`) are still removed on
+      // scope close. The reactive owner is only the fallback for callers that
+      // run without a Scope (e.g. plain render owners).
+      return base.listen(event, handler).pipe(
+        Effect.flatMap((cleanup) =>
+          Effect.flatMap(Effect.serviceOption(Scope.Scope), (maybeScope) => {
+            let removed = false;
+            const removeOnce = () => {
+              if (removed) return;
+              removed = true;
+              cleanup();
+            };
+            if (Option.isSome(maybeScope)) {
+              return Scope.addFinalizer(maybeScope.value, Effect.sync(removeOnce));
+            }
+            return Effect.sync(() => {
+              onCleanup(removeOnce);
+            });
+          })
+        ),
+        Effect.asVoid,
+      );
     },
     emit(event, eventData) {
       const set = listeners.get(event);
@@ -181,25 +223,35 @@ function makeHandle<T extends string>(tag: T): Handle & { readonly kind: T } {
         handler(eventData);
       }
     },
+    // DQ-068: writes serialize and reads parse through the ONE attribute
+    // contract (`src/attributes.ts`), so this test handle and the DOM/SSR
+    // renderer agree by construction — `false` removes, booleans read back
+    // as booleans, numbers as numbers, absent reads are `undefined`.
     setAttr(name, value) {
-      return Effect.sync(() => {
-        if (typeof value === "function") {
-          createEffect(() => {
-            attrs.set(name, (value as () => unknown)());
-          });
+      const write = (next: unknown): void => {
+        const serialized = serializeAttribute(name, next);
+        if (serialized === null) {
+          attrs.delete(name);
         } else {
-          attrs.set(name, value);
+          attrs.set(name, serialized);
         }
+      };
+      if (typeof value === "function") {
+        return reaction(() => {
+          write((value as () => unknown)());
+        });
+      }
+      return Effect.sync(() => {
+        write(value);
       });
     },
     getAttr(name) {
-      return attrs.get(name);
+      const raw = attrs.get(name);
+      return parseAttribute(name, raw === undefined ? null : String(raw));
     },
     setStyle(prop, value) {
-      return Effect.sync(() => {
-        createEffect(() => {
-          styles.set(prop, value());
-        });
+      return reaction(() => {
+        styles.set(prop, value());
       });
     },
     setStyleOnce(prop, value) {
@@ -311,7 +363,12 @@ export function collection<E extends Handle>(initial: ReadonlyArray<E> = []): Co
       return Effect.forEach(current, (item, index) => f(item, index)).pipe(Effect.asVoid);
     },
     observeEach(f) {
-      return Effect.sync(() => {
+      // Teardown is owned by the ambient Effect `Scope` when one is present, so
+      // observers registered outside a reactive render owner (behavior
+      // reattachment / resume, `Component.setupEffect`) are still released on
+      // scope close. The reactive owner is only the fallback for callers that
+      // run without a Scope.
+      return Effect.flatMap(Effect.serviceOption(Scope.Scope), (maybeScope) => {
         const observer = {
           run: f,
           cleanups: new Set<Cleanup>(),
@@ -319,12 +376,27 @@ export function collection<E extends Handle>(initial: ReadonlyArray<E> = []): Co
         observers.add(observer);
         runObserver(observer);
 
-        onCleanup(() => {
+        // Exactly-once at two levels: `disposed` guards the teardown itself,
+        // and per-item cleanups are drained out of the live set (which
+        // `runObserver` also drains on every re-run, so an item removed before
+        // scope close was already released and is no longer reachable here).
+        let disposed = false;
+        const disposeOnce = () => {
+          if (disposed) return;
+          disposed = true;
           observers.delete(observer);
-          for (const cleanup of observer.cleanups) {
+          const pending = [...observer.cleanups];
+          observer.cleanups.clear();
+          for (const cleanup of pending) {
             cleanup();
           }
-          observer.cleanups.clear();
+        };
+
+        if (Option.isSome(maybeScope)) {
+          return Scope.addFinalizer(maybeScope.value, Effect.sync(disposeOnce));
+        }
+        return Effect.sync(() => {
+          onCleanup(disposeOnce);
         });
       });
     },

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Resume-extract compiler proof</title>
+  </head>
+  <body>
+    <main>
+      <h1>Resume-extract compiler proof</h1>
+      <p>
+        The button is server-rendered. Its action was extracted by the
+        compiler; the generated module loads on first use.
+      </p>
+      <div id="root"><!--__SSR_HTML__--></div>
+      <div id="eager-baseline-root">
+        <button
+          type="button"
+          data-testid="eager-baseline"
+          data-rendered-by="server"
+        >Server baseline</button>
+      </div>
+    </main>
+    <script>
+      window.__EXTRACT_TEST__ = {
+        appImports: 0,
+        loaderCalls: 0,
+        setupRuns: 0,
+        viewRuns: 0,
+        parentSetupRuns: 0,
+        parentViewRuns: 0,
+        siblingSetupRuns: 0,
+        siblingViewRuns: 0,
+        eagerSetupRuns: 0,
+        eagerViewRuns: 0,
+        eagerNodeReused: undefined,
+        eagerRenderedText: "",
+        eagerComparator: undefined,
+        notes: [],
+        diagnostics: [],
+        ready: false,
+        disposed: false
+      };
+    </script>
+    <!--__RESUME_MANIFEST__-->
+    <script type="module" src="/client/bootstrap.ts"></script>
+  </body>
+</html>

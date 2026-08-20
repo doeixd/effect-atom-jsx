@@ -1,4 +1,4 @@
-import { Effect, ServiceMap } from "effect";
+import { Effect, Context } from "effect";
 import * as Behavior from "../Behavior.js";
 import * as Component from "../Component.js";
 import * as Element from "../Element.js";
@@ -11,7 +11,7 @@ type Equal<A, B> =
 type Expect<T extends true> = T;
 
 type Analytics = { readonly track: (name: string) => Effect.Effect<void> };
-const Analytics = ServiceMap.Service<Analytics>("Analytics");
+const Analytics = Context.Service<Analytics>("Analytics");
 type BehaviorError = { readonly _tag: "BehaviorError" };
 
 const addOpenState = Behavior.make<{

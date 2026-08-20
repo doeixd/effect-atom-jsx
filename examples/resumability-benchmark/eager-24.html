@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AF resumability benchmark — eager / 24</title>
+  </head>
+  <body>
+    <main>
+      <h1>Resumability measurement fixture</h1>
+      <div id="root"><!--__SSR_HTML__--></div>
+    </main>
+    <script>
+      window.__AF_BENCHMARK__ = {
+        mode: "eager-rerender",
+        density: 24,
+        navigationStartedAt: performance.now(),
+        ready: false,
+        appImports: 0,
+        loaderCalls: 0,
+        setupRuns: 0,
+        viewRuns: 0,
+        componentResources: 0,
+        componentDisposals: 0,
+        patches: 0,
+        disposed: false,
+        diagnostics: []
+      };
+      window.__AF_BENCHMARK_PAYLOAD__ = /*__PAYLOAD__*/;
+    </script>
+    <!--__RESUME_MANIFEST__-->
+    <script type="module" src="/client/eager.ts"></script>
+  </body>
+</html>
+

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AF resumability attribution — 1 expression</title>
+  </head>
+  <body>
+    <div id="root"><!--__SSR_HTML__--></div>
+    <script>
+      window.__AF_ATTRIBUTION__ = {
+        density: 1,
+        stage: new URLSearchParams(location.search).get("stage") ?? "modules",
+        ready: false,
+        disposed: false,
+        diagnostics: []
+      };
+    </script>
+    <!--__RESUME_MANIFEST__-->
+    <script type="module" src="/client/attribution.ts"></script>
+  </body>
+</html>
+

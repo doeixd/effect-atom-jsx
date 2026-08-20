@@ -26,6 +26,35 @@ describe("Route", () => {
     expect(Route.extractParams("/users/:userId", "/users/alice")).toEqual({ userId: "alice" });
   });
 
+  it("handles optional param segments consistently", () => {
+    // A trailing optional param matches both presence and absence of the
+    // segment, and the param key is stripped of the `?`.
+    expect(Route.matchPattern("/users/:id?", "/users", true)).toBe(true);
+    expect(Route.matchPattern("/users/:id?", "/users/a", true)).toBe(true);
+    expect(Route.matchPattern("/users/:id?", "/users/a/b", true)).toBe(false);
+    expect(Route.matchPattern("/users/:id?", "/users/a/b")).toBe(true);
+    expect(Route.extractParams("/users/:id?", "/users/a")).toEqual({ id: "a" });
+    expect(Route.extractParams("/users/:id?", "/users")).toEqual({});
+
+    // A non-final optional param must match a present segment (no absence).
+    expect(Route.matchPattern("/:a?/users", "/x/users")).toBe(true);
+    expect(Route.extractParams("/:a?/users", "/x/users")).toEqual({ a: "x" });
+    expect(Route.matchPattern("/:a?/users", "/users")).toBe(false);
+
+    // validateTree sees :id and :id? as the same param within a chain, for
+    // both unified routes and route nodes.
+    const DupUnified = Route.children([
+      Route.path(":id?")(Component.from<{}>(() => null)),
+    ])(Route.layout()(Route.path("/chain/:id")(Component.from<{}>(() => null))));
+    expect(Route.validateTree(DupUnified).some((e) => e.includes("Duplicate route param 'id'"))).toBe(true);
+
+    const DupNodes = Route.mount(
+      Route.page("/node-chain/:id", Component.from<{}>(() => null)),
+      [Route.page(":id?", Component.from<{}>(() => null))],
+    );
+    expect(Route.validateTree(DupNodes).some((e) => e.includes("Duplicate route param 'id'"))).toBe(true);
+  });
+
   it("creates typed-ish links from routed components", () => {
     const User = Route.paramsSchema(Schema.Struct({ userId: Schema.String }))(
       Route.path("/users/:userId")(Component.from<{ readonly title: string }>(() => null)),
@@ -269,6 +298,70 @@ describe("Route", () => {
     expect(Route.validateTree(App)).toEqual([]);
   });
 
+  it("binds nested route-node materialization to the joined parent path", () => {
+    const UserLayout = Route.page("/r1-nested/users/:userId", Component.from<{}>(() => "user-layout")).pipe(
+      Route.id("r1.users.layout"),
+    );
+    const Settings = Route.page("settings", Component.from<{}>(() => "settings")).pipe(
+      Route.id("r1.users.settings"),
+    );
+
+    const App = Route.define(
+      Route.layout(Component.from<{}>(() => "shell")).pipe(
+        Route.children([Route.mount(UserLayout, [Settings])]),
+      ),
+    );
+
+    // The materialized settings component's render identity must be the joined
+    // path — the same identity tree matching and loaders use.
+    const meta = Route.collect(App).find((entry) => entry.id === "r1.users.settings");
+    expect(meta?.fullPattern).toBe("/r1-nested/users/:userId/settings");
+
+    const MaterializedSettings = Route.componentOf(Settings);
+    const matched = Effect.runSync(
+      Component.renderEffect(MaterializedSettings, {}).pipe(
+        Effect.provide(memoryRouter("/r1-nested/users/1/settings")),
+      ) as unknown as Effect.Effect<unknown, never, never>,
+    );
+    expect(matched).toBe("settings");
+
+    const unmatched = Effect.runSync(
+      Component.renderEffect(MaterializedSettings, {}).pipe(
+        Effect.provide(memoryRouter("/settings")),
+      ) as unknown as Effect.Effect<unknown, never, never>,
+    );
+    expect(unmatched).not.toBe("settings");
+  });
+
+  it("re-materializes under the joined path after a standalone materialization", () => {
+    const UserLayout = Route.page("/r1-standalone/users/:userId", Component.from<{}>(() => "user-layout")).pipe(
+      Route.id("r1s.users.layout"),
+    );
+    const Settings = Route.page("settings", Component.from<{}>(() => "settings")).pipe(
+      Route.id("r1s.users.settings"),
+    );
+
+    // Standalone materialization before the tree exists caches the local-path
+    // wrap ("/settings"). Defining the tree afterward must not inherit it.
+    const standalone = Route.componentOf(Settings);
+    expect(standalone).toBeDefined();
+
+    const App = Route.define(
+      Route.layout(Component.from<{}>(() => "shell")).pipe(
+        Route.children([Route.mount(UserLayout, [Settings])]),
+      ),
+    );
+    const meta = Route.collect(App).find((entry) => entry.id === "r1s.users.settings");
+    expect(meta?.fullPattern).toBe("/r1-standalone/users/:userId/settings");
+
+    const matched = Effect.runSync(
+      Component.renderEffect(Route.componentOf(Settings), {}).pipe(
+        Effect.provide(memoryRouter("/r1-standalone/users/1/settings")),
+      ) as unknown as Effect.Effect<unknown, never, never>,
+    );
+    expect(matched).toBe("settings");
+  });
+
   it("preserves component View metadata through legacy route wrappers", () => {
     const Page = Component.make<
       {},
@@ -307,6 +400,30 @@ describe("Route", () => {
     expect(matched?.slotMetadata?.root?.name).toBe("root");
     expect(View.nameOfCapability(matched?.slotMetadata?.root?.capability ?? "missing")).toBe("Container");
     expect(unmatched).toBeUndefined();
+  });
+
+  it("keeps distinct route metadata when a routed component is wrapped again", () => {
+    const slots = View.Slots.define({
+      root: { capability: Element.Capability.Container },
+    });
+    const Base = Component.make(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({}),
+      () => "page",
+    ).pipe(Component.withSlots(slots));
+    const First = Base.pipe(Component.route("/registration-first"));
+    const Second = First.pipe(Component.route("/registration-second"));
+
+    // R2: there is no global registry to replace. An explicit registry keeps
+    // both components under their own resolved pattern.
+    const routes = Route.registry([First, Second]);
+    expect(routes.entries.find((e) => e.meta.fullPattern === "/registration-first")?.component).toBe(First);
+    expect(routes.entries.find((e) => e.meta.fullPattern === "/registration-second")?.component).toBe(Second);
+    expect(Route.routeMetaOf(First)?.fullPattern).toBe("/registration-first");
+    expect(Route.routeMetaOf(Second)?.fullPattern).toBe("/registration-second");
+    expect(Component.getSlotContract(First)).toBe(slots);
+    expect(Component.getSlotContract(Second)).toBe(slots);
   });
 
   it("preserves component View metadata through route-node materialization", () => {

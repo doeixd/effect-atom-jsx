@@ -79,7 +79,7 @@ export function createCombobox<T>(options: {
         trigger,
         content,
         optionElements,
-      });
+      }, {});
 
       return {
         slots: {

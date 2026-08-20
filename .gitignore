@@ -5,4 +5,7 @@ dist/
 npm-debug.log*
 smoke-test-temp/
 bench-results.json
+bench-results/resumability/
 reactively-upstream/
+test-results/
+playwright-report/

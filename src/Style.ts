@@ -1,12 +1,13 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import * as Component from "./Component.js";
 import * as Element from "./Element.js";
 import * as MetadataToken from "./MetadataToken.js";
 import * as Theme from "./Theme.js";
 import * as View from "./View.js";
 import { createContext, useContext } from "./api.js";
-import { mergeMany, resolveTokenValue } from "./style-runtime.js";
-import type { SlotStyle } from "./style-types.js";
+import { mergeMany, resolveTokenValue, tokenPathForProperty } from "./style-runtime.js";
+import type { SlotStyle, ThemeTokenSchema } from "./style-types.js";
+import { defaultThemeTokens } from "./style-types.js";
 import type { TokenPath } from "./style-types.js";
 
 type AnySlot = Record<string, unknown>;
@@ -72,7 +73,7 @@ export interface PlatformService {
   readonly onDiagnostic?: (diagnostic: StyleDiagnostic) => void;
 }
 
-export const PlatformTag = ServiceMap.Service<PlatformService>("StylePlatform");
+export const PlatformTag = Context.Service<PlatformService>("StylePlatform");
 
 /** Resolved global styles published by `Style.globalLayer`. */
 export interface GlobalStyleSheet {
@@ -86,7 +87,7 @@ export interface GlobalStyleService {
   readonly apply?: (sheet: GlobalStyleSheet) => Effect.Effect<void>;
 }
 
-export const GlobalStyleTag = ServiceMap.Service<GlobalStyleService>("StyleGlobal");
+export const GlobalStyleTag = Context.Service<GlobalStyleService>("StyleGlobal");
 
 /** Layer returned by `Style.platform`, branded with its metadata for typing. */
 export type PlatformLayer<Metadata extends StylePlatformMetadata = StylePlatformMetadata> =
@@ -117,15 +118,20 @@ export function platform<const Metadata extends StylePlatformMetadata>(
 }
 
 /** Diagnostic codes produced by style/platform validation. */
-export type StyleDiagnosticCode = "style:unsupported-property";
+export type StyleDiagnosticCode =
+  | "style:unsupported-property"
+  // DQ-062/ratified mergeRecipes: dynamic patch targeting an undeclared slot.
+  | "style:unknown-recipe-slot"
+  // DQ-054 opt-in exhaustive coverage: a contract slot left unstyled.
+  | "style:missing-slot-style";
 
 /** Structured diagnostic emitted when style uses unsupported platform features. */
 export interface StyleDiagnostic {
   readonly code: StyleDiagnosticCode;
   readonly message: string;
-  readonly platform: string;
+  readonly platform?: string;
   readonly slot: string;
-  readonly property: string;
+  readonly property?: string;
 }
 
 /** Concrete style object for one slot. */
@@ -283,7 +289,11 @@ export type StyleValue =
   | ReadonlyArray<StyleValue>;
 
 export type BindingNamesOfValue<T> =
-  T extends { readonly _bindings?: infer Bindings } ? Bindings & string
+  // `Extract` (not `& string`): a piece WITHOUT `_bindings` infers it as
+  // `unknown`, and `unknown & string` is `string` — which made every style
+  // "require" an unnameable binding the moment the contract-aware `make`
+  // stopped erasing bindings to `never` (DQ-054).
+  T extends { readonly _bindings?: infer Bindings } ? Extract<Bindings, string>
     : never;
 
 export type BindingNamesOfStyleMap<T> = BindingNamesOfValue<NonNullable<T[keyof T]>>;
@@ -309,6 +319,8 @@ export type SlotStyles<S extends string = string> = Record<S, StyleValue>;
 export interface ComposedStyle<S extends string = string, Bindings extends string = never> {
   readonly slots: SlotStyles<S>;
   readonly _bindings?: Bindings;
+  /** DQ-054 opt-in exhaustive coverage gaps; absent when clean. */
+  readonly diagnostics?: ReadonlyArray<StyleDiagnostic>;
 }
 
 /**
@@ -398,33 +410,67 @@ export function transition(value: Record<string, unknown>): AnimationPiece {
  * Prefer `Style.forSlots(Slots)(...)` for authored component APIs because it
  * restricts the keys to the published `View.Slots` contract.
  */
+export function make<
+  const W extends SlotContractInput,
+  const Styles extends { readonly [K in SlotContractNames<W>]?: StyleValue },
+>(
+  contract: W,
+  styles: Styles,
+  options?: { readonly exhaustive?: boolean },
+): ComposedStyle<SlotContractNames<W>, BindingNamesOfStyleMap<Styles>>;
 export function make<const Styles extends Record<string, StyleValue>>(
   slots: Styles,
-): ComposedStyle<keyof Styles & string, BindingNamesOfStyleMap<Styles>> {
-  return { slots } as ComposedStyle<keyof Styles & string, BindingNamesOfStyleMap<Styles>>;
+): ComposedStyle<keyof Styles & string, BindingNamesOfStyleMap<Styles>>;
+/**
+ * `DQ-054` (ratified): ONE contract-aware builder. Pass an authored slot
+ * contract first to constrain keys to the contract's slot names while
+ * keeping binding-name inference; the map-only form remains for dynamic
+ * maps. `Style.forSlots` is deleted — it erased `Bindings` to `never`,
+ * making the binding-compatibility check vacuous on the golden path.
+ * Full slot coverage is opt-in exhaustive (`Style.makeExhaustive`), not
+ * default-required.
+ */
+export function make(
+  contractOrSlots: SlotContractInput | Record<string, StyleValue>,
+  maybeStyles?: Record<string, StyleValue | undefined>,
+  options?: { readonly exhaustive?: boolean },
+): ComposedStyle<string, never> {
+  const hasContract = maybeStyles !== undefined;
+  const styles = hasContract
+    ? maybeStyles
+    : contractOrSlots as Record<string, StyleValue>;
+  const out: Record<string, StyleValue> = {};
+  for (const [slotName, styleValue] of Object.entries(styles)) {
+    if (styleValue !== undefined) out[slotName] = styleValue;
+  }
+  const result = { slots: out } as ComposedStyle<string, never> & {
+    diagnostics?: ReadonlyArray<StyleDiagnostic>;
+  };
+  // Opt-in exhaustive coverage (DQ-054): partial recipes are LEGITIMATE by
+  // default; only under `exhaustive: true` is a contract slot without a
+  // style a diagnostic.
+  if (hasContract && options?.exhaustive === true) {
+    const names = slotContractNamesOf(contractOrSlots as SlotContractInput);
+    const missing = names.filter((name) => !(name in out));
+    if (missing.length > 0) {
+      Object.defineProperty(result, "diagnostics", {
+        enumerable: false,
+        value: missing.map((slotName): StyleDiagnostic => ({
+          code: "style:missing-slot-style",
+          message: `Style.make({ exhaustive: true }) covers ${Object.keys(out).length} slot(s) but the contract declares "${slotName}" unstyled.`,
+          slot: slotName,
+        })),
+      });
+    }
+  }
+  return result;
 }
 
-/**
- * Create a style builder keyed by an authored slot contract.
- *
- * @example
- * const FieldStyle = Style.forSlots(FieldSlots)({
- *   root: Style.slot({ display: "grid" }),
- *   input: Style.slot({ padding: "sm" }),
- * })
- */
-export function forSlots<const W extends SlotContractInput>(
-  _slots: W,
-): (
-  styles: { readonly [K in SlotContractNames<W>]?: StyleValue },
-) => ComposedStyle<SlotContractNames<W>> {
-  return (styles) => {
-    const out: Record<string, StyleValue> = {};
-    for (const [slotName, styleValue] of Object.entries(styles) as Array<[string, StyleValue | undefined]>) {
-      if (styleValue !== undefined) out[slotName] = styleValue;
-    }
-    return { slots: out } as ComposedStyle<SlotContractNames<W>>;
-  };
+function slotContractNamesOf(input: SlotContractInput): ReadonlyArray<string> {
+  if (typeof input === "object" && input !== null && "bound" in input) {
+    return Object.keys((input as { readonly bound: Record<string, unknown> }).bound);
+  }
+  return Object.keys(input);
 }
 
 export type PseudoClass =
@@ -539,7 +585,23 @@ export function layers(names: ReadonlyArray<string>): readonly string[] {
   return names;
 }
 
-export function inLayer(name: string, piece: StyleValue): LayerPiece {
+/**
+ * The public cascade order (ratified): kit layers first, and the consumer's
+ * `"app"` layer ALWAYS last — "your layers come after ours" is one sentence
+ * enforced by the platform cascade. A closed, branded tuple so a typo like
+ * `"compnents"` is a compile error, never a silently-wrong layer.
+ */
+export const cssLayerOrder = Object.freeze([
+  "defaults",
+  "components",
+  "variants",
+  "utilities",
+  "app",
+] as const);
+
+export type CssLayer = (typeof cssLayerOrder)[number];
+
+export function inLayer(name: CssLayer, piece: StyleValue): LayerPiece {
   return { _tag: "LayerPiece", layer: name, piece };
 }
 
@@ -672,7 +734,7 @@ function resolveSlot(piece: StyleValue, bindings?: unknown): SlotStyle {
 function resolveSlotTokens(style: SlotStyle): SlotStyle {
   const out: Record<string, unknown> = {};
   for (const [prop, value] of Object.entries(style)) {
-    out[prop] = prop === "_states" || prop.startsWith("__") ? value : resolveTokenValue(value);
+    out[prop] = prop === "_states" || prop.startsWith("__") ? value : resolveTokenValue(value, undefined, prop);
   }
   return out;
 }
@@ -707,14 +769,339 @@ export function propertiesOf<S extends string>(style: ComposedStyle<S, any>): re
   return usages;
 }
 
+// ── Static CSS extraction (`DQ-064`, ratified; K4) ───────────────────────────
+//
+// Per-module extraction with the SLOT as the fail-open unit: a slot whose
+// pieces are fully resolvable in this module extracts to static CSS; any slot
+// touched by a runtime condition, a binding conditional (reactive per
+// `DQ-056` — NEVER extracted), a dynamic function value, or a piece kind the
+// extractor cannot statically serialize runtime-composes WHOLE. Extraction is
+// non-destructive: the input style is untouched, so cross-module
+// `Style.compose` and runtime attachment keep working on the same value —
+// failing open costs only the static bytes, never correctness.
+
+/** The result of one module's static extraction pass. */
+export interface StaticExtraction<S extends string = string> {
+  readonly css: string;
+  /** Slots fully extracted to static CSS. */
+  readonly staticSlots: ReadonlyArray<S>;
+  /** Slots that fail open to runtime composition (and why they must). */
+  readonly runtimeSlots: ReadonlyArray<S>;
+}
+
+export interface ExtractStaticOptions {
+  /** Selector for one slot's rule; defaults to `.af-<slot>`. */
+  readonly selector?: (slot: string) => string;
+  /** Cascade layer the rules land in; defaults to `"components"`. */
+  readonly layer?: CssLayer;
+  /** Token schema used to recognise token paths; defaults to the theme default. */
+  readonly tokens?: ThemeTokenSchema;
+}
+
+/** A style object whose every declaration is a statically known value. */
+function staticStyleObject(style: Record<string, unknown>): boolean {
+  return Object.values(style).every(
+    (value) => typeof value === "string" || typeof value === "number",
+  );
+}
+
+/** Only pieces whose every value is statically known extract; anything else fails open. */
+function pieceIsStaticallyExtractable(piece: StyleValue): boolean {
+  if (Array.isArray(piece)) return piece.every(pieceIsStaticallyExtractable);
+  const node = piece as Exclude<StyleValue, ReadonlyArray<StyleValue>>;
+  switch (node._tag) {
+    case "SlotPiece":
+      return staticStyleObject(node.style);
+    case "VarsPiece":
+      return staticStyleObject(node.vars);
+    case "StatesPiece":
+      return Object.values(node.states).every(staticStyleObject);
+    case "PseudoPiece":
+      return Object.values(node.pseudo).every(staticStyleObject);
+    case "NestPiece":
+      return Object.values(node.selectors).every(staticStyleObject);
+    case "MediaPiece":
+      return Object.values(node.media).every((value) =>
+        isStyleValue(value)
+          ? pieceIsStaticallyExtractable(value)
+          : staticStyleObject(value as Record<string, unknown>),
+      );
+    case "LayerPiece":
+      return pieceIsStaticallyExtractable(node.piece);
+    default:
+      // Conditionals and binding conditionals (reactive, DQ-056) — and any
+      // piece kind without a static serialization — send the whole slot to
+      // runtime composition.
+      return false;
+  }
+}
+
+function cssPropertyName(property: string): string {
+  return property.startsWith("--")
+    ? property
+    : property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+}
+
+function staticDeclarationValue(
+  property: string,
+  value: unknown,
+  tokens: ThemeTokenSchema,
+): string {
+  if (typeof value === "string") {
+    // Property-aware, exactly like runtime resolution: a token path becomes a
+    // CSS variable reference under the `--af-*` namespace — the SAME names
+    // `@affe/css`'s foundation stylesheet emits — so extracted CSS stays
+    // theme-swappable at runtime, and CSS keywords (`display: "none"`) are
+    // never hijacked by token-leaf name collisions.
+    const path = tokenPathForProperty(tokens, cssPropertyName(property), value);
+    if (path !== undefined) return `var(--af-${path.replace(/\./g, "-")})`;
+    return value;
+  }
+  return String(value);
+}
+
+function staticDeclarations(
+  style: Record<string, unknown>,
+  tokens: ThemeTokenSchema,
+): string {
+  return Object.entries(style)
+    .filter(([property]) => isStylePropertyKey(property) || property.startsWith("--"))
+    .map(([property, value]) =>
+      `${cssPropertyName(property)}: ${staticDeclarationValue(property, value, tokens)};`,
+    )
+    .join(" ");
+}
+
+/** Everything one slot's static pieces contribute, grouped by emission site. */
+interface SlotCssParts {
+  readonly base: Record<string, unknown>;
+  readonly pseudo: Map<string, Record<string, unknown>>;
+  readonly states: Map<string, Record<string, unknown>>;
+  readonly nest: Map<string, Record<string, unknown>>;
+  readonly media: Map<string, Record<string, unknown>>;
+  layer: CssLayer | undefined;
+}
+
+function collectSlotParts(piece: StyleValue, parts: SlotCssParts): void {
+  if (Array.isArray(piece)) {
+    for (const inner of piece) collectSlotParts(inner, parts);
+    return;
+  }
+  const node = piece as Exclude<StyleValue, ReadonlyArray<StyleValue>>;
+  switch (node._tag) {
+    case "SlotPiece":
+      Object.assign(parts.base, node.style);
+      return;
+    case "VarsPiece":
+      Object.assign(parts.base, node.vars);
+      return;
+    case "StatesPiece":
+      for (const [state, style] of Object.entries(node.states)) {
+        // `default` is the base rule; every other state becomes a
+        // `[data-state="..."]` attribute selector (the DQ-056 dormant-widget
+        // payoff: SSR stamps the attribute, loaded CSS does the rest).
+        if (state === "default") {
+          Object.assign(parts.base, style);
+        } else {
+          parts.states.set(state, { ...(parts.states.get(state) ?? {}), ...style });
+        }
+      }
+      return;
+    case "PseudoPiece":
+      for (const [selector, style] of Object.entries(node.pseudo)) {
+        parts.pseudo.set(selector, { ...(parts.pseudo.get(selector) ?? {}), ...style });
+      }
+      return;
+    case "NestPiece":
+      for (const [selector, style] of Object.entries(node.selectors)) {
+        parts.nest.set(selector, { ...(parts.nest.get(selector) ?? {}), ...style });
+      }
+      return;
+    case "MediaPiece":
+      for (const [query, value] of Object.entries(node.media)) {
+        const style = isStyleValue(value) ? resolveSlot(value) : value as SlotStyle;
+        parts.media.set(query, { ...(parts.media.get(query) ?? {}), ...style });
+      }
+      return;
+    case "LayerPiece":
+      parts.layer = node.layer as CssLayer;
+      collectSlotParts(node.piece, parts);
+      return;
+    default:
+      return;
+  }
+}
+
+/**
+ * Extract every fully-static slot of `style` to CSS, failing open per SLOT.
+ *
+ * Extractable per slot: flat declarations, custom-property vars, pseudo
+ * selectors, machine states (as `[data-state="..."]` attribute selectors),
+ * nested selectors (`&` splices the slot selector), media blocks, and
+ * `inLayer` cascade-layer overrides. Any runtime condition, binding
+ * conditional, or dynamic value anywhere in the slot fails the WHOLE slot
+ * open to runtime composition (`DQ-064`).
+ *
+ * @example
+ * const { css, runtimeSlots } = Style.extractStatic(cardStyle)
+ * // css → `@layer components { .af-root { display: grid; gap: var(--af-spacing-sm); } }`
+ * // runtimeSlots → slots left for `Style.attach*` at runtime
+ */
+export function extractStatic<S extends string>(
+  style: ComposedStyle<S, any>,
+  options?: ExtractStaticOptions,
+): StaticExtraction<S> {
+  const tokens = options?.tokens ?? defaultThemeTokens;
+  const selectorOf = options?.selector ?? ((slot: string) => `.af-${slot}`);
+  const defaultLayer: CssLayer = options?.layer ?? "components";
+  const staticSlots: Array<S> = [];
+  const runtimeSlots: Array<S> = [];
+  const rulesByLayer = new Map<CssLayer, Array<string>>();
+  const pushRule = (layer: CssLayer, rule: string): void => {
+    const bucket = rulesByLayer.get(layer) ?? [];
+    bucket.push(rule);
+    rulesByLayer.set(layer, bucket);
+  };
+  for (const [slotName, piece] of Object.entries(style.slots) as Array<[S, StyleValue]>) {
+    if (!pieceIsStaticallyExtractable(piece)) {
+      runtimeSlots.push(slotName);
+      continue;
+    }
+    staticSlots.push(slotName);
+    const parts: SlotCssParts = {
+      base: {},
+      pseudo: new Map(),
+      states: new Map(),
+      nest: new Map(),
+      media: new Map(),
+      layer: undefined,
+    };
+    collectSlotParts(piece, parts);
+    const selector = selectorOf(slotName);
+    const layer = parts.layer ?? defaultLayer;
+    const emit = (ruleSelector: string, decls: Record<string, unknown>): void => {
+      const body = staticDeclarations(decls, tokens);
+      if (body.length > 0) pushRule(layer, `${ruleSelector} { ${body} }`);
+    };
+    emit(selector, parts.base);
+    for (const [pseudoSelector, decls] of parts.pseudo) {
+      emit(`${selector}${pseudoSelector}`, decls);
+    }
+    for (const [state, decls] of parts.states) {
+      emit(`${selector}[data-state="${state}"]`, decls);
+    }
+    for (const [nestSelector, decls] of parts.nest) {
+      emit(
+        nestSelector.startsWith("&")
+          ? `${selector}${nestSelector.slice(1)}`
+          : `${selector} ${nestSelector}`,
+        decls,
+      );
+    }
+    for (const [query, decls] of parts.media) {
+      const body = staticDeclarations(decls, tokens);
+      if (body.length > 0) {
+        pushRule(layer, `@media ${query} { ${selector} { ${body} } }`);
+      }
+    }
+  }
+  const blocks: Array<string> = [];
+  for (const layer of cssLayerOrder) {
+    const rules = rulesByLayer.get(layer);
+    if (rules !== undefined && rules.length > 0) {
+      blocks.push(`@layer ${layer} {\n${rules.join("\n")}\n}`);
+    }
+  }
+  return { css: blocks.join("\n"), staticSlots, runtimeSlots };
+}
+
 function applyResolvedStyleToHandle(handle: Element.Handle, styleDef: SlotStyle): Effect.Effect<void> {
   return Effect.forEach(Object.entries(styleDef), ([prop, value]) => {
     if (prop === "_states" || prop.startsWith("__")) return handle.setStyleOnce(prop, value);
     if (typeof value === "function") {
-      return handle.setStyle(prop, () => resolveTokenValue((value as () => unknown)()));
+      return handle.setStyle(prop, () => resolveTokenValue((value as () => unknown)(), undefined, prop));
     }
-    return handle.setStyleOnce(prop, resolveTokenValue(value));
+    return handle.setStyleOnce(prop, resolveTokenValue(value, undefined, prop));
   }).pipe(Effect.asVoid) as Effect.Effect<void>;
+}
+
+function pieceHasBindingConditional(piece: StyleValue): boolean {
+  if (Array.isArray(piece)) return piece.some(pieceHasBindingConditional);
+  const node = piece as Exclude<StyleValue, ReadonlyArray<StyleValue>>;
+  switch (node._tag) {
+    case "BindingConditionalPiece":
+      return true;
+    case "ConditionalPiece":
+      return pieceHasBindingConditional(node.piece);
+    case "ResponsivePiece":
+      return node.map.base !== undefined && pieceHasBindingConditional(node.map.base);
+    default:
+      return false;
+  }
+}
+
+/** Every property any branch of `piece` could contribute, conditions ignored. */
+function flattenPieceAllBranches(piece: StyleValue): ReadonlyArray<SlotStyle> {
+  if (Array.isArray(piece)) {
+    return piece.flatMap(flattenPieceAllBranches);
+  }
+  const node = piece as Exclude<StyleValue, ReadonlyArray<StyleValue>>;
+  switch (node._tag) {
+    case "BindingConditionalPiece":
+      return flattenPieceAllBranches(node.piece);
+    case "ConditionalPiece":
+      return flattenPieceAllBranches(node.piece);
+    default:
+      return flattenPiece(node);
+  }
+}
+
+/**
+ * Apply one slot's style piece to a handle. A piece with a binding
+ * conditional (`Style.whenBinding`) applies REACTIVELY: piece selection
+ * re-evaluates whenever the binding it reads changes, so machine state (or
+ * any signal-valued binding) drives styling live rather than snapshotting
+ * at attach time — the fix for the known attach-time-snapshot gap. Pieces
+ * without binding conditionals keep the cheap resolve-once path.
+ */
+function applyStylePieceToHandle(
+  handle: Element.Handle,
+  piece: StyleValue,
+  bindings: unknown,
+): Effect.Effect<void> {
+  if (!pieceHasBindingConditional(piece)) {
+    return applyResolvedStyleToHandle(handle, resolveSlot(piece, bindings));
+  }
+  return Effect.gen(function* () {
+    // Meta keys (states/nest/media/...) come from the attach-time resolution;
+    // branch-conditional META remains out of scope for the reactive path.
+    const attachResolution = resolveSlot(piece, bindings);
+    for (const [prop, value] of Object.entries(attachResolution)) {
+      if (prop === "_states" || prop.startsWith("__")) {
+        yield* handle.setStyleOnce(prop, value);
+      }
+    }
+    // Every property ANY branch can contribute becomes a reactive style:
+    // reading the binding inside the accessor is what makes selection track.
+    const dynamicProps = new Set<string>();
+    for (const branch of flattenPieceAllBranches(piece)) {
+      for (const prop of Object.keys(branch)) {
+        if (isStylePropertyKey(prop)) dynamicProps.add(prop);
+      }
+    }
+    for (const prop of dynamicProps) {
+      yield* handle.setStyle(prop, () => {
+        const current = resolveSlot(piece, bindings)[prop];
+        const value = typeof current === "function"
+          ? (current as () => unknown)()
+          : current;
+        const resolved = resolveTokenValue(value, undefined, prop);
+        // A branch switching OFF unsets the property (the K1 null-unset rule)
+        // instead of freezing its last value.
+        return resolved === undefined ? null : resolved;
+      });
+    }
+  });
 }
 
 type Overrides = Record<string, StyleValue>;
@@ -747,16 +1134,15 @@ function attachToBindingSlotsImpl<S extends string, StyleBindings extends string
       }
       const overrides = useContext(OverrideContext);
       for (const [slotName, slotPiece] of Object.entries(style.slots as Record<string, StyleValue>)) {
-        const overridePiece = overrides[slotName];
-        const resolved = resolveSlot(overridePiece ?? slotPiece, bindings);
+        const piece = overrides[slotName] ?? slotPiece;
         const target = (bindings as any).slots?.[slotName] as Element.Handle | Element.Collection<Element.Handle> | undefined;
         if (!target) continue;
 
         if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
           const collection = target as Element.Collection<Element.Handle>;
-          yield* collection.observeEach((item) => applyResolvedStyleToHandle(item, resolved).pipe(Effect.as(() => {})));
+          yield* collection.observeEach((item) => applyStylePieceToHandle(item, piece, bindings).pipe(Effect.as(() => {})));
         } else {
-          yield* applyResolvedStyleToHandle(target as Element.Handle, resolved);
+          yield* applyStylePieceToHandle(target as Element.Handle, piece, bindings);
         }
       }
     })) as any;
@@ -786,15 +1172,14 @@ function attachByViewImpl<S extends string, StyleBindings extends string>(
     const overrides = useContext(OverrideContext);
     const slots = result.slots as Record<string, Element.Handle | Element.Collection<Element.Handle>>;
     for (const [slotName, slotPiece] of Object.entries(style.slots as Record<string, StyleValue>)) {
-      const overridePiece = overrides[slotName];
-      const resolved = resolveSlot(overridePiece ?? slotPiece, _bindings);
+      const piece = overrides[slotName] ?? slotPiece;
       const target = slots[slotName];
       if (!target) continue;
       if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
         const collection = target as Element.Collection<Element.Handle>;
-        Effect.runSync(collection.observeEach((item) => applyResolvedStyleToHandle(item, resolved).pipe(Effect.as(() => {}))));
+        Effect.runSync(collection.observeEach((item) => applyStylePieceToHandle(item, piece, _bindings).pipe(Effect.as(() => {}))));
       } else {
-        Effect.runSync(applyResolvedStyleToHandle(target as Element.Handle, resolved));
+        Effect.runSync(applyStylePieceToHandle(target as Element.Handle, piece, _bindings));
       }
     }
     return result;
@@ -920,12 +1305,11 @@ export function attachToAllWithCapability<C extends View.SlotCapability>(
       const target = slots[slotName];
       if (!target) continue;
 
-      const resolved = resolveSlot(style, _bindings);
       if ((target as Element.Collection<Element.Handle>)._tag === "Collection") {
         const collection = target as Element.Collection<Element.Handle>;
-        Effect.runSync(collection.observeEach((item) => applyResolvedStyleToHandle(item, resolved).pipe(Effect.as(() => {}))));
+        Effect.runSync(collection.observeEach((item) => applyStylePieceToHandle(item, style, _bindings).pipe(Effect.as(() => {}))));
       } else {
-        Effect.runSync(applyResolvedStyleToHandle(target as Element.Handle, resolved));
+        Effect.runSync(applyStylePieceToHandle(target as Element.Handle, style, _bindings));
       }
     }
     return result;
@@ -1034,7 +1418,8 @@ export function reportPlatformDiagnostics<S extends string>(
 type VariantDef = {
   readonly base?: StyleValue;
   readonly variants: Record<string, Record<string, StyleValue>>;
-  readonly compounds?: ReadonlyArray<{ readonly when: Record<string, string | boolean>; readonly style: StyleValue }>;
+  /** Ratified singular spelling, matching `RecipeDef.compound`. */
+  readonly compound?: ReadonlyArray<{ readonly when: Record<string, string | boolean>; readonly style: StyleValue }>;
   readonly defaults?: Record<string, string | boolean>;
 };
 
@@ -1065,7 +1450,7 @@ export function variants<D extends VariantDef>(def: D) {
         if (piece) pieces.push(piece);
       }
     }
-    for (const compound of def.compounds ?? []) {
+    for (const compound of def.compound ?? []) {
       const ok = Object.entries(compound.when).every(([k, v]) => picks[k] === v);
       if (ok) pieces.push(compound.style);
     }
@@ -1080,15 +1465,28 @@ export type VariantProps<T> = T extends { __variantDef: infer D }
     : never
   : never;
 
-type RecipeDef<Slots extends string> = {
+export type RecipeDef<Slots extends string> = {
   readonly slots: ReadonlyArray<Slots>;
   readonly base: Record<Slots, StyleValue>;
   readonly variants?: Record<string, Record<string, Partial<Record<Slots, StyleValue>>>>;
+  /**
+   * Ratified spelling: `compound` (singular), with `when` TYPED against the
+   * declared axes — `{ intnet: "danger" }` is a compile error. Compound
+   * matches apply AFTER variants, so a full match wins over both.
+   */
+  readonly compound?: ReadonlyArray<{
+    readonly when: Record<string, string | boolean>;
+    readonly style: Partial<Record<Slots, StyleValue>>;
+  }>;
   readonly defaults?: Record<string, string | boolean>;
 };
 
-type RecipeSelection<D extends RecipeDef<any>> = D["variants"] extends Record<string, any>
-  ? { readonly [K in keyof D["variants"]]?: keyof D["variants"][K] & string }
+/**
+ * A selection may be explicitly UNSET (ratified): `null` removes an axis
+ * that has a default; `recipe.without("axis")` is the readable sugar.
+ */
+export type RecipeSelection<D extends RecipeDef<any>> = D["variants"] extends Record<string, any>
+  ? { readonly [K in keyof D["variants"]]?: (keyof D["variants"][K] & string) | null }
   : {};
 
 /**
@@ -1100,7 +1498,12 @@ type RecipeSelection<D extends RecipeDef<any>> = D["variants"] extends Record<st
 export function recipe<Slots extends string, D extends RecipeDef<Slots>>(def: D) {
   const fn = (selection?: RecipeSelection<D>): Record<Slots, StyleValue> => {
     const out = { ...def.base } as Record<Slots, StyleValue>;
-    const picks = { ...(def.defaults ?? {}), ...(selection ?? {}) } as Record<string, string | boolean>;
+    const picks = { ...(def.defaults ?? {}) } as Record<string, string | boolean>;
+    for (const [axis, pick] of Object.entries(selection ?? {})) {
+      // `null` explicitly unsets an axis that has a default (ratified).
+      if (pick === null || pick === undefined) delete picks[axis];
+      else picks[axis] = pick as string | boolean;
+    }
       if (def.variants) {
       for (const [axis, axisVariants] of Object.entries(def.variants)) {
         const pick = picks[axis];
@@ -1117,9 +1520,131 @@ export function recipe<Slots extends string, D extends RecipeDef<Slots>>(def: D)
         }
       }
     }
+    // Resolution order (ratified): base -> variants -> compound. A compound
+    // whose `when` fully matches the picks wins over both.
+    for (const compound of def.compound ?? []) {
+      const matches = Object.entries(compound.when).every(
+        ([axis, value]) => picks[axis] === value,
+      );
+      if (!matches) continue;
+      for (const [slotName, piece] of Object.entries(
+        compound.style as Record<string, StyleValue | undefined>,
+      )) {
+        if (piece === undefined) continue;
+        out[slotName as Slots] = compose(out[slotName as Slots], piece);
+      }
+    }
     return out;
   };
-  return Object.assign(fn, { __recipeDef: def });
+  return Object.assign(fn, {
+    __recipeDef: def,
+    /** Resolve with the named axes explicitly unset (null-selection sugar). */
+    without: (...axes: ReadonlyArray<string>) =>
+      fn(
+        Object.fromEntries(axes.map((axis) => [axis, null])) as RecipeSelection<D>,
+      ),
+  });
+}
+
+/**
+ * Pure data merge of a recipe with a patch (ratified two-arg signature):
+ * variants deep-merge (patch axis keys win last), defaults override,
+ * `base`/`compound` patches compose in. The base recipe is left untouched.
+ *
+ * Patch slot keys are constrained to the BASE's slot names at the type
+ * level; a dynamic patch smuggling an unknown slot is skipped and reported
+ * on the result's `diagnostics` (never a silent merge, never a throw —
+ * recipes are data and the failure model is a type error or a diagnostic).
+ * Widening slots is the explicit, name-carrying `extendRecipeSlots`.
+ */
+export function mergeRecipes<
+  Slots extends string,
+  D extends RecipeDef<Slots>,
+>(
+  base: D,
+  patch: {
+    readonly base?: Partial<Record<Slots, StyleValue>>;
+    readonly variants?: Record<string, Record<string, Partial<Record<Slots, StyleValue>>>>;
+    readonly compound?: RecipeDef<Slots>["compound"];
+    readonly defaults?: Record<string, string | boolean>;
+  },
+): D & { readonly diagnostics?: ReadonlyArray<StyleDiagnostic> } {
+  const known = new Set<string>(base.slots as ReadonlyArray<string>);
+  const diagnostics: Array<StyleDiagnostic> = [];
+  const filterSlots = <V>(
+    record: Partial<Record<string, V>> | undefined,
+    where: string,
+  ): Partial<Record<string, V>> | undefined => {
+    if (record === undefined) return undefined;
+    const out: Partial<Record<string, V>> = {};
+    for (const [slotName, value] of Object.entries(record)) {
+      if (known.has(slotName)) out[slotName] = value as V;
+      else {
+        diagnostics.push({
+          code: "style:unknown-recipe-slot",
+          message: `Recipe patch ${where} targets slot "${slotName}", which the base recipe does not declare. Widen deliberately with Style.extendRecipeSlots.`,
+          slot: slotName,
+        });
+      }
+    }
+    return out;
+  };
+
+  const mergedVariants: Record<string, Record<string, Partial<Record<string, StyleValue>>>> = {};
+  for (const [axis, axisVariants] of Object.entries(base.variants ?? {})) {
+    mergedVariants[axis] = { ...axisVariants };
+  }
+  for (const [axis, axisVariants] of Object.entries(patch.variants ?? {})) {
+    const target = { ...(mergedVariants[axis] ?? {}) };
+    for (const [key, slotPatch] of Object.entries(axisVariants)) {
+      target[key] = filterSlots(slotPatch, `variants.${axis}.${key}`) ?? {};
+    }
+    mergedVariants[axis] = target;
+  }
+
+  const merged = {
+    ...base,
+    base: {
+      ...base.base,
+      ...(filterSlots(patch.base, "base") ?? {}),
+    },
+    variants: mergedVariants,
+    compound: [
+      ...(base.compound ?? []),
+      ...(patch.compound ?? []).map((entry) => ({
+        ...entry,
+        style: filterSlots(entry.style, "compound") ?? {},
+      })),
+    ],
+    defaults: { ...(base.defaults ?? {}), ...(patch.defaults ?? {}) },
+  };
+  if (diagnostics.length > 0) {
+    Object.defineProperty(merged, "diagnostics", {
+      enumerable: false,
+      configurable: false,
+      writable: false,
+      value: diagnostics,
+    });
+  }
+  return merged as D & { readonly diagnostics?: ReadonlyArray<StyleDiagnostic> };
+}
+
+/**
+ * Widen a recipe's slot set — the explicit, name-carrying operation the
+ * ratified `mergeRecipes` signature requires (a boolean flag cannot re-type
+ * the result). New slots start unstyled; style them via `mergeRecipes`.
+ */
+export function extendRecipeSlots<
+  Slots extends string,
+  const Added extends ReadonlyArray<string>,
+>(
+  base: RecipeDef<Slots>,
+  added: Added,
+): RecipeDef<Slots | Added[number]> {
+  return {
+    ...base,
+    slots: [...base.slots, ...added] as ReadonlyArray<Slots | Added[number]>,
+  } as RecipeDef<Slots | Added[number]>;
 }
 
 export type RecipeProps<T> = T extends { __recipeDef: infer D }
@@ -1140,7 +1665,6 @@ export const Style = {
   keyframes,
   transition,
   make,
-  forSlots,
   nest,
   child,
   descendant,
@@ -1163,6 +1687,10 @@ export const Style = {
   grid,
   layers,
   inLayer,
+  cssLayerOrder,
+  extractStatic,
+  mergeRecipes,
+  extendRecipeSlots,
   global,
   resolveGlobal,
   globalLayer,

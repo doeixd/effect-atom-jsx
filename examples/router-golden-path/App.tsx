@@ -1,5 +1,5 @@
-import { Atom, Component, Reactivity, Route, WithLayer, Async, Show, For, Loading, Errored, FetchResult } from "effect-atom-jsx";
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Atom, Component, Reactivity, Route, WithLayer, Async, Show, For, Loading, Errored } from "effect-atom-jsx";
+import { Effect, Layer, Schema, Context } from "effect";
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
 
@@ -21,14 +21,14 @@ type TeamNotFound = { readonly _tag: "TeamNotFound"; readonly id: string };
 
 // ─── Domain Services ──────────────────────────────────────────────────────────
 
-const UsersService = ServiceMap.Service<{
+const UsersService = Context.Service<{
   readonly list: () => Effect.Effect<ReadonlyArray<User>>;
   readonly byId: (id: string) => Effect.Effect<User, UserNotFound>;
   readonly search: (query: string) => Effect.Effect<ReadonlyArray<User>>;
   readonly update: (id: string, updates: { readonly name?: string; readonly bio?: string }) => Effect.Effect<User, UserNotFound>;
 }>("UsersService");
 
-const TeamsService = ServiceMap.Service<{
+const TeamsService = Context.Service<{
   readonly list: () => Effect.Effect<ReadonlyArray<Team>>;
   readonly byId: (id: string) => Effect.Effect<Team, TeamNotFound>;
 }>("TeamsService");

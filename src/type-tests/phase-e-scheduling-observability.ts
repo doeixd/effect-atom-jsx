@@ -42,6 +42,25 @@ type QueryEffectType = ReturnType<typeof query.effect>;
 declare const queryEffectValue: QueryEffectType;
 const _queryEffectAssignable: Effect.Effect<number, BridgeError, never> = queryEffectValue;
 
+const failingRetrySchedule = Schedule.recurs(1).pipe(
+  Schedule.addDelay(() => Effect.fail("retry-schedule-failed" as const)),
+);
+const queryWithFailingSchedule = defineQuery(
+  () =>
+    Effect.fail("query-failed" as const).pipe(
+      Effect.as(1),
+    ),
+  { retrySchedule: failingRetrySchedule },
+);
+declare const scheduledQueryEffect: ReturnType<
+  typeof queryWithFailingSchedule.effect
+>;
+const _scheduledQueryErrors: Effect.Effect<
+  number,
+  "query-failed" | "retry-schedule-failed" | BridgeError,
+  never
+> = scheduledQueryEffect;
+
 const mutation = defineMutation(
   (n: number) => n > 0 ? Effect.void : Effect.fail("bad" as const),
   {

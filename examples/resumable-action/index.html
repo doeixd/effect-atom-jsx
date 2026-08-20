@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Resumable action proof</title>
+  </head>
+  <body>
+    <main>
+      <h1>Resumable action proof</h1>
+      <p>The button is server-rendered. Its action module loads on first use.</p>
+      <div id="root"><!--__SSR_HTML__--></div>
+    </main>
+    <script>
+      window.__RESUME_TEST__ = {
+        actionImports: 0,
+        componentImports: 0,
+        loaderCalls: 0,
+        componentLoaderCalls: 0,
+        setupRuns: 0,
+        viewRuns: 0,
+        componentResources: 0,
+        componentDisposals: 0,
+        saves: [],
+        diagnostics: [],
+        ready: false,
+        disposed: false
+      };
+    </script>
+    <!--__RESUME_MANIFEST__-->
+    <script type="module" src="/client/bootstrap.ts"></script>
+  </body>
+</html>

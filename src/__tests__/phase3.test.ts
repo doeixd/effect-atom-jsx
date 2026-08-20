@@ -95,6 +95,142 @@ describe("AsyncResult combinators", () => {
     });
   });
 
+  // Ported from the deleted fetch model (RESULT_UNIFICATION_PLAN.md slice 3):
+  // core `Result` must be a capability superset before `FetchResult` goes away.
+  describe("builder", () => {
+    const build = <A, E>(r: AsyncResultType<A, E>) =>
+      AsyncResult.builder(r)
+        .onLoading(() => "loading")
+        .onRefreshing(() => "refreshing")
+        .onSuccess((v) => `ok:${String(v)}`)
+        .onStale((e, v) => `stale:${String(v)}:${String(e)}`)
+        .onFailure((e) => `err:${JSON.stringify(e)}`)
+        .onDefect((c) => `defect:${c}`)
+        .render();
+
+    it("dispatches every variant when all handlers are present", () => {
+      expect(build(AsyncResult.loading)).toBe("loading");
+      expect(build(AsyncResult.success(42))).toBe("ok:42");
+      expect(build(AsyncResult.failure("oops"))).toBe(`err:"oops"`);
+      expect(build(AsyncResult.stale("oops", 1))).toBe("stale:1:oops");
+      expect(build(AsyncResult.defect("boom"))).toBe("defect:boom");
+      expect(build(AsyncResult.refreshing<number, string>(AsyncResult.success(1)))).toBe("refreshing");
+    });
+
+    it("returns undefined for an unhandled variant", () => {
+      const only = AsyncResult.builder(AsyncResult.loading as AsyncResultType<number, string>)
+        .onSuccess((v) => v)
+        .render();
+      expect(only).toBeUndefined();
+    });
+
+    it("falls back from Refreshing to the wrapped variant's handler", () => {
+      const view = (r: AsyncResultType<number, string>) =>
+        AsyncResult.builder(r)
+          .onSuccess((v) => `ok:${v}`)
+          .onFailure((e) => `err:${JSON.stringify(e)}`)
+          .render();
+
+      expect(view(AsyncResult.refreshing<number, string>(AsyncResult.success(7)))).toBe("ok:7");
+      expect(view(AsyncResult.refreshing<number, string>(AsyncResult.failure("oops")))).toBe(`err:"oops"`);
+      expect(view(AsyncResult.refreshing<number, string>(AsyncResult.defect("boom"))))
+        .toBe(`err:{"_tag":"ResultDefectError","defect":"boom"}`);
+    });
+
+    it("falls back from Stale to onFailure with the typed error", () => {
+      const view = AsyncResult.builder(AsyncResult.stale("oops", 1))
+        .onFailure((e) => `err:${JSON.stringify(e)}`)
+        .render();
+      expect(view).toBe(`err:"oops"`);
+    });
+
+    it("falls back from Defect to onFailure with a tagged ResultDefectError", () => {
+      const view = AsyncResult.builder(AsyncResult.defect("boom") as AsyncResultType<number, string>)
+        .onFailure((e) => e)
+        .render();
+      expect(view).toEqual({ _tag: "ResultDefectError", defect: "boom" });
+    });
+
+    it("prefers the specific handler over the fallback", () => {
+      const view = AsyncResult.builder(AsyncResult.stale("oops", 1))
+        .onStale(() => "specific")
+        .onFailure(() => "fallback")
+        .render();
+      expect(view).toBe("specific");
+    });
+  });
+
+  describe("all", () => {
+    it("combines successes into a tuple", () => {
+      const r = AsyncResult.all([AsyncResult.success(1), AsyncResult.success("a")]);
+      expect(r._tag).toBe("Success");
+      if (r._tag === "Success") expect(r.value).toEqual([1, "a"]);
+    });
+
+    it("short-circuits Defect above everything else", () => {
+      const r = AsyncResult.all([
+        AsyncResult.failure("oops"),
+        AsyncResult.defect("boom"),
+        AsyncResult.loading,
+      ]);
+      expect(r._tag).toBe("Defect");
+    });
+
+    it("short-circuits Failure above Stale, Loading and Refreshing", () => {
+      const r = AsyncResult.all([
+        AsyncResult.loading,
+        AsyncResult.stale("stale-err", 1),
+        AsyncResult.failure("oops"),
+      ]);
+      expect(r._tag).toBe("Failure");
+      if (r._tag === "Failure") expect(r.error).toBe("oops");
+    });
+
+    it("keeps Stale data when every input still has data", () => {
+      const r = AsyncResult.all([
+        AsyncResult.success(1),
+        AsyncResult.stale("oops", 2),
+        AsyncResult.refreshing<number, string>(AsyncResult.success(3)),
+      ]);
+      expect(r._tag).toBe("Stale");
+      if (r._tag === "Stale") {
+        expect(r.error).toBe("oops");
+        expect(r.data).toEqual([1, 2, 3]);
+      }
+    });
+
+    it("degrades Stale to Failure when an input has no data", () => {
+      const r = AsyncResult.all([AsyncResult.loading, AsyncResult.stale("oops", 2)]);
+      expect(r._tag).toBe("Failure");
+      if (r._tag === "Failure") expect(r.error).toBe("oops");
+    });
+
+    it("prefers Loading over Refreshing", () => {
+      const r = AsyncResult.all([
+        AsyncResult.refreshing<number, string>(AsyncResult.success(1)),
+        AsyncResult.loading,
+      ]);
+      expect(r._tag).toBe("Loading");
+    });
+
+    it("keeps Refreshing data when every input still has data", () => {
+      const r = AsyncResult.all([
+        AsyncResult.success(1),
+        AsyncResult.refreshing<number, string>(AsyncResult.success(2)),
+      ]);
+      expect(r._tag).toBe("Refreshing");
+      if (r._tag === "Refreshing" && r.previous._tag === "Success") {
+        expect(r.previous.value).toEqual([1, 2]);
+      }
+    });
+
+    it("returns an empty success tuple for no inputs", () => {
+      const r = AsyncResult.all([]);
+      expect(r._tag).toBe("Success");
+      if (r._tag === "Success") expect(r.value).toEqual([]);
+    });
+  });
+
   describe("map", () => {
     it("transforms success value", () => {
       const r = AsyncResult.map(AsyncResult.success(2), (x) => x * 10);

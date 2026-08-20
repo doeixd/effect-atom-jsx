@@ -161,16 +161,40 @@ describe("View", () => {
     const hole = View.html(safe);
 
     expect(SafeHtml.isSafeHtml(safe)).toBe(true);
+    // Negative controls: the brand is the whole point, so a guard that answers
+    // `true` for everything must fail here.
+    expect(SafeHtml.isSafeHtml("<strong>trusted</strong>")).toBe(false);
+    expect(SafeHtml.isSafeHtml({ value: "<strong>trusted</strong>" })).toBe(false);
+    expect(SafeHtml.isSafeHtml(null)).toBe(false);
+    expect(SafeHtml.isSafeHtml(undefined)).toBe(false);
+
     expect(SafeHtml.unwrap(hole.value)).toBe("<strong>trusted</strong>");
     expect(hole.kind).toBe("view.hole.html");
   });
 
   it("creates typed runtime holes", () => {
+    // Carry the *payload* through, not just the discriminant: asserting only
+    // `.kind` passed for an implementation that dropped `value` entirely.
     expect(View.text("hello")).toEqual({ kind: "view.hole.text", value: "hello" });
-    expect(View.className(["primary", { active: true }]).kind).toBe("view.hole.class");
-    expect(View.style({ opacity: 1, color: "red" }).kind).toBe("view.hole.style");
-    expect(View.event<MouseEvent>(() => undefined).kind).toBe("view.hole.event");
-    expect(View.children(["child"]).kind).toBe("view.hole.children");
+    expect(View.className(["primary", { active: true }])).toEqual({
+      kind: "view.hole.class",
+      value: ["primary", { active: true }],
+    });
+    expect(View.style({ opacity: 1, color: "red" })).toEqual({
+      kind: "view.hole.style",
+      value: { opacity: 1, color: "red" },
+    });
+    expect(View.children(["child"])).toEqual({
+      kind: "view.hole.children",
+      value: ["child"],
+    });
+
+    const handler = () => undefined;
+    const eventHole = View.event<MouseEvent>(handler);
+    expect(eventHole.kind).toBe("view.hole.event");
+    // Note: `EventHole` carries its payload as `handler`, not `value` like
+    // every other hole. Pinned deliberately so the asymmetry is visible.
+    expect(eventHole.handler).toBe(handler);
   });
 
   it("creates typed tree metadata without changing node unwrapping", () => {

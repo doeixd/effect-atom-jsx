@@ -6,6 +6,7 @@ import {
   getRequestEvent,
   setRequestEvent,
 } from "../dom.js";
+import { onCleanup } from "../api.js";
 
 describe("SSR", () => {
   describe("isServer", () => {
@@ -30,6 +31,30 @@ describe("SSR", () => {
     it("renders a number", () => {
       const html = renderToString(() => 42);
       expect(html).toBe("42");
+    });
+
+    it("restores globals and disposes the reactive root when rendering throws", () => {
+      const globals = globalThis as Record<string, unknown>;
+      const hadDocument = Object.prototype.hasOwnProperty.call(globals, "document");
+      const hadNode = Object.prototype.hasOwnProperty.call(globals, "Node");
+      const previousDocument = globals.document;
+      const previousNode = globals.Node;
+      let cleaned = false;
+
+      expect(() =>
+        renderToString(() => {
+          onCleanup(() => {
+            cleaned = true;
+          });
+          throw new Error("render failed");
+        })
+      ).toThrow("render failed");
+
+      expect(cleaned).toBe(true);
+      expect(Object.prototype.hasOwnProperty.call(globals, "document")).toBe(hadDocument);
+      expect(Object.prototype.hasOwnProperty.call(globals, "Node")).toBe(hadNode);
+      expect(globals.document).toBe(previousDocument);
+      expect(globals.Node).toBe(previousNode);
     });
   });
 

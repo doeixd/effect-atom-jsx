@@ -1,7 +1,7 @@
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Cause, Context, Effect, Fiber, Layer, Option, Schema, Stream } from "effect";
 import * as Atom from "./Atom.js";
 import { createComponent } from "./dom.js";
-import { renderToString, setRequestEvent } from "./dom.js";
+import { getRequestEvent, renderToString, setRequestEvent } from "./dom.js";
 import { createSignal, useContext, type Accessor } from "./api.js";
 import {
   ManagedRuntimeContext,
@@ -12,21 +12,26 @@ import {
   type BridgeError,
   type MutationSupersededError,
 } from "./effect-ts.js";
-import * as FetchResult from "./Result.js";
 import * as Serialization from "./Serialization.js";
-import { SingleFlightTransportTag, type SingleFlightTransportService } from "./SingleFlightTransport.js";
+import { SingleFlightTransportError, SingleFlightTransportTag, type SingleFlightTransportService } from "./SingleFlightTransport.js";
 import * as ComponentRuntime from "./Component.js";
-import * as RouterRuntimeModule from "./RouterRuntime.js";
 import {
+  LoaderCacheTag,
   collectLoaderReactivityKeys,
-  clearLoaderCache,
-  getLoaderCacheEntry,
+  currentLoaderCacheStore,
   invalidateLoaderReactivity,
+  makeLoaderCacheStore,
   matchesLoaderReactivity,
   runCachedLoader,
+  runInLoaderCacheStore,
   setLoaderCacheEntry,
 } from "./router-runtime.js";
 import { beginReactivityInvalidationCapture, normalizeReactivityKeys, type ReactivityKeysInput } from "./reactivity-runtime.js";
+import {
+  extractPatternParams,
+  matchPatternSegments,
+  substitutePattern,
+} from "./route-pattern.js";
 import type { Component as ComponentType } from "./Component.js";
 
 export interface NavigateOptions {
@@ -35,13 +40,19 @@ export interface NavigateOptions {
 
 export interface RouterService {
   readonly url: Atom.ReadonlyAtom<URL>;
-  readonly navigate: (to: string, options?: NavigateOptions) => Effect.Effect<void>;
+  readonly navigate: (to: string, options?: NavigateOptions) => Effect.Effect<void, unknown>;
   readonly back: () => Effect.Effect<void>;
   readonly forward: () => Effect.Effect<void>;
   readonly preload?: (to: string) => Effect.Effect<void>;
+  /**
+   * Optional navigation error channel (DQ-031(b)): an optimistic write that
+   * fails its forked navigation reports here after rolling back — never
+   * swallowed. Optional so loader-less layers stay trivially implementable.
+   */
+  readonly onNavigationError?: (error: unknown) => Effect.Effect<void>;
 }
 
-export const RouterTag = ServiceMap.Service<RouterService>("Router");
+export const RouterTag = Context.Service<RouterService>("Router");
 
 export interface RouteContext<P = unknown, Q = unknown, H = unknown> {
   readonly prefix: Atom.ReadonlyAtom<string>;
@@ -55,9 +66,9 @@ export interface RouteContext<P = unknown, Q = unknown, H = unknown> {
   readonly loaderResult?: Atom.ReadonlyAtom<CoreResultType<unknown, unknown>>;
 }
 
-export const RouteContextTag = ServiceMap.Service<RouteContext<any, any, any>>("RouteContext");
-export const ServerRequestTag = ServiceMap.Service<{ readonly request: Request; readonly url: URL }>("ServerRequest");
-export const ServerResponseTag = ServiceMap.Service<{
+export const RouteContextTag = Context.Service<RouteContext<any, any, any>>("RouteContext");
+export const ServerRequestTag = Context.Service<{ readonly request: Request; readonly url: URL }>("ServerRequest");
+export const ServerResponseTag = Context.Service<{
   readonly setStatus: (status: number) => void;
   readonly setHeader: (name: string, value: string) => void;
   readonly appendHeader: (name: string, value: string) => void;
@@ -69,6 +80,7 @@ export const ServerResponseTag = ServiceMap.Service<{
 export const RouteMetaSymbol: unique symbol = Symbol.for("effect-atom-jsx/RouteMeta");
 export const RouteLoaderMetaSymbol: unique symbol = Symbol.for("effect-atom-jsx/RouteLoaderMeta");
 export const RouteNodeSymbol: unique symbol = Symbol.for("effect-atom-jsx/RouteNode");
+export const RouteRegistrySymbol: unique symbol = Symbol.for("effect-atom-jsx/RouteRegistry");
 
 export interface RouteMeta<P, Q, H> {
   readonly pattern: string;
@@ -109,7 +121,6 @@ interface UnifiedRouteInternals<P, Q, H, LD, LE> {
   readonly loaderErrorCases?: LoaderErrorCases<unknown, unknown>;
   readonly title?: StoredRouteTitle;
   readonly metaExtra?: StoredRouteMetaExtra;
-  readonly transition?: { readonly enter?: Effect.Effect<unknown>; readonly exit?: Effect.Effect<unknown> };
   readonly guards: ReadonlyArray<Effect.Effect<unknown, any, any>>;
   readonly loader?: {
     readonly data: LD;
@@ -124,7 +135,17 @@ interface UnifiedRouteInternals<P, Q, H, LD, LE> {
  * with route helpers like `Route.paramsSchema(...)`, `Route.loader(...)`, and
  * `Route.title(...)`.
  */
-export interface Route<C, P, Q, H, LD = void, LE = never> extends Pipeable<Route<C, P, Q, H, LD, LE>> {
+export interface Route<C, P, Q, H, LD = void, LE = never> {
+  // `this`-polymorphic pipe (ADR-006): a self-stamped `Component.route` sugar
+  // value is a ComponentType AND a Route. A `Pipeable<Route<...>>` would type
+  // `self` as the route facet ALONE, so an enhancer piped off the sugar never
+  // saw the component facet and typed the result non-callable. `this` carries
+  // the whole intersection into the enhancer's target-conditional result.
+  pipe(): this;
+  pipe<A>(ab: (self: this) => A): A;
+  pipe<A, B>(ab: (self: this) => A, bc: (a: A) => B): B;
+  pipe<A, B, C>(ab: (self: this) => A, bc: (a: A) => B, cd: (b: B) => C): C;
+  pipe<A, B, C, D>(ab: (self: this) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D): D;
   readonly [UnifiedRouteSymbol]: UnifiedRouteInternals<P, Q, H, LD, LE>;
   readonly component: C;
   readonly kind: UnifiedRouteKind;
@@ -137,7 +158,12 @@ export interface Route<C, P, Q, H, LD = void, LE = never> extends Pipeable<Route
  *
  * Only layout routes can accept `Route.children(...)`.
  */
-export interface LayoutRoute<C, P, Q, H, LD = void, LE = never> extends Route<C, P, Q, H, LD, LE> {
+export interface LayoutRoute<C, P, Q, H, LD = void, LE = never> extends Omit<Route<C, P, Q, H, LD, LE>, "pipe"> {
+  pipe(): this;
+  pipe<A>(ab: (self: this) => A): A;
+  pipe<A, B>(ab: (self: this) => A, bc: (a: A) => B): B;
+  pipe<A, B, C>(ab: (self: this) => A, bc: (a: A) => B, cd: (b: B) => C): C;
+  pipe<A, B, C, D>(ab: (self: this) => A, bc: (a: A) => B, cd: (b: B) => C, de: (c: C) => D): D;
   readonly kind: "layout";
   pipe(): LayoutRoute<C, P, Q, H, LD, LE>;
   pipe<A>(ab: (self: LayoutRoute<C, P, Q, H, LD, LE>) => A): A;
@@ -154,13 +180,10 @@ type SegmentPart<S extends string> =
   : S extends `:${infer Name}` ? { readonly [K in Name]: string }
   : {};
 
-type MergeParams<A, B> = {
-  readonly [K in keyof A | keyof B]: K extends keyof B
-    ? B[K]
-    : K extends keyof A
-      ? A[K]
-      : never;
-};
+// `Omit`-based so property modifiers survive: an optional segment (`:tab?`)
+// must stay OPTIONAL in the link params type — a mapped union of keys would
+// silently strip `?` and force callers to pass every optional param.
+type MergeParams<A, B> = Omit<A, keyof B> & B;
 
 export type ExtractParams<Path extends string> =
   string extends Path ? Record<string, string>
@@ -210,40 +233,120 @@ type PipeRouteNode<T extends AnyAppRouteNode, Ops extends readonly unknown[]> =
     ? PipeRouteNode<ApplyRouteNodePipeOp<T, Head>, Tail>
     : T;
 type AnyRouteAttachTarget = AnyAppRouteNode | ComponentType<any, any, any, any, any>;
-type RouteIdEnhancer =
-  & (<C, P, Q, H, LD, LE>(route: LayoutRoute<C, P, Q, H, LD, LE>) => LayoutRoute<C, P, Q, H, LD, LE>)
-  & (<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, Q, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
-  & (<C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
-  & RouteNodePipeOp<"identity">;
-type RouteParamsSchemaEnhancer<P> =
-  & (<Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<any, Q, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
-  & (<C, Q, H, LD, LE>(route: Route<C, any, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
-  & RouteNodePipeOp<"params", P>;
-type RouteQuerySchemaEnhancer<Q> =
-  & (<P, H, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, any, H, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
-  & (<C, P, H, LD, LE>(route: Route<C, P, any, H, LD, LE>) => Route<C, P, Q, H, LD, LE>)
-  & RouteNodePipeOp<"query", Q>;
-type RouteHashSchemaEnhancer<H> =
-  & (<P, Q, C extends ComponentType<any, any, any, any, any>, A, LE>(route: AppRouteNode<P, Q, any, C, A, LE>) => AppRouteNode<P, Q, H, C, A, LE>)
-  & (<C, P, Q, LD, LE>(route: Route<C, P, Q, any, LD, LE>) => Route<C, P, Q, H, LD, LE>)
-  & RouteNodePipeOp<"hash", H>;
+type AnyComponentType = ComponentType<any, any, any, any, any>;
+
+// ── The ADR-006 collapse ─────────────────────────────────────────────────────
+//
+// Enhancers used to be overload-INTERSECTION types dispatching on the target
+// facet (node / unified route / component). TypeScript's contextual inference
+// uses only the LAST call signature of an intersection, so which facet a
+// `.pipe(...)` chain typed to depended on the chain's SHAPE — one op vs two
+// ops changed the result type (the "KNOWN INFERENCE GAP" below, now closed).
+// The collapse: every enhancer is ONE generic call signature whose result is
+// target-CONDITIONAL. Inference is then arity- and order-independent by
+// construction. Each enhancer carries its `RouteNodePipeOp` brand as a MEMBER
+// of the same object type rather than as an intersection: intersecting a brand
+// with a generic call signature stops TypeScript from instantiating that
+// signature in the context of `pipe`, which silently re-opens the same gap.
+
+/** Every value an enhancer can attach to. */
+type EnhancerTarget = AnyAppRouteNode | AnyRoute | AnyComponentType;
+
+/**
+ * Refresh the ROUTE facet of a self-stamped `Component.route` sugar value
+ * while preserving the component facet (with `R`/`E` folded into its
+ * requirement and error channels) and every extra decoration on the value.
+ */
+type RefreshSugar<T, R, E, P, Q, H, LD, LE> =
+  T extends ComponentType<infer Props, infer Req, infer Err, infer B, infer SC>
+    ? ComponentType<Props, Req | R, Err | E, B, SC>
+      & Omit<T, keyof ComponentType<any, any, any, any, any> | typeof UnifiedRouteSymbol | "pipe" | "kind" | "path" | "children" | "component">
+      & Route<ComponentType<Props, Req | R, Err | E, B, SC>, P, Q, H, LD, LE>
+    : never;
+
+type IdentityEnhance<T> = T;
+
+type RouteIdEnhancer = {
+  <T>(target: T): IdentityEnhance<T>;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "identity"; readonly value: never };
+};
+type RouteParamsSchemaEnhancer<P> = {
+  <T>(target: T):
+    T extends AnyAppRouteNode ? WithNodeParams<T, P>
+    : T extends Route<infer C, any, infer Q, infer H, infer LD, infer LE>
+      ? (T extends AnyComponentType ? RefreshSugar<T, never, never, P, Q, H, LD, LE>
+        : Route<C, P, Q, H, LD, LE>)
+    : T;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "params"; readonly value: P };
+};
+type RouteQuerySchemaEnhancer<Q> = {
+  <T>(target: T):
+    T extends AnyAppRouteNode ? WithNodeQuery<T, Q>
+    : T extends Route<infer C, infer P, any, infer H, infer LD, infer LE>
+      ? (T extends AnyComponentType ? RefreshSugar<T, never, never, P, Q, H, LD, LE>
+        : Route<C, P, Q, H, LD, LE>)
+    : T;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "query"; readonly value: Q };
+};
+type RouteHashSchemaEnhancer<H> = {
+  <T>(target: T):
+    T extends AnyAppRouteNode ? WithNodeHash<T, H>
+    : T extends Route<infer C, infer P, infer Q, any, infer LD, infer LE>
+      ? (T extends AnyComponentType ? RefreshSugar<T, never, never, P, Q, H, LD, LE>
+        : Route<C, P, Q, H, LD, LE>)
+    : T;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "hash"; readonly value: H };
+};
 type RouteChildrenEnhancer =
   & (<T extends AnyLayoutRoute | AnyAppRouteNode>(route: T) => T)
   & RouteNodePipeOp<"identity">;
 type RouteTarget = AnyAppRouteNode | AnyRoute;
 type RouteTargetComponent = ComponentType<any, any, any, any, any> | AnyRoute;
-type GuardEnhancer<Req, E> = UnifiedGuardEnhancer<Req, E>
-  & (<Props, R0, E0, B, SlotContract>(component: ComponentType<Props, R0, E0, B, SlotContract>) => ComponentType<Props, R0 | Req, E0 | E, B, SlotContract>);
-type TitleRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(route: T) => T)
-  & NodeTitleEnhancer<AnyAppRouteNode>
-  & TitleEnhancer<P, A, E>;
-type MetaRouteEnhancer<P, A, E> = (<T extends Route<any, P, any, any, A, E>>(route: T) => T)
-  & NodeMetaEnhancer<AnyAppRouteNode>
-  & MetaEnhancer<P, A, E>;
-type LoaderRouteEnhancer<P, A, E, R> = LoaderEnhancer<P, A, E, R>
-  & NodeLoaderEnhancer<AnyAppRouteNode, A, E, R>
-  & (<C, Q, H>(route: Route<C, P, Q, H, void, never>) => Route<ComponentWithAddedReqE<C, R, E>, P, Q, H, A, E>)
-  & RouteNodePipeOp<"loader", { readonly data: A; readonly error: E }>;
+// The component form is identity-typed: the legacy branch mutates and returns
+// the same object, so preserving the caller's full intersection type (routed
+// metadata, loader tags) matters more than reflecting Req/E enrichment, which
+// the unified form carries.
+type GuardEnhancer<Req, E> = {
+  <T>(target: T):
+    T extends AnyAppRouteNode ? T
+    : T extends Route<infer C, infer P, infer Q, infer H, infer LD, infer LE>
+      ? (T extends AnyComponentType ? RefreshSugar<T, Req, E, P, Q, H, LD, LE>
+        : Route<ComponentWithAddedReqE<C, Req, E>, P, Q, H, LD, LE>)
+    // The legacy component branch mutates and returns the same object, so
+    // identity typing preserves the caller's full intersection.
+    : T;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "identity"; readonly value: never };
+};
+// Title and meta stamp metadata without changing any type axis: identity on
+// EVERY facet, which is what makes them immune to chain shape.
+type TitleRouteEnhancer<P, A, E> = {
+  <T>(target: T): IdentityEnhance<T>;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "identity"; readonly value: never };
+};
+type MetaRouteEnhancer<P, A, E> = {
+  <T>(target: T): IdentityEnhance<T>;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "identity"; readonly value: never };
+};
+// ADR-006 collapse (was: "KNOWN INFERENCE GAP"): the loader enhancer is one
+// generic call signature with a target-conditional result — node gets a
+// loader-typed node, self-stamped `Component.route` sugar keeps its callable
+// component facet (with the loader's R/E folded in) and refreshes its route
+// facet, detached unified routes take the pure route result, and plain
+// components get the legacy loader-tagged shape. Chain shape and pipe arity
+// no longer change the type, so `renderEffect(loaderified sugar)` and
+// `runMatchedLoaders(loaderified sugar)` infer without casts.
+type LoaderApply<T, A, E, R> =
+  T extends AnyAppRouteNode ? WithNodeLoader<T, A, E>
+  : T extends Route<infer C, infer P2, infer Q, infer H, any, any>
+    ? (T extends AnyComponentType
+        ? RefreshSugar<T, R, E, P2, Q, H, A, E> & LoaderTaggedComponent<A, E>
+        : Route<ComponentWithAddedReqE<C, R, E>, P2, Q, H, A, E>)
+  : T extends AnyComponentType ? WithLoaderComponent<T, R, E, A, E>
+  : T;
+type LoaderRouteEnhancer<P, A, E, R> = {
+  <T>(target: T): LoaderApply<T, A, E, R>;
+  readonly [RouteNodePipeSymbol]: { readonly kind: "loader"; readonly value: { readonly data: A; readonly error: E } };
+};
 
 export type MaterializedAppRoute<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE> =
   C extends ComponentType<infer Props, infer Req, infer Err, infer B, infer SlotContract>
@@ -270,6 +373,8 @@ export interface AppRouteNodeDef<P = unknown, Q = unknown, H = unknown, C extend
 
 export interface AppRouteNodeState<P = unknown, Q = unknown, H = unknown, C extends ComponentType<any, any, any, any, any> = ComponentType<any, any, any, any, any>, A = unknown, LE = unknown> {
   readonly materialized?: MaterializedAppRoute<P, Q, H, C, A, LE>;
+  /** Joined path the cached materialization was produced under. */
+  readonly materializedPath?: string;
 }
 
 export interface AppRouteNode<P = unknown, Q = unknown, H = unknown, C extends ComponentType<any, any, any, any, any> = ComponentType<any, any, any, any, any>, A = unknown, LE = unknown> {
@@ -308,8 +413,6 @@ export interface LoaderOptions {
   readonly cacheTime?: number | string;
   readonly staleWhileRevalidate?: boolean;
   readonly reactivityKeys?: ReactivityKeysInput;
-  readonly revalidateOnFocus?: boolean;
-  readonly revalidateOnReconnect?: boolean;
   readonly timeout?: number | string;
 }
 
@@ -348,8 +451,153 @@ export type SingleFlightResponse<A, E = unknown> =
   | { readonly ok: true; readonly payload: SingleFlightPayload<A> }
   | { readonly ok: false; readonly error: E };
 
+// ─── Single-flight wire contract (R5.1) ─────────────────────────────────────
+//
+// The response envelope is schema-validated at the trust boundary, and loader
+// results cross the wire through the canonical `Serialization.ResultWire` projection — the
+// same encoding the SSR loader handoff uses — instead of `JSON.stringify` on a
+// core `Result`. Values travel through the sparse rich-value tree, so a `Date`
+// a loader produced on the server is a `Date` again in the client cache.
+
+/** The transport failed: network, endpoint, or the action itself. */
+export class SingleFlightInvokeError extends Schema.TaggedErrorClass<SingleFlightInvokeError>(
+  "@effect-atom-jsx/SingleFlightInvokeError",
+)("SingleFlightInvokeError", {
+  message: Schema.String,
+  cause: Schema.optional(Schema.Unknown),
+}) {}
+
+/**
+ * The transport succeeded but the response failed schema validation.
+ *
+ * Distinct from {@link SingleFlightInvokeError} because the remedies differ:
+ * a malformed payload is deploy skew or tampering, a failed transport is a
+ * retry.
+ */
+export class SingleFlightDecodeError extends Schema.TaggedErrorClass<SingleFlightDecodeError>(
+  "@effect-atom-jsx/SingleFlightDecodeError",
+)("SingleFlightDecodeError", {
+  message: Schema.String,
+}) {}
+
+export const SingleFlightWireLoaderEntrySchema = Schema.Struct({
+  routeId: Schema.String,
+  result: Serialization.ResultWire,
+});
+
+export const SingleFlightWirePayloadSchema = Schema.Struct({
+  // `undefined` mutation values (void actions) are dropped by JSON, so the
+  // field is optional on the wire.
+  mutation: Schema.optional(Schema.Unknown),
+  url: Schema.String,
+  loaders: Schema.Array(SingleFlightWireLoaderEntrySchema),
+});
+
+/**
+ * Wire version of the single-flight envelope (`DQ-091`, closed 2026-08-17).
+ * Bump on any envelope-shape change. The version rides on the ENVELOPE, not
+ * the payload, so a client from build N talking to a server from build N+1
+ * fails closed with a decode error instead of misreading the shape — the
+ * same rule the loader handoff already follows.
+ */
+export const singleFlightWireVersion = 1 as const;
+
+export const SingleFlightResponseSchema = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(singleFlightWireVersion),
+    ok: Schema.Literal(true),
+    payload: SingleFlightWirePayloadSchema,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(singleFlightWireVersion),
+    ok: Schema.Literal(false),
+    error: Schema.Unknown,
+  }),
+]);
+
+/** The schema-validated response shape a single-flight handler emits. */
+export type SingleFlightWireResponse = typeof SingleFlightResponseSchema.Type;
+
+/** Project one in-memory payload onto the validated wire envelope. */
+export function encodeSingleFlightPayload(
+  payload: SingleFlightPayload<unknown>,
+): typeof SingleFlightWirePayloadSchema.Type {
+  return {
+    mutation: Serialization.encodeWireValue(payload.mutation),
+    url: payload.url,
+    loaders: payload.loaders.map((entry) => ({
+      routeId: entry.routeId,
+      result: Serialization.resultToWire(entry.result),
+    })),
+  };
+}
+
+/**
+ * Validate one raw single-flight response at the trust boundary and rehydrate
+ * its payload.
+ *
+ * Validation goes through the injected `Serialization` service when present
+ * (falling back to the schema codec), so a transport with a richer wire format
+ * can swap the decoder without touching call sites. A structurally invalid
+ * response is a typed {@link SingleFlightDecodeError} — never a defect — and
+ * nothing is hydrated from it.
+ */
+export function decodeSingleFlightResponse<A>(
+  raw: unknown,
+): Effect.Effect<
+  SingleFlightPayload<A>,
+  SingleFlightInvokeError | SingleFlightDecodeError
+> {
+  return Effect.gen(function* () {
+    // DQ-080 decided EXACTLY two arms. An envelope carrying both (`ok: true`
+    // plus an `error`, or `ok: false` plus a `payload`) is internally
+    // inconsistent — tampering or a broken proxy — and must fail closed
+    // rather than having the surplus arm silently stripped by the schema
+    // and the remaining one believed.
+    if (typeof raw === "object" && raw !== null) {
+      const record = raw as { readonly error?: unknown; readonly payload?: unknown };
+      if (record.error !== undefined && record.payload !== undefined) {
+        return yield* new SingleFlightDecodeError({
+          message:
+            "Single-flight response carries both envelope arms; the two-arm contract admits exactly one.",
+        });
+      }
+    }
+    const serialization = yield* Effect.serviceOption(Serialization.Tag);
+    const decoded = yield* (serialization._tag === "Some"
+      ? serialization.value.deserialize(
+          SingleFlightResponseSchema,
+          JSON.stringify(raw),
+        )
+      : Schema.decodeUnknownEffect(SingleFlightResponseSchema)(raw)
+    ).pipe(
+      Effect.catchTag("SchemaError", (error) =>
+        Effect.fail(
+          new SingleFlightDecodeError({
+            message: `Single-flight response failed wire validation: ${String(error)}`,
+          }),
+        ),
+      ),
+    );
+    if (!decoded.ok) {
+      return yield* new SingleFlightInvokeError({
+        message: "Single-flight action failed",
+        cause: decoded.error,
+      });
+    }
+    return {
+      mutation: Serialization.decodeWireValue(decoded.payload.mutation) as A,
+      url: decoded.payload.url,
+      loaders: decoded.payload.loaders.map((entry) => ({
+        routeId: entry.routeId,
+        result: Serialization.resultFromWire(entry.result),
+      })),
+    };
+  });
+}
+
 /** Runtime integration point for transparent single-flight transport support. */
-export { SingleFlightTransportTag, type SingleFlightTransportService };
+export { SingleFlightTransportError, SingleFlightTransportTag, type SingleFlightTransportService };
 
 /**
  * Mutation-handle facade for single-flight route mutations.
@@ -374,7 +622,7 @@ export interface SingleFlightMutationHandle<Args extends ReadonlyArray<unknown>,
  * - `setLoaders` seeds canonical loader payloads directly and can skip reruns
  */
 export interface SingleFlightOptions<Args extends ReadonlyArray<unknown>, A> {
-  readonly app?: AnyRoute | AnyAppRouteNode;
+  readonly app?: RouteSource;
   readonly reactivityKeys?: ReactivityKeysInput;
   readonly onSuccess?: (result: A, args: Args) => Effect.Effect<void>;
   readonly target?: string | URL | ((result: A, args: Args, currentUrl: URL) => string | URL | undefined);
@@ -383,7 +631,10 @@ export interface SingleFlightOptions<Args extends ReadonlyArray<unknown>, A> {
   readonly setLoaders?: (result: A, args: Args, targetUrl: URL) => ReadonlyArray<SingleFlightLoaderEntry>;
 }
 
-type LoaderFn = (params: unknown, deps?: { readonly parent: <A>() => A }) => Effect.Effect<unknown, unknown, unknown>;
+// Loaders are stored after their requirements are erased; the runtime provides
+// services before running, so the stored shape carries `R = never`. Typing it
+// this way lets loader call sites feed `runCachedLoader` without re-casting.
+type LoaderFn = (params: unknown, deps?: { readonly parent: <A>() => A }) => Effect.Effect<unknown, unknown>;
 type ErrorTag<E> = E extends { readonly _tag: infer K extends string }
   ? K
   : E extends { _tag: infer K extends string }
@@ -397,7 +648,8 @@ export type LoaderErrorCases<P = unknown, E = unknown> = {
   readonly _?: (error: E, params: P) => unknown;
 };
 
-type RegisteredRoute = {
+/** A route paired with its resolved metadata (registry / tree projection). */
+export type RegisteredRoute = {
   readonly component: ComponentType<any, any, any, any, any>;
   readonly meta: RouteMeta<any, any, any>;
 };
@@ -412,16 +664,55 @@ type RoutedMetadataCarrier<P = unknown, Q = unknown, H = unknown, A = unknown, E
   readonly [RouteLoaderMetaSymbol]?: RouteLoaderMeta<A, E>;
 };
 
-type RouteDecoratedComponent<P = unknown, Q = unknown, H = unknown, A = unknown, E = unknown> = ComponentType<any, any, any, any, any> & RoutedMetadataCarrier<P, Q, H, A, E> & {
+/**
+ * The route decorations stamped directly onto a component value.
+ *
+ * This is the single declaration site for the string-keyed route decoration
+ * fields. `RouteDecorationFields` below must list every key of this type, and
+ * component wrappers copy the decorations by iterating that list — so adding a
+ * field here cannot silently be dropped by a wrapper.
+ */
+type RouteDecorationRecord<P = unknown, A = unknown, E = unknown> = {
   __routeLoader?: LoaderFn;
   __routeLoaderOptions?: LoaderOptions;
   __routeLoaderError?: LoaderErrorCases<any, any>;
   __routeTitle?: string | ((params: P, loaderData: A | undefined, loaderResult: CoreResultType<A, E> | undefined) => string);
   __routeMetaExtra?: RouteMetaRecord | ((params: P, loaderData: A | undefined, loaderResult: CoreResultType<A, E> | undefined) => RouteMetaRecord);
-  __routeTransition?: { readonly enter?: Effect.Effect<unknown>; readonly exit?: Effect.Effect<unknown> };
   __routeSitemapParams?: () => Effect.Effect<ReadonlyArray<any>>;
   __routeGuards?: ReadonlyArray<Effect.Effect<unknown, any, any>>;
 };
+
+/** Canonical, exhaustive list of the string-keyed route decoration fields. */
+export const RouteDecorationFields = [
+  "__routeLoader",
+  "__routeLoaderOptions",
+  "__routeLoaderError",
+  "__routeTitle",
+  "__routeMetaExtra",
+  "__routeSitemapParams",
+  "__routeGuards",
+] as const satisfies ReadonlyArray<keyof RouteDecorationRecord>;
+
+/** Compile-time proof that `RouteDecorationFields` misses no decoration. */
+type _MissingRouteDecorationField = Exclude<
+  keyof RouteDecorationRecord,
+  typeof RouteDecorationFields[number]
+>;
+type _AssertNoMissingRouteDecorationField = [_MissingRouteDecorationField] extends [never] ? true
+  : { readonly __missingRouteDecorationFields: _MissingRouteDecorationField };
+const _assertRouteDecorationFieldsExhaustive: _AssertNoMissingRouteDecorationField = true;
+void _assertRouteDecorationFieldsExhaustive;
+
+/** Canonical, exhaustive list of the symbol-keyed route metadata carriers. */
+export const RouteDecorationSymbols = [
+  RouteMetaSymbol,
+  RouteLoaderMetaSymbol,
+] as const;
+
+type RouteDecoratedComponent<P = unknown, Q = unknown, H = unknown, A = unknown, E = unknown> =
+  & ComponentType<any, any, any, any, any>
+  & RoutedMetadataCarrier<P, Q, H, A, E>
+  & RouteDecorationRecord<P, A, E>;
 
 function pipeSelf<T>(self: T, fns: ReadonlyArray<(value: unknown) => unknown>): unknown {
   return fns.reduce<unknown>((acc, fn) => fn(acc), self);
@@ -429,10 +720,6 @@ function pipeSelf<T>(self: T, fns: ReadonlyArray<(value: unknown) => unknown>): 
 
 function isUnifiedRoute(value: unknown): value is AnyRoute {
   return (typeof value === "object" || typeof value === "function") && value !== null && UnifiedRouteSymbol in value;
-}
-
-function isRegistrableComponent(value: unknown): value is ComponentType<any, any, any, any, any> {
-  return typeof value === "function" && ComponentRuntime.Component.TypeId in value;
 }
 
 function makeUnifiedRoute<C, P, Q, H, LD = void, LE = never>(
@@ -446,10 +733,8 @@ function makeUnifiedRoute<C, P, Q, H, LD = void, LE = never>(
     path: internals.meta.pattern,
     children: internals.children,
   } as Route<C, P, Q, H, LD, LE>;
+  // R2: constructing a route is side-effect free — no global registration.
   route.pipe = ((...fns: ReadonlyArray<(value: unknown) => unknown>) => pipeSelf(route, fns)) as Route<C, P, Q, H, LD, LE>["pipe"];
-  if (isRegistrableComponent(component)) {
-    registerRoute(component, internals.meta);
-  }
   return route;
 }
 
@@ -458,7 +743,7 @@ function copyUnifiedRoute<C, P, Q, H, LD, LE, P2 = P, Q2 = Q, H2 = H, LD2 = LD, 
   patch: Partial<UnifiedRouteInternals<P2, Q2, H2, LD2, LE2>>,
 ): Route<C, P2, Q2, H2, LD2, LE2> {
   const current = route[UnifiedRouteSymbol];
-  return makeUnifiedRoute(route.component, {
+  const next: UnifiedRouteInternals<P2, Q2, H2, LD2, LE2> = {
     kind: (patch.kind ?? current.kind) as UnifiedRouteKind,
     meta: (patch.meta ?? current.meta) as RouteMeta<P2, Q2, H2>,
     children: (patch.children ?? current.children) as ReadonlyArray<AnyRoute>,
@@ -467,10 +752,55 @@ function copyUnifiedRoute<C, P, Q, H, LD, LE, P2 = P, Q2 = Q, H2 = H, LD2 = LD, 
     loaderErrorCases: (patch.loaderErrorCases ?? current.loaderErrorCases) as LoaderErrorCases<unknown, unknown> | undefined,
     title: (patch.title ?? current.title) as StoredRouteTitle | undefined,
     metaExtra: (patch.metaExtra ?? current.metaExtra) as StoredRouteMetaExtra | undefined,
-    transition: patch.transition ?? current.transition,
     guards: (patch.guards ?? current.guards) as ReadonlyArray<Effect.Effect<unknown, any, any>>,
     loader: (patch.loader ?? current.loader) as UnifiedRouteInternals<P2, Q2, H2, LD2, LE2>["loader"],
-  });
+  };
+  if ((route as { readonly component?: unknown }).component === route) {
+    // Self-stamped sugar (`Component.route`, R3): the route IS the component,
+    // so enhancers evolve the stamp in place — the legacy branch has always
+    // mutated the component — and mirror into the legacy `__route*`
+    // projection the sugar's own setup path reads. Returning the same object
+    // keeps the value usable directly in JSX.
+    const routed = route as unknown as RouteDecoratedComponent<any, any, any, any, any> & Record<PropertyKey, unknown>;
+    routed[UnifiedRouteSymbol] = next;
+    routed["kind"] = next.kind;
+    routed["path"] = next.meta.pattern;
+    routed["children"] = next.children;
+    if (next.loaderFn !== undefined) routed.__routeLoader = next.loaderFn as never;
+    if (next.loaderOptions !== undefined) routed.__routeLoaderOptions = next.loaderOptions;
+    if (next.loaderErrorCases !== undefined) routed.__routeLoaderError = next.loaderErrorCases;
+    if (next.title !== undefined) routed.__routeTitle = next.title as never;
+    if (next.metaExtra !== undefined) routed.__routeMetaExtra = next.metaExtra as never;
+    routed.__routeGuards = next.guards;
+    return route as unknown as Route<C, P2, Q2, H2, LD2, LE2>;
+  }
+  return makeUnifiedRoute(route.component, next);
+}
+
+/**
+ * Stamp a `Component.route(...)` result as a self-routed unified value: the
+ * route's `component` is the routed component itself (R3, `DQ-030`). This is
+ * what makes the sugar produce the same identity `Route.path` would — it is
+ * visible to `collectAll`, `runMatchedLoaders`, and the runtime — while
+ * remaining a component.
+ *
+ * @internal
+ */
+export function stampSelfRoute(
+  component: object,
+  meta: RouteMeta<any, any, any>,
+): void {
+  const routed = component as RouteDecoratedComponent<any, any, any, any, any> & Record<PropertyKey, unknown>;
+  routed[UnifiedRouteSymbol] = {
+    kind: "path",
+    meta,
+    children: [],
+    guards: routed.__routeGuards ?? [],
+  } satisfies UnifiedRouteInternals<any, any, any, any, any>;
+  routed["component"] = component;
+  routed["kind"] = "path";
+  routed["path"] = meta.pattern;
+  routed["children"] = [];
 }
 
 function isRouteNode(value: unknown): value is AppRouteNode<any, any, any, any, any, any> {
@@ -508,18 +838,30 @@ function hasTag(error: unknown, tag: string): error is { readonly _tag: string }
   return typeof error === "object" && error !== null && "_tag" in error && (error as { readonly _tag: string })._tag === tag;
 }
 
+/**
+ * Last-known-good loader data, if any.
+ *
+ * `Stale` is a *failure* carrying the data from the last success, which is
+ * precisely the case where a route should keep rendering what the user already
+ * has. Reading only `Success` here meant a failed loader refresh rendered as
+ * *no data* — the keep-stale-on-failure gap recorded in
+ * `RESULT_UNIFICATION_PLAN.md` finding 3.
+ */
 function loaderSuccess(result: UnknownRouteResult | undefined): { readonly value: unknown } | undefined {
   if (!result) return undefined;
   if (result._tag === "Success") return { value: result.value };
+  if (result._tag === "Stale") return { value: result.data };
+  // `Refreshing.previous` is typed to exclude `Stale`, so a refresh of stale
+  // data is represented as `Refreshing(Success(data))` and is covered here.
   if (result._tag === "Refreshing" && result.previous._tag === "Success") return { value: result.previous.value };
   return undefined;
 }
 
 function toComponentRouteOptions<P, Q, H>(node: AppRouteNode<P, Q, H, any, any, any>) {
   return {
-    params: node.options.params as Schema.Schema<P> | undefined,
-    query: node.options.query as Schema.Schema<Q> | undefined,
-    hash: node.options.hash as Schema.Schema<H> | undefined,
+    params: node.options.params,
+    query: node.options.query,
+    hash: node.options.hash,
     exact: node.options.exact,
   };
 }
@@ -562,6 +904,21 @@ export function routeMetaOf<C extends ComponentType<any, any, any, any, any>>(
 
 function setRouteMeta<P, Q, H>(component: RoutedMetadataCarrier<P, Q, H>, meta: RouteMeta<P, Q, H>): void {
   (component as RoutedMetadataCarrier<P, Q, H> & { [RouteMetaSymbol]: RouteMeta<P, Q, H> })[RouteMetaSymbol] = meta;
+  // A self-stamped `Component.route` sugar value carries the same meta in its
+  // unified stamp; the two projections must never disagree (R3).
+  const stamped = component as unknown as {
+    readonly component?: unknown;
+    [UnifiedRouteSymbol]?: UnifiedRouteInternals<any, any, any, any, any>;
+  };
+  if (
+    stamped[UnifiedRouteSymbol] !== undefined
+    && stamped.component === component
+  ) {
+    stamped[UnifiedRouteSymbol] = {
+      ...stamped[UnifiedRouteSymbol],
+      meta: meta as RouteMeta<any, any, any>,
+    };
+  }
 }
 
 function setRouteLoaderMeta<A, E>(component: RoutedMetadataCarrier<any, any, any, A, E>): void {
@@ -649,11 +1006,23 @@ function withNodeChildren<P, Q, H, C extends ComponentType<any, any, any, any, a
 
 function materializeNode<P, Q, H, C extends ComponentType<any, any, any, any, any>, A, LE>(
   node: AppRouteNode<P, Q, H, C, A, LE>,
+  parentFullPath = "",
 ): MaterializedAppRoute<P, Q, H, C, A, LE> {
+  // Bind the component to the joined path so render/match identity matches the
+  // tree/loader identity. joinRoutePath is the same per-segment join
+  // routePathOfTarget performs, so both identities stay byte-identical.
+  const fullPath = joinRoutePath(parentFullPath, node.path, node.kind);
+  // Tree materialization (a real parent path) is authoritative for the cached
+  // identity. Standalone calls (componentOf/link, parent "") defer to any
+  // existing cache, so a standalone materialization before Route.define is
+  // replaced by the tree's joined identity — and never replaces it back.
   if (node.state.materialized) {
-    return node.state.materialized as MaterializedAppRoute<P, Q, H, C, A, LE>;
+    const cachedPath = node.state.materializedPath;
+    if (cachedPath === fullPath || parentFullPath === "") {
+      return node.state.materialized as MaterializedAppRoute<P, Q, H, C, A, LE>;
+    }
   }
-  const routed = node.component.pipe(ComponentRuntime.route(node.path, toComponentRouteOptions(node)));
+  const routed = node.component.pipe(ComponentRuntime.route(fullPath, toComponentRouteOptions(node)));
   let current = asRouteComponent<P, Q, H, A, LE>(routed);
   for (const enhancer of node.enhancers) {
     current = asRouteComponent<P, Q, H, A, LE>(enhancer(current));
@@ -661,13 +1030,16 @@ function materializeNode<P, Q, H, C extends ComponentType<any, any, any, any, an
   if (node.options.id) {
     const meta = getRouteMeta(current);
     if (meta) {
-      const withId = { ...meta, id: node.options.id };
-      setRouteMeta(current, withId);
-      routeRegistryById.set(node.options.id, { component: current, meta: withId });
+      setRouteMeta(current, { ...meta, id: node.options.id });
     }
   }
   const materialized = current as MaterializedAppRoute<P, Q, H, C, A, LE>;
-  (node.state as { materialized?: MaterializedAppRoute<P, Q, H, C, A, LE> }).materialized = materialized;
+  const state = node.state as {
+    materialized?: MaterializedAppRoute<P, Q, H, C, A, LE>;
+    materializedPath?: string;
+  };
+  state.materialized = materialized;
+  state.materializedPath = fullPath;
   return materialized;
 }
 
@@ -680,15 +1052,13 @@ type WithLoaderComponent<C, RAdd, EAdd, A, E> = C extends ComponentType<infer Pr
 
 type RouteComponentEnhancer<I extends ComponentType<any, any, any, any, any>, O extends ComponentType<any, any, any, any, any>> = (component: I) => O;
 
-type LoaderEnhancer<P, A, E, R> =
-  & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, any, any>) => AppRouteNode<P, Q, H, C, A, E>)
-  & (<C extends RoutedComponent<P, any, any> & ComponentType<any, any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>)
-  & (<C extends ComponentType<any, any, any, any, any>>(route: C) => WithLoaderComponent<C, R, E, A, E>);
+// ADR-006 collapse: both loader-enhancer aliases share the ONE conditional
+// call signature; the node flavor only differs in how the loader fn's params
+// were typed at the `Route.loader<typeof Node>(...)` call.
+type LoaderEnhancer<P, A, E, R> = LoaderRouteEnhancer<P, A, E, R>;
 
 type NodeLoaderEnhancer<T extends AnyAppRouteNode, A, E, R> =
-  & LoaderEnhancer<RouteNodeParamsOf<T>, A, E, R>
-  & (<RouteNode extends T>(route: RouteNode) => WithNodeLoader<RouteNode, A, E>)
-  & RouteNodePipeOp<"loader", { readonly data: A; readonly error: E }>;
+  LoaderRouteEnhancer<RouteNodeParamsOf<T>, A, E, R>;
 
 type TitleEnhancer<P, A, E> =
   & (<Q, H, C extends ComponentType<any, any, any, any, any>>(route: AppRouteNode<P, Q, H, C, A, E>) => AppRouteNode<P, Q, H, C, A, E>)
@@ -732,55 +1102,72 @@ type UnifiedTitleEnhancer<P, A, E> =
 type UnifiedMetaEnhancer<P, A, E> =
   <C, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>;
 
-type UnifiedTransitionEnhancer =
-  <C, P, Q, H, LD, LE>(route: Route<C, P, Q, H, LD, LE>) => Route<C, P, Q, H, LD, LE>;
-
-const routeRegistry = new Map<string, RegisteredRoute>();
-const routeRegistryById = new Map<string, RegisteredRoute>();
-let routeIdSeq = 0;
-
-function makeRouteId(): string {
-  routeIdSeq += 1;
-  return `route-${routeIdSeq}`;
+/**
+ * An explicit registry of component-first routes.
+ *
+ * R2 removed the module-global route registry: constructing a route has no side
+ * effects, and every loader/sitemap/hydration entry point takes its routes from
+ * a **route source** — either a route tree root or one of these explicitly
+ * constructed registry values.
+ */
+export interface RouteRegistry {
+  readonly [RouteRegistrySymbol]: true;
+  readonly entries: ReadonlyArray<RegisteredRoute>;
 }
 
-export function createRouteId(): string {
-  return makeRouteId();
+/** Anything loader/sitemap/hydration entry points can read routes from. */
+export type RouteSource = AnyAppRouteNode | AnyRoute | RouteRegistry;
+
+/** Carries the app's route source for context-driven paths (e.g. `preload`). */
+export interface RouteSourceService {
+  readonly source: RouteSource;
+}
+
+/** Injectable route source, consumed by `RouterService.preload`. */
+export const RouteSourceTag = Context.Service<RouteSourceService>("RouteSource");
+
+/** Provide the app's route source to router layers and preloads. */
+export function routeSourceLayer(source: RouteSource): Layer.Layer<RouteSourceService> {
+  return Layer.succeed(RouteSourceTag, { source });
 }
 
 /**
- * Internal registry hook backing the component-first routing tier.
- *
- * Explicit route trees are preferred when available; component-first routes
- * (`Component.route`) resolve through this registry by design.
+ * Resolve a route source: the explicit one wins, else the injected
+ * `RouteSourceTag`, else `undefined` (there is no global fallback).
  */
-export function registerRoute(component: ComponentType<any, any, any, any, any>, meta: RouteMeta<any, any, any>): void {
-  const entry = { component, meta };
-  routeRegistry.set(meta.fullPattern, entry);
-  if (meta.id) routeRegistryById.set(meta.id, entry);
+export function resolveRouteSource(
+  explicit?: RouteSource,
+): Effect.Effect<RouteSource | undefined> {
+  if (explicit !== undefined) return Effect.succeed(explicit);
+  return Effect.serviceOption(RouteSourceTag).pipe(
+    Effect.map((option) => (option._tag === "Some" ? option.value.source : undefined)),
+  );
 }
 
-/** Internal lookup for the registry-backed component-first routing tier. */
-export function findRegisteredRoute(pattern: string): RegisteredRoute | undefined {
-  return routeRegistry.get(pattern);
+export function isRouteRegistry(value: unknown): value is RouteRegistry {
+  return typeof value === "object" && value !== null && RouteRegistrySymbol in value;
 }
 
 /**
- * Collect registered routes.
- *
- * When a route tree is provided, this prefers explicit tree traversal so
- * unified routes do not have to rely on the global registry.
+ * Build an explicit registry from route-decorated components
+ * (`Component.route(...)`), replacing the deleted global registry.
  */
-export function collectAll(_root: unknown): ReadonlyArray<RegisteredRoute> {
-  if (_root && (isUnifiedRoute(_root) || isRouteNode(_root))) {
-    return registeredRoutesFromTree(_root);
+export function registry(
+  components: Iterable<ComponentType<any, any, any, any, any>>,
+): RouteRegistry {
+  const entries: Array<RegisteredRoute> = [];
+  for (const component of components) {
+    const meta = getRouteMeta(asRouteComponent(component));
+    if (!meta) continue;
+    entries.push({ component, meta });
   }
-  return [...routeRegistryById.values()];
+  return { [RouteRegistrySymbol]: true, entries };
 }
 
-/** Internal lookup for the registry-backed component-first routing tier. */
-export function getRegisteredRouteById(routeId: string): RegisteredRoute | undefined {
-  return routeRegistryById.get(routeId);
+/** Collect every route in a route source as `{ component, meta }` pairs. */
+export function collectAll(source: RouteSource): ReadonlyArray<RegisteredRoute> {
+  if (isRouteRegistry(source)) return source.entries;
+  return registeredRoutesFromTree(source);
 }
 
 /**
@@ -807,15 +1194,74 @@ export interface RouteHead {
   readonly meta?: RouteMetaRecord;
 }
 
-type ResolvedHeadEntry = {
+export type ResolvedHeadEntry = {
   readonly id: string;
   readonly depth: number;
   readonly title?: string;
   readonly meta?: RouteMetaRecord;
 };
 
-const routeHeadEntries = new Map<string, ResolvedHeadEntry>();
-let routeHeadSeq = 0;
+// ─── Head state: per-request on the server, per-owner on the client ──────────
+//
+// R2: head entries used to live in one module-global map that SSR `clear()`ed on
+// every render, so a server render wiped client head state and two concurrent
+// server renders raced. Head state is now a *store value*:
+//
+// - the server creates one store per request and provides it as `RouteHeadTag`
+//   (fiber-local: Effect context is per-fiber) plus installs it as the ambient
+//   store for the synchronous render, so nested `Component.route` setups and
+//   their later atom-subscription callbacks all write to that request's store;
+// - the client resolves the store once during setup and closes over it, which
+//   scopes head writes to the rendering owner;
+// - nothing ever clears another render's store.
+
+/** A head-entry store: one per server request, one per client document. */
+export interface RouteHeadStore {
+  readonly entries: Map<string, ResolvedHeadEntry>;
+  /** Client stores flush to `document.head`; server stores never touch it. */
+  readonly applyToDocument: boolean;
+  seq: number;
+}
+
+export function makeRouteHeadStore(options?: { readonly applyToDocument?: boolean }): RouteHeadStore {
+  return {
+    entries: new Map(),
+    applyToDocument: options?.applyToDocument ?? false,
+    seq: 0,
+  };
+}
+
+/** Injectable per-request head store. */
+export const RouteHeadTag = Context.Service<RouteHeadStore>("RouteHead");
+
+/** The client/document head store, used when nothing scopes it. */
+export const clientRouteHeadStore: RouteHeadStore = makeRouteHeadStore({ applyToDocument: true });
+
+let ambientRouteHeadStore: RouteHeadStore | undefined;
+
+/** Install `store` as the ambient head store for a synchronous render. */
+export function runInRouteHeadStore<A>(store: RouteHeadStore, evaluate: () => A): A {
+  const previous = ambientRouteHeadStore;
+  ambientRouteHeadStore = store;
+  try {
+    return evaluate();
+  } finally {
+    ambientRouteHeadStore = previous;
+  }
+}
+
+/** Resolve the head store for synchronous call sites. */
+export function resolveRouteHeadStore(store?: RouteHeadStore): RouteHeadStore {
+  return store ?? ambientRouteHeadStore ?? clientRouteHeadStore;
+}
+
+/**
+ * Resolve the head store inside an Effect: provided service, then ambient, then
+ * the client store. Adds no requirement.
+ */
+export const currentRouteHeadStore: Effect.Effect<RouteHeadStore> = Effect.serviceOption(RouteHeadTag).pipe(
+  Effect.map((option) => (option._tag === "Some" ? option.value : resolveRouteHeadStore())),
+);
 
 function tagIdentity(tag: Readonly<Record<string, string | null | undefined>>): string {
   return String(tag.name ?? tag.property ?? tag.rel ?? tag.httpEquiv ?? tag.charset ?? JSON.stringify(tag));
@@ -932,24 +1378,30 @@ export function applyRouteHeadToDocument(head: RouteHead): void {
   }
 }
 
-function flushRouteHead(): void {
-  const head = resolveRouteHead([...routeHeadEntries.values()]);
-  applyRouteHeadToDocument(head);
+function flushRouteHead(store: RouteHeadStore): void {
+  if (!store.applyToDocument) return;
+  applyRouteHeadToDocument(resolveRouteHeadOf(store));
 }
 
-export function createRouteHeadId(): string {
-  routeHeadSeq += 1;
-  return `route-head-${routeHeadSeq}`;
+/** Resolve the merged head for one store. */
+export function resolveRouteHeadOf(store: RouteHeadStore): RouteHead {
+  return resolveRouteHead([...store.entries.values()]);
 }
 
-export function setRouteHead(entry: ResolvedHeadEntry): void {
-  routeHeadEntries.set(entry.id, entry);
-  flushRouteHead();
+/** Mint a head-entry id inside a store. */
+export function createRouteHeadId(store: RouteHeadStore): string {
+  store.seq += 1;
+  return `route-head-${store.seq}`;
 }
 
-export function removeRouteHead(id: string): void {
-  routeHeadEntries.delete(id);
-  flushRouteHead();
+export function setRouteHead(store: RouteHeadStore, entry: ResolvedHeadEntry): void {
+  store.entries.set(entry.id, entry);
+  flushRouteHead(store);
+}
+
+export function removeRouteHead(store: RouteHeadStore, id: string): void {
+  store.entries.delete(id);
+  flushRouteHead(store);
 }
 
 export type RoutedComponent<P, Q, H> = {
@@ -1006,14 +1458,9 @@ type LoaderTarget = string | (ComponentType<any, any, any, any, any> & LoaderTag
 /**
  * Create a first-class unified route by attaching a path pattern to a component.
  *
- * Path params are inferred from the pattern. Use `Route.paramsSchema(...)` when
- * you want decoded params with richer types than the raw string-based inference.
- */
-/**
- * Create a route enhancer that assigns a path pattern.
- *
  * Path params are inferred from `:param` segments and flow into typed links,
- * loaders, and route context.
+ * loaders, and route context. Use `Route.paramsSchema(...)` when you want
+ * decoded params with richer types than the raw string-based inference.
  */
 export function path<Pattern extends string>(
   pattern: Pattern,
@@ -1023,18 +1470,19 @@ export function path<Pattern extends string>(
   return <C extends ComponentType<any, any, any, any, any>>(component: C) =>
     makeUnifiedRoute(component, {
       kind: "path",
+      // No generated id: route identity is the resolved pattern unless
+      // `Route.id(...)` assigns an explicit, stable one. A module-eval counter
+      // cannot be trusted to agree across server and client.
       meta: {
         pattern,
         fullPattern: pattern,
-        id: createRouteId(),
       },
       children: [],
       guards: [],
     });
 }
 
-/** Create a first-class page route node. */
-/** Create a page route from a path and component. */
+/** Create a page route node from a path and component. */
 export function page<C extends ComponentType<any, any, any, any, any>>(path: string, component: C): AppRouteNode<unknown, unknown, unknown, C, unknown, unknown> {
   return makeRouteNode("page", path, component);
 }
@@ -1080,9 +1528,8 @@ export function index(component?: ComponentType<any, any, any, any, any>) {
   return makeRouteNode("index", "", component!, { exact: true });
 }
 
-/** Materialize a route tree and return its root node. */
 /**
- * Mark a route tree root as an application route definition.
+ * Mark a route tree root as an application route definition and materialize it.
  *
  * The returned value is unchanged at runtime; the helper communicates intent
  * to tooling and keeps inference stable around the root.
@@ -1106,11 +1553,10 @@ export function mount<T extends AppRouteNode<any, any, any, any, any, any>>(
 }
 
 /**
- * Attach child routes to a layout route.
+ * Attach child routes to a layout/route node.
  *
  * In the unified route model this should be used after `Route.layout()`.
  */
-/** Attach child routes to a route node. */
 export function children(nodes: ReadonlyArray<AnyAppRouteNode> | ReadonlyArray<AnyRoute>): RouteChildrenEnhancer {
   const out = (route: RouteTarget): RouteTarget => {
     if (isUnifiedRoute(route)) {
@@ -1123,7 +1569,6 @@ export function children(nodes: ReadonlyArray<AnyAppRouteNode> | ReadonlyArray<A
   return out as unknown as RouteChildrenEnhancer;
 }
 
-/** Assign a stable route id to a route or route node. */
 /** Assign a stable route id for loaders, hydration, diagnostics, and links. */
 export function id(value: string): RouteIdEnhancer {
   const out = (route: AnyAppRouteNode | AnyRoute): AnyAppRouteNode | AnyRoute => {
@@ -1204,10 +1649,11 @@ export function componentOf<T extends AppRouteNode<any, any, any, any, any, any>
   return materializeNode(route);
 }
 
-function materializeTree(route: AppRouteNode<any, any, any, any, any, any>): void {
-  materializeNode(route);
+function materializeTree(route: AppRouteNode<any, any, any, any, any, any>, parentFullPath = ""): void {
+  materializeNode(route, parentFullPath);
+  const fullPath = joinRoutePath(parentFullPath, route.path, route.kind);
   for (const child of route.children) {
-    materializeTree(child);
+    materializeTree(child, fullPath);
   }
 }
 
@@ -1309,6 +1755,48 @@ function routeIdOfTarget(target: AnyAppRouteNode | AnyRoute, fullPattern: string
     : target.options.id ?? fullPattern;
 }
 
+function routeGuardsOfTarget(
+  target: AnyAppRouteNode | AnyRoute,
+): ReadonlyArray<Effect.Effect<unknown, any, any>> {
+  if (isUnifiedRoute(target)) {
+    // A self-stamped unified route (`Component.route` sugar) can carry BOTH
+    // kinds: guards added through the unified pipe live on the symbol, and
+    // guards stamped on the component before the sugar live in
+    // `__routeGuards` (preserved by the wrapper's decoration copy). Reading
+    // only the symbol would make the stamped half silently inert.
+    const stamped = (target as {
+      readonly __routeGuards?: ReadonlyArray<Effect.Effect<unknown, any, any>>;
+    }).__routeGuards ?? [];
+    const unified = target[UnifiedRouteSymbol].guards;
+    return stamped.length === 0 ? unified : [...unified, ...stamped];
+  }
+  // Guards live in two places on the legacy tier: piped onto the route NODE
+  // (`Route.page(...).pipe(Route.guard(...))`) or stamped on the component
+  // itself. Both must gate — reading only the component is how node-piped
+  // guards were silently inert.
+  const nodeGuards = isRouteNode(target)
+    ? (target as { readonly __routeGuards?: ReadonlyArray<Effect.Effect<unknown, any, any>> })
+      .__routeGuards ?? []
+    : [];
+  const component = routeComponentOfTarget(target);
+  const componentGuards = component
+    ? asRouteComponent(component).__routeGuards ?? []
+    : [];
+  return nodeGuards.length === 0
+    ? componentGuards
+    : [...nodeGuards, ...componentGuards];
+}
+
+function routeLoaderErrorCasesOfTarget(
+  target: AnyAppRouteNode | AnyRoute,
+): LoaderErrorCases<unknown, unknown> | undefined {
+  if (isUnifiedRoute(target)) return target[UnifiedRouteSymbol].loaderErrorCases;
+  const component = routeComponentOfTarget(target);
+  return component
+    ? asRouteComponent(component).__routeLoaderError as LoaderErrorCases<unknown, unknown> | undefined
+    : undefined;
+}
+
 function routeLoaderOptionsOfTarget(target: AnyAppRouteNode | AnyRoute): LoaderOptions | undefined {
   if (isUnifiedRoute(target)) return target[UnifiedRouteSymbol].loaderOptions;
   const component = routeComponentOfTarget(target);
@@ -1355,39 +1843,140 @@ function targetHasLoader(target: AnyAppRouteNode | AnyRoute): boolean {
   return component ? asRouteComponent(component).__routeLoader !== undefined : false;
 }
 
-function registeredRouteFromTarget(root: AnyAppRouteNode | AnyRoute, target: AnyAppRouteNode | AnyRoute): RegisteredRoute | undefined {
+// ─── One normalized route-entry model ────────────────────────────────────────
+//
+// R2: `runMatchedLoaders`, `runStreamingNavigation`, `prefetch`,
+// `collectSitemapEntries` and single-flight hydration used to each carry two
+// near-identical bodies — one walking the route tree, one walking the global
+// registry. Both are now projections onto this one entry shape, so there is a
+// single implementation of each operation.
+
+type RouteEntry = {
+  readonly routeId: string;
+  readonly fullPattern: string;
+  readonly exact?: boolean;
+  readonly hasLoader: boolean;
+  readonly guards: ReadonlyArray<Effect.Effect<unknown, any, any>>;
+  readonly loaderErrorCases?: LoaderErrorCases<unknown, unknown>;
+  readonly loaderOptions?: LoaderOptions;
+  readonly title?: StoredRouteTitle;
+  readonly metaExtra?: StoredRouteMetaExtra;
+  readonly sitemapParams?: () => Effect.Effect<ReadonlyArray<unknown>>;
+  readonly meta: RouteMeta<any, any, any>;
+  readonly component?: ComponentType<any, any, any, any, any>;
+  /**
+   * The parent loader's full pattern, given the patterns eligible to be a
+   * parent. Tree sources answer from the tree (candidates ignored); registry
+   * sources derive it by longest-prefix match, as the registry path always did.
+   */
+  readonly parentPattern: (candidates: ReadonlyArray<string>) => string | undefined;
+  readonly linkOf: () => (params: unknown) => string;
+  readonly runLoader: (url: URL, parentData: unknown) => Effect.Effect<UnknownRouteResult, never>;
+};
+
+function routeEntryOfTarget(root: AnyAppRouteNode | AnyRoute, target: AnyAppRouteNode | AnyRoute): RouteEntry {
   const fullPattern = routePathOfTarget(root, target);
+  const routeId = routeIdOfTarget(target, fullPattern);
+  const component = routeComponentOfTarget(target);
   const meta = isUnifiedRoute(target)
     ? { ...target[UnifiedRouteSymbol].meta, fullPattern }
-    : routeMetaOf(routeComponentOfTarget(target)!);
-  if (!meta) return undefined;
-  const component = routeComponentOfTarget(target);
-  if (!component) return undefined;
+    : { ...(component ? routeMetaOf(component) : undefined), pattern: target.path, fullPattern } as RouteMeta<any, any, any>;
+  const parent = parentOfInternal(root, target);
+  const parentFullPattern = parent ? routePathOfTarget(root, parent) : undefined;
   return {
-    component,
+    routeId,
+    fullPattern,
+    exact: routeExactOfTarget(target),
+    hasLoader: targetHasLoader(target),
+    guards: routeGuardsOfTarget(target),
+    loaderErrorCases: routeLoaderErrorCasesOfTarget(target),
+    loaderOptions: routeLoaderOptionsOfTarget(target),
+    title: routeTitleOfTarget(target),
+    metaExtra: routeMetaExtraOfTarget(target),
+    sitemapParams: routeSitemapParamsOfTarget(target),
     meta,
+    component,
+    parentPattern: () => (parentFullPattern === undefined || parentFullPattern === fullPattern ? undefined : parentFullPattern),
+    linkOf: () => (isUnifiedRoute(target) ? link(target) : link(componentOf(target))) as (params: unknown) => string,
+    runLoader: (url, parentData) => {
+      if (isUnifiedRoute(target)) return runRouteLoader(target, url, parentData);
+      if (!component) return Effect.succeed(CoreResult.loading);
+      const componentMeta = routeMetaOf(component);
+      if (!componentMeta) return Effect.succeed(CoreResult.loading);
+      // Cache identity comes from the ENTRY, not from the raw component's
+      // meta: a node-piped `Route.id` lands on the component only at
+      // materialization, and a diverging id here would cache the same
+      // loader under two keys — running it once per key.
+      return runRouteLoader(
+        component,
+        { ...componentMeta, id: routeId, fullPattern },
+        url,
+        parentData,
+      );
+    },
   };
+}
+
+function routeEntryOfRegistered(entry: RegisteredRoute): RouteEntry {
+  const routed = asRouteComponent(entry.component);
+  const fullPattern = entry.meta.fullPattern;
+  return {
+    routeId: entry.meta.id ?? fullPattern,
+    fullPattern,
+    exact: entry.meta.exact,
+    hasLoader: routed.__routeLoader !== undefined,
+    guards: routed.__routeGuards ?? [],
+    loaderErrorCases: routed.__routeLoaderError as LoaderErrorCases<unknown, unknown> | undefined,
+    loaderOptions: routed.__routeLoaderOptions,
+    title: routed.__routeTitle as StoredRouteTitle | undefined,
+    metaExtra: routed.__routeMetaExtra as StoredRouteMetaExtra | undefined,
+    sitemapParams: routed.__routeSitemapParams as (() => Effect.Effect<ReadonlyArray<unknown>>) | undefined,
+    meta: entry.meta,
+    component: entry.component,
+    parentPattern: (candidates) => findParentPattern(fullPattern, candidates),
+    linkOf: () => link(entry.component) as (params: unknown) => string,
+    runLoader: (url, parentData) => runRouteLoader(entry.component, entry.meta, url, parentData),
+  };
+}
+
+/** Project any route source onto the normalized entry list. */
+function routeEntriesOf(source: RouteSource): ReadonlyArray<RouteEntry> {
+  if (isRouteRegistry(source)) {
+    return source.entries.map(routeEntryOfRegistered);
+  }
+  return nodesInternal(source).map((target) => routeEntryOfTarget(source, target));
 }
 
 function registeredRoutesFromTree(root: AnyAppRouteNode | AnyRoute): ReadonlyArray<RegisteredRoute> {
   const out: Array<RegisteredRoute> = [];
-  for (const target of nodesInternal(root)) {
-    const entry = registeredRouteFromTarget(root, target);
-    if (entry) out.push(entry);
+  for (const entry of routeEntriesOf(root)) {
+    if (!entry.component) continue;
+    out.push({ component: entry.component, meta: entry.meta });
   }
   return out;
 }
 
-function collectSitemapEntriesForTreeInternal(
-  root: AnyRoute | AnyAppRouteNode,
+/**
+ * Matched entries for a pathname, ordered root-first.
+ *
+ * Ranking is by resolved-pattern length, which R1 documented as the intended
+ * (if crude) ordering; R5 owns specificity ranking.
+ */
+function matchedRouteEntries(entries: ReadonlyArray<RouteEntry>, pathname: string): ReadonlyArray<RouteEntry> {
+  return entries
+    .filter((entry) => entry.fullPattern.length > 0 && matchPattern(entry.fullPattern, pathname, entry.exact))
+    .sort((a, b) => a.fullPattern.length - b.fullPattern.length);
+}
+
+function collectSitemapEntriesInternal(
+  entries: ReadonlyArray<RouteEntry>,
   baseUrl: string,
 ): Effect.Effect<ReadonlyArray<{ readonly loc: string }>, never> {
   return Effect.gen(function* () {
     const out: Array<{ readonly loc: string }> = [];
-    for (const entry of nodesInternal(root)) {
-      const fullPattern = routePathOfTarget(root, entry);
-      if (!fullPattern || fullPattern.includes(":")) {
-        const enumerate = routeSitemapParamsOfTarget(entry);
+    for (const entry of entries) {
+      if (!entry.fullPattern || entry.fullPattern.includes(":")) {
+        const enumerate = entry.sitemapParams;
         if (!enumerate) continue;
         const paramsList = yield* enumerate().pipe(
           Effect.match({
@@ -1395,53 +1984,36 @@ function collectSitemapEntriesForTreeInternal(
             onSuccess: (value) => value,
           }),
         );
-        const linkFn = isUnifiedRoute(entry)
-          ? link(entry)
-          : link(componentOf(entry));
+        const linkFn = entry.linkOf();
         for (const paramsValue of paramsList) {
-          out.push({ loc: new URL(linkFn(paramsValue as never), baseUrl).toString() });
+          out.push({ loc: new URL(linkFn(paramsValue), baseUrl).toString() });
         }
         continue;
       }
-      out.push({ loc: new URL(fullPattern, baseUrl).toString() });
+      out.push({ loc: new URL(entry.fullPattern, baseUrl).toString() });
     }
     return out;
   });
 }
 
-function prefetchTreeInternal<P, Q>(
-  root: AnyRoute | AnyAppRouteNode,
-  to: RouteLink<P, Q>,
-  paramsValue: P,
-  options?: { readonly query?: Partial<Q>; readonly hash?: string; readonly scope?: "loader" | "component" | "full" },
-): Effect.Effect<void, never> {
-  return Effect.gen(function* () {
-    const href = to(paramsValue, { query: options?.query, hash: options?.hash });
-    const url = new URL(href, typeof window === "undefined" ? "http://localhost" : window.location.origin);
-    yield* runMatchedLoadersTreeInternal(root, url, { includeDeferred: true });
-  }) as Effect.Effect<void, never>;
-}
-
-function runMatchedLoadersRegistry(
+function runMatchedLoadersInternal(
+  entries: ReadonlyArray<RouteEntry>,
   url: URL,
   options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
 ): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never> {
   return Effect.gen(function* () {
-    const matched = [...routeRegistryById.values()]
-      .filter((entry) => matchPattern(entry.meta.fullPattern, url.pathname, entry.meta.exact))
-      .sort((a, b) => a.meta.fullPattern.length - b.meta.fullPattern.length);
+    const matched = matchedRouteEntries(entries, url.pathname);
+    const matchedPatterns = matched.map((entry) => entry.fullPattern);
 
     const invalidatedKeys = options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : undefined;
     const candidates = matched.filter((entry) => {
-      const loaderOptions = asRouteComponent(entry.component).__routeLoaderOptions;
-      const isDeferred = loaderOptions?.priority === "deferred";
+      const isDeferred = entry.loaderOptions?.priority === "deferred";
       if (isDeferred && options?.includeDeferred === false) return false;
-      if (!asRouteComponent(entry.component).__routeLoader) return false;
+      if (!entry.hasLoader) return false;
       if (!invalidatedKeys || invalidatedKeys.length === 0) return true;
-      const routeId = entry.meta.id ?? entry.meta.fullPattern;
-      const paramsRaw = extractParams(entry.meta.fullPattern, url.pathname) ?? {};
-      const loaderKeys = collectLoaderReactivityKeys(routeId, paramsRaw, {
-        fallback: loaderOptions?.reactivityKeys,
+      const paramsRaw = extractParams(entry.fullPattern, url.pathname) ?? {};
+      const loaderKeys = collectLoaderReactivityKeys(entry.routeId, paramsRaw, {
+        fallback: entry.loaderOptions?.reactivityKeys,
       });
       return matchesLoaderReactivity(loaderKeys, invalidatedKeys);
     });
@@ -1449,30 +2021,41 @@ function runMatchedLoadersRegistry(
     const remaining = [...candidates];
     const outputs: Array<{ readonly routeId: string; readonly result: UnknownRouteResult }> = [];
     const successByPattern = new Map<string, unknown>();
+    // DQ-035: a dependent loader is never fresher than its parent. A `Stale`
+    // parent still feeds its child (discarding in-hand data is exactly what
+    // `Stale` exists to avoid), but the child's own `Success` is degraded to
+    // `Stale` carrying the parent's error — transitively, so a grandchild of a
+    // stale parent is stale too. This is `Result.all`'s composition rule
+    // applied along the loader tree.
+    const staleErrorByPattern = new Map<string, unknown>();
 
     while (remaining.length > 0) {
       const runnable = remaining.filter((entry) => {
-        const loaderOptions = asRouteComponent(entry.component).__routeLoaderOptions;
-        if (!loaderOptions?.dependsOnParent) return true;
-        const parentPattern = findParentPattern(entry.meta.fullPattern, matched.map((m) => m.meta.fullPattern));
+        if (!entry.loaderOptions?.dependsOnParent) return true;
+        const parentPattern = entry.parentPattern(matchedPatterns);
         if (!parentPattern) return true;
         return successByPattern.has(parentPattern);
       });
 
-      const batch = runnable.length > 0 ? runnable : [remaining[0] as RegisteredRoute];
+      const batch = runnable.length > 0 ? runnable : [remaining[0] as RouteEntry];
       const batchResults = yield* Effect.all(batch.map((entry) => {
-        const loaderFn = asRouteComponent(entry.component).__routeLoader as LoaderFn;
-        const paramsRaw = extractParams(entry.meta.fullPattern, url.pathname) ?? {};
-        const routeId = entry.meta.id ?? entry.meta.fullPattern;
-        const loaderOptions = asRouteComponent(entry.component).__routeLoaderOptions;
-        const parentPattern = findParentPattern(entry.meta.fullPattern, [...successByPattern.keys()]);
+        const parentPattern = entry.parentPattern([...successByPattern.keys()]);
         const parentData = parentPattern ? successByPattern.get(parentPattern) : undefined;
-        return runCachedLoader(
-          routeId,
-          paramsRaw,
-          loaderFn(paramsRaw, { parent: <X>() => parentData as X }) as Effect.Effect<unknown, unknown>,
-          loaderOptions,
-        ).pipe(Effect.map((result) => ({ routeId, result, pattern: entry.meta.fullPattern })));
+        const inheritedStale =
+          entry.loaderOptions?.dependsOnParent === true
+            && parentPattern !== undefined
+            && staleErrorByPattern.has(parentPattern)
+            ? { error: staleErrorByPattern.get(parentPattern) }
+            : undefined;
+        return entry.runLoader(url, parentData).pipe(
+          Effect.map((result) => ({
+            routeId: entry.routeId,
+            result: inheritedStale !== undefined && result._tag === "Success"
+              ? CoreResult.stale(inheritedStale.error, result.value)
+              : result,
+            pattern: entry.fullPattern,
+          })),
+        );
       }), { concurrency: "unbounded" });
 
       for (const item of batchResults) {
@@ -1480,6 +2063,9 @@ function runMatchedLoadersRegistry(
         const success = loaderSuccess(item.result);
         if (success !== undefined) {
           successByPattern.set(item.pattern, success.value);
+        }
+        if (item.result._tag === "Stale") {
+          staleErrorByPattern.set(item.pattern, item.result.error);
         }
       }
 
@@ -1493,142 +2079,109 @@ function runMatchedLoadersRegistry(
   });
 }
 
-function runMatchedLoadersTreeInternal(
-  root: AnyRoute | AnyAppRouteNode,
+interface StreamingNavigationResult {
+  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
+  readonly deferredScripts: ReadonlyArray<string>;
+  /**
+   * Set when a matched route guard refused the request. The server render
+   * paths translate this into a non-200 status; loaders never ran, so
+   * neither `critical` nor `deferredScripts` can carry protected data.
+   */
+  readonly guardDenied?: { readonly error: unknown };
+}
+
+/**
+ * R3's server half: run every matched guard, parents-first, fail-fast,
+ * BEFORE any loader starts. Gating only the render would still let the
+ * query execute and — for a deferred loader — serialize the payload into
+ * the page before anyone checked whether the caller may see it. Returns the
+ * denial (never fails), so callers decide the response shape.
+ */
+function matchedGuardDenial(
+  entries: ReadonlyArray<RouteEntry>,
   url: URL,
-  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
-): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never> {
-  return Effect.gen(function* () {
-    const matched = collectMatchedRouteTargets(root, url.pathname);
-
-    const invalidatedKeys = options?.reactivityKeys ? normalizeReactivityKeys(options.reactivityKeys) : undefined;
-    const candidates = matched.filter((entry) => {
-      const loaderOptions = routeLoaderOptionsOfTarget(entry);
-      const isDeferred = loaderOptions?.priority === "deferred";
-      if (isDeferred && options?.includeDeferred === false) return false;
-      if (!targetHasLoader(entry)) {
-        return false;
-      }
-      if (!invalidatedKeys || invalidatedKeys.length === 0) return true;
-      const fullPattern = routePathOfTarget(root, entry);
-      const routeId = routeIdOfTarget(entry, fullPattern);
-      const paramsRaw = extractParams(fullPattern, url.pathname) ?? {};
-      const loaderKeys = collectLoaderReactivityKeys(routeId, paramsRaw, {
-        fallback: loaderOptions?.reactivityKeys,
-      });
-      return matchesLoaderReactivity(loaderKeys, invalidatedKeys);
-    });
-
-    const remaining = [...candidates];
-    const outputs: Array<{ readonly routeId: string; readonly result: UnknownRouteResult }> = [];
-    const successByPattern = new Map<string, unknown>();
-
-    while (remaining.length > 0) {
-      const runnable = remaining.filter((entry) => {
-        const loaderOptions = routeLoaderOptionsOfTarget(entry);
-        if (!loaderOptions?.dependsOnParent) return true;
-        const fullPattern = routePathOfTarget(root, entry);
-        const parent = parentOfInternal(root, entry);
-        if (!parent) return true;
-        const parentPattern = routePathOfTarget(root, parent);
-        if (parentPattern === fullPattern) return true;
-        return successByPattern.has(parentPattern);
-      });
-
-      const batch = runnable.length > 0 ? runnable : [remaining[0] as AnyAppRouteNode | AnyRoute];
-      const batchResults = yield* Effect.all(batch.map((entry) => {
-        const fullPattern = routePathOfTarget(root, entry);
-        const routeId = routeIdOfTarget(entry, fullPattern);
-        const parent = parentOfInternal(root, entry);
-        const parentPattern = parent ? routePathOfTarget(root, parent) : undefined;
-        const parentData = parentPattern ? successByPattern.get(parentPattern) : undefined;
-        return (isUnifiedRoute(entry)
-          ? runRouteLoader(entry, url, parentData)
-          : (() => {
-            const component = routeComponentOfTarget(entry);
-            const meta = component ? routeMetaOf(component) : undefined;
-            if (!component || !meta) return Effect.succeed(CoreResult.loading);
-            return runRouteLoader(component, meta, url, parentData);
-          })()).pipe(
-            Effect.map((result) => ({ routeId, result, pattern: fullPattern })),
-          );
-      }), { concurrency: "unbounded" });
-
-      for (const item of batchResults) {
-        outputs.push({ routeId: item.routeId, result: item.result });
-        const success = loaderSuccess(item.result);
-        if (success !== undefined) {
-          successByPattern.set(item.pattern, success.value);
+): Effect.Effect<{ readonly error: unknown } | undefined, never> {
+  const guards = matchedRouteEntries(entries, url.pathname).flatMap((entry) => entry.guards);
+  if (guards.length === 0) return Effect.succeed(undefined);
+  return Effect.exit(
+    Effect.forEach(guards, (check) => check as Effect.Effect<unknown, unknown, never>, {
+      discard: true,
+    }),
+  ).pipe(
+    Effect.map((exit) =>
+      exit._tag === "Failure"
+        ? {
+          error: Cause.findErrorOption(exit.cause).pipe(
+            Option.getOrElse(() => exit.cause as unknown),
+          ),
         }
-      }
+        : undefined
+    ),
+  );
+}
 
-      for (const entry of batch) {
-        const idx = remaining.indexOf(entry);
-        if (idx >= 0) remaining.splice(idx, 1);
+function runStreamingNavigationInternal(
+  entries: ReadonlyArray<RouteEntry>,
+  url: URL,
+  options?: {
+    /**
+     * Set when the caller already ran (and passed) the matched-guard check,
+     * so guards execute exactly once per door.
+     */
+    readonly guardsPrechecked?: boolean;
+  },
+): Effect.Effect<StreamingNavigationResult, never> {
+  return Effect.gen(function* () {
+    // The client navigation path runs its own guard pass in `RouterRuntime`
+    // and calls `runMatchedLoaders` directly, so guards run once per door.
+    if (options?.guardsPrechecked !== true) {
+      const denial = yield* matchedGuardDenial(entries, url);
+      if (denial !== undefined) {
+        return { critical: [], deferredScripts: [], guardDenied: denial };
       }
     }
-
-    return outputs;
-  });
-}
-
-function runStreamingNavigationRegistry(
-  url: URL,
-): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
-  readonly deferredScripts: ReadonlyArray<string>;
-}, never> {
-  return Effect.gen(function* () {
-    const critical = yield* runMatchedLoadersRegistry(url, { includeDeferred: false });
-    const all = yield* runMatchedLoadersRegistry(url, { includeDeferred: true });
-    const criticalIds = new Set(critical.map((c) => c.routeId));
-    const deferred = all.filter((item) => !criticalIds.has(item.routeId));
+    // DQ-017 (fixed in place, 2026-08-11): ONE pass over all matched loaders.
+    // Critical and deferred loaders fork together — waves only where
+    // `dependsOnParent` orders them — so every loader starts before any
+    // result gates anything and each runs exactly once per request. The old
+    // critical-then-all double pass re-ran cache-missing loaders twice.
+    const all = yield* runMatchedLoadersInternal(entries, url, { includeDeferred: true });
+    const matched = matchedRouteEntries(entries, url.pathname);
+    const deferredIds = new Set(
+      matched
+        .filter((entry) => entry.loaderOptions?.priority === "deferred")
+        .map((entry) => entry.routeId),
+    );
+    const patternByRouteId = new Map(entries.map((entry) => [entry.routeId, entry.fullPattern] as const));
+    const critical = all.filter((item) => !deferredIds.has(item.routeId));
+    const deferred = all
+      .filter((item) => deferredIds.has(item.routeId))
+      .map((item) => {
+        const pattern = patternByRouteId.get(item.routeId);
+        return {
+          ...item,
+          params: (pattern ? extractParams(pattern, url.pathname) : null) ?? {},
+        };
+      });
     const deferredScripts = streamDeferredLoaderScripts(deferred);
     return { critical, deferredScripts };
   });
 }
 
-function runStreamingNavigationTreeInternal(
-  root: AnyRoute | AnyAppRouteNode,
-  url: URL,
-): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
-  readonly deferredScripts: ReadonlyArray<string>;
-}, never> {
-  return Effect.gen(function* () {
-    const critical = yield* runMatchedLoadersTreeInternal(root, url, { includeDeferred: false });
-    const all = yield* runMatchedLoadersTreeInternal(root, url, { includeDeferred: true });
-    const criticalIds = new Set(critical.map((c) => c.routeId));
-    const deferred = all.filter((item) => !criticalIds.has(item.routeId));
-    const deferredScripts = streamDeferredLoaderScripts(deferred);
-    return { critical, deferredScripts };
-  });
-}
-
-function collectMatchedRouteTargets(root: AnyAppRouteNode | AnyRoute, pathname: string): ReadonlyArray<AnyAppRouteNode | AnyRoute> {
-  return nodesInternal(root)
-    .filter((entry) => {
-      const fullPattern = routePathOfTarget(root, entry);
-      return fullPattern.length > 0 && matchPattern(fullPattern, pathname, routeExactOfTarget(entry));
-    })
-    .sort((a, b) => routePathOfTarget(root, a).length - routePathOfTarget(root, b).length);
-}
-
-function setResolvedTreeHeadEntries(
-  root: AnyAppRouteNode | AnyRoute,
+function setResolvedHeadEntries(
+  store: RouteHeadStore,
+  entries: ReadonlyArray<RouteEntry>,
   url: URL,
   results: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>,
 ): void {
   const resultByRouteId = new Map(results.map((item) => [item.routeId, item.result] as const));
-  for (const target of collectMatchedRouteTargets(root, url.pathname)) {
-    const fullPattern = routePathOfTarget(root, target);
-    const routeId = routeIdOfTarget(target, fullPattern);
-    const title = routeTitleOfTarget(target);
-    const metaExtra = routeMetaExtraOfTarget(target);
+  for (const entry of matchedRouteEntries(entries, url.pathname)) {
+    const title = entry.title;
+    const metaExtra = entry.metaExtra;
     if (title === undefined && metaExtra === undefined) continue;
 
-    const params = extractParams(fullPattern, url.pathname) ?? {};
-    const loaderResult = resultByRouteId.get(routeId);
+    const params = extractParams(entry.fullPattern, url.pathname) ?? {};
+    const loaderResult = resultByRouteId.get(entry.routeId);
     const loaderData = loaderSuccess(loaderResult)?.value;
     const resolvedTitle = title === undefined
       ? undefined
@@ -1641,9 +2194,9 @@ function setResolvedTreeHeadEntries(
         ? metaExtra(params, loaderData, loaderResult)
         : metaExtra;
 
-    routeHeadEntries.set(routeId, {
-      id: routeId,
-      depth: fullPattern.split("/").filter(Boolean).length,
+    store.entries.set(entry.routeId, {
+      id: entry.routeId,
+      depth: entry.fullPattern.split("/").filter(Boolean).length,
       title: resolvedTitle,
       meta: resolvedMeta,
     });
@@ -1688,6 +2241,7 @@ export function routeChainOf(root: AnyAppRouteNode | AnyRoute, target: AnyAppRou
 /** Compute the resolved full path of a route node inside a tree. */
 export function fullPathOf(root: AppRouteNode<any, any, any, any, any, any>, target: AppRouteNode<any, any, any, any, any, any>): string;
 export function fullPathOf(root: AnyRoute, target: AnyRoute): string;
+export function fullPathOf(root: AppRouteNode<any, any, any, any, any, any> | AnyRoute, target: AppRouteNode<any, any, any, any, any, any> | AnyRoute): string;
 export function fullPathOf(root: AnyAppRouteNode | AnyRoute, target: AnyAppRouteNode | AnyRoute): string {
   return routeChainOfInternal(root, target).reduce((acc, node) =>
     isUnifiedRoute(node)
@@ -1702,7 +2256,7 @@ export function paramNamesOf(root: AnyAppRouteNode | AnyRoute, target: AnyAppRou
   const names = new Set<string>();
   for (const node of routeChainOfInternal(root, target)) {
     for (const part of node.path.split("/").filter(Boolean)) {
-      if (part.startsWith(":")) names.add(part.slice(1).replace(/\?$/, ""));
+      if (part.startsWith(":")) names.add(paramNameOf(part));
     }
   }
   return [...names];
@@ -1726,7 +2280,7 @@ export function validateTree(root: AnyAppRouteNode | AnyRoute): ReadonlyArray<st
       for (const route of chain) {
         for (const part of route.path.split("/").filter(Boolean)) {
           if (!part.startsWith(":")) continue;
-          const name = part.slice(1);
+          const name = paramNameOf(part);
           if (seenParams.has(name)) errors.push(`Duplicate route param '${name}' in chain for '${fullPathOf(root, node)}'`);
           seenParams.add(name);
         }
@@ -1756,7 +2310,7 @@ export function validateTree(root: AnyAppRouteNode | AnyRoute): ReadonlyArray<st
     for (const item of chain) {
       for (const part of item.path.split("/").filter(Boolean)) {
         if (!part.startsWith(":")) continue;
-        const name = part.slice(1).replace(/\?$/, "");
+        const name = paramNameOf(part);
         if (seenParams.has(name)) errors.push(`Duplicate route param '${name}' in chain for '${fullPathOf(root, route)}'`);
         seenParams.add(name);
       }
@@ -1832,25 +2386,77 @@ export function renderRequest(
       snapshot: () => ({ status, headers: headerMap as ReadonlyMap<string, ReadonlyArray<string>> }),
     };
     const requestUrl = new URL(options.request.url);
-    const streaming = yield* runStreamingNavigation(app, requestUrl);
+    // Per-request state: this render's head entries and loader cache are its
+    // own, so concurrent renders cannot see each other and neither can clobber
+    // the client stores.
+    const headStore = makeRouteHeadStore({ applyToDocument: false });
+    const loaderCache = makeLoaderCacheStore(); loaderCache.requestScoped = true;
+    const routeEntries = routeEntriesOf(app);
+    const streaming = yield* runStreamingNavigationInternal(routeEntries, requestUrl).pipe(
+      Effect.provideService(LoaderCacheTag, loaderCache),
+    );
+    // A guard refusal is visible to the host as a status, not only as an
+    // absence of loader data ("learns nothing" needs both halves). Marking
+    // the request's cache store is what stops the RENDER from re-running the
+    // protected loader on a cache miss.
+    if (streaming.guardDenied !== undefined) {
+      responseService.setStatus(403);
+      loaderCache.guardDenied = true;
+    }
     const appComponent = isUnifiedRoute(app) ? app.component : componentOf(app);
     let effect = ComponentRuntime.renderEffect(appComponent, {}).pipe(
       Effect.provide(Server({ url: requestUrl.toString() })),
       Effect.provideService(ServerRequestTag, { request: options.request, url: requestUrl }),
       Effect.provideService(ServerResponseTag, responseService),
+      Effect.provideService(RouteHeadTag, headStore),
+      Effect.provideService(LoaderCacheTag, loaderCache),
+      Effect.provideService(RouteSourceTag, { source: app }),
     ) as Effect.Effect<unknown, never, never>;
     if (options.layer) {
       effect = effect.pipe(Effect.provide(options.layer)) as Effect.Effect<unknown, never, never>;
     }
 
-    routeHeadEntries.clear();
+    // Unified-route trees own their head metadata up front; route-node trees
+    // still resolve head during render via `Component.route`.
     if (isUnifiedRoute(app)) {
-      setResolvedTreeHeadEntries(app, requestUrl, streaming.critical);
+      setResolvedHeadEntries(headStore, routeEntries, requestUrl, streaming.critical);
+      // R3 (`DQ-030`): a matched loader failure with declared
+      // `loaderErrorCases` renders the tagged fallback instead of the page
+      // component — the failure is neither thrown nor silently swallowed.
+      for (const item of streaming.critical) {
+        if (item.result._tag !== "Failure") continue;
+        const entry = routeEntries.find(
+          (candidate) => candidate.routeId === item.routeId,
+        );
+        const cases = entry?.loaderErrorCases;
+        if (cases === undefined) continue;
+        const error = item.result.error;
+        const tag = typeof error === "object" && error !== null && "_tag" in error
+          ? String((error as { readonly _tag: unknown })._tag)
+          : "_";
+        const record = cases as Readonly<
+          Record<string, ((error: unknown, params: unknown) => unknown) | undefined>
+        >;
+        const handler = record[tag] ?? record["_"];
+        if (handler === undefined) continue;
+        const params = entry === undefined
+          ? {}
+          : extractParams(entry.fullPattern, requestUrl.pathname) ?? {};
+        const fallbackView = handler(error, params);
+        effect = Effect.succeed(fallbackView) as Effect.Effect<unknown, never, never>;
+        break;
+      }
     }
+    const previousRequestEvent = getRequestEvent();
     setRequestEvent({ request: options.request, url: requestUrl });
-    const html = renderToString(() => Effect.runSync(effect));
-    setRequestEvent(undefined);
-    const head = resolveRouteHead([...routeHeadEntries.values()]);
+    let html: string;
+    try {
+      html = runInRouteHeadStore(headStore, () =>
+        runInLoaderCacheStore(loaderCache, () => renderToString(() => Effect.runSync(effect))));
+    } finally {
+      setRequestEvent(previousRequestEvent);
+    }
+    const head = resolveRouteHeadOf(headStore);
     return {
       status,
       headers: new Map(headerMap),
@@ -1862,18 +2468,154 @@ export function renderRequest(
   });
 }
 
+/**
+ * Streaming server navigation (M11 item 4, `DQ-017`): fork ALL matched
+ * loaders — critical and deferred — as one concurrent pass under the request,
+ * and flush the shell immediately instead of `renderRequest`'s
+ * loaders-then-render sequence. The stream emits the shell HTML first, then
+ * one chunk of `DQ-034` loader-handoff entries (inert `data-af-loader` JSON
+ * scripts — the same wire `renderRequest` uses, no new format) once every
+ * loader settles, so client hydration fills the loader cache instead of
+ * refetching.
+ *
+ * Slice limits, deliberate: the shell renders WITHOUT waiting on critical
+ * loader data, so unified-route head enrichment and `loaderErrorCases`
+ * fallbacks (both derived from critical results) stay on `renderRequest`;
+ * a component that must render FROM loader data belongs behind an async
+ * region (`renderComponentAsync`) once regions route through it.
+ */
+export function renderRequestStream<T extends AppRouteNode<any, any, any, any, any, any>>(
+  app: T,
+  options: {
+    readonly request: Request;
+    readonly layer?: Layer.Layer<any>;
+  },
+): Stream.Stream<string, never>;
+export function renderRequestStream(
+  app: AnyRoute | AppRouteNode<any, any, any, any, any, any>,
+  options: {
+    readonly request: Request;
+    readonly layer?: Layer.Layer<any>;
+  },
+): Stream.Stream<string, never>;
+export function renderRequestStream(
+  app: AnyRoute | AppRouteNode<any, any, any, any, any, any>,
+  options: {
+    readonly request: Request;
+    readonly layer?: Layer.Layer<any>;
+  },
+): Stream.Stream<string, never> {
+  return Stream.unwrap(
+    Effect.gen(function* () {
+      const requestUrl = new URL(options.request.url);
+      const headerMap = new Map<string, Array<string>>();
+      let status = 200;
+      const responseService = {
+        setStatus: (next: number) => {
+          status = next;
+        },
+        setHeader: (name: string, value: string) => {
+          headerMap.set(name.toLowerCase(), [value]);
+        },
+        appendHeader: (name: string, value: string) => {
+          const key = name.toLowerCase();
+          headerMap.set(key, [...(headerMap.get(key) ?? []), value]);
+        },
+        redirect: (location: string, nextStatus = 302) => {
+          status = nextStatus;
+          headerMap.set("location", [location]);
+        },
+        notFound: () => {
+          status = 404;
+        },
+        snapshot: () => ({ status, headers: headerMap as ReadonlyMap<string, ReadonlyArray<string>> }),
+      };
+      const headStore = makeRouteHeadStore({ applyToDocument: false });
+      const loaderCache = makeLoaderCacheStore(); loaderCache.requestScoped = true;
+      const routeEntries = routeEntriesOf(app);
+
+      // R3's server half: the guard verdict must exist BEFORE the shell
+      // renders (the shell flushes immediately, and the render path consults
+      // the denial mark), so guards run here rather than inside the forked
+      // loader pass.
+      const guardDenial = yield* matchedGuardDenial(routeEntries, requestUrl);
+      if (guardDenial !== undefined) {
+        status = 403;
+        loaderCache.guardDenied = true;
+      }
+
+      // Every matched loader is in flight BEFORE any component renders.
+      // Detached, as renderToStream's region fibers are: the unwrap effect's
+      // own fiber ends once the stream is built, and a child fiber would be
+      // interrupted with it before the handoff chunk joins.
+      const loadersFiber = yield* Effect.forkDetach(
+        guardDenial !== undefined
+          ? Effect.succeed<StreamingNavigationResult>({ critical: [], deferredScripts: [] })
+          : runStreamingNavigationInternal(routeEntries, requestUrl, {
+            guardsPrechecked: true,
+          }).pipe(
+            Effect.provideService(LoaderCacheTag, loaderCache),
+          ),
+      );
+
+      const appComponent = isUnifiedRoute(app) ? app.component : componentOf(app);
+      let effect = ComponentRuntime.renderEffect(appComponent, {}).pipe(
+        Effect.provide(Server({ url: requestUrl.toString() })),
+        Effect.provideService(ServerRequestTag, { request: options.request, url: requestUrl }),
+        Effect.provideService(ServerResponseTag, responseService),
+        Effect.provideService(RouteHeadTag, headStore),
+        Effect.provideService(LoaderCacheTag, loaderCache),
+        Effect.provideService(RouteSourceTag, { source: app }),
+      ) as Effect.Effect<unknown, never, never>;
+      if (options.layer) {
+        effect = effect.pipe(Effect.provide(options.layer)) as Effect.Effect<unknown, never, never>;
+      }
+
+      const shell = Effect.sync(() => {
+        const previousRequestEvent = getRequestEvent();
+        setRequestEvent({ request: options.request, url: requestUrl });
+        try {
+          return runInRouteHeadStore(headStore, () =>
+            runInLoaderCacheStore(loaderCache, () => renderToString(() => Effect.runSync(effect))));
+        } finally {
+          setRequestEvent(previousRequestEvent);
+        }
+      });
+
+      // One handoff chunk once every loader settles: critical results ride
+      // the same DQ-034 entry scripts as deferred ones, so the client cache
+      // fill (`hydrateLoaderHandoff`) covers the whole navigation.
+      const patternByRouteId = new Map(
+        routeEntries.map((entry) => [entry.routeId, entry.fullPattern] as const),
+      );
+      const handoff = Fiber.join(loadersFiber).pipe(
+        Effect.map(({ critical, deferredScripts }) => {
+          const criticalScripts = streamDeferredLoaderScripts(
+            critical.map((item) => {
+              const pattern = patternByRouteId.get(item.routeId);
+              return {
+                ...item,
+                params:
+                  (pattern ? extractParams(pattern, requestUrl.pathname) : null)
+                    ?? {},
+              };
+            }),
+          );
+          return [...criticalScripts, ...deferredScripts].join("");
+        }),
+      );
+
+      return Stream.fromEffect(shell).pipe(
+        Stream.concat(Stream.fromEffect(handoff)),
+        Stream.filter((chunk) => chunk.length > 0),
+      );
+    }),
+  );
+}
+
 export type RouteLink<P, Q> = ((paramsValue: P, options?: { readonly query?: Partial<Q>; readonly hash?: string }) => string) & {
   readonly pattern: string;
 };
-
-/** Render a request through a RouterRuntime instance. */
-export function renderRequestWithRuntime(
-  runtime: RouterRuntimeModule.RouterRuntimeInstance,
-  request: Request,
-  options?: { readonly layer?: Layer.Layer<any> },
-): Effect.Effect<RenderRequestResult, never> {
-  return runtime.renderRequest(request, options);
-}
 
 /** Access the current server request inside SSR/server handlers. */
 export const serverRequest = Effect.service(ServerRequestTag);
@@ -1907,41 +2649,20 @@ export function resolvePattern(parentPrefix: string, pattern: string): string {
   return `${base}/${pattern}`.replace(/\/+/g, "/");
 }
 
-function toParts(path: string): ReadonlyArray<string> {
-  return path.split("/").filter((p) => p.length > 0);
+/** Param name for a `:name` / `:name?` pattern segment, with any `?` stripped. */
+function paramNameOf(part: string): string {
+  return part.slice(1).replace(/\?$/, "");
 }
 
+// R5.4: `Route` and `ServerRoute` share one segment engine
+// (`route-pattern.ts`), so the grammars — `:param`, `:param?`, `*` — cannot
+// drift between the two matchers or between matching and `Route.link`.
 export function extractParams(pattern: string, pathname: string): Record<string, string> | null {
-  const pp = toParts(pattern);
-  const ap = toParts(pathname);
-  if (ap.length < pp.length) return null;
-  const out: Record<string, string> = {};
-  for (let i = 0; i < pp.length; i += 1) {
-    const p = pp[i];
-    const a = ap[i];
-    if (p === undefined || a === undefined) return null;
-    if (p.startsWith(":")) {
-      out[p.slice(1)] = decodeURIComponent(a);
-      continue;
-    }
-    if (p !== a) return null;
-  }
-  return out;
+  return extractPatternParams(pattern, pathname, false);
 }
 
 export function matchPattern(pattern: string, pathname: string, exact?: boolean): boolean {
-  const pp = toParts(pattern);
-  const ap = toParts(pathname);
-  if (exact && ap.length !== pp.length) return false;
-  if (ap.length < pp.length) return false;
-  for (let i = 0; i < pp.length; i += 1) {
-    const p = pp[i];
-    const a = ap[i];
-    if (p === undefined || a === undefined) return false;
-    if (p.startsWith(":")) continue;
-    if (p !== a) return false;
-  }
-  return true;
+  return matchPatternSegments(pattern, pathname, exact === true);
 }
 
 export const params = Effect.gen(function* () {
@@ -1994,9 +2715,6 @@ export function loaderData<A>(): Effect.Effect<Atom.ReadonlyAtom<A>, never, Rout
  * (`Loading` / `Refreshing` / `Success` / `Failure` / `Defect`) — the same
  * model queries and actions emit. Use this with `Async` / `Result`
  * control-flow components.
- *
- * Callers that need the deprecated stale-while-revalidate `FetchResult`
- * compatibility shape can use `loaderFetchResult()`.
  */
 export function loaderResult<A, E = unknown>(): Effect.Effect<Atom.ReadonlyAtom<CoreResultType<A, E>>, never, RouteContext<any, any, any>> {
   return Effect.gen(function* () {
@@ -2008,37 +2726,6 @@ export function loaderResult<A, E = unknown>(): Effect.Effect<Atom.ReadonlyAtom<
       return Atom.derived(() => CoreResult.success(ctx.loaderData!() as A)) as Atom.ReadonlyAtom<CoreResultType<A, E>>;
     }
     return Atom.derived(() => CoreResult.loading) as Atom.ReadonlyAtom<CoreResultType<A, E>>;
-  });
-}
-
-/**
- * Normalize an optional loader `Result` for callbacks that accept absent loader
- * state.
- */
-export function toUnifiedLoaderResult<A, E>(
-  result: CoreResultType<A, E> | undefined,
-): CoreResultType<A, E> | undefined {
-  return result;
-}
-
-/**
- * @deprecated Loader state as the stale-while-revalidate `FetchResult` shape.
- * Prefer `loaderResult()` (unified `Result`). This accessor exists for one
- * release for callers that read `FetchResult`-specific fields (`waiting`,
- * `previousSuccess`); it will be removed when `FetchResult` becomes
- * compat-subpath-only.
- */
-export function loaderFetchResult<A, E = unknown>(): Effect.Effect<Atom.ReadonlyAtom<FetchResult.Result<A, E>>, never, RouteContext<any, any, any>> {
-  return Effect.gen(function* () {
-    const ctx = yield* RouteContextTag;
-    if (ctx.loaderResult) {
-      const source = ctx.loaderResult as Atom.ReadonlyAtom<CoreResultType<A, E>>;
-      return Atom.derived(() => FetchResult.fromResult(source())) as Atom.ReadonlyAtom<FetchResult.Result<A, E>>;
-    }
-    if (ctx.loaderData) {
-      return Atom.derived(() => FetchResult.success(ctx.loaderData!() as A)) as Atom.ReadonlyAtom<FetchResult.Result<A, E>>;
-    }
-    return Atom.derived(() => FetchResult.initial<A, E>(true)) as Atom.ReadonlyAtom<FetchResult.Result<A, E>>;
   });
 }
 
@@ -2078,14 +2765,17 @@ export function link<T extends ComponentType<any, any, any, any, any> | AppRoute
   const encodeQuery = meta.querySchema ? encodeWithSchema(meta.querySchema) : undefined;
 
   const make = (paramsValue: RouteParamsOf<T>, options?: { readonly query?: Partial<RouteQueryOf<T>>; readonly hash?: string }) => {
-    let path = meta.fullPattern;
+    // DQ-038: substitution goes through the shared segment model, so an
+    // absent optional segment disappears instead of leaving a stray `?`.
     const encoded = encodeParams(paramsValue) as Record<string, unknown>;
-    for (const [k, v] of Object.entries(encoded ?? {})) {
-      path = path.replace(`:${k}`, encodeURIComponent(String(v)));
-    }
+    let path = substitutePattern(meta.fullPattern, encoded ?? {});
 
-    if (options?.query && encodeQuery) {
-      const q = encodeQuery(options.query as RouteQueryOf<T>) as Record<string, unknown>;
+    if (options?.query) {
+      // Without a declared query schema the values pass through untyped —
+      // query composition must not silently vanish on schema-less routes.
+      const q = encodeQuery
+        ? encodeQuery(options.query as RouteQueryOf<T>) as Record<string, unknown>
+        : options.query as Record<string, unknown>;
       const usp = new URLSearchParams();
       for (const [k, v] of Object.entries(q)) {
         if (v !== undefined) usp.set(k, String(v));
@@ -2118,7 +2808,18 @@ export function Link<P, Q>(props: {
 }) {
   const runtime = useContext(ManagedRuntimeContext);
   const href = props.to(props.params, { query: props.query, hash: props.hash });
-  const active = (props.to.pattern ? window.location.pathname.startsWith(props.to.pattern.replace(/:[^/]+/g, "")) : false);
+  // DQ-031: active state reads the ROUTER SERVICE's URL — `window.location`
+  // is simply wrong under the Hash, Memory, and Server layers, so there is no
+  // browser fallback of any kind here.
+  const serviceOption = runtime === null
+    ? undefined
+    : runtime.runSync(Effect.serviceOption(RouterTag));
+  const routerService = serviceOption !== undefined && serviceOption._tag === "Some"
+    ? serviceOption.value
+    : undefined;
+  const active = props.to.pattern !== undefined && routerService !== undefined
+    ? matchPattern(props.to.pattern, routerService.url().pathname)
+    : false;
   const onClick = (event: MouseEvent) => {
     event.preventDefault();
     if (runtime !== null) {
@@ -2126,10 +2827,9 @@ export function Link<P, Q>(props: {
         const router = yield* RouterTag;
         yield* router.navigate(href);
       }) as Effect.Effect<void, never, never>);
-    } else {
-      window.history.pushState(null, "", href);
-      window.dispatchEvent(new PopStateEvent("popstate"));
     }
+    // No `pushState` + synthetic `PopStateEvent` fallback: a Link outside a
+    // router runtime is inert rather than a second navigation stack.
   };
   const onMouseEnter = () => {
     if (props.preload !== "hover" || runtime === null) return;
@@ -2138,10 +2838,18 @@ export function Link<P, Q>(props: {
       if (router.preload) {
         yield* router.preload(href);
       }
-      yield* prefetch(props.to as RouteLink<P, Q>, props.params, { query: props.query, hash: props.hash, scope: "full" });
+      const source = yield* resolveRouteSource();
+      if (source !== undefined) {
+        yield* prefetch(source, props.to as RouteLink<P, Q>, props.params, { query: props.query, hash: props.hash, scope: "full" });
+      }
     }) as Effect.Effect<void, never, never>);
   };
   const className = typeof props.class === "function" ? props.class(active) : props.class;
+  // No document, no anchor: outside any DOM (browser or installed server
+  // document) the Link is inert rather than reaching for browser globals.
+  if ((globalThis as { readonly document?: unknown }).document === undefined) {
+    return null;
+  }
   return createComponent("a" as any, {
     href,
     class: className,
@@ -2162,8 +2870,18 @@ export function queryAtom<A>(
     const encode = encodeWithSchema(schema);
     const defaultEncoded = String(encode(options.default));
 
+    // DQ-031(b): a signal write navigates optimistically, then reconciles.
+    // The atom updates immediately from the written value; the navigation is
+    // FORKED (never `Effect.runSync` around an async navigation); a failed
+    // navigation rolls the atom back to the URL's value and surfaces the
+    // error on the service's navigation error channel. The accepted cost is a
+    // visible window where atom and URL disagree — the same trade every
+    // optimistic update makes, bounded by the rollback rule.
+    const [override, setOverride] = createSignal<{ readonly value: A } | null>(null);
     return Atom.writable(
       () => {
+        const pending = override();
+        if (pending !== null) return pending.value;
         const raw = router.url().searchParams.get(key);
         if (raw === null) return options.default;
         const decoded = decode(raw);
@@ -2177,7 +2895,29 @@ export function queryAtom<A>(
         } else {
           url.searchParams.set(key, encoded);
         }
-        Effect.runSync(router.navigate(url.pathname + url.search, { replace: true }));
+        setOverride({ value: next });
+        Effect.runFork(
+          router.navigate(url.pathname + url.search + url.hash, { replace: true }).pipe(
+            Effect.matchEffect({
+              onSuccess: () =>
+                Effect.sync(() => {
+                  // Reconciled: the URL now carries the value.
+                  setOverride(null);
+                }),
+              onFailure: (error) =>
+                Effect.sync(() => {
+                  // Rolled back: never left showing a state that did not land.
+                  setOverride(null);
+                }).pipe(
+                  Effect.andThen(
+                    router.onNavigationError === undefined
+                      ? Effect.void
+                      : router.onNavigationError(error),
+                  ),
+                ),
+            }),
+          ),
+        );
       },
     );
   });
@@ -2244,51 +2984,29 @@ export function loaderError(
 export const reload: Effect.Effect<void, never, RouterService> = Effect.gen(function* () {
   const router = yield* RouterTag;
   const current = router.url();
-  yield* router.navigate(current.pathname + current.search + current.hash, { replace: true });
+  yield* router.navigate(current.pathname + current.search + current.hash, { replace: true }).pipe(
+    Effect.catch((error) =>
+      router.onNavigationError === undefined
+        ? Effect.void
+        : router.onNavigationError(error)
+    ),
+  );
 });
 
-/**
- * Prefetch loader work.
- *
- * Pass a route tree as the first argument to use the tree-first unified route
- * path; otherwise this falls back to the legacy registry-backed lookup path.
- */
+/** Prefetch the loaders a link target would run, against an explicit source. */
 export function prefetch<P, Q>(
+  source: RouteSource,
   to: RouteLink<P, Q>,
   paramsValue: P,
   options?: { readonly query?: Partial<Q>; readonly hash?: string; readonly scope?: "loader" | "component" | "full" },
-): Effect.Effect<void, never>;
-export function prefetch<P, Q>(
-  root: AnyRoute | AnyAppRouteNode,
-  to: RouteLink<P, Q>,
-  paramsValue: P,
-  options?: { readonly query?: Partial<Q>; readonly hash?: string; readonly scope?: "loader" | "component" | "full" },
-): Effect.Effect<void, never>;
-export function prefetch<P, Q>(
-  rootOrTo: AnyRoute | AnyAppRouteNode | RouteLink<P, Q>,
-  toOrParams: RouteLink<P, Q> | P,
-  paramsOrOptions?: P | { readonly query?: Partial<Q>; readonly hash?: string; readonly scope?: "loader" | "component" | "full" },
-  maybeOptions?: { readonly query?: Partial<Q>; readonly hash?: string; readonly scope?: "loader" | "component" | "full" },
 ): Effect.Effect<void, never> {
-  if (typeof rootOrTo === "function") {
-    const to = rootOrTo;
-    const paramsValue = toOrParams as P;
-    const options = paramsOrOptions as { readonly query?: Partial<Q>; readonly hash?: string; readonly scope?: "loader" | "component" | "full" } | undefined;
-    return Effect.gen(function* () {
-      const href = to(paramsValue, { query: options?.query, hash: options?.hash });
-      const url = new URL(href, typeof window === "undefined" ? "http://localhost" : window.location.origin);
-      yield* runMatchedLoaders(url, { includeDeferred: true });
-    }) as Effect.Effect<void, never>;
-  }
-  return prefetchTreeInternal(rootOrTo, toOrParams as RouteLink<P, Q>, paramsOrOptions as P, maybeOptions);
+  return Effect.gen(function* () {
+    const href = to(paramsValue, { query: options?.query, hash: options?.hash });
+    const url = new URL(href, typeof window === "undefined" ? "http://localhost" : window.location.origin);
+    yield* runMatchedLoaders(source, url, { includeDeferred: true });
+  }) as Effect.Effect<void, never>;
 }
 
-/**
- * Prefetch loader work from an explicit route tree.
- *
- * This avoids the global route registry and is the preferred prefetch path for
- * unified route roots and subtrees.
- */
 function resolveSingleFlightRouteId(target: LoaderTarget): string {
   if (typeof target === "string") {
     return target;
@@ -2467,21 +3185,33 @@ export function actionSingleFlight<Args extends ReadonlyArray<unknown>, A, E, R>
       const revalidate = options?.revalidate ?? "reactivity";
       const allLoaders = revalidate === "none"
         ? [] as ReadonlyArray<SingleFlightLoaderEntry>
-        : options?.app
-          ? yield* runMatchedLoaders(options.app, targetUrl, {
-            includeDeferred: options?.includeDeferred ?? true,
-            reactivityKeys: revalidate === "reactivity" ? capturedInvalidations : undefined,
-          })
-          : yield* runMatchedLoaders(targetUrl, {
-            includeDeferred: options?.includeDeferred ?? true,
-            reactivityKeys: revalidate === "reactivity" ? capturedInvalidations : undefined,
-          });
+        : yield* resolveRouteSource(options?.app).pipe(
+          Effect.flatMap((source) => source === undefined
+            ? Effect.succeed([] as ReadonlyArray<SingleFlightLoaderEntry>)
+            // The single-flight response is a server door like any other
+            // (R3's server half): revalidated loader payloads ride back to
+            // the caller, so matched guards gate them exactly as they gate
+            // `renderRequest`. A denial drops the revalidation set — the
+            // author's explicit `setLoaders` seed is mutation output the
+            // action itself authorized and stays.
+            : matchedGuardDenial(routeEntriesOf(source), targetUrl).pipe(
+              Effect.flatMap((denial) =>
+                denial !== undefined
+                  ? Effect.succeed([] as ReadonlyArray<SingleFlightLoaderEntry>)
+                  : runMatchedLoaders(source, targetUrl, {
+                    includeDeferred: options?.includeDeferred ?? true,
+                    reactivityKeys: revalidate === "reactivity" ? capturedInvalidations : undefined,
+                  })
+              ),
+            )),
+        );
       const filteredLoaders = Array.isArray(revalidate)
         ? allLoaders.filter((item) => revalidate.includes(item.routeId))
         : revalidate === "reactivity" && capturedInvalidations.length === 0
-          ? options?.app
-            ? yield* runMatchedLoaders(options.app, targetUrl, { includeDeferred: options?.includeDeferred ?? true })
-            : yield* runMatchedLoaders(targetUrl, { includeDeferred: options?.includeDeferred ?? true })
+          // Nothing was invalidated, so nothing needs revalidation: return an
+          // empty loader list instead of re-running the full matched set.
+          ? []
+          // "matched" (and "reactivity" with invalidations) uses the matched run.
           : allLoaders;
       const loaders = [...seededLoaders, ...filteredLoaders.filter((item) => !seededIds.has(item.routeId))];
 
@@ -2546,6 +3276,24 @@ export function mutationSingleFlight<Args extends ReadonlyArray<unknown>, A, E, 
 }
 
 /**
+ * Default freshness window for hydrated single-flight loader entries.
+ *
+ * Hydrated single-flight entries default to 30s freshness so the client does
+ * not immediately refetch data the server just computed; routes can override
+ * this via their own loader `staleTime`.
+ */
+const defaultHydratedLoaderStaleTimeMs = 30_000;
+
+export interface HydrateSingleFlightOptions {
+  /**
+   * Called for each payload entry whose `routeId` matches no known route
+   * (tree, registry by id, and registry by pattern all miss). Without this
+   * callback such entries are skipped silently.
+   */
+  readonly onMissingRoute?: (routeId: string) => void;
+}
+
+/**
  * Hydrate loader cache entries from a previously returned single-flight payload.
  *
  * When a route tree is provided, hydration prefers the explicit tree over the
@@ -2554,31 +3302,28 @@ export function mutationSingleFlight<Args extends ReadonlyArray<unknown>, A, E, 
  */
 export function hydrateSingleFlightPayload(
   payload: SingleFlightPayload<unknown>,
-): Effect.Effect<void, never>;
-export function hydrateSingleFlightPayload(
-  payload: SingleFlightPayload<unknown>,
-  root: AnyRoute | AnyAppRouteNode,
-): Effect.Effect<void, never>;
-export function hydrateSingleFlightPayload(
-  payload: SingleFlightPayload<unknown>,
-  root?: AnyRoute | AnyAppRouteNode,
+  source: RouteSource,
+  options: HydrateSingleFlightOptions = {},
 ): Effect.Effect<void, never> {
-  return Effect.sync(() => {
-  const url = new URL(payload.url);
-  const treeRoutes = root ? registeredRoutesFromTree(root) : undefined;
-  for (const item of payload.loaders) {
-    const byTree = treeRoutes?.find((entry) => (entry.meta.id ?? entry.meta.fullPattern) === item.routeId);
-    const byId = byTree ?? getRegisteredRouteById(item.routeId);
-    const byPattern = byId ?? findRegisteredRoute(item.routeId);
-    if (!byPattern) continue;
-    const params = extractParams(byPattern.meta.fullPattern, url.pathname) ?? {};
-    const loaderOptions = asRouteComponent(byPattern.component).__routeLoaderOptions;
-    setLoaderCacheEntry(item.routeId, params, item.result, {
-      ...loaderOptions,
-      staleTime: loaderOptions?.staleTime ?? 30_000,
-    });
-  }
-  });
+  return currentLoaderCacheStore.pipe(Effect.map((store) => {
+    const url = new URL(payload.url);
+    const entries = routeEntriesOf(source);
+    for (const item of payload.loaders) {
+      const entry = entries.find((candidate) => candidate.routeId === item.routeId)
+        ?? entries.find((candidate) => candidate.fullPattern === item.routeId);
+      if (!entry) {
+        options.onMissingRoute?.(item.routeId);
+        continue;
+      }
+      const params = extractParams(entry.fullPattern, url.pathname) ?? {};
+      const loaderOptions = entry.loaderOptions;
+      setLoaderCacheEntry(item.routeId, params, item.result, {
+        ...loaderOptions,
+        staleTime:
+          loaderOptions?.staleTime ?? defaultHydratedLoaderStaleTimeMs,
+      }, store);
+    }
+  }));
 }
 
 /**
@@ -2588,15 +3333,23 @@ export function hydrateSingleFlightPayload(
 export function createSingleFlightHandler<Args extends ReadonlyArray<unknown>, A, E, R>(
   run: (...args: Args) => Effect.Effect<SingleFlightPayload<A>, E, R | RouterService>,
   options?: { readonly baseUrl?: string },
-): (request: SingleFlightRequest<Args>) => Effect.Effect<SingleFlightResponse<A, E>, never, R> {
+): (request: SingleFlightRequest<Args>) => Effect.Effect<SingleFlightWireResponse, never, R> {
   return (request) => {
     const base = options?.baseUrl ?? "http://localhost";
     const requestUrl = new URL(request.url, base).toString();
     return run(...request.args).pipe(
       Effect.provide(Server({ url: requestUrl })),
       Effect.match({
-        onSuccess: (payload) => ({ ok: true as const, payload }),
-        onFailure: (error) => ({ ok: false as const, error }),
+        onSuccess: (payload) => ({
+          version: singleFlightWireVersion,
+          ok: true as const,
+          payload: encodeSingleFlightPayload(payload),
+        }),
+        onFailure: (error) => ({
+          version: singleFlightWireVersion,
+          ok: false as const,
+          error: Serialization.encodeWireValue(error),
+        }),
       }),
     );
   };
@@ -2613,8 +3366,8 @@ export function FetchSingleFlightTransport(options?: {
   readonly fetch?: (input: string, init?: { readonly method?: string; readonly headers?: Record<string, string>; readonly body?: string }) => Promise<{ readonly json: () => Promise<unknown> }>;
 }): Layer.Layer<SingleFlightTransportService> {
   return Layer.succeed(SingleFlightTransportTag, {
-    execute: <Args extends ReadonlyArray<unknown>, A, E = unknown>(
-      request: SingleFlightRequest<Args>,
+    execute: (
+      request: { readonly name?: string; readonly args: ReadonlyArray<unknown>; readonly url: string },
       overrides?: {
         readonly endpoint?: string;
         readonly fetch?: (input: string, init?: { readonly method?: string; readonly headers?: Record<string, string>; readonly body?: string }) => Promise<{ readonly json: () => Promise<unknown> }>;
@@ -2625,7 +3378,9 @@ export function FetchSingleFlightTransport(options?: {
           ?? (typeof options?.endpoint === "function" ? options.endpoint(request as SingleFlightRequest<ReadonlyArray<unknown>>) : options?.endpoint)
           ?? request.name;
         if (!endpoint) {
-          throw { _tag: "SingleFlightTransportError", message: "No single-flight endpoint resolved" } as const;
+          throw new SingleFlightTransportError({
+            message: "No single-flight endpoint resolved",
+          });
         }
         const fetchImpl = overrides?.fetch ?? options?.fetch
           ?? ((input: string, init?: { readonly method?: string; readonly headers?: Record<string, string>; readonly body?: string }) =>
@@ -2635,14 +3390,15 @@ export function FetchSingleFlightTransport(options?: {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(request),
         });
-        return await response.json() as SingleFlightResponse<A, E>;
+        return await response.json();
       },
-      catch: (cause) => {
-        if (typeof cause === "object" && cause !== null && "_tag" in cause && (cause as { readonly _tag: string })._tag === "SingleFlightTransportError") {
-          return cause as { readonly _tag: "SingleFlightTransportError"; readonly message: string; readonly cause?: unknown };
-        }
-        return { _tag: "SingleFlightTransportError", message: "Failed to execute single-flight transport", cause } as const;
-      },
+      catch: (cause) =>
+        cause instanceof SingleFlightTransportError
+          ? cause
+          : new SingleFlightTransportError({
+              message: "Failed to execute single-flight transport",
+              cause,
+            }),
     }),
   });
 }
@@ -2656,7 +3412,7 @@ export function FetchSingleFlightTransport(options?: {
 export function singleFlight<Args extends ReadonlyArray<unknown>, A, E, R>(
   fn: (...args: Args) => Effect.Effect<A, E, R>,
   options?: (SingleFlightOptions<Args, A> & { readonly baseUrl?: string }),
-): (request: SingleFlightRequest<Args>) => Effect.Effect<SingleFlightResponse<A, E>, never, R> {
+): (request: SingleFlightRequest<Args>) => Effect.Effect<SingleFlightWireResponse, never, R> {
   const run = actionSingleFlight(fn, options);
   return (request) => run.pipe(
     Effect.flatMap((runner) => createSingleFlightHandler(runner, { baseUrl: options?.baseUrl })(request)),
@@ -2675,9 +3431,13 @@ export function invokeSingleFlight<Args extends ReadonlyArray<unknown>, A>(
   options?: {
     readonly fetch?: (input: string, init?: { readonly method?: string; readonly headers?: Record<string, string>; readonly body?: string }) => Promise<{ readonly json: () => Promise<unknown> }>;
     readonly hydrate?: boolean;
-    readonly app?: AnyRoute | AnyAppRouteNode;
+    readonly app?: RouteSource;
   },
-): Effect.Effect<SingleFlightPayload<A>, { readonly _tag: "SingleFlightInvokeError"; readonly message: string; readonly cause?: unknown }, never> {
+): Effect.Effect<
+  SingleFlightPayload<A>,
+  SingleFlightInvokeError | SingleFlightDecodeError,
+  never
+> {
   return Effect.tryPromise({
     try: async () => {
       const fetchImpl = options?.fetch ?? ((input: string, init?: { readonly method?: string; readonly headers?: Record<string, string>; readonly body?: string }) =>
@@ -2687,34 +3447,36 @@ export function invokeSingleFlight<Args extends ReadonlyArray<unknown>, A>(
         headers: { "content-type": "application/json" },
         body: JSON.stringify(request),
       });
-      const parsed = await response.json() as SingleFlightResponse<A, unknown>;
-      if (!parsed || typeof parsed !== "object" || !("ok" in parsed)) {
-        throw { _tag: "SingleFlightInvokeError", message: "Invalid single-flight response shape" } as const;
-      }
-      if (parsed.ok === false) {
-        throw { _tag: "SingleFlightInvokeError", message: "Single-flight action failed", cause: parsed.error } as const;
-      }
-      return parsed.payload;
+      return await response.json();
     },
-    catch: (cause) => {
-      if (typeof cause === "object" && cause !== null && "_tag" in cause && (cause as { readonly _tag: string })._tag === "SingleFlightInvokeError") {
-        return cause as { readonly _tag: "SingleFlightInvokeError"; readonly message: string; readonly cause?: unknown };
-      }
-      return { _tag: "SingleFlightInvokeError", message: "Failed to invoke single-flight endpoint", cause } as const;
-    },
+    catch: (cause) =>
+      new SingleFlightInvokeError({
+        message: "Failed to invoke single-flight endpoint",
+        cause,
+      }),
   }).pipe(
+    // Validation before hydration: a malformed response is a typed decode
+    // failure and seeds nothing into the loader cache.
+    Effect.flatMap((raw) => decodeSingleFlightResponse<A>(raw)),
     Effect.tap((payload) => options?.hydrate === false
       ? Effect.void
-      : options?.app
-        ? hydrateSingleFlightPayload(payload as SingleFlightPayload<unknown>, options.app)
-        : hydrateSingleFlightPayload(payload as SingleFlightPayload<unknown>)),
+      : resolveRouteSource(options?.app).pipe(
+        Effect.flatMap((source) => source === undefined
+          ? Effect.void
+          : hydrateSingleFlightPayload(payload as SingleFlightPayload<unknown>, source)),
+      )),
   );
 }
 
-/** Attach a guard Effect that must succeed before a route renders. */
+/**
+ * Attach a guard Effect that must succeed before a route renders.
+ *
+ * The returned enhancer carries both call signatures — unified route and
+ * component — so authored pipes need no casts on either tier (R3).
+ */
 export function guard<Req, E>(
   check: Effect.Effect<unknown, E, Req>,
-): UnifiedGuardEnhancer<Req, E>;
+): GuardEnhancer<Req, E>;
 export function guard<Req, E>(
   check: Effect.Effect<unknown, E, Req>,
 ): GuardEnhancer<Req, E> {
@@ -2723,6 +3485,19 @@ export function guard<Req, E>(
       return copyUnifiedRoute(component, {
         guards: [...component[UnifiedRouteSymbol].guards, check],
       });
+    }
+    if (isRouteNode(component)) {
+      // A guard piped onto a route NODE is stored on the node itself and
+      // read back by `routeGuardsOfTarget`. Before this branch existed the
+      // call fell through to the component arm, which stamped
+      // `__routeGuards` onto the node object — where nothing ever read it,
+      // so `Route.guard(...)(Route.page(...))` type-checked, composed, and
+      // gated nothing (the auth-bypass shape R3 exists to forbid).
+      const node = component as AnyAppRouteNode & {
+        __routeGuards?: ReadonlyArray<Effect.Effect<unknown, any, any>>;
+      };
+      node.__routeGuards = [...(node.__routeGuards ?? []), check];
+      return node;
     }
     const routed = asRouteComponent(component);
     const previous = routed.__routeGuards;
@@ -2798,19 +3573,10 @@ export function meta(
   return attach as MetaRouteEnhancer<unknown, unknown, unknown>;
 }
 
-export function transition(
-  value: { readonly enter?: Effect.Effect<unknown>; readonly exit?: Effect.Effect<unknown> },
-): <C extends ComponentType<any, any, any, any, any> | AnyRoute>(component: C) => C {
-  return <C extends ComponentType<any, any, any, any, any> | AnyRoute>(component: C): C => {
-    if (isUnifiedRoute(component)) {
-      return copyUnifiedRoute(component, {
-        transition: value,
-      }) as C;
-    }
-    asRouteComponent(component).__routeTransition = value;
-    return component;
-  };
-}
+// R3 (`DQ-030`): `Route.transition` is deleted. It needed a view-transition
+// model this library does not have, so it was a silent no-op behind a
+// plausible name -- worse than its absence. View transitions return, if they
+// do, as a designed feature rather than a stored-and-never-read field.
 
 export function sitemapParams<P, E = never, R = never>(
   enumerate: () => Effect.Effect<ReadonlyArray<P>, E, R>,
@@ -2860,57 +3626,49 @@ export function collect(component: unknown): ReadonlyArray<RouteMeta<any, any, a
 }
 
 /**
- * Run matched loaders.
+ * Run the loaders matched by `url` in `source`.
  *
- * With only a `URL`, this uses the legacy registry-backed lookup path. When a
- * route tree is provided first, it traverses that explicit tree instead.
+ * `source` is a route tree root or an explicit `Route.registry([...])`. There is
+ * no implicit global route set: R2 deleted it.
  */
 export function runMatchedLoaders(
+  source: RouteSource,
   url: URL,
   options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
-): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never>;
-
-export function runMatchedLoaders(
-  root: AnyRoute | AnyAppRouteNode,
-  url: URL,
-  options?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
-): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never>;
-export function runMatchedLoaders(
-  rootOrUrl: AnyRoute | AnyAppRouteNode | URL,
-  urlOrOptions?: URL | { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
-  maybeOptions?: { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput },
 ): Effect.Effect<ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>, never> {
-  if (rootOrUrl instanceof URL) {
-    const url = rootOrUrl;
-    const options = urlOrOptions as { readonly includeDeferred?: boolean; readonly reactivityKeys?: ReactivityKeysInput } | undefined;
-    return runMatchedLoadersRegistry(url, options);
-  }
-  return runMatchedLoadersTreeInternal(rootOrUrl, urlOrOptions as URL, maybeOptions);
+  return runMatchedLoadersInternal(routeEntriesOf(source), url, options);
 }
-export function runStreamingNavigation(
+
+/**
+ * Run every matched route's guards for `url`, parents first, failing fast
+ * (R3, `DQ-030`).
+ *
+ * A failing guard fails this effect with the guard's own error, which is how
+ * the runtime's navigation path refuses the navigation *before any loader
+ * runs*. A guard belongs to its route: unmatched routes' guards are never
+ * consulted.
+ */
+export function runMatchedRouteGuards(
+  source: RouteSource,
   url: URL,
-): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
-  readonly deferredScripts: ReadonlyArray<string>;
-}, never>;
+): Effect.Effect<void, unknown> {
+  const entries = routeEntriesOf(source);
+  const matched = matchedRouteEntries(entries, url.pathname);
+  const guards = matched.flatMap((entry) => entry.guards);
+  return Effect.forEach(guards, (check) => check as Effect.Effect<unknown, unknown, never>, {
+    discard: true,
+  });
+}
+
+/** Run matched loaders split into critical and deferred (streamed) sets. */
 export function runStreamingNavigation(
-  root: AnyRoute | AnyAppRouteNode,
+  source: RouteSource,
   url: URL,
-): Effect.Effect<{
-  readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
-  readonly deferredScripts: ReadonlyArray<string>;
-}, never>;
-export function runStreamingNavigation(
-  rootOrUrl: AnyRoute | AnyAppRouteNode | URL,
-  maybeUrl?: URL,
 ): Effect.Effect<{
   readonly critical: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>;
   readonly deferredScripts: ReadonlyArray<string>;
 }, never> {
-  if (rootOrUrl instanceof URL) {
-    return runStreamingNavigationRegistry(rootOrUrl);
-  }
-  return runStreamingNavigationTreeInternal(rootOrUrl, maybeUrl as URL);
+  return runStreamingNavigationInternal(routeEntriesOf(source), url);
 }
 
 function findParentPattern(pattern: string, candidates: ReadonlyArray<string>): string | undefined {
@@ -2938,8 +3696,11 @@ export function runRouteLoader(
   urlOrParent?: URL | unknown,
   parentDataArg?: unknown,
 ): Effect.Effect<UnknownRouteResult, never> {
-  if (isUnifiedRoute(component)) {
-    const url = metaOrUrl as URL;
+  // Dispatch on the ARGUMENT shape, not only the route kind: a self-stamped
+  // `Component.route` sugar value is a unified route AND a component, and its
+  // own setup path still calls the legacy `(component, meta, url)` form.
+  if (isUnifiedRoute(component) && metaOrUrl instanceof URL) {
+    const url = metaOrUrl;
     const parentData = urlOrParent;
     const loaderFn = component[UnifiedRouteSymbol].loaderFn;
     if (!loaderFn) return Effect.succeed(CoreResult.loading);
@@ -2948,22 +3709,25 @@ export function runRouteLoader(
     return runCachedLoader(
       meta.id ?? meta.fullPattern,
       paramsRaw,
-      loaderFn(paramsRaw, { parent: <A>() => parentData as A }) as Effect.Effect<unknown, unknown>,
+      loaderFn(paramsRaw, { parent: <A>() => parentData as A }),
       component[UnifiedRouteSymbol].loaderOptions,
     );
   }
   const meta = metaOrUrl as RouteMeta<any, any, any>;
   const url = urlOrParent as URL;
   const parentData = parentDataArg;
-  const loaderFn = asRouteComponent(component).__routeLoader;
+  // The legacy 3-arg form only ever receives components (including
+  // self-stamped `Component.route` sugar, which is both).
+  const legacyComponent = component as ComponentType<any, any, any, any, any>;
+  const loaderFn = asRouteComponent(legacyComponent).__routeLoader;
   if (!loaderFn) return Effect.succeed(CoreResult.loading);
   const paramsRaw = extractParams(meta.fullPattern, url.pathname) ?? {};
   const routeId = meta.id ?? meta.fullPattern;
-  const loaderOptions = asRouteComponent(component).__routeLoaderOptions;
+  const loaderOptions = asRouteComponent(legacyComponent).__routeLoaderOptions;
   return runCachedLoader(
     routeId,
     paramsRaw,
-    loaderFn(paramsRaw, { parent: <A>() => parentData as A }) as Effect.Effect<unknown, unknown>,
+    loaderFn(paramsRaw, { parent: <A>() => parentData as A }),
     loaderOptions,
   );
 }
@@ -2980,61 +3744,225 @@ export function deserializeLoaderData(serialized: string): Record<string, Unknow
   return Serialization.decodeResultRecord(serialized);
 }
 
+// ─── Versioned loader-data handoff ───────────────────────────────────────────
+//
+// R2 item 4: `window.__LOADER_DATA__` / `window.__HYDRATE_ROUTE__` were an
+// undocumented, unvalidated, unversioned pair — the second one defined nowhere
+// in src at all. They are replaced by one declared, versioned envelope that is
+// encoded and decoded through the `Serialization` seam, so streamed loader data
+// uses the same wire projection as the SSR payload and malformed input is a
+// typed failure rather than whatever the page happened to assign.
+
+/** Current loader-handoff envelope version. Bump on any shape change. */
+export const loaderHandoffVersion = 1 as const;
+
+/** The single global the server writes streamed loader data into. */
+export const loaderHandoffGlobalKey = "__afuiLoaderHandoff" as const;
+
+/** The optional hook a client may install to observe entries as they stream in. */
+export const loaderHandoffNotifyKey = "__afuiLoaderHandoffNotify" as const;
+
+/**
+ * Attribute marking one inert, per-entry loader payload script (`DQ-034`):
+ * deferred loader results ship on the resume-manifest channel family
+ * (`data-af-*`) as `<script type="application/json" data-af-loader>` tags —
+ * no executable inline JS and no second window global beside the manifest.
+ */
+export const loaderEntryScriptAttribute = "data-af-loader" as const;
+
+/**
+ * One streamed loader entry: the route id, the params the loader ran with (so
+ * the client caches under the same identity the server used), and the canonical
+ * result wire shape.
+ */
+export const LoaderHandoffEntry = Schema.Struct({
+  routeId: Schema.String,
+  params: Schema.Record(Schema.String, Schema.String),
+  result: Serialization.ResultWire,
+});
+
+/** The versioned envelope accumulated on `window[loaderHandoffGlobalKey]`. */
+export const LoaderHandoff = Schema.Struct({
+  version: Schema.Literal(loaderHandoffVersion),
+  entries: Schema.Array(LoaderHandoffEntry),
+});
+
+export type LoaderHandoffEntryValue = {
+  readonly routeId: string;
+  readonly params: Readonly<Record<string, string>>;
+  readonly result: Serialization.ResultWireValue;
+};
+
+export type LoaderHandoff = {
+  readonly version: typeof loaderHandoffVersion;
+  readonly entries: ReadonlyArray<LoaderHandoffEntryValue>;
+};
+
+type LoaderHandoffCarrier = {
+  [loaderHandoffGlobalKey]?: LoaderHandoff & { entries: Array<LoaderHandoff["entries"][number]> };
+  [loaderHandoffNotifyKey]?: (entry: LoaderHandoff["entries"][number]) => void;
+};
+
+function loaderHandoffCarrier(): LoaderHandoffCarrier | undefined {
+  return typeof globalThis === "undefined" ? undefined : globalThis as unknown as LoaderHandoffCarrier;
+}
+
+/**
+ * Emit the streamed-loader scripts for deferred results.
+ *
+ * Each script appends validated entries to the versioned envelope and notifies
+ * the optional client hook. The payload is produced by `Serialization` so the
+ * embedded JSON is script-safe and schema-checked at encode time.
+ */
 export function streamDeferredLoaderScripts(
-  results: ReadonlyArray<{ readonly routeId: string; readonly result: UnknownRouteResult }>,
+  results: ReadonlyArray<{
+    readonly routeId: string;
+    readonly result: UnknownRouteResult;
+    readonly params?: Readonly<Record<string, string>>;
+  }>,
 ): ReadonlyArray<string> {
   return results.map((item) => {
-    const routeId = Serialization.encodeSync(Schema.String, item.routeId);
-    const result = Serialization.encodeResult(item.result);
-    return `<script>window.__LOADER_DATA__=window.__LOADER_DATA__||{};window.__LOADER_DATA__[${routeId}]=${result};window.__HYDRATE_ROUTE__&&window.__HYDRATE_ROUTE__(${routeId});</script>`;
+    const payload = Serialization.encodeSync(LoaderHandoffEntry, {
+      routeId: item.routeId,
+      params: item.params ?? {},
+      result: Serialization.resultToWire(item.result),
+    });
+    // DQ-034 / R6: one handoff. The entry is data on the manifest channel,
+    // not a script that builds a parallel window global — the client reads it
+    // through `readLoaderHandoff`/`hydrateLoaderHandoff` (and, once streaming
+    // installs land, through the incremental manifest reader). Inert JSON is
+    // also CSP-friendlier than executable inline scripts.
+    return `<script type="application/json" ${loaderEntryScriptAttribute}>${payload}</script>`;
   });
 }
 
 /**
- * Collect sitemap entries.
+ * Read and validate the loader handoff envelope.
  *
- * Pass a route tree as the first argument to use the explicit tree-first path;
- * otherwise this falls back to the legacy registry-backed collector.
+ * Decoding goes through the injectable `Serialization` service, so a malformed
+ * or version-mismatched handoff is a typed `SchemaError`, never a defect.
  */
-export function collectSitemapEntries(baseUrl: string): Effect.Effect<ReadonlyArray<{ readonly loc: string }>, never>;
-export function collectSitemapEntries(root: AnyRoute | AnyAppRouteNode, baseUrl: string): Effect.Effect<ReadonlyArray<{ readonly loc: string }>, never>;
-export function collectSitemapEntries(
-  rootOrBaseUrl: AnyRoute | AnyAppRouteNode | string,
-  maybeBaseUrl?: string,
-): Effect.Effect<ReadonlyArray<{ readonly loc: string }>, never> {
-  if (typeof rootOrBaseUrl !== "string") {
-    return collectSitemapEntriesForTreeInternal(rootOrBaseUrl, maybeBaseUrl ?? "http://localhost");
-  }
-  const baseUrl = rootOrBaseUrl;
+export function readLoaderHandoff(
+  input?: unknown,
+): Effect.Effect<LoaderHandoff, Schema.SchemaError, Serialization.SerializationService> {
   return Effect.gen(function* () {
-    const out: Array<{ readonly loc: string }> = [];
-    for (const entry of routeRegistryById.values()) {
-      const enumerate = asRouteComponent(entry.component).__routeSitemapParams;
-      if (!enumerate) {
-        out.push({ loc: new URL(entry.meta.fullPattern, baseUrl).toString() });
+    const serialization = yield* Serialization.Tag;
+    const raw = input ?? (() => {
+      const envelope = loaderHandoffCarrier()?.[loaderHandoffGlobalKey] as unknown;
+      // Inert per-entry payload scripts on the manifest channel (DQ-034) are
+      // part of the same handoff: one channel, one decoder, one cache write.
+      const scriptEntries: Array<unknown> = [];
+      const documentValue = (globalThis as {
+        readonly document?: {
+          readonly querySelectorAll?: (selector: string) => ArrayLike<{ readonly textContent: string | null }>;
+        };
+      }).document;
+      if (typeof documentValue?.querySelectorAll === "function") {
+        const scripts = documentValue.querySelectorAll(`script[${loaderEntryScriptAttribute}]`);
+        for (let index = 0; index < scripts.length; index += 1) {
+          const text = scripts[index]?.textContent;
+          if (text === null || text === undefined) continue;
+          try {
+            scriptEntries.push(JSON.parse(text));
+          } catch {
+            // Malformed entries fail below through the schema, not here —
+            // but unparseable text cannot even reach the schema, so it is
+            // skipped rather than turned into a defect.
+          }
+        }
+      }
+      if (envelope === undefined) {
+        return { version: loaderHandoffVersion, entries: scriptEntries };
+      }
+      // The global is a `window` key any page script can assign: it is
+      // UNTRUSTED until the schema says otherwise. A malformed envelope is
+      // handed to the schema VERBATIM so it fails as a typed SchemaError —
+      // spreading `envelope.entries` here used to throw a TypeError defect
+      // on exactly the shapes an attacker would assign (a string, a missing
+      // or non-array `entries`).
+      if (
+        typeof envelope === "object"
+        && envelope !== null
+        && Array.isArray((envelope as { readonly entries?: unknown }).entries)
+      ) {
+        return {
+          ...(envelope as Record<string, unknown>),
+          entries: [
+            ...((envelope as { readonly entries: ReadonlyArray<unknown> }).entries),
+            ...scriptEntries,
+          ],
+        };
+      }
+      return envelope;
+    })();
+    return yield* serialization.deserialize(LoaderHandoff, JSON.stringify(raw)) as Effect.Effect<LoaderHandoff, Schema.SchemaError>;
+  });
+}
+
+/**
+ * Hydrate the loader cache from the versioned handoff envelope.
+ *
+ * This is the client half of the streamed-loader channel that
+ * `window.__HYDRATE_ROUTE__` only ever gestured at.
+ */
+export function hydrateLoaderHandoff(
+  source: RouteSource,
+  options?: {
+    readonly input?: unknown;
+    readonly onMissingRoute?: (routeId: string) => void;
+  },
+): Effect.Effect<void, Schema.SchemaError, Serialization.SerializationService> {
+  return Effect.gen(function* () {
+    const handoff = yield* readLoaderHandoff(options?.input);
+    const store = yield* currentLoaderCacheStore;
+    const entries = routeEntriesOf(source);
+    for (const item of handoff.entries) {
+      const entry = entries.find((candidate) => candidate.routeId === item.routeId)
+        ?? entries.find((candidate) => candidate.fullPattern === item.routeId);
+      if (!entry) {
+        options?.onMissingRoute?.(item.routeId);
         continue;
       }
-      const paramsList = yield* enumerate().pipe(
-        Effect.match({
-          onFailure: () => [] as ReadonlyArray<any>,
-          onSuccess: (value) => value,
-        }),
-      );
-      const linkFn = link(entry.component) as (params: unknown) => string;
-      for (const paramsValue of paramsList) {
-        out.push({ loc: new URL(linkFn(paramsValue), baseUrl).toString() });
-      }
+      const loaderOptions = entry.loaderOptions;
+      setLoaderCacheEntry(item.routeId, item.params, Serialization.resultFromWire(item.result), {
+        ...loaderOptions,
+        staleTime: loaderOptions?.staleTime ?? defaultHydratedLoaderStaleTimeMs,
+      }, store);
     }
-    return out;
   });
 }
 
 /**
- * Collect sitemap entries by traversing an explicit route tree.
+ * Subscribe to streamed handoff entries.
  *
- * Unified route trees should prefer this over the registry-based collector so
- * sitemap generation follows the actual app tree directly.
+ * Installs the notify hook the emitted scripts call and replays any entries
+ * that already arrived before subscription. Returns an unsubscribe function.
  */
+export function onLoaderHandoffEntry(
+  handler: (entry: LoaderHandoff["entries"][number]) => void,
+): () => void {
+  const carrier = loaderHandoffCarrier();
+  if (!carrier) return () => {};
+  for (const entry of carrier[loaderHandoffGlobalKey]?.entries ?? []) {
+    handler(entry);
+  }
+  const previous = carrier[loaderHandoffNotifyKey];
+  carrier[loaderHandoffNotifyKey] = (entry) => {
+    previous?.(entry);
+    handler(entry);
+  };
+  return () => {
+    carrier[loaderHandoffNotifyKey] = previous;
+  };
+}
+
+/** Collect sitemap entries for every route in an explicit route source. */
+export function collectSitemapEntries(
+  source: RouteSource,
+  baseUrl = "http://localhost",
+): Effect.Effect<ReadonlyArray<{ readonly loc: string }>, never> {
+  return collectSitemapEntriesInternal(routeEntriesOf(source), baseUrl);
+}
 
 export function validateLinks(component: unknown): ReadonlyArray<string> {
   const metas = collect(component);
@@ -3096,8 +4024,20 @@ function browserUrl(): URL {
   return new URL(window.location.href);
 }
 
+/**
+ * Preload the loaders for `to`.
+ *
+ * Router layers have no route tree of their own, so the app's route source is
+ * injected (`Route.routeSourceLayer(app)`). Without it there is nothing to
+ * match against and preload is a no-op rather than a global-registry lookup.
+ */
 function preloadUrl(to: string, base: URL | string): Effect.Effect<void> {
-  return runMatchedLoaders(new URL(to, base), { includeDeferred: true }).pipe(Effect.asVoid);
+  return Effect.serviceOption(RouteSourceTag).pipe(
+    Effect.flatMap((option) =>
+      option._tag === "Some"
+        ? runMatchedLoaders(option.value.source, new URL(to, base), { includeDeferred: true }).pipe(Effect.asVoid)
+        : Effect.void),
+  );
 }
 
 export const Browser: Layer.Layer<RouterService> = Layer.effect(
@@ -3239,6 +4179,14 @@ export const Route = {
   actionSingleFlight,
   mutationSingleFlight,
   hydrateSingleFlightPayload,
+  hydrateLoaderHandoff,
+  readLoaderHandoff,
+  onLoaderHandoffEntry,
+  LoaderHandoff,
+  LoaderHandoffEntry,
+  loaderHandoffVersion,
+  loaderHandoffGlobalKey,
+  loaderHandoffNotifyKey,
   createSingleFlightHandler,
   FetchSingleFlightTransport,
   singleFlight,
@@ -3247,7 +4195,6 @@ export const Route = {
   guard,
   title,
   meta,
-  transition,
   lazy,
   Switch,
   componentOf,
@@ -3259,18 +4206,25 @@ export const Route = {
   streamDeferredLoaderScripts,
   collectSitemapEntries,
   collectAll,
+  registry,
+  isRouteRegistry,
+  routeSourceLayer,
   collect,
   validateLinks,
   UnifiedRouteSymbol,
   RouteMetaSymbol,
   RouteLoaderMetaSymbol,
+  RouteRegistrySymbol,
   RouteContextTag,
+  RouteSourceTag,
+  RouteHeadTag,
+  makeRouteHeadStore,
+  currentRouteHeadStore,
+  runInRouteHeadStore,
+  resolveRouteHeadOf,
   SingleFlightTransportTag,
   RouterTag,
-  createRouteId,
   resolvePattern,
   matchPattern,
   extractParams,
 } as const;
-
-

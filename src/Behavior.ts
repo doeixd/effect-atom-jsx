@@ -1,6 +1,8 @@
-import { Effect } from "effect";
+import { Effect, Exit, Schema, Scope } from "effect";
 import * as Component from "./Component.js";
+import * as Diagnostics from "./Diagnostics.js";
 import * as Element from "./Element.js";
+import * as Portable from "./Portable.js";
 import * as View from "./View.js";
 
 const BehaviorTypeId: unique symbol = Symbol.for("effect-atom-jsx/Behavior");
@@ -18,25 +20,163 @@ const BehaviorTypeId: unique symbol = Symbol.for("effect-atom-jsx/Behavior");
  *   Effect.succeed({ focus: () => elements.input.focus?.() })
  * )
  */
-export interface Behavior<Elements, Bindings, Req, E> {
+export interface Behavior<Elements, Bindings, Req, E, Deps = {}> {
   readonly [BehaviorTypeId]: {
     readonly Elements: Elements;
     readonly Bindings: Bindings;
     readonly Req: Req;
     readonly E: E;
+    readonly Deps: Deps;
   };
-  readonly run: (elements: Elements) => Effect.Effect<Bindings, E, Req>;
+  /**
+   * `Deps` is the behavior's per-instance dependency channel (`DQ-052`):
+   * caller-supplied values arrive via `attachScoped(behavior, elements,
+   * { deps })`, and component attachment resolves them from the component's
+   * own bindings by name. Dependencies are NOT Effect requirements — a
+   * service would be shared across attachments, losing per-instance identity.
+   */
+  readonly run: (elements: Elements, deps: Deps) => Effect.Effect<Bindings, E, Req>;
   readonly metadata?: BehaviorMetadata<Elements>;
+  /**
+   * Optional portable attachment descriptor. Behaviors without one are opaque
+   * closures and require fallback activation on a resumed client.
+   */
+  readonly attachment?: BehaviorAttachment;
+  /**
+   * Pipeable: `Behavior.make(...).pipe(Behavior.provides({...}))`.
+   *
+   * `pipe` is defined NON-enumerably, so an object spread
+   * (`{ ...behavior }`) produces a value with no `pipe` — deliberately, as a
+   * copied closure would still pipe the ORIGINAL object. Never spread a
+   * behavior to modify it; use `withMetadata` / `provides` / `compose`,
+   * which re-attach a correctly bound `pipe`. `isBehavior` guards a value
+   * that may have lost the contract.
+   */
+  pipe(): Behavior<Elements, Bindings, Req, E, Deps>;
+  pipe<B>(ab: (self: this) => B): B;
+  pipe<B, C>(ab: (self: this) => B, bc: (b: B) => C): C;
+  pipe<B, C, D>(ab: (self: this) => B, bc: (b: B) => C, cd: (c: C) => D): D;
+  pipe<B, C, D, F>(
+    ab: (self: this) => B,
+    bc: (b: B) => C,
+    cd: (c: C) => D,
+    df: (d: D) => F,
+  ): F;
+}
+
+// `pipe` is defined non-enumerably so an object spread (`{ ...behavior }`)
+// drops it instead of copying a closure bound to the ORIGINAL object; every
+// construction site re-attaches a pipe bound to the new value.
+function attachPipe<T extends object>(behavior: T): T {
+  Object.defineProperty(behavior, "pipe", {
+    value: (...fns: ReadonlyArray<(value: unknown) => unknown>) =>
+      fns.reduce<unknown>((value, fn) => fn(value), behavior),
+    enumerable: false,
+  });
+  return behavior;
+}
+
+/**
+ * Declarative portability record carried by a behavior value.
+ *
+ * A portable attachment lists the bound code references whose execution
+ * reproduces the behavior's `run` in document order. Composition preserves
+ * portability only when every member is portable.
+ */
+export type BehaviorAttachment =
+  | {
+    readonly kind: "portable";
+    readonly executables: ReadonlyArray<Portable.AnyBoundCode>;
+  }
+  | {
+    readonly kind: "opaque";
+  };
+
+const opaqueAttachment: BehaviorAttachment = Object.freeze({
+  kind: "opaque",
+}) as BehaviorAttachment;
+
+/**
+ * Is this value a complete `Behavior` (brand AND a callable `pipe`)? A spread
+ * copy (`{ ...behavior }`) fails this check — it silently drops the
+ * non-enumerable `pipe` — so use this to fail loudly where a behavior may
+ * have been reconstructed instead of transformed.
+ */
+export function isBehavior(
+  value: unknown,
+): value is Behavior<unknown, unknown, unknown, unknown, unknown> {
+  return (
+    typeof value === "object"
+    && value !== null
+    && BehaviorTypeId in value
+    && typeof (value as { readonly pipe?: unknown }).pipe === "function"
+  );
+}
+
+/** Read the declarative attachment record; absent metadata reads as opaque. */
+export function inspectAttachment(
+  behavior: Behavior<any, any, any, any>,
+): BehaviorAttachment {
+  return behavior.attachment ?? opaqueAttachment;
+}
+
+/**
+ * Typed failure for a catalog behavior whose configuration does not satisfy
+ * its options Schema. Constructing a behavior is not an Effect, so decode
+ * happens where an error channel exists — inside `run`, surfacing on attach —
+ * never as a synchronous throw at the factory call site.
+ */
+export class BehaviorOptionsError extends Schema.TaggedErrorClass<BehaviorOptionsError>(
+  "@effect-atom-jsx/BehaviorOptionsError",
+)("BehaviorOptionsError", {
+  behavior: Schema.String,
+  message: Schema.String,
+  /** The structured schema issue, for debugging dynamic configs. */
+  issue: Schema.optional(Schema.Unknown),
+}) {}
+
+/**
+ * Decode a catalog behavior's options against its Schema, failing closed with
+ * a typed `BehaviorOptionsError`. Defaults belong in the Schema
+ * (`Schema.withDecodingDefault`), so a partial — or absent — config decodes to
+ * the full option type.
+ */
+export function decodeOptions<S extends Schema.Top>(
+  behaviorName: string,
+  schema: S,
+  input: unknown,
+): Effect.Effect<S["Type"], BehaviorOptionsError> {
+  return Schema.decodeUnknownEffect(schema)(input).pipe(
+    Effect.mapError((error) =>
+      new BehaviorOptionsError({
+        behavior: behaviorName,
+        message: `Invalid ${behaviorName} options: ${error.message}`,
+        issue: error.issue,
+      })
+    ),
+  ) as Effect.Effect<S["Type"], BehaviorOptionsError>;
 }
 
 /** Extract the element map required by a behavior. */
-export type ElementsOf<T> = T extends Behavior<infer E, any, any, any> ? E : never;
+export type ElementsOf<T> = T extends Behavior<infer E, any, any, any, any> ? E : never;
 /** Extract bindings contributed by a behavior. */
-export type BindingsOf<T> = T extends Behavior<any, infer B, any, any> ? B : never;
+export type BindingsOf<T> = T extends Behavior<any, infer B, any, any, any> ? B : never;
 /** Extract Effect requirements needed by a behavior. */
-export type RequirementsOf<T> = T extends Behavior<any, any, infer R, any> ? R : never;
+export type RequirementsOf<T> = T extends Behavior<any, any, infer R, any, any> ? R : never;
 /** Extract typed errors that can fail while a behavior attaches. */
-export type ErrorsOf<T> = T extends Behavior<any, any, any, infer E> ? E : never;
+export type ErrorsOf<T> = T extends Behavior<any, any, any, infer E, any> ? E : never;
+/** Extract the per-instance dependency channel of a behavior. */
+export type DepsOf<T> = T extends Behavior<any, any, any, any, infer D> ? D : never;
+/**
+ * The binding contract a behavior's TYPE declares it provides (`DQ-053`).
+ * Present only on `Behavior.provides(...)` results, whose type carries a
+ * REQUIRED `metadata.provides`; a plain behavior (optional metadata) yields
+ * `{}` — its deps must all come from the component.
+ */
+export type ProvidedContractOf<T> = T extends {
+  readonly metadata: { readonly provides: infer P };
+} ? (P extends BindingContract ? P : {})
+  : {};
 
 type SlotMapLike = Record<string, unknown>;
 type SlotContractRecord = Record<string, View.Slot.Any>;
@@ -82,6 +222,12 @@ export interface BehaviorMetadata<Elements = Record<string, unknown>> {
   readonly events?: BehaviorEventMap<Elements>;
   readonly provides?: BindingContract;
   readonly emits?: OutEventContract;
+  /**
+   * Required slot capabilities per behavior element key (`DQ-051`: retained
+   * by `forSlots` so dynamic attachment validation can check requirement
+   * against reality).
+   */
+  readonly requires?: Record<string, View.SlotCapability>;
 }
 
 export type MetadataOf<T> = T extends Behavior<infer Elements, any, any, any> ? BehaviorMetadata<Elements> : never;
@@ -99,6 +245,8 @@ export type OutEventsOf<T> = T extends { readonly metadata?: { readonly emits?: 
 export interface BindingWitness<Name extends string = string, A = unknown> {
   readonly name: Name;
   readonly _A?: (_: A) => A;
+  /** DQ-053: component-scoped state factory for a provided binding. */
+  readonly state?: () => Effect.Effect<A, any, any>;
 }
 
 export type BindingContract = Record<string, BindingWitness<string, any>>;
@@ -111,8 +259,20 @@ export type BindingValueOf<T> = T extends BindingWitness<any, infer A> ? A : nev
  * @example
  * const selected = Behavior.binding<"selected", Atom.WritableAtom<string | null>>("selected")
  */
-export function binding<const Name extends string, A = unknown>(name: Name): BindingWitness<Name, A> {
-  return { name };
+export function binding<const Name extends string, A = unknown>(
+  name: Name,
+  options?: {
+    /**
+     * DQ-053: declare the state this binding PROVIDES. The attach machinery
+     * materializes it once in the COMPONENT's scope (not the behavior's) and
+     * hands it in through the deps channel — so replacing the behavior that
+     * authored it keeps the state, and a replacement whose state shape does
+     * not match is surfaced, never a silent reset.
+     */
+    readonly state?: () => Effect.Effect<A, any, any>;
+  },
+): BindingWitness<Name, A> {
+  return options?.state === undefined ? { name } : { name, state: options.state };
 }
 
 /** Typed witness for an event emitted by a behavior-owned event bus. */
@@ -201,20 +361,115 @@ type CompatibleSlotKey<Slots extends SlotMapLike, Needed> = {
  * Any Effect requirements or typed errors are preserved on the behavior and
  * bubble through component attachment.
  */
-export function make<Elements, Bindings = {}, Req = never, E = never>(
-  run: (elements: Elements) => Effect.Effect<Bindings, E, Req>,
+export function make<Elements, Bindings = {}, Req = never, E = never, Deps = {}>(
+  run: (elements: Elements, deps: Deps) => Effect.Effect<Bindings, E, Req>,
   metadata?: BehaviorMetadata<Elements>,
-): Behavior<Elements, Bindings, Req, E> {
-  return {
+): Behavior<Elements, Bindings, Req, E, Deps> {
+  return attachPipe({
     [BehaviorTypeId]: {
       Elements: undefined as unknown as Elements,
       Bindings: undefined as unknown as Bindings,
       Req: undefined as unknown as Req,
       E: undefined as unknown as E,
+      Deps: undefined as unknown as Deps,
     },
     run,
     metadata,
-  };
+  }) as unknown as Behavior<Elements, Bindings, Req, E, Deps>;
+}
+
+/**
+ * Create a behavior from a portable, addressable attachment executable.
+ *
+ * The bound code receives the selected elements as its single argument and
+ * returns the contributed bindings. The behavior records a portable
+ * attachment descriptor, so a resumed client can reattach it by resolving the
+ * code identity instead of replaying the component that originally composed
+ * it.
+ */
+export function portable<
+  Captures,
+  EncodedCaptures,
+  Elements,
+  Bindings,
+  E,
+  Req,
+>(
+  executable: Portable.BoundCode<
+    Captures,
+    EncodedCaptures,
+    readonly [Elements],
+    Bindings,
+    E,
+    Req
+  >,
+  metadata?: BehaviorMetadata<Elements>,
+): Behavior<Elements, Bindings, Req, E> {
+  return attachPipe({
+    ...make<Elements, Bindings, Req, E>(
+      (elements) => Portable.execute(executable, elements),
+      metadata,
+    ),
+    attachment: Object.freeze({
+      kind: "portable",
+      executables: Object.freeze([executable as Portable.AnyBoundCode]),
+    }) as BehaviorAttachment,
+  }) as Behavior<Elements, Bindings, Req, E>;
+}
+
+/**
+ * Attached behavior handle owned by `attachScoped`.
+ *
+ * Listeners and resources acquired by the behavior live in a fresh Scope that
+ * is independent of any component setup scope; `dispose` releases exactly that
+ * Scope.
+ */
+export interface AttachedBehavior<Bindings> {
+  readonly bindings: Bindings;
+  readonly dispose: Effect.Effect<void>;
+}
+
+/**
+ * Run a behavior against already-available elements in a fresh attachment
+ * Scope.
+ *
+ * This is the reattachment path for restored/resumed components: the base
+ * component setup is not rerun, and every resource the behavior acquires is
+ * released by `dispose` (or automatically if attachment itself fails).
+ */
+export function attachScoped<Elements, Bindings, Req, E>(
+  behavior: Behavior<Elements, Bindings, Req, E, {}>,
+  elements: Elements,
+  options?: { readonly deps?: {} },
+): Effect.Effect<AttachedBehavior<Bindings>, E, Exclude<Req, Scope.Scope>>;
+export function attachScoped<Elements, Bindings, Req, E, Deps>(
+  behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  elements: Elements,
+  // A behavior with real dependencies REQUIRES them at attach: forgetting
+  // `{ deps }` is a compile error, not a runtime undefined-property crash.
+  options: { readonly deps: Deps },
+): Effect.Effect<AttachedBehavior<Bindings>, E, Exclude<Req, Scope.Scope>>;
+export function attachScoped<Elements, Bindings, Req, E, Deps = {}>(
+  behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  elements: Elements,
+  options?: { readonly deps?: Deps },
+): Effect.Effect<AttachedBehavior<Bindings>, E, Exclude<Req, Scope.Scope>> {
+  return Effect.gen(function* () {
+    const scope = yield* Scope.make();
+    const bindings = yield* (
+      behavior.run(
+        elements,
+        options?.deps ?? ({} as Deps),
+      ) as Effect.Effect<Bindings, E, Req | Scope.Scope>
+    ).pipe(
+      Scope.provide(scope),
+      Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause))),
+    );
+    return {
+      bindings,
+      dispose: Effect.suspend(() => Scope.close(scope, Exit.void)),
+    };
+  }) as Effect.Effect<AttachedBehavior<Bindings>, E, Exclude<Req, Scope.Scope>>;
 }
 
 function slotContractRecordFrom(input: SlotContractInput): SlotContractRecord {
@@ -241,15 +496,28 @@ export function forSlots<const S extends SlotContractInput>(
   run: (elements: ElementsForSlotContract<S>) => Effect.Effect<Bindings, E, Req>,
   metadata?: BehaviorMetadata<ElementsForSlotContract<S>>,
 ) => Behavior<ElementsForSlotContract<S>, Bindings, Req, E> {
-  return (run, metadata) => make(run, metadata);
+  // DQ-051: the builder RETAINS its slot contract as required capabilities,
+  // so dynamic attachment validation can check what the behavior needs
+  // against what a slot actually is.
+  const witnesses = slotContractRecordFrom(slots);
+  const requires: Record<string, View.SlotCapability> = {};
+  for (const [name, slot] of Object.entries(witnesses)) {
+    const capability = slot.metadata.capability;
+    if (capability !== undefined) requires[name] = capability;
+  }
+  return (run, metadata) =>
+    make(run, {
+      ...metadata,
+      ...(Object.keys(requires).length === 0 ? {} : { requires }),
+    });
 }
 
 /** Merge behavior metadata without changing its runtime attachment logic. */
-export function withMetadata<Elements, Bindings, Req, E>(
-  behavior: Behavior<Elements, Bindings, Req, E>,
+export function withMetadata<Elements, Bindings, Req, E, Deps = {}>(
+  behavior: Behavior<Elements, Bindings, Req, E, Deps>,
   metadata: BehaviorMetadata<Elements>,
-): Behavior<Elements, Bindings, Req, E> {
-  return {
+): Behavior<Elements, Bindings, Req, E, Deps> {
+  return attachPipe({
     ...behavior,
     metadata: {
       ...behavior.metadata,
@@ -267,20 +535,20 @@ export function withMetadata<Elements, Bindings, Req, E>(
         ...metadata.emits,
       },
     },
-  };
+  }) as Behavior<Elements, Bindings, Req, E, Deps>;
 }
 
 /** Declare the bindings a behavior contributes. */
 export function provides<const Contract extends BindingContract>(
   contract: Contract,
 ): (
-  <Elements, Bindings extends { readonly [K in keyof Contract & string]: BindingValueOf<Contract[K]> }, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => Behavior<Elements, Bindings, Req, E> & { readonly metadata: BehaviorMetadata<Elements> & { readonly provides: Contract } }
+  <Elements, Bindings extends { readonly [K in keyof Contract & string]: BindingValueOf<Contract[K]> }, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => Behavior<Elements, Bindings, Req, E, Deps> & { readonly metadata: BehaviorMetadata<Elements> & { readonly provides: Contract } }
 ) {
-  return <Elements, Bindings extends { readonly [K in keyof Contract & string]: BindingValueOf<Contract[K]> }, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => withMetadata(behavior, { provides: contract }) as Behavior<Elements, Bindings, Req, E> & {
+  return <Elements, Bindings extends { readonly [K in keyof Contract & string]: BindingValueOf<Contract[K]> }, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => withMetadata(behavior, { provides: contract }) as Behavior<Elements, Bindings, Req, E, Deps> & {
     readonly metadata: BehaviorMetadata<Elements> & { readonly provides: Contract };
   };
 }
@@ -291,13 +559,13 @@ export function events<
 >(
   eventMap: EventMap,
 ): (
-  <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => Behavior<Elements, Bindings, Req, E> & { readonly metadata: BehaviorMetadata<Elements> & { readonly events: EventMap } }
+  <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => Behavior<Elements, Bindings, Req, E, Deps> & { readonly metadata: BehaviorMetadata<Elements> & { readonly events: EventMap } }
 ) {
-  return <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => withMetadata(behavior, { events: eventMap }) as Behavior<Elements, Bindings, Req, E> & {
+  return <Elements extends { readonly [K in keyof EventMap & string]: unknown }, Bindings, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => withMetadata(behavior, { events: eventMap }) as Behavior<Elements, Bindings, Req, E, Deps> & {
     readonly metadata: BehaviorMetadata<Elements> & { readonly events: EventMap };
   };
 }
@@ -306,41 +574,80 @@ export function events<
 export function emits<const Contract extends OutEventContract>(
   contract: Contract,
 ): (
-  <Elements, Bindings, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => Behavior<Elements, Bindings, Req, E> & { readonly metadata: BehaviorMetadata<Elements> & { readonly emits: Contract } }
+  <Elements, Bindings, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => Behavior<Elements, Bindings, Req, E, Deps> & { readonly metadata: BehaviorMetadata<Elements> & { readonly emits: Contract } }
 ) {
-  return <Elements, Bindings, Req, E>(
-    behavior: Behavior<Elements, Bindings, Req, E>,
-  ) => withMetadata(behavior, { emits: contract }) as Behavior<Elements, Bindings, Req, E> & {
+  return <Elements, Bindings, Req, E, Deps>(
+    behavior: Behavior<Elements, Bindings, Req, E, Deps>,
+  ) => withMetadata(behavior, { emits: contract }) as Behavior<Elements, Bindings, Req, E, Deps> & {
     readonly metadata: BehaviorMetadata<Elements> & { readonly emits: Contract };
   };
 }
 
-export function compose<E1, B1, R1, Err1, E2, B2, R2, Err2>(
-  first: Behavior<E1, B1, R1, Err1>,
-  second: Behavior<E2, B2, R2, Err2>,
-): Behavior<E1 & E2, B1 & B2, R1 | R2, Err1 | Err2>;
-export function compose<E1, B1, R1, Err1, E2, B2, R2, Err2, E3, B3, R3, Err3>(
-  first: Behavior<E1, B1, R1, Err1>,
-  second: Behavior<E2, B2, R2, Err2>,
-  third: Behavior<E3, B3, R3, Err3>,
-): Behavior<E1 & E2 & E3, B1 & B2 & B3, R1 | R2 | R3, Err1 | Err2 | Err3>;
+/** Merge where B's keys override A's — the runtime's last-wins truth. */
+type MergeBindings<A, B> =
+  & { readonly [K in Exclude<keyof A, keyof B>]: A[K] }
+  & { readonly [K in keyof B]: B[K] };
+
+/** Fold a tuple of binding maps left to right, later members overriding. */
+type MergeAllBindings<Members extends readonly Behavior.Any[]> =
+  Members extends readonly [infer Only extends Behavior.Any] ? BindingsOf<Only>
+    : Members extends readonly [
+      infer Head extends Behavior.Any,
+      ...infer Rest extends readonly Behavior.Any[],
+    ] ? MergeBindings<BindingsOf<Head>, MergeAllBindings<Rest>>
+      : never;
+
+type UnionToIntersection<U> =
+  (U extends unknown ? (u: U) => void : never) extends (i: infer I) => void ? I
+    : never;
+
+export declare namespace Behavior {
+  export type Any = Behavior<any, any, any, any, any>;
+}
+
 /**
- * Compose behaviors into one behavior.
+ * Compose behaviors into one behavior (`DQ-057`, ratified).
  *
- * Requirements, typed errors, contributed bindings, and metadata are combined.
- * Runtime attachment runs each behavior in order and merges returned bindings.
+ * Runtime attachment runs each member in order and merges returned bindings
+ * with LAST-WINS semantics — and the types tell that truth: the composed
+ * bindings are `MergeAll` over the member tuple, so REPLACE-by-compose (the
+ * sanctioned customization path) types as the replacement, not as a
+ * near-uninhabited intersection. Element requirements and deps intersect
+ * (inputs); requirements and errors union.
+ *
+ * A later member overriding an earlier member's `provides` key is legal but
+ * REPORTED: a `behavior:provides-override` diagnostic goes through the same
+ * opt-in reporter channel as `component:duplicate-attachment` (`DQ-058`) at
+ * attach time. Composition never silently blocks.
  */
-export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any>>): Behavior<any, any, any, any> {
+export function compose<
+  const Members extends readonly [Behavior.Any, Behavior.Any, ...Behavior.Any[]],
+>(
+  ...behaviors: Members
+): Behavior<
+  UnionToIntersection<ElementsOf<Members[number]>>,
+  MergeAllBindings<Members>,
+  RequirementsOf<Members[number]>,
+  ErrorsOf<Members[number]>,
+  UnionToIntersection<DepsOf<Members[number]>>
+>;
+export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any, any>>): Behavior<any, any, any, any, any> {
   let metadataEvents: BehaviorEventMap<any> | undefined;
   let metadataProvides: BindingContract | undefined;
   let metadataEmits: OutEventContract | undefined;
+  const providesOverrides: Array<string> = [];
   for (const behavior of behaviors) {
     if (behavior.metadata?.events !== undefined) {
       metadataEvents = { ...metadataEvents, ...behavior.metadata.events };
     }
     if (behavior.metadata?.provides !== undefined) {
+      for (const key of Object.keys(behavior.metadata.provides)) {
+        if (metadataProvides !== undefined && key in metadataProvides) {
+          providesOverrides.push(key);
+        }
+      }
       metadataProvides = { ...metadataProvides, ...behavior.metadata.provides };
     }
     if (behavior.metadata?.emits !== undefined) {
@@ -352,15 +659,46 @@ export function compose(...behaviors: ReadonlyArray<Behavior<any, any, any, any>
     ...(metadataProvides === undefined ? {} : { provides: metadataProvides }),
     ...(metadataEmits === undefined ? {} : { emits: metadataEmits }),
   };
-  return make((elements) =>
-    Effect.gen(function* () {
-      const out: Record<string, unknown> = {};
-      for (const behavior of behaviors) {
-        const next = yield* behavior.run(elements);
-        Object.assign(out, next);
-      }
-      return out;
-    }), metadata);
+  const attachments = behaviors.map(inspectAttachment);
+  const attachment: BehaviorAttachment =
+    attachments.every((entry) => entry.kind === "portable")
+      ? Object.freeze({
+        kind: "portable",
+        executables: Object.freeze(
+          attachments.flatMap((entry) =>
+            entry.kind === "portable" ? entry.executables : []
+          ),
+        ),
+      }) as BehaviorAttachment
+      : opaqueAttachment;
+  return attachPipe({
+    ...make((elements, deps) =>
+      Effect.gen(function* () {
+        // DQ-057: overriding an earlier member's provides key is legal but
+        // reported, exactly like DQ-058's duplicate-attachment.
+        if (providesOverrides.length > 0) {
+          const maybeReporter = yield* Effect.serviceOption(Diagnostics.ReporterTag);
+          if (maybeReporter._tag === "Some") {
+            for (const key of providesOverrides) {
+              maybeReporter.value.reporter.report({
+                source: "behavior",
+                severity: "warning",
+                code: "behavior:provides-override",
+                message:
+                  `Behavior composition overrides the earlier provided binding "${key}" (last member wins).`,
+              });
+            }
+          }
+        }
+        const out: Record<string, unknown> = {};
+        for (const behavior of behaviors) {
+          const next = yield* behavior.run(elements, deps);
+          Object.assign(out, next);
+        }
+        return out;
+      }), metadata),
+    attachment,
+  }) as Behavior<any, any, any, any, any>;
 }
 
 export function decorator<Elements, Bindings, Req, E>(
@@ -496,6 +834,80 @@ export function attachToSlots<
   return attachBySlotContract(behavior as any, map as any, merge) as any;
 }
 
+/**
+ * Attach a behavior to a component by naming which component slot fills each
+ * behavior element (`DQ-051`: the capability contract comes from the
+ * component). The behavior's `Deps` channel resolves from the component's own
+ * bindings by name (`DQ-052`, half two), so the call site never restates a
+ * value the component already publishes.
+ *
+ * @example
+ * Component.make(...).pipe(
+ *   Component.withSlots(Anatomy),
+ *   Behavior.attachTo(mirror, { root: "root" }),
+ * )
+ */
+export function attachTo<
+  B extends Behavior.Any,
+  Props,
+  Req,
+  E,
+  Slots extends SlotMapLike,
+  Bindings extends
+    & { readonly slots: Slots }
+    // DQ-053: dependencies the behavior PROVIDES (via `Behavior.provides`
+    // with state factories) are materialized in the component's scope by the
+    // attach machinery — only the remainder must already exist on the
+    // component's own bindings.
+    & Omit<DepsOf<B>, keyof ProvidedContractOf<B>>,
+  const As extends string | undefined = undefined,
+  SlotContract = Slots,
+>(
+  behavior: B,
+  // The remap is OPTIONAL: when the behavior's element keys already ARE the
+  // component's slot names, identity `{ root: "root" }` is pure ceremony and
+  // the slots record itself is the element map (DQ-051). `as` namespaces
+  // everything this attachment provides under `bindings[as]` — the ratified
+  // replacement for the untyped `merge` callback when re-piping a behavior
+  // whose binding names would otherwise collide.
+  elementMap?:
+    & { readonly [K in keyof ElementsOf<B>]?: CompatibleSlotKey<Slots, ElementsOf<B>[K]> }
+    & { readonly as?: As },
+  merge?: (
+    bindings: Bindings,
+    added: BindingsOf<B>,
+  ) => Bindings & BindingsOf<B>,
+): (
+  component: Component.Component<Props, Req, E, Bindings, SlotContract>,
+) => Component.Component<
+  Props,
+  Req | RequirementsOf<B>,
+  E | ErrorsOf<B>,
+  Bindings & (As extends string ? { readonly [K in As]: BindingsOf<B> } : BindingsOf<B>),
+  SlotContract
+> {
+  const { as, ...map } = (elementMap ?? {}) as { readonly as?: string } & Record<string, unknown>;
+  const mergeUnderNamespace = as === undefined
+    ? merge
+    : (bindings: Bindings, added: BindingsOf<B>) =>
+      ({ ...bindings, [as]: added }) as Bindings & BindingsOf<B>;
+  return Component.withBehavior(
+    behavior,
+    (bindings: Bindings) => {
+      if (Object.keys(map).length === 0) {
+        // Identity attachment: the component's slots ARE the elements.
+        return bindings.slots as unknown as ElementsOf<B>;
+      }
+      const out: Record<string, unknown> = {};
+      for (const [behaviorKey, slotKey] of Object.entries(map)) {
+        out[behaviorKey] = (bindings.slots as Record<string, unknown>)[String(slotKey)];
+      }
+      return out as ElementsOf<B>;
+    },
+    mergeUnderNamespace,
+  ) as never;
+}
+
 /** Attach a behavior to every slot whose capability satisfies `capability`. */
 export function attachToAllWithCapability<
   Elements extends SlotMapLike,
@@ -558,6 +970,32 @@ export function validateAttachmentBySlots<
   const diagnostics = [
     ...View.validateSlotTargets(view, Object.values(elementMap) as string[], options),
   ];
+  // DQ-051: the behavior's retained slot contract names what each element
+  // key REQUIRES; the rendered slot's capability is what it IS. The check is
+  // an `extendsCapability` lattice walk (a strictly stronger slot is legal),
+  // and a too-weak slot fails CLOSED with a named diagnostic instead of
+  // silently accepting the attachment.
+  const required = behavior.metadata?.requires;
+  if (required !== undefined) {
+    const slotMetadataMap = view.slotMetadata as
+      | Record<string, View.SlotMetadata | undefined>
+      | undefined;
+    const renderedSlots = view.slots as Record<string, unknown>;
+    for (const [behaviorKey, capability] of Object.entries(required)) {
+      const slotName = elementMap[behaviorKey as keyof Elements];
+      if (slotName === undefined) continue;
+      const actual = slotMetadataMap?.[String(slotName)]?.capability
+        ?? View.capabilityOf(renderedSlots[String(slotName)]);
+      if (actual === undefined) continue;
+      if (!View.extendsCapability(actual, capability)) {
+        diagnostics.push({
+          code: "component:slot-capability-mismatch",
+          message: `Slot ${String(slotName)} is ${View.nameOfCapability(actual)}, which does not satisfy the behavior's required capability ${View.nameOfCapability(capability)}.`,
+          slot: String(slotName),
+        });
+      }
+    }
+  }
   const eventRequirements = behavior.metadata?.events;
   if (eventRequirements === undefined) return diagnostics;
 
@@ -615,6 +1053,9 @@ export const Behavior = {
   TypeId: BehaviorTypeId,
   make,
   forSlots,
+  portable,
+  inspectAttachment,
+  attachScoped,
   compose,
   decorator,
   attach,

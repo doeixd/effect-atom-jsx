@@ -79,6 +79,33 @@ const Field = Component.make(
   },
 ).pipe(Component.withSlots(FieldSlots));
 
+// ── Finding 1 golden-path sugar: makeWithSlots infers the whole contract ──
+// One call publishes the contract, wraps the view in fromSlots, and needs no
+// explicit generics. props/require default when omitted.
+const SugarField = Component.makeWithSlots(FieldSlots, {
+  props: Component.props<{ readonly label: string }>(),
+  setup: () => Effect.succeed({ draft: "" }),
+  view: (props, bindings) => {
+    const label: string = props.label;
+    const draft: string = bindings.draft;
+    void label;
+    void draft;
+    return null;
+  },
+});
+// the inferred contract matches the explicit path exactly
+type SugarContract = Component.SlotContractOf<typeof SugarField>;
+const sugarContractName: View.Slots.NamesOf<SugarContract> = "input";
+void sugarContractName;
+// @ts-expect-error unknown slot name on the inferred contract
+const badSugarContractName: View.Slots.NamesOf<SugarContract> = "missing";
+void badSugarContractName;
+// styles/behaviors attach to the sugar-published contract without generics
+const SugarStyled = SugarField.pipe(
+  Style.attachToSlots(Style.make(FieldSlots, { root: Style.slot({ display: "grid" }) }), FieldSlots),
+);
+void SugarStyled;
+
 // the published contract is precise without annotations
 type FieldContract = Component.SlotContractOf<typeof Field>;
 type FieldContractNames = View.Slots.NamesOf<FieldContract>;
@@ -86,7 +113,7 @@ const contractName: FieldContractNames = "input";
 void contractName;
 
 // styles and behaviors attach without generics and reject unknown slots
-const fieldStyle = Style.forSlots(FieldSlots)({
+const fieldStyle = Style.make(FieldSlots, {
   root: Style.slot({ display: "grid" }),
   input: Style.slot({ padding: "sm" }),
 });
@@ -129,7 +156,7 @@ const Styled = Field.pipe(
 );
 void Styled;
 
-Style.forSlots(FieldSlots)({
+Style.make(FieldSlots, {
   root: Style.whenBinding(IsOpen, true, Style.slot({ opacity: 1 })),
 });
 
@@ -163,7 +190,7 @@ const SetupCardWithoutBinding = Component.make<{}, never, never, {
 // @ts-expect-error binding-aware styles require the referenced binding on the component
 SetupCardWithoutBinding.pipe(Style.attach(bindingAwareStyle));
 
-Style.forSlots(FieldSlots)({
+Style.make(FieldSlots, {
   // @ts-expect-error unknown slot in a contract-keyed style
   missing: Style.slot({ color: "red" }),
 });

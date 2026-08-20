@@ -8,6 +8,26 @@ import * as StyleUtils from "../style-utils.js";
 import { defaultThemeTokens } from "../style-types.js";
 import * as Theme from "../Theme.js";
 import * as View from "../View.js";
+import { createSignal, flush } from "../api.js";
+
+/**
+ * Resolve a style value the way a real attachment does — through
+ * `Style.make` + `Style.attach` onto a component slot — and read the
+ * resulting handle styles back. Asserting on *resolved* values is what makes
+ * variant/recipe tests falsifiable: `toBeDefined()` on the returned piece
+ * passes for any implementation that returns a non-undefined object.
+ */
+const resolveOnSlot = (piece: Style.StyleValue): Element.Container => {
+  const Probe = Component.make<{}, never, never, {
+    readonly slots: { readonly root: Element.Container };
+  }>(
+    Component.props<{}>(),
+    Component.require<never>(),
+    () => Effect.succeed({ slots: { root: Element.container() } }),
+    () => null,
+  ).pipe(Style.attach(Style.make({ root: piece })));
+  return Effect.runSync(Component.setupEffect(Probe, {})).slots.root;
+};
 
 describe("Style", () => {
   it("attaches slot styles to component slots", () => {
@@ -55,8 +75,44 @@ describe("Style", () => {
       defaults: { intent: "primary", size: "sm" },
     });
 
-    const selected = button({ intent: "ghost", size: "lg" });
-    expect(Array.isArray(selected) ? selected.length > 0 : true).toBe(true);
+    // Resolve both the explicit selection and the defaults. Asserting the two
+    // differ on exactly the selected axes is what makes this falsifiable: an
+    // implementation that ignored `selection` and always applied `defaults`
+    // used to pass the old `length > 0` check.
+    const selected = resolveOnSlot(button({ intent: "ghost", size: "lg" }));
+    const defaulted = resolveOnSlot(button());
+
+    expect(selected.getStyle("backgroundColor")).toBe("#ffffff");
+    expect(defaulted.getStyle("backgroundColor")).not.toBe("#ffffff");
+    expect(selected.getStyle("fontSize")).not.toBe(defaulted.getStyle("fontSize"));
+    // `base` applies to both regardless of selection.
+    expect(selected.getStyle("padding")).toBe(defaulted.getStyle("padding"));
+    expect(selected.getStyle("padding")).not.toBeUndefined();
+  });
+
+  it("applies variant compounds only when every axis matches", () => {
+    const button = Style.variants({
+      base: Style.slot({ padding: "sm" }),
+      variants: {
+        intent: {
+          primary: Style.slot({ backgroundColor: "accent.default" }),
+          ghost: Style.slot({ backgroundColor: "surface" }),
+        },
+        size: {
+          sm: Style.slot({ fontSize: "body.sm" }),
+          lg: Style.slot({ fontSize: "body.lg" }),
+        },
+      },
+      compound: [
+        { when: { intent: "ghost", size: "lg" }, style: Style.slot({ opacity: 0.5 }) },
+      ],
+      defaults: { intent: "primary", size: "sm" },
+    });
+
+    expect(resolveOnSlot(button({ intent: "ghost", size: "lg" })).getStyle("opacity")).toBe(0.5);
+    // Negative controls: a partial match must not apply the compound.
+    expect(resolveOnSlot(button({ intent: "ghost", size: "sm" })).getStyle("opacity")).toBeUndefined();
+    expect(resolveOnSlot(button({ intent: "primary", size: "lg" })).getStyle("opacity")).toBeUndefined();
   });
 
   it("supports recipe factories", () => {
@@ -75,9 +131,20 @@ describe("Style", () => {
       defaults: { compact: "false" },
     });
 
-    const styles = card({ compact: "true" });
-    expect(styles.root).toBeDefined();
-    expect(styles.title).toBeDefined();
+    // The guarantee is that the selected variant *overrides* the base for the
+    // slot it patches, and leaves untouched slots alone. `toBeDefined()` on the
+    // returned pieces passed even if the variant patch was dropped entirely.
+    const compact = card({ compact: "true" });
+    const roomy = card({ compact: "false" });
+
+    const compactRoot = resolveOnSlot(compact.root);
+    const roomyRoot = resolveOnSlot(roomy.root);
+    expect(roomyRoot.getStyle("padding")).toBe(16); // base "md"
+    expect(compactRoot.getStyle("padding")).toBe(8); // variant "sm" wins
+    // The `title` slot has no patch on either selection.
+    expect(resolveOnSlot(compact.title).getStyle("fontSize"))
+      .toBe(resolveOnSlot(roomy.title).getStyle("fontSize"));
+    expect(resolveOnSlot(compact.title).getStyle("padding")).toBeUndefined();
   });
 
   it("applies binding-conditional styles against setup bindings", () => {
@@ -108,6 +175,71 @@ describe("Style", () => {
 
     expect(open.slots.root.getStyle("opacity")).toBe(1);
     expect(closed.slots.root.getStyle("opacity")).toBe(0.5);
+  });
+
+  // ── Piece selection is a setup-time snapshot; value functions are reactive ──
+  //
+  // The two tests above compare *separately constructed* components, which
+  // cannot distinguish "whenBinding evaluated the binding" from "whenBinding
+  // re-evaluates when the binding changes". These two pin the actual contract:
+  // `Style.whenBinding` piece selection is REACTIVE (fixed 2026-08-17;
+  // previously a pinned known-defect: `resolveSlot` ran once at attach and
+  // snapshotted signal-valued bindings). Reading the binding inside the
+  // per-property accessor is what makes selection track.
+
+  it("re-evaluates a signal-valued binding: whenBinding piece selection is reactive", () => {
+    const [isOpen, setIsOpen] = createSignal(false);
+    const Card = Component.make<{}, never, never, {
+      readonly isOpen: () => boolean;
+      readonly slots: { readonly root: Element.Container };
+    }>(
+      Component.props<{}>(),
+      Component.require<never>(),
+      () => Effect.succeed({ isOpen, slots: { root: Element.container() } }),
+      () => null,
+    ).pipe(
+      Style.attach(
+        Style.make({
+          root: Style.compose(
+            Style.slot({ opacity: 0.5 }),
+            Style.whenBinding("isOpen", true, Style.slot({ opacity: 1 })),
+          ),
+        }),
+      ),
+    );
+
+    const bindings = Effect.runSync(Component.setupEffect(Card, {}));
+    expect(bindings.slots.root.getStyle("opacity")).toBe(0.5);
+
+    setIsOpen(true);
+    flush();
+    // Machine state (or any signal-valued binding) drives styling live.
+    expect(bindings.slots.root.getStyle("opacity")).toBe(1);
+
+    // …and switching the branch OFF returns to the base piece rather than
+    // freezing the last value.
+    setIsOpen(false);
+    flush();
+    expect(bindings.slots.root.getStyle("opacity")).toBe(0.5);
+  });
+
+  it("re-evaluates a function-valued style property when its signal changes", () => {
+    const [opacity, setOpacity] = createSignal(0.5);
+    let recomputes = 0;
+    const root = resolveOnSlot(Style.slot({
+      opacity: () => {
+        recomputes += 1;
+        return opacity();
+      },
+    }));
+
+    expect(root.getStyle("opacity")).toBe(0.5);
+    expect(recomputes).toBe(1);
+
+    setOpacity(1);
+    flush();
+    expect(root.getStyle("opacity")).toBe(1);
+    expect(recomputes).toBe(2);
   });
 
   it("publishes resolved global styles through a layer service", () => {
@@ -213,7 +345,7 @@ describe("Style", () => {
       Component.withSlots(Slots),
       Behavior.attachToSlots(disclosure, Slots),
       Style.attachToSlots(
-        Style.forSlots(Slots)({
+        Style.make(Slots, {
           root: Style.compose(
             Style.slot({ opacity: 0.25 }),
             Style.whenBinding(IsOpen, true, Style.slot({ opacity: 1 })),

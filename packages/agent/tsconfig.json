@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    // The package consumes the published core surface (public subpaths),
+    // never src/ — the same external-consumer constraint @affe/permissive
+    // pins with its spi-consumer test.
+    "plugins": []
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

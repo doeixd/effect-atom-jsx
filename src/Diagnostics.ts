@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import * as Behavior from "./Behavior.js";
 import * as Component from "./Component.js";
 import * as Element from "./Element.js";
@@ -52,7 +52,7 @@ export interface ReporterService {
   readonly reporter: Reporter;
 }
 
-export const ReporterTag = ServiceMap.Service<ReporterService>("DiagnosticsReporter");
+export const ReporterTag = Context.Service<ReporterService>("DiagnosticsReporter");
 
 /**
  * Create a diagnostic reporter.

@@ -1,12 +1,12 @@
-import { Effect, Schema, ServiceMap } from "effect";
+import { Effect, Schema, Context } from "effect";
 import * as Component from "../Component.js";
 import * as Route from "../Route.js";
 
 type AuthError = { readonly _tag: "AuthError" };
 type DbError = { readonly _tag: "DbError" };
 
-const AuthService = ServiceMap.Service<{ readonly check: () => Effect.Effect<string, AuthError> }>("AuthService");
-const DbService = ServiceMap.Service<{ readonly query: () => Effect.Effect<ReadonlyArray<string>, DbError> }>("DbService");
+const AuthService = Context.Service<{ readonly check: () => Effect.Effect<string, AuthError> }>("AuthService");
+const DbService = Context.Service<{ readonly query: () => Effect.Effect<ReadonlyArray<string>, DbError> }>("DbService");
 
 const BaseComponent = Component.from<{}>(() => null);
 

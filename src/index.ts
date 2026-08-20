@@ -29,6 +29,7 @@ export * as SafeHtml from "./SafeHtml.js";
 export * as View from "./View.js";
 export * as Component from "./Component.js";
 export * as Behavior from "./Behavior.js";
+export * as Machine from "./Machine.js";
 export * as Element from "./Element.js";
 export * as Behaviors from "./behaviors.js";
 export * as Composables from "./composables.js";
@@ -40,8 +41,9 @@ export * as StyledComposables from "./styled-composables.js";
 export * as Route from "./Route.js";
 export * as ServerRoute from "./ServerRoute.js";
 export * as RouterRuntime from "./RouterRuntime.js";
-export * as FetchResult from "./Result.js";
 export * as Serialization from "./Serialization.js";
+export * as Portable from "./Portable.js";
+export * as Resume from "./Resume.js";
 export * as Diagnostics from "./Diagnostics.js";
 export * as A11y from "./A11y.js";
 export * as Form from "./Form.js";
@@ -95,6 +97,9 @@ export {
   renderWithHMR,
   withViteHMR,
   renderToString,
+  renderToStream,
+  RenderToStreamError,
+  type RenderToStreamOptions,
   hydrateRoot,
   isServer,
   setRequestEvent,
